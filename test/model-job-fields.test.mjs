@@ -53,7 +53,11 @@ await test("validation of max_output, sort and max_price", () => {
   for (const bad of ["fast", "", 3, true]) rejects(withJob("notes", { sort: bad }), /sort must be/);
   for (const ok of [null, { prompt: 0, completion: 0 }, { prompt: 0.5, completion: 15 }]) validateModelSettings(withJob("notes", { max_price: ok }));
   for (const bad of [{}, { prompt: 1 }, { prompt: 1, completion: -1 }, { prompt: 1, completion: "2" }, { prompt: 1, completion: 2, extra: 3 }, { prompt: 1, completion: 20000 }, [1, 2], 5]) rejects(withJob("notes", { max_price: bad }), /max price/);
-  const f = clone(SEED); f.jobs["chat.general"].fallbacks[0] = { ...f.jobs["chat.general"].fallbacks[0], max_output: 10 }; rejects(f, /Invalid/);
+  const f = clone(SEED); f.routing.categories[0].chains.zdr[1] = { ...f.routing.categories[0].chains.zdr[1], max_output: 10 }; rejects(f, /Invalid/);
+  // a routing category carries the limits of its replies, checked like a job's
+  const cat = (over) => { const c = clone(SEED); Object.assign(c.routing.categories[0], over); return c; };
+  for (const ok of [{ max_output: 4000, sort: "latency", max_price: { prompt: 1, completion: 5 }, timeout_ms: 60000 }, { max_output: null, sort: null, max_price: null, timeout_ms: null }]) validateModelSettings(cat(ok));
+  rejects(cat({ max_output: 0 }), /max output/); rejects(cat({ sort: "fast" }), /sort must be/); rejects(cat({ max_price: { prompt: 1 } }), /max price/); rejects(cat({ timeout_ms: 5 }), /timeout/);
 });
 
 await test("hosts and pin on an entry are refused", () => {

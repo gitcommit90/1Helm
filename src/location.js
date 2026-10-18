@@ -125,9 +125,9 @@ export function placeLine(o = {}) {
   if (d && Number(d.at) && now - Number(d.at) <= LOC_USE_MS) {
     const where = d.place || `${d.lat}, ${d.lng}`, as = whenLabel(Number(d.at), now, tz);
     const near = `${now - Number(d.at) <= LOC_NOW_MS ? "near" : "last known near"} ${where}`;
-    return { src: "device", line: `(Where they are: the person is ${near} (as of ${as}, from their device, rounded to about 1 km). Use it for anything that depends on where they are, without asking; say the area in a short line ("Near ${where}: …"). ${WINS})` };
+    return { src: "device", line: `(Where they are: the person is ${near} (as of ${as}, from their device, rounded to about 1 km). Use it silently for anything that depends on where they are, without asking. Don't open a reply with the area or mention it in a reply that doesn't depend on where they are; when the answer is local (places nearby, weather, local times or events), you may name the area once, inside the answer, if that helps. ${WINS})` };
   }
   const city = o.tzKnown ? tzCity(tz) : "";
-  if (o.tzKnown && tz) return { src: "timezone", line: `(Where they are: no device location. Their time zone is ${tz}${o.tzLabel ? ` (${o.tzLabel})` : ""}, a wide region${city ? ` around ${city}` : ""}. For anything that depends on where they are, assume that region and say the assumption in a short line ("Assuming you're around ${city || "there"}: …") instead of asking. ${SHARE})` };
+  if (o.tzKnown && tz) return { src: "timezone", line: `(Where they are: no device location. Their time zone is ${tz}${o.tzLabel ? ` (${o.tzLabel})` : ""}, a wide region${city ? ` around ${city}` : ""}. For anything that depends on where they are, assume that region instead of asking, and use it silently. Don't open a reply with the region or mention it in a reply that doesn't depend on where they are; when the answer is local and depends on the assumption, say once, inside the answer, that you're assuming the region${city ? ` around ${city}` : ""}, so they can correct you. ${SHARE})` };
   return { src: "none", line: `(Where they are: unknown, no device location or time zone. ${o.cards === false ? "If what they want depends on where they are, ask in one short line which area to use." : "If what they want depends on where they are, offer the one-tap Share my location button instead of asking in prose."})` };
 }

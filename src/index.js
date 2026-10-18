@@ -13,7 +13,7 @@ import { notifApi } from "./notify.js";
 import { meetingsApi, meetingsCron } from "./ee/index.js";   // Meeting reminders for notes (Google Calendar / Outlook → "Take notes?")
 import { reportApi, reportsPage, reportShot } from "./reports.js";
 import { MANIFEST_RE, PWA_ICON_RE, manifestResponse, pwaHead, iconName, DEV_ICON_V } from "./pwa.js";
-import { versionedAsset as versionedAssetFor } from "./asset-version.js";
+import { versionedAsset as versionedAssetFor, withAppV } from "./asset-version.js";
 import { cardRoute } from "./cards.js";
 import { logoRoute } from "./logo.js";
 import { appLogoRoute } from "./ee/index.js";
@@ -64,7 +64,7 @@ import { modelsRoute } from "./ee/index.js";
 import { healthCron } from "./hindsight-health.js";
 import { hindsightSelfTest, hsOn, sweepBanks, recall as hsRecall, bankId as hsBankId } from "./hindsight.js";
 import { privacyBoot, privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // AI data privacy (onboarding step, boot)
-import { askDecider, jobModel, dispatch, plannedMaxOutput, plannedHoldNano } from "./ee/index.js";
+import { askDecider, dispatch } from "./ee/index.js";
 import { parityRoute } from "./internal-shim.js";
 import { pageDialog } from "./page-dialog.js";
 import { helperName, DEFAULT_HELPER } from "./helper-name.js";
@@ -72,7 +72,8 @@ import { interviewEnsure, interviewApi, bootView as interviewBoot, rowOf as inte
 import { interviewChatApi } from "./interview-chat.js";
 import { appsUsedApi } from "./ee/index.js";
 import { googleStatus, googleDisconnect, listConnections, setDefaultAccount, setAccountNote, tidyAfterConnect, appName, disconnectAllManaged, managedCount, RETIRED_APPS, RETIRED_NOTE } from "./ee/index.js";
-import { connectOfferApi, connectOfferDone, offerCallbackQuery, catalogFile } from "./ee/index.js";
+import { connectOfferApi, connectOfferDone, offerCallbackQuery, catalogFile, connectBlock } from "./ee/index.js";
+import { visibleCatalog } from "./ee/index.js";
 import { cancelApi, cancelWebhook, cancelSync, cancelCron } from "./ee/index.js";
 import { holdOf, holdView, holdFromFailure, notePaid, pastdueSync, pastdueCron, pastdueApi, pastdueSeen } from "./ee/index.js";
 import { PAY_MSG, INACTIVE_MSG } from "./ee/index.js";   // payment failed: read-only now, deleted after the paid period + 7 days
@@ -83,10 +84,8 @@ import { textingStatus, textingStart, textingPoll, textingNewCode, textingOff, t
 import { customMcpRoute } from "./ee/index.js";
 
 const NANO = 1e9;                         // balances in nano-dollars (integers)
-const PRICE = { in: 150, cached: 30, out: 500 }; // glm-5.3-flash nano$/token (CF list); Workers AI fallback only
-import { OR_RESERVE_PRICE } from "./model.js";
 import { PLANS } from "./plans-def.js";
-import { byokApi, loadByok, byokChat, BYOK_PLAN, ledgerByok } from "./byok.js";
+import { byokApi, BYOK_PLAN, ledgerByok } from "./byok.js";
 import { orStart, orFinish, orCookie, orCookieOf } from "./byok-openrouter.js";   // Sign in with OpenRouter (the BYOK panel's optional button)   // own AI key: the byok plan's settings + routing (+ a backup key on a full plan)
 import { People, aliasesFor } from "./people.js";
 import { seenAdd, seenSet, backfillSeen, seenBackfillAdmin, hsWalls } from "./walls.js";   // HS_WALLS: Contacts visibility per channel, General's front door
@@ -102,7 +101,6 @@ import { scrubSecrets, hasSecret, SECRET_NOTE } from "./secrets-scrub.js";   // 
 import { locationRoute, saveLocation, rawFix } from "./location.js";   // where the person is: the app's coarse fix, the helper's place line
 import { replyRef } from "./reply-to.js";   // Reply on a chat bubble: the quoted message rides with /stream and send-later
 const MARKUP = 1.15;
-import { PLAIN_STYLE } from "./plain-style.js";
 import { isCapacityError, computerBusyError } from "./computer-capacity.js";
 const RESERVED = new Set("admin api app assets auth billing blog cdn demo docs help mail provision security status support www 1helm cloudflare login signup static dev staging test internal captain root system cloud gateway portal account accounts dashboard console design models hooks onboard download downloads manual terms privacy legal pricing about home news careers jobs press email smtp imap ftp ns ns1 ns2 m mobile ios android".split(" "));
 const slugValid = (s) => /^(?=.{3,48}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])$/.test(s) && !s.includes("--") && !/^\d+$/.test(s) && !RESERVED.has(s);
@@ -180,7 +178,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "261";
+const APP_V = "272";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -599,7 +597,7 @@ export default {
   },
   async fetch(req, env, ctx) {
     env = tolerantEnv(env);   // do-stub.js: every Durable Object call survives a deploy's skew/reset window
-    const res = transportHeaders(req, await this.route(req, env, ctx));
+    const res = withAppV(new URL(req.url), transportHeaders(req, await this.route(req, env, ctx)), { APP_V });
     if (isPublicShare(env, new URL(req.url))) return res;   // share links and published pages are the person's content: never touched
     // Dev environment: a yellow DEV strip on every page, so dev can never be mistaken for Live.
     if (env.ENV_NAME === "dev" && (res.headers.get("content-type") || "").includes("text/html"))
@@ -723,7 +721,14 @@ export default {
       if (p.startsWith("/c/")) { const cr = await cardRoute(req, env, ctx, url); if (cr) return cr; }
       // The app catalog for the Composio version this server uses (connect-offer.js catalogFile): same URL, the latest list when
       // COMPOSIO_TOOLKIT_VERSION="latest".
-      if (env.ASSETS && p === "/app-static/integrations.json" && catalogFile(env) !== "integrations.json") { const u = new URL(req.url); u.pathname = `/app-static/${catalogFile(env)}`; return env.ASSETS.fetch(new Request(u, req)); }
+      // The Apps popup loads this list, so it is filtered here by the same rules as find_app (app-visibility.js): hidden apps never reach the app.
+      if (env.ASSETS && (p === "/app-static/integrations.json" || p === "/app-static/integrations-latest.json")) {
+        const u = new URL(req.url); if (p === "/app-static/integrations.json") u.pathname = `/app-static/${catalogFile(env)}`;
+        const r = await env.ASSETS.fetch(new Request(u, req));
+        if (!r.ok) return r;
+        const h = new Headers(r.headers); h.delete("content-length"); h.delete("content-encoding"); h.delete("etag");
+        return versionedAsset(url, new Response(JSON.stringify(visibleCatalog(await r.json())), { status: 200, headers: h }));
+      }
       if ((p === "/onboard/v1/" || p === "/onboard/v1/index.html") && !(await ageAccess(req, env, { allowPending: false })).allowed) return agePage();
       if (env.ASSETS && (p.startsWith("/app-static/") || p.startsWith("/onboard-static/") || p.startsWith("/onboard/v1/") || p === "/onboard/kit.js" || p === "/onboard/kit.css" || p.startsWith("/fonts/") || p.startsWith("/av/") || p === "/1helm-sailboat.png" || PWA_ICON_RE.test(p))) return versionedAsset(url, await env.ASSETS.fetch(req));
       if (p === "/admin/reconcile") {
@@ -1072,7 +1077,7 @@ export default {
         if (sub === "/app" || sub === "/app/") return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <link rel="icon" type="image/png" href="${iconName("/1helm-icon-64.png", env.ENV_NAME === "dev")}">${pwaHead(t.slug, env.ENV_NAME === "dev")}<title>1Helm</title><meta name="theme-color" content="#f3f2ef" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#121212" media="(prefers-color-scheme: dark)"><link rel="preload" href="/fonts/instrument-sans.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/fonts/instrument-serif.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/app-static/style.css?v=${APP_V}"></head>
 <body><nav id="rail"></nav><aside id="side"></aside><main id="stage"></main><div id="m"></div><div id="sheet"></div>
-<script>window.__1HC=${scriptJson({ api: `/w/${t.slug}/api`, slug: t.slug, classic: `/w/${t.slug}/?classic=1`, person: t.first_name || "", email: user.email, support: env.SUPPORT_EMAIL || env.EMAIL_FROM, helper: helperName(t), avatar: Number(t.helper_avatar || 8) })}</script><script>${BOOT_EARLY}</script><script type="module" src="/app-static/app.js?v=${APP_V}"></script></body></html>`, { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
+<script>window.__1HC=${scriptJson({ v: APP_V, api: `/w/${t.slug}/api`, slug: t.slug, classic: `/w/${t.slug}/?classic=1`, person: t.first_name || "", email: user.email, support: env.SUPPORT_EMAIL || env.EMAIL_FROM, helper: helperName(t), avatar: Number(t.helper_avatar || 8) })}</script><script>${BOOT_EARLY}</script><script type="module" src="/app-static/app.js?v=${APP_V}"></script></body></html>`, { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
         // Deleting a chat, a channel or the account (deletion.js). Before the access check: deleting always works, even unpaid.
         { const dr = await deletionRoute(req, env, t, url, sub); if (dr) return dr; }
         // Settings → General → Your account: name, sign-in email, signed-in devices (account.js). Also before the access check.
@@ -1166,6 +1171,8 @@ export default {
           if (!app) return json({ error: "Which app?" }, 400);
           if (RETIRED_APPS.has(app)) return json({ error: RETIRED_NOTE, retired: true }, 410);
           // The "Reconnect Composio" card (Self-managed sign-in ended): sign in again, then back into the task.
+          // Hidden apps (Cloudflare toolkits other than Cloudflare MCP, the deny list) and Soon apps they aren't connected to can't be connected (app-visibility.js).
+          if (app !== "composio") { const no = await connectBlock(env, t.id, app); if (no) return json({ error: no, unavailable: true }, 403); }
           if (app === "composio") return json({ url: `/w/${t.slug}/composio/connect?back=${encodeURIComponent(`/w/${t.slug}/apps/done?app=composio&from=${from}${from === "offer" ? offerCallbackQuery(b) : ""}`)}` });
           try { return json(await transportFor(env, t.id).connectLink(app, `${origin}/w/${t.slug}/apps/done?app=${app}&from=${from}${from === "offer" ? offerCallbackQuery(b) : ""}`, { another: b.another === true })); }
           catch (e) { console.log("app connect", app, e.message); return json({ error: `${e.message.includes("can't") || e.message.includes("doesn't") ? e.message : "That app isn't available right now. Try again in a minute."}` }); }
@@ -1394,7 +1401,7 @@ export default {
         if (sub === "/api/plan/cancel" || sub === "/api/plan/keep" || sub === "/api/test/cancel-notices" || sub === "/api/test/cancel-tick") return cancelApi(req, env, t, user, sub, { stripe, json });
         if (sub === "/api/fix-payment" && req.method === "POST") return json(await fixPayment(env, t, origin));
         if (sub === "/api/test/pastdue") return pastdueApi(req, env, t, user, { json, stripe });
-        if ((sub === "/api/chat" || sub === "/api/topup") && access.mode === "read_only")
+        if (sub === "/api/topup" && access.mode === "read_only")
           return payRequired(access);
         // TEST_MODE only, test accounts only: deploy measurements (e2e/dev/measure-deploy.mjs, notes/2026-10-08-deploy-safe-agents.md §6).
         //   GET ?c=<channel>: which code version the Worker and that channel's Resident run, its boots, released reservations and the
@@ -1427,47 +1434,6 @@ export default {
         // Voice dictation (the composer's mic): the recording in, { text } out, billed like a model call, never stored.
         if (sub === "/api/transcribe/live") return access.mode === "read_only" ? payRequired(access) : transcribeLive(req, env, L, { tenant: t.id, look: !!viewAsToken(req) }, { waitUntil: p => ctx.waitUntil(p) });
         if (sub === "/api/transcribe") return access.mode === "read_only" ? payRequired(access) : transcribe(req, env, L, { tenant: t.id, kind: "transcribe" });
-
-        if (sub === "/api/chat" && req.method === "POST") {
-          const { message } = await boundedJson(req);
-          if (!message || String(message).length > 20000) return json({ error: "Message required (max 20k chars)." }, 400);
-          const history = await L.history(20);
-          const messages = [{ role: "system", content: "You are the person's 1Helm helper: a warm, capable assistant for a nontechnical person. Be concise and practical. " + PLAIN_STYLE },
-            ...history.map((m) => ({ role: m.role, content: m.content })), { role: "user", content: String(message) }];
-          // Own AI key: their endpoint answers, nothing is reserved or charged, and nothing else is tried if it fails.
-          const bk = t.plan === BYOK_PLAN ? await loadByok(env, t.id).catch(() => null) : null;
-          if (bk) {
-            try {
-              const j = await (await byokChat(bk, { messages, max_tokens: await plannedMaxOutput(env, "chat.general").catch(() => undefined) })).json(); let text = String(j.choices?.[0]?.message?.content ?? "");
-              if (text.includes("</think>")) text = text.split("</think>").pop();
-              const st = await L.settle(`byok:${crypto.randomUUID()}`, 0, [{ role: "user", content: String(message) }, { role: "assistant", content: text.trim() }]);
-              return json({ reply: text.trim(), charge_nano: 0, model: j.model, usage: { in: j.usage?.prompt_tokens || 0, cached: 0, out: j.usage?.completion_tokens || 0 }, state: st });
-            } catch (e) { return json({ error: e.message }, 502); }
-          }
-          const estIn = Math.ceil(JSON.stringify(messages).length / 3);
-          const reserveNano = Math.ceil((estIn * OR_RESERVE_PRICE.in + (await plannedHoldNano(env, "chat.general").catch(() => 0) || 0)) * MARKUP);   // the saved job's output limit (or the model's published maximum), at the model's price
-          const rid = crypto.randomUUID();
-          const r = await L.reserve(rid, reserveNano);
-          if (!r.ok) return r.reason === "day_limit" ? json({ error: "day_limit", day: r.day, state: r.state }, 429) : json({ error: "out_of_credits", state: r.state }, 402);
-          let out, usage, orCost = null, served = null;
-          try {
-            let res = null;
-            // The saved job chat.general answers; when it can't, the saved job workers_ai_chat does. Neither is named here.
-            try { res = await (await dispatch(env, "chat.general", { messages }, { meta: { tenant: t.id, kind: "api-chat" }, session: `ledger:${t.id}` })).json(); orCost = String(res.provider).toLowerCase() === "cloudflare" ? null : res.usage?.cost ?? null; served = res.model; } catch (e) { if (e.orStatus === 400) throw e; res = null; }
-            if (!res) res = await (await dispatch(env, "workers_ai_chat", { messages }, { meta: { tenant: t.id, kind: "api-chat-fallback" } })).json();
-            let text = res.choices?.[0]?.message?.content ?? res.response ?? "";
-            if (text.includes("</think>")) text = text.split("</think>").pop();
-            out = text.trim(); usage = res.usage || {};
-          } catch (e) {
-            await L.settle(rid, 0);
-            return json({ error: `Model error: ${e.message}` }, 502);
-          }
-          const inTok = usage.prompt_tokens || estIn, cached = usage.prompt_tokens_details?.cached_tokens || 0, outTok = usage.completion_tokens || 0;
-          const costNano = orCost != null ? Math.ceil(orCost * 1e9) : Math.ceil((inTok - cached) * PRICE.in + cached * PRICE.cached + outTok * PRICE.out);
-          const chargeNano = Math.ceil(costNano * MARKUP);
-          const st = await L.settle(rid, chargeNano, [{ role: "user", content: String(message) }, { role: "assistant", content: out }]);
-          return json({ reply: out, charge_nano: chargeNano, model: served || await jobModel(env, "workers_ai_chat"), usage: { in: inTok, cached, out: outTok }, state: st });
-        }
 
         if (sub === "/api/topup" && req.method === "POST") {
           const { pack } = await boundedJson(req);

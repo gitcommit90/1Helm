@@ -1,0 +1,21 @@
+{
+ "_note": "The one list of apps 1Helm never offers or lets the helper use. Read by src/ee/app-visibility.js (the Worker: find_app, offer_connect, the hint, app_actions, app_run, app_proxy, connect and app-detail routes, and the catalog the Apps popup loads). test/app-visibility.test.mjs checks it.",
+ "hidden": {
+  "malwarebytes_mcp": "wrong verdicts in the audit (google.com 'not a recognized site', an obvious phishing domain 'unknown'), sends the person's link, email or phone to a third party, injects 'User Guidance' text",
+  "codeinterpreter": "duplicates the helper's own computer; runs code on a third-party sandbox, and every run needs a confirm card",
+  "text_to_pdf": "uploads the text to a third party and returns a public link; the helper makes PDFs itself",
+  "excalidraw_mcp": "its export publishes the diagram publicly; widget-only output",
+  "mermaid_chart_mcp": "a 55k-char SVG per call for a widget 1Helm doesn't have; the helper renders Mermaid on its computer",
+  "aiwyn_tax_mcp": "invites bank, routing and date-of-birth data; its PDF action isn't read-only",
+  "clarity_ai_mcp": "a demo API that asks for an email; too narrow"
+ },
+ "prefixes": [
+  {
+   "prefix": "cloudflare",
+   "except": [
+    "cloudflare_mcp"
+   ],
+   "reason": "Only Cloudflare MCP (one-click sign-in) is offered. The other Cloudflare toolkits (cloudflare, cloudflare_api_key, cloudflare_browser_rendering, and any future cloudflare* slug) need an API key or Global API Key that the person must never be asked for."
+  }
+ ]
+}

@@ -65,15 +65,6 @@ test("embeddings: OpenRouter gets the saved model and zero data retention, and n
   } finally { n.done(); }
 });
 
-test("embeddings: a Workers AI model runs on env.AI", async () => {
-  const env = envWith((s) => allLevels(s, ID.EMBED_MEMORY)); const ran = [];
-  env.AI = { run: async (m, input) => { ran.push(m); return { data: input.text.map((t) => [0.5]) }; } };
-  const id = env.MODEL_SETTINGS.jobs.embed_memory.model;
-  if (!id.startsWith("@cf/")) return;
-  const r = await dispatch(env, "embed_memory", { input: ["a", "b"] }, { meta: { tenant: "t1" } });
-  assert.equal((await r.json()).data.length, 2); assert.deepEqual(ran, [id]);
-});
-
 test("transcribe: each step gets its own body, a failing model moves on, and the saved provider has no host list", async () => {
   const env = envWith(); const stt = env.MODEL_SETTINGS.jobs.stt;
   const made = [];
@@ -115,7 +106,7 @@ test("decide_json: a JSON chat with require_parameters, through the chat route",
   const env = envWith((s) => { s.jobs.decider.model = ID.DEEPSEEK; s.jobs.decider.fallbacks = []; });
   const n = net((c) => chatOk(c.body.model));
   try {
-    await dispatch(env, "decider", { ...msgs, response_format: { type: "json_schema", json_schema: { name: "x", schema: { type: "object" } } } }, { meta: { tenant: "t1" } });
+    await dispatch(env, "decider", { ...msgs, response_format: { type: "json_schema", json_schema: { name: "x", schema: { type: "object" } } } }, { meta: { tenant: "t1" }, jsonLevels: async () => null });
     assert.equal(n.calls[0].body.provider.require_parameters, true); assert.equal(n.calls[0].body.max_tokens, undefined, "an empty saved max output sends no max_tokens");
   } finally { n.done(); }
 });
@@ -148,7 +139,7 @@ test("live dictation: the Workers AI socket is opened through the gateway with l
 test("no step can run: nothing is sent", async () => {
   const env = envWith((s) => { for (const j of Object.keys(s.catalog)) s.catalog[j].levels = []; });
   const n = net(() => { throw new Error("sent"); });
-  try { await assert.rejects(() => dispatch(env, "chat.general", msgs, { meta: {}, level: "zdr" }), (e) => e.privacyBlocked); assert.equal(n.calls.length, 0); } finally { n.done(); }
+  try { await assert.rejects(() => dispatch(env, "label", msgs, { meta: {}, level: "zdr" }), (e) => e.privacyBlocked); assert.equal(n.calls.length, 0); } finally { n.done(); }
 });
 
 test("model_served: written when the served model changes, and not on every call", async () => {
@@ -170,7 +161,7 @@ test("a Cloudflare model with no verified zdr route still runs at zdr, and the p
   const { plan } = await import("../src/ee/model-dispatch.js");
   assert.match(plan(env.MODEL_SETTINGS, "look", { level: "zdr" }).steps[0].privacy_note, /no training, not zero retention/);
   assert.equal(plan(env.MODEL_SETTINGS, "look", { level: "no_training" }).steps[0].privacy_note, undefined);
-  assert.equal(plan(env.MODEL_SETTINGS, "chat.general", { level: "zdr" }).steps.find((s) => s.source === "OR").privacy_note, undefined);
+  assert.equal(plan(env.MODEL_SETTINGS, "label", { level: "zdr" }).steps.find((s) => s.source === "OR").privacy_note, undefined);
 });
 
 // ---- empty max output, and what answered each call (Captain 2026-10-17) ----
@@ -231,6 +222,47 @@ test("served model: the main chat (a routed call) records its category job, with
   const writes = []; const env = servedEnv(writes);
   const route = policyRoute(env.MODEL_SETTINGS, "technical", "zdr", "x");
   const n = net((c) => new Response(`data: ${JSON.stringify({ model: `${c.body.model}-served`, provider: "Fireworks", choices: [{ delta: { content: "hi" } }] })}\n\ndata: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } }));
-  try { const r = await dispatch(env, "chat.technical", { ...msgs, stream: true }, { meta: { tenant: "t1" }, route, session: "s1" }); await r.text(); await new Promise((z) => setTimeout(z, 5)); } finally { n.done(); }
-  const row = served(writes); assert.equal(row[1], "chat.technical"); assert.match(row[3], /-served$/); assert.equal(row[4], "Fireworks");
+  try { const r = await dispatch(env, "chat", { ...msgs, stream: true }, { meta: { tenant: "t1" }, route, session: "s1" }); await r.text(); await new Promise((z) => setTimeout(z, 5)); } finally { n.done(); }
+  const row = served(writes); assert.equal(row[1], "chat"); assert.match(row[3], /-served$/); assert.equal(row[4], "Fireworks");
+});
+
+test("structured request: a model with no endpoint accepting response_format at the job's level gets prompt-only JSON, and one with support keeps json_schema", async () => {
+  const schema = { type: "object", properties: { a: { type: "string" } }, required: ["a"], additionalProperties: false };
+  const request = { ...msgs, response_format: { type: "json_schema", json_schema: { name: "x", strict: true, schema } } };
+  const run = async (json_levels, jsonLevels = null) => {
+    const env = envWith((s) => { s.catalog[s.jobs.label.model] = { ...s.catalog[s.jobs.label.model], levels: ["unrestricted", "no_training", "zdr"], json_levels }; }, {});
+    const n = net((c) => chatOk(c.body.model));
+    try { await dispatch(env, "label", request, { meta: { tenant: "t1", kind: "card-label" }, level: "zdr", jsonLevels }); return n.calls[0].body; } finally { n.done(); }
+  };
+  const without = await run(["unrestricted"]);
+  assert.equal(without.response_format, undefined);
+  assert.ok(!JSON.stringify(without.messages.at(-1)).includes("json_schema"));
+  assert.match(without.messages.at(-1).content, /JSON schema/);
+  assert.equal(without.messages.length, 2);
+  const withSupport = await run(["unrestricted", "zdr"]);
+  assert.equal(withSupport.response_format.type, "json_schema");
+  assert.equal(withSupport.provider.require_parameters, true);
+  const older = await run(undefined, async () => null);
+  assert.equal(older.response_format.type, "json_schema");
+});
+
+test("structured request: a saved record without json_levels is checked against the live endpoints, and a failed lookup keeps json_schema", async () => {
+  const request = { ...msgs, response_format: { type: "json_schema", json_schema: { name: "x", strict: true, schema: { type: "object" } } } };
+  const run = async (jsonLevels) => {
+    const env = envWith();
+    const n = net((c) => chatOk(c.body.model));
+    try { await dispatch(env, "label", request, { meta: { tenant: "t1" }, level: "zdr", jsonLevels }); return n.calls[0].body; } finally { n.done(); }
+  };
+  const seen = []; const none = await run(async (id) => { seen.push(id); return ["unrestricted"]; });
+  assert.equal(none.response_format, undefined); assert.equal(seen.length, 1);
+  assert.equal((await run(async () => ["unrestricted", "zdr"])).response_format.type, "json_schema");
+  assert.equal((await run(async () => { throw new Error("down"); })).response_format.type, "json_schema");
+});
+
+test("jsonLevelsFor: one live lookup per model, and a failure answers null", async () => {
+  const { jsonLevelsFor, resetJsonLevelCache } = await import("../src/ee/model-catalog.js");
+  resetJsonLevelCache(); let n = 0;
+  const lookup = async () => { n++; return { json_levels: ["unrestricted"] }; };
+  assert.deepEqual(await jsonLevelsFor("openai/x-y", {}, { lookup }), ["unrestricted"]); await jsonLevelsFor("openai/x-y", {}, { lookup }); assert.equal(n, 1);
+  assert.equal(await jsonLevelsFor("openai/z-y", {}, { lookup: async () => { throw new Error("x"); } }), null);
 });

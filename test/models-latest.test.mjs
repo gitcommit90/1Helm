@@ -10,7 +10,7 @@ import { policyRoute as policyRoute0, dispatchOrder as dispatchOrder0 } from "..
 import { browserPlan } from "./helpers/browser-plan.mjs";
 import { enforceRequest } from "../src/privacy.js";
 import { jobSetting } from "../src/ee/model-jobs.js";
-import { ID, SEED } from "./helpers/seed-settings.mjs";
+import { ID, SEED, setGeneral } from "./helpers/seed-settings.mjs";
 const SOL = ID.SOL, MUSE_C = ID.MUSE_C, MUSE_S = ID.MUSE_S;
 
 const sql = new DatabaseSync(":memory:");
@@ -64,16 +64,16 @@ try {
 
   // 3. Saving: a ~ ID is accepted for a chat job (main and fallback) and for the decider job, and stored as entered.
   const first = await modelSettingsView(env); revision = first.revision;
-  let view = await save((c) => { c.jobs["chat.general"] = { model: ALIAS, effort: "low", fallbacks: [{ model: TARGET, effort: "low" }] }; c.jobs.decider = { model: DEC_ALIAS, effort: null, fallbacks: [] }; });
-  assert.equal(view.config.jobs["chat.general"].model, ALIAS); assert.equal(view.config.jobs.decider.model, DEC_ALIAS);
+  let view = await save((c) => { setGeneral(c, [{ model: ALIAS, effort: "low" }, { model: TARGET, effort: "low" }]); c.jobs.decider = { model: DEC_ALIAS, effort: null, fallbacks: [] }; });
+  assert.equal(view.config.routing.categories[0].chains.zdr[0].model, ALIAS); assert.equal(view.config.jobs.decider.model, DEC_ALIAS);
   assert.equal(view.config.catalog[ALIAS].pricing.prompt, 1); assert.deepEqual(view.config.catalog[DEC_ALIAS].kinds, ["decider"]);
-  view = await save((c) => { c.jobs["chat.technical"].fallbacks = [{ model: ALIAS, effort: "low" }]; });
-  assert.equal(view.config.jobs["chat.technical"].fallbacks[0].model, ALIAS);
+  view = await save((c) => { c.jobs.notes_refine.fallbacks = [{ model: ALIAS, effort: "low" }]; });
+  assert.equal(view.config.jobs.notes_refine.fallbacks[0].model, ALIAS);
   // Wrong input stays refused: a ~ ID the catalog can't verify, a ~ ID that is not a latest ID, a decision model on a chat job.
   for (const [id, msg] of [[BAD_ALIAS, /not-on-zdr|zero-data-retention/], ["~example/unlisted-latest", /not available|Invalid/], ["~example/family-2", /Invalid/]]) {
-    await assert.rejects(save((c) => { c.jobs["chat.general"] = { model: id, effort: "low", fallbacks: [] }; }), (e) => e.modelSettings || e.status === 400, id);
+    await assert.rejects(save((c) => { setGeneral(c, [{ model: id, effort: "low" }]); }), (e) => e.modelSettings || e.status === 400, id);
   }
-  await assert.rejects(save((c) => { c.jobs["chat.general"] = { model: DEC_ALIAS, effort: "low", fallbacks: [] }; }), (e) => e.status === 400);
+  await assert.rejects(save((c) => { setGeneral(c, [{ model: DEC_ALIAS, effort: "low" }]); }), (e) => e.status === 400);
 
   // 4. Dispatch: the ~ ID goes to OpenRouter as written, and the model OpenRouter reports is what the app records.
   const route = { model: ALIAS, effort: "low", host: "safe-host/fp16", pin: true, strict: true, max_output: 4096 };

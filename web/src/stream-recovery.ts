@@ -20,7 +20,7 @@ export function streamInvalidate(owner: object) {
 }
 export function streamProgress(owner: object, event: any) {
   if (event.t === "hb") return;
-  const s = streamState(owner); s.progress = Date.now(); s.revision++; s.waiting = event.t === "model_wait" && event.phase === "waiting" ? "Waiting for the model" : "";
+  const s = streamState(owner); s.progress = Date.now(); s.revision++; s.waiting = event.t === "model_wait" && event.phase === "waiting" ? "waiting" : "";
 }
 export function streamCheckDue(owner: object, server: any, now = Date.now()) {
   const s = streamState(owner);

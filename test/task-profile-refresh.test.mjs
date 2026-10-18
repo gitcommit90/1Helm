@@ -17,7 +17,7 @@ const args = () => ({ kind: "job", text: "go", hist: [], stats: { charge: 0 } })
 
 let p = await ensureTaskRuntime(R, { session: "s1", turn: "c1" }, args());
 assert.equal(p.requestedModel, MUSE_C); assert.equal(p.refreshedTurn, "c1");
-settings.jobs["chat.general"] = { model: SOL, effort: "high", fallbacks: [] }; revision++;
+for (const chain of Object.values(settings.routing.categories[0].chains)) chain[0] = { model: SOL, effort: "high" }; revision++;
 p = await ensureTaskRuntime(R, { session: "s1", turn: "c1" }, args());
 assert.equal(p.requestedModel, MUSE_C, "inside one turn (a resume included) the model stays fixed");
 const cache = p.cacheSession;
@@ -27,7 +27,7 @@ assert.equal(p.transitions.length, 1); assert.equal(p.transitions[0].from, MUSE_
 // the same model again: nothing recorded as a transition
 p = await ensureTaskRuntime(R, { session: "s1", turn: "c3" }, args()); assert.equal(p.transitions.length, 1);
 // a profile saved before this release has no refreshedTurn: kept for the turn it is resumed in, refreshed at the next message
-settings.jobs["chat.general"] = { model: MUSE_C, effort: "low", fallbacks: [] }; revision++;
+settings.routing.categories[0].chains.unrestricted[0] = { model: MUSE_C, effort: "low" }; revision++;
 const { refreshedTurn, ...legacy } = p; store.set(TASK_PROFILE_KEY("old"), JSON.stringify(legacy));
 p = await ensureTaskRuntime(R, { session: "old", turn: "k5" }, args()); assert.equal(p.requestedModel, SOL, "a resumed turn of an older task keeps its model"); assert.equal(readTaskProfile(R, "old").refreshedTurn, "k5");
 p = await ensureTaskRuntime(R, { session: "old", turn: "k6" }, args()); assert.equal(p.requestedModel, MUSE_C);

@@ -64,7 +64,7 @@ await test("page and API read only their environment with safe headers", async (
     for (const j of Object.values(data.config.jobs)) assert.ok(j.model && Array.isArray(j.fallbacks));
     assert.equal(data.jobs.length, JOB_IDS.length); assert.equal(data.history[0].action, "seed");
     assert.ok(data.groups.some((g) => g.id === "other")); assert.ok(data.groups.some((g) => g.id === "other"));
-    for (const id of ["workers_ai_chat", "look", "embed_memory"]) {
+    for (const id of ["workers_ai_chat", "look", "embed_files"]) {
       assert.ok(data.config.jobs[id], `${id} has a saved setting`);
       assert.ok(data.jobs.some((j) => j.id === id), `${id} is shown`);
     }
@@ -102,22 +102,22 @@ await test("body validation and size limits reject bad input", async () => {
 
 await test("save, stale conflict and restore are versioned and environment isolated", async () => {
   const original = await (await call("/models/api")).json();
-  const config = structuredClone(original.config); config.jobs["chat.technical"].effort = "medium";
-  let r = await post("/models/api/save", { revision: 1, config }); assert.equal(r.status, 200); let value = await r.json(); assert.equal(value.revision, 2); assert.equal(value.config.jobs["chat.technical"].effort, "medium"); assert.equal(value.history[0].by, "admin@example.com");
+  const config = structuredClone(original.config); config.jobs.label.effort = "medium";
+  let r = await post("/models/api/save", { revision: 1, config }); assert.equal(r.status, 200); let value = await r.json(); assert.equal(value.revision, 2); assert.equal(value.config.jobs.label.effort, "medium"); assert.equal(value.history[0].by, "admin@example.com");
   r = await post("/models/api/save", { revision: 1, config }); assert.equal(r.status, 409);
   assert.equal((await (await call("/models/api", { env: live })).json()).revision, 1, "live has its own first version");
   r = await post("/models/api/restore", { revision: 2, restore_revision: 1 }); assert.equal(r.status, 200); value = await r.json(); assert.equal(value.revision, 3); assert.deepEqual(value.config, original.config);
   assert.ok(value.jobs.some((j) => j.group === "other"));
-  r = await post("/models/api/restore", { revision: 3, restore_revision: 2 }); assert.equal(r.status, 200); value = await r.json(); assert.equal(value.revision, 4); assert.equal(value.config.jobs["chat.technical"].effort, "medium");
+  r = await post("/models/api/restore", { revision: 3, restore_revision: 2 }); assert.equal(r.status, 200); value = await r.json(); assert.equal(value.revision, 4); assert.equal(value.config.jobs.label.effort, "medium");
   r = await post("/models/api/restore", { revision: 4, restore_revision: 987 }); assert.equal(r.status, 404);
   assert.equal((await (await call("/models/api", { env: live })).json()).revision, 1); assert.equal((await (await call("/models/api")).json()).revision, 4);
 });
 
 await test("invalid model settings do not create a version", async () => {
   const current = await (await call("/models/api")).json();
-  current.config.jobs["chat.technical"].effort = "not-an-effort";
+  current.config.jobs.label.effort = "not-an-effort";
   // The model list is a local stub that offers the job's own model with the reasoning levels low and high, so "not-an-effort" is refused by 1Helm's check.
-  const originalFetch = globalThis.fetch, id = current.config.jobs["chat.technical"].model;
+  const originalFetch = globalThis.fetch, id = current.config.jobs.label.model;
   const candidate = { id, name: "Fixture", architecture: { input_modalities: ["text"], output_modalities: ["text"] }, reasoning: { mandatory: false, supported_efforts: ["low", "high"], default_effort: "low" } };
   const endpoint = { model_id: id, tag: "fixture-zdr", context_length: 131072, max_completion_tokens: 16384, pricing: { prompt: "0.000001", completion: "0.000002" }, supported_parameters: ["tools", "max_tokens", "reasoning", "response_format"], supports_tool_choice: { auto: true, none: true, required: true, function: true } };
   globalThis.fetch = async (url) => Response.json({ data: /\/models(\?|$)/.test(String(url)) ? [candidate] : String(url).endsWith("/endpoints/zdr") ? [endpoint] : { endpoints: [] } });
@@ -165,10 +165,10 @@ await test("catalog is admin-only, read-only, no-store and never forwards creden
     assert.equal((await post("/models/api/catalog", {})).status, 405);
     const none = await call("/models/api/catalog?q=https://evil.example/"); assert.deepEqual((await none.json()).models, []);
     const current = await (await call("/models/api")).json();
-    current.config.jobs["chat.technical"] = { model: candidate.id, effort: "low", fallbacks: [current.config.jobs["chat.technical"], ...current.config.jobs["chat.technical"].fallbacks].map(({ fallbacks, ...e }) => e).slice(0, 2) };
-    const saved = await post("/models/api/save", { revision: current.revision, config: { version: 2, jobs: current.config.jobs } }); assert.equal(saved.status, 200); const updated = await saved.json();
-    assert.equal(updated.config.jobs["chat.technical"].model, candidate.id); assert.equal(updated.config.catalog[candidate.id].name, candidate.name);
-    assert.equal((await (await call("/models/api", { env: live })).json()).config.jobs["chat.technical"].model, ID.HAIKU, "the other environment is untouched");
+    current.config.jobs.label = { model: candidate.id, effort: "low", fallbacks: [current.config.jobs.label, ...current.config.jobs.label.fallbacks].map(({ fallbacks, ...e }) => e).slice(0, 2) };
+    const saved = await post("/models/api/save", { revision: current.revision, config: { version: 3, jobs: current.config.jobs, routing: current.config.routing } }); assert.equal(saved.status, 200); const updated = await saved.json();
+    assert.equal(updated.config.jobs.label.model, candidate.id); assert.equal(updated.config.catalog[candidate.id].name, candidate.name);
+    assert.equal((await (await call("/models/api", { env: live })).json()).config.jobs.label.model, ID.HAIKU, "the other environment is untouched");
     globalThis.fetch = async () => { throw new Error("secret upstream failure"); };
     const failed = await call("/models/api/catalog"); assert.equal(failed.status, 503); noStore(failed); assert.match((await failed.json()).error, /catalog is unavailable/);
   } finally { globalThis.fetch = originalFetch; }
@@ -180,7 +180,7 @@ await test("storage errors are sanitized and never cached", async () => {
     const r = await call(path, { env }); noStore(r); const text = await r.text(); assert.doesNotMatch(text, /secret connection details/);
   }
   const current = await (await call("/models/api")).json();
-  const r = await post("/models/api/save", { revision: current.revision, config: { version: 2, jobs: current.config.jobs } }, { env }); assert.equal(r.status, 503); noStore(r); assert.doesNotMatch(await r.text(), /secret connection details/);
+  const r = await post("/models/api/save", { revision: current.revision, config: { version: 3, jobs: current.config.jobs, routing: current.config.routing } }, { env }); assert.equal(r.status, 503); noStore(r); assert.doesNotMatch(await r.text(), /secret connection details/);
 });
 
 await test("the dashboard shows exactly what is saved for each job, and a change shows on the very next read", async () => {
@@ -191,48 +191,45 @@ await test("the dashboard shows exactly what is saved for each job, and a change
     assert.equal(row.main.id, saved.model, def.id); assert.deepEqual(row.fallbacks.map((f) => f.id), saved.fallbacks.map((f) => f.model), def.id);
     if (row.has_effort) { assert.equal(row.main.effort, saved.effort); assert.deepEqual(row.fallbacks.map((f) => f.effort), saved.fallbacks.map((f) => f.effort)); } else assert.equal(row.main.effort, null);
   }
-  // every chat list reports, per privacy setting, how many of its models the setting allows
-  for (const c of ["general", "research", "technical"]) for (const lv of ["unrestricted", "no_training", "zdr"]) assert.ok(rows[`chat.${c}`].coverage[lv].allowed >= 1, `${c} ${lv}`);
-  assert.deepEqual(rows["chat.general"].warnings, []);
-  // a list that leaves a privacy setting with no allowed model is reported (and still saved: the privacy rule skips the model at run time)
-  const cfg = structuredClone(view.config); cfg.jobs["chat.research"] = { model: ID.MUSE_C, effort: "xhigh", fallbacks: [] };
-  const saved = await (await post("/models/api/save", { revision: view.revision, config: { version: 2, jobs: cfg.jobs } })).json(), after = Object.fromEntries(saved.jobs.map((j) => [j.id, j]));
-  assert.equal(after["chat.research"].main.id, ID.MUSE_C); assert.equal(after["chat.research"].coverage.zdr.allowed, 0); assert.equal(after["chat.research"].coverage.no_training.allowed, 0); assert.equal(after["chat.research"].coverage.unrestricted.allowed, 1);
-  assert.equal(after["chat.research"].warnings.length, 2); assert.match(after["chat.research"].warnings[0], /no allowed model/);
-  assert.equal(after["chat.general"].warnings.length, 0);
-  // the runtime never sends to it at zero data retention: the very next dispatch for that list has no allowed model
-  const { dispatchOrder, policyRoute } = await import("../src/ee/route2.js");
-  assert.deepEqual(dispatchOrder(policyRoute(saved.config, "research", "zdr", "x"), "zdr", { settings: saved.config }).models, []);
-  assert.deepEqual(dispatchOrder(policyRoute(saved.config, "research", "unrestricted", "x"), "unrestricted", { settings: saved.config }).models, [ID.MUSE_C]);
+  // there is no chat job: General and the other categories carry the limits of their replies
+  assert.ok(!rows.chat && !("chat" in view.config.jobs), "the chat job is gone from the page and from the saved jobs");
+  // a limit saved on a category is stored on that category, comes back on the next read, and the other categories keep theirs
+  const cfg = structuredClone(view.config); cfg.routing.categories[0].max_output = 4321; cfg.routing.categories[0].sort = "latency";
+  const saved = await (await post("/models/api/save", { revision: view.revision, config: { version: 3, jobs: cfg.jobs, routing: cfg.routing } })).json();
+  assert.equal(saved.config.routing.categories[0].max_output, 4321); assert.equal(saved.config.routing.categories[0].sort, "latency");
+  assert.equal((await (await call("/models/api")).json()).config.routing.categories[0].max_output, 4321);
+  // a limit that is not valid is refused
+  const worse = structuredClone(saved.config); worse.routing.categories[0].max_output = 0;
+  assert.equal((await post("/models/api/save", { revision: saved.revision, config: { version: 3, jobs: worse.jobs, routing: worse.routing } })).status, 400);
   assert.equal(modelDashboard(saved).jobs.length, JOB_IDS.length);
+  // restore the version before the change, for the tests after this one
+  assert.equal((await post("/models/api/restore", { revision: saved.revision, restore_revision: view.revision })).status, 200);
 });
 
-await test("a page change replaces the model of one job only, and the row shows it", async () => {
+await test("a page change replaces one model of one category only, and the saved copy is the server's", async () => {
   const originalFetch = globalThis.fetch;
   const cand = { id: "fixture/dash-model", name: "Fixture Dash", architecture: { input_modalities: ["text"], output_modalities: ["text"] }, reasoning: { mandatory: false, supported_efforts: ["low", "high"], default_effort: "low" } };
-  const ep = { model_id: cand.id, tag: "fixture-zdr", context_length: 131072, max_completion_tokens: 16384, pricing: { prompt: "0.000001", completion: "0.000002" }, supported_parameters: ["tools", "max_tokens", "reasoning", "response_format"], supports_tool_choice: { auto: true, none: true, required: true, function: true } };
+  const ep = { model_id: cand.id, tag: "fixture-zdr", context_length: 131072, max_completion_tokens: 16384, pricing: { prompt: "0.000001", completion: "0.000002" }, supported_parameters: ["tools", "max_tokens", "reasoning", "response_format"], supports_tool_choice: { auto: true, none: true, required: true } };
   globalThis.fetch = async (url) => Response.json({ data: /\/models(\?|$)/.test(String(url)) ? [cand] : String(url).endsWith("/endpoints/zdr") ? [ep] : { endpoints: [] } });
   try {
     const view = await (await call("/models/api")).json(), cfg = structuredClone(view.config), before = structuredClone(view.config.jobs);
-    cfg.jobs["chat.skills"] = { ...cfg.jobs["chat.skills"], model: cand.id, effort: "low", fallbacks: cfg.jobs["chat.skills"].fallbacks.filter((f) => f.model !== cand.id) };
-    const saved = await (await post("/models/api/save", { revision: view.revision, config: { version: 2, jobs: cfg.jobs } })).json(), row = saved.jobs.find((j) => j.id === "chat.skills");
-    assert.equal(row.main.id, cand.id); assert.equal(row.main.name, "Fixture Dash"); assert.equal(row.main.effort, "low");
-    for (const id of JOB_IDS) if (id !== "chat.skills") assert.deepEqual(saved.config.jobs[id], before[id], `${id} is untouched: no shared slot moved with it`);
-    const html = await (await call("/models")).text(); assert.match(html, /id="app"/); assert.match(html, /Fixture Dash/);
+    cfg.routing.categories[0].chains.unrestricted[0] = { model: cand.id, effort: "low" };
+    const saved = await (await post("/models/api/save", { revision: view.revision, config: { version: 3, jobs: cfg.jobs, routing: cfg.routing } })).json();
+    assert.equal(saved.config.routing.categories[0].chains.unrestricted[0].model, cand.id); assert.equal(saved.config.catalog[cand.id].name, "Fixture Dash");
+    for (const id of JOB_IDS) assert.deepEqual(saved.config.jobs[id], before[id], `${id} is untouched: no shared slot moved with it`);
   } finally { globalThis.fetch = originalFetch; }
 });
 
-await test("fallback order, reasoning and removal save like any other change", async () => {
-  const view = await (await call("/models/api")).json(), cfg = structuredClone(view.config), job = cfg.jobs["chat.general"];
-  assert.ok(job.fallbacks.length >= 2); const [a, b] = [job.fallbacks[0], job.fallbacks[1]];
-  job.fallbacks = [b, a, ...job.fallbacks.slice(2)]; job.effort = "high";
-  let saved = await (await post("/models/api/save", { revision: view.revision, config: { version: 2, jobs: cfg.jobs } })).json();
-  assert.deepEqual(saved.config.jobs["chat.general"].fallbacks.slice(0, 2).map((f) => f.model), [b.model, a.model]);
-  const cut = structuredClone(saved.config.jobs); cut["chat.general"].fallbacks = []; 
-  saved = await (await post("/models/api/save", { revision: saved.revision, config: { version: 2, jobs: cut } })).json(); assert.deepEqual(saved.config.jobs["chat.general"].fallbacks, []);
-  const bad = structuredClone(saved.config.jobs); bad["chat.general"].fallbacks = [{ model: bad["chat.general"].model, effort: bad["chat.general"].effort }];
-  assert.equal((await post("/models/api/save", { revision: saved.revision, config: { version: 2, jobs: bad } })).status, 400, "a model can be listed once");
-  assert.equal((await post("/models/api/save", { revision: saved.revision, config: { version: 2, jobs: { ...cut, evil: cut.handoff } } })).status, 400);
+await test("model order and reasoning of a category save like any other change", async () => {
+  const view = await (await call("/models/api")).json(), cfg = structuredClone(view.config), chain = cfg.routing.categories[0].chains.zdr;
+  const [a, b] = [chain[0], chain[1]]; chain[0] = b; chain[1] = a;
+  const save = (c) => post("/models/api/save", { revision: c.revision, config: { version: 3, jobs: c.config.jobs, routing: c.config.routing } });
+  let saved = await (await save({ revision: view.revision, config: cfg })).json();
+  assert.deepEqual(saved.config.routing.categories[0].chains.zdr.slice(0, 2).map((e) => e.model), [b.model, a.model]);
+  const dup = structuredClone(saved.config); dup.routing.categories[0].chains.zdr[1] = { ...dup.routing.categories[0].chains.zdr[0] };
+  assert.equal((await save({ revision: saved.revision, config: dup })).status, 400, "a model can be listed once");
+  const evil = structuredClone(saved.config); evil.jobs.evil = evil.jobs.handoff;
+  assert.equal((await save({ revision: saved.revision, config: evil })).status, 400);
 });
 
 await test("search lists saved models with the live name, price and reasoning levels, not the saved copy", async () => {

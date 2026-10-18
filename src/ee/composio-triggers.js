@@ -20,6 +20,7 @@ import { composioRequest } from "./composio-api.js";
 import { boundedText, BodyTooLargeError } from "../bounded-body.js";
 import { slimInputs } from "./composio-schema.js";
 import { appsMode } from "./composio-self.js";
+import { isHiddenApp, HIDDEN_TEXT } from "./app-visibility.js";
 import { pickAccount, toolkitInfo, notConnected, RETIRED_APPS, RETIRED_NOTE } from "./composio.js";   // a cycle on purpose: used only at call time
 
 const uid = (tenantId) => `1hc:${tenantId}`;
@@ -55,6 +56,7 @@ export async function appEventsTool(env, tenantId, a = {}, conns = []) {
     if ((await appsMode(env, tenantId)) === "self") return SELF_NO_EVENTS;
     const app = APP(a.app); if (!app) return "error: give the app id, e.g. gmail.";
     if (RETIRED_APPS.has(app)) return `error: ${RETIRED_NOTE}`;
+    if (isHiddenApp(app)) return HIDDEN_TEXT(app);   // app-visibility.js
     const live = conns.filter((c) => c.app === app && c.status === "connected");   // not connected: said before asking Composio anything
     if (!live.length) return notConnected(conns.find((c) => c.app === app)?.name || app, app, { expired: conns.some((c) => c.app === app) });
     const tk = await toolkitInfo(env, app).catch(() => null);
@@ -95,6 +97,7 @@ export async function createTrigger(env, tenantId, o = {}, conns = []) {
   if (!slug) return { error: "error: on_event.event is required: an event id from app_events, e.g. GMAIL_NEW_GMAIL_MESSAGE. Nothing was set up." };
   if (!slug.toLowerCase().startsWith(`${app}_`)) return { error: `error: ${slug} isn't one of ${app}'s events. Call app_events for ${app}. Nothing was set up.` };
   if (RETIRED_APPS.has(app)) return { error: `error: ${RETIRED_NOTE}` };
+  if (isHiddenApp(app)) return { error: HIDDEN_TEXT(app) };   // app-visibility.js
   const tk = await toolkitInfo(env, app).catch(() => null);
   if (!tk) return { error: `error: no app called "${app}". Nothing was set up.` };
   const p = pickAccount(conns, app, o.account);

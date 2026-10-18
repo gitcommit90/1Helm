@@ -28,7 +28,7 @@ person sees it's under way, then do the work in this same turn without narrating
 | Slides, a deck, a presentation (.pptx by default) | presentation | presentation (it has everything a new deck needs: read nothing else, not even the image-search skill; editing one: deck-editing) |
 | A spreadsheet (.xlsx), a budget, a tracker, a model, or a CSV | spreadsheet | spreadsheet, then spreadsheet-formulas |
 | Notes, a README, minutes, text they'll paste elsewhere (.md) | markdown | markdown |
-| A web page to open in a browser or publish | web page | web-page |
+| A web page to open in a browser or publish (to put a site live on their own domain, read the business-setup skill first) | web page | web-page |
 
 Shared references, read only when they apply: prose (what the words say: any document whose value is its text), charts (the file
 has a chart), maps (places, routes, addresses), live-data (only when they want real, current numbers: see rule 3), testing (the

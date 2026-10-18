@@ -53,7 +53,7 @@ test('actual retry wrapper discards batches and retries once, including the appe
       let requests=0;const wire=[],saved=[];
       const R={env:{BYOK:{base:'https://provider.example.test/v1',key:'',model:'fixture-model'}},get:()=>null,modelTools:()=>[],cardCharge:()=>{},
         governTaskContext:async()=>{},sidecarAudioCurrent(){},save:(_turn,message)=>saved.push(message)};
-      R.callModelStep=(...args)=>Resident.prototype.callModelOnce.call(R,...args);
+      R.callModelOnce=(...args)=>Resident.prototype.callModelOnce.call(R,...args);
       globalThis.fetch=async(_url,init)=>{wire.push(JSON.parse(init.body));return new Response(stream(requests++===0?'repeat':second,{pulled:0,cancelled:0}));};
       const messages=[{role:'user',content:'Read only.'}],tc=appendRuntime?{appendRuntime:true,turn:'fixture',transcript:{observe:()=>{}}}:null;
       const result=await Resident.prototype.callModel.call(R,messages,()=>{},null,false,tc);

@@ -62,7 +62,7 @@ export const ALIASES = {
   twitter: "twitter", "x.com": "twitter", "ms teams": "microsoft_teams", "microsoft teams": "microsoft_teams", hotmail: "outlook", "outlook.com": "outlook",
   "microsoft outlook": "outlook", "outlook email": "outlook", "outlook calendar": "outlook", onedrive: "one_drive", "one drive": "one_drive", quickbooks: "quickbooks", "quick books": "quickbooks",
   seatgeek: "seat_geek", "seat geek": "seat_geek", "all trails": "alltrails_mcp", alltrails: "alltrails_mcp", trivago: "trivago_mcp", viator: "viator_mcp",
-  godaddy: "godaddy_mcp", "go daddy": "godaddy_mcp", malwarebytes: "malwarebytes_mcp", deepwiki: "deepwiki_mcp", "hacker news": "hackernews",
+  godaddy: "godaddy_mcp", "go daddy": "godaddy_mcp", cloudflare: "cloudflare_mcp", "cloudflare mcp": "cloudflare_mcp", malwarebytes: "malwarebytes_mcp", deepwiki: "deepwiki_mcp", "hacker news": "hackernews",
   "zoom meeting": "zoom", "zoom meetings": "zoom", "zoom call": "zoom", "zoom calls": "zoom", "monday.com": "monday", "notion page": "notion", "notion pages": "notion",
   "notion doc": "notion", "notion database": "notion", "outlook inbox": "outlook", "stripe dashboard": "stripe", "stripe payments": "stripe", "square pos": "square",
   "linear issue": "linear", "linear issues": "linear", "linear ticket": "linear", "linear tickets": "linear", "excel online": "excel",
@@ -304,9 +304,8 @@ const shortWhat = (a) => { let d = oneLine(a).replace(/^Find and book local Task
 export const displayName = (a) => strip(BUILTIN_APPS_LATEST.get(a.s) || a.n || a.s).replace(/\s*\(.*$/, "");
 // One app's state for this person: builtin | connected | expired | connect | null (Soon / retired: never hinted).
 export function hintState(a, conns = []) {
-  const kind = connectKind(a); if (kind === "soon" || kind === "retired") return null;
+  const st = statusFor(a.s, conns), kind = connectKind(a, st.status === "connected"); if (kind === "soon" || kind === "retired") return null;
   if (kind === "builtin") return { state: "builtin" };
-  const st = statusFor(a.s, conns);
   return st.status === "connected" ? { state: "connected", accounts: st.accounts.length } : st.status === "expired" ? { state: "expired" } : { state: "connect" };
 }
 const tag = (a) => OWN_TOOLS[a.s] || a.s;

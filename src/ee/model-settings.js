@@ -6,10 +6,9 @@
 // (model_settings_versions) is only read, once, to carry an environment's existing choices into the first version.
 import { PRIVACY_LEVELS } from "../privacy.js";
 import { modelCatalog, validCatalogRecord, validModelId, unlistedIds, listedKinds, NO_LONGER_OFFERED } from "./model-catalog.js";
-import { SORTS, JOBS, JOB_IDS, MODEL_PAGE_JOBS, JOB_KINDS, GROUPS, takesChat, canChat, nativeFor, zdrApplies, ModelSettingsError, jobDef, jobSetting, settingsOf, entriesOf, factsOf, zdrBlocked, privacyCoverage, configuredHosts } from "./model-jobs.js";
+import { SORTS, CHAT_JOB, CATEGORY_FIELDS, JOBS, JOB_IDS, MODEL_PAGE_JOBS, JOB_KINDS, GROUPS, takesChat, canChat, nativeFor, zdrApplies, ModelSettingsError, jobDef, jobSetting, settingsOf, entriesOf, factsOf, zdrBlocked, privacyCoverage, configuredHosts } from "./model-jobs.js";
 import { seedFromLegacy, mergeLevels, SEED_FACTS, ROUTING_ZDR_THIRD_MODEL, JOB_FIELDS, OPTIONAL_JOB_IDS, optionalJobDefault } from "./model-seed.js";
-import { dynamicRoutingOn, withRoutingConfig } from "./routing-config.js";
-import { ambientSearchOn } from "../legacy-flags.js";
+import { dynamicRoutingOn, withRoutingConfig, withCategoryLimits } from "./routing-config.js";
 import { limitsProblem, compactLimits, timeoutProblem } from "../limits.js";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -145,7 +144,8 @@ export function validateModelSettings(config, { fill = false } = {}) {
     if (!Array.isArray(categories) || !categories.length || categories.length > 24) fail("Save between 1 and 24 categories.");
     const ids = new Set(), titles = new Set();
     for (const c of categories) {
-      keys(c, ["id", "title", "chains"], "category");
+      keys(c, ["id", "title", "chains", ...CATEGORY_FIELDS.filter((k) => own(c, k))], "category");   // the limits are optional: a category saved before they existed has none
+      validJobFields(c, c.title, JOB_KINDS.chat);
       if (typeof c.id !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(c.id) || ids.has(c.id)) fail("Invalid category ID.");
       ids.add(c.id);
       if (typeof c.title !== "string" || !c.title.trim() || c.title.length > 240 || /[\u0000-\u001f\u007f]/.test(c.title)) fail("Enter a category title of 1 to 240 characters.");
@@ -200,12 +200,24 @@ async function insertRow(env, revision, config, by, action) {
 }
 // A saved version can name jobs that a later release removed (for example the memory jobs). The validator requires exactly the jobs that exist
 // now, so reading drops any job id that is not in the registry, and nothing else is changed. The stored row is left as it is.
+const OLD_CHAT_JOB = "chat.general";
 export const hasRetiredJobs = (raw) => !!raw && typeof raw === "object" && !!raw.jobs && typeof raw.jobs === "object" && !Array.isArray(raw.jobs) && Object.keys(raw.jobs).some((id) => !JOB_IDS.includes(id));
 export function withoutRetiredJobs(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || !raw.jobs || typeof raw.jobs !== "object" || Array.isArray(raw.jobs)) return raw;
   const known = new Set(JOB_IDS), dropped = Object.keys(raw.jobs).filter((id) => !known.has(id));
   if (!dropped.length) return raw;
-  return { ...raw, jobs: Object.fromEntries(Object.entries(raw.jobs).filter(([id]) => known.has(id))) };
+  // The chat job is gone: its max output, sort, max price and timeout now belong to each routing category. A version 3 category without them takes the
+  // saved values of the chat job (or of "chat.general" in the oldest versions). A version 2 version has no categories, so it first becomes version 3
+  // from the chat job's models, which also copies the limits to the General category.
+  const chatJob = own(raw.jobs, CHAT_JOB) ? raw.jobs[CHAT_JOB] : raw.jobs[OLD_CHAT_JOB];
+  // Earlier versions saved the chat limits and models as "chat.general" (with a job for each old kind of request next to it). Its saved values
+  // are used as the chat job's, so no saved limit is lost. The other old chat jobs, the retry jobs and "escalate" are dropped.
+  const jobs = Object.fromEntries(Object.entries(raw.jobs).filter(([id]) => known.has(id)));
+  if (chatJob && typeof chatJob === "object") {
+    if (raw.version === 3 && raw.routing?.categories?.length) return withCategoryLimits({ ...raw, jobs }, chatJob);
+    if (raw.version === 2) { try { return withRoutingConfig(clone({ ...raw, jobs: { ...jobs, [CHAT_JOB]: chatJob } }), { zdrThirdModel: ROUTING_ZDR_THIRD_MODEL }); } catch { /* left as version 2: the check reports it */ } }
+  }
+  return { ...raw, jobs };
 }
 function configOf(row) {
   try { return validateModelSettings(withoutProviderLists(withoutRetiredJobs(JSON.parse(row.config)))); }
@@ -327,9 +339,7 @@ function choicesOf(config) {
   }
   return out;
 }
-// Jobs left out of the settings view's option list because nothing runs them here. The Models page itself shows every job on every environment (Captain, 2026-10-17).
-export const hiddenJobs = (env) => ambientSearchOn(env) ? [] : ["embed_memory"];   // only the settings view's own option list: the Models page shows every job (model-dashboard.js)
-export const modelSettingsOptions = (config, hidden = []) => ({ groups: GROUPS, jobs: MODEL_PAGE_JOBS.filter((j) => !hidden.includes(j.id)), kinds: JOB_KINDS, levels: PRIVACY_LEVELS, choices: choicesOf(config) });
+export const modelSettingsOptions = (config) => ({ groups: GROUPS, jobs: MODEL_PAGE_JOBS, kinds: JOB_KINDS, levels: PRIVACY_LEVELS, choices: choicesOf(config) });
 // Models in the saved settings or the first-run list that OpenRouter no longer lists. A failed lookup flags nothing.
 // Kept apart from modelSettingsView so that opening the page never waits on OpenRouter.
 export async function unlistedModels(env) {
@@ -339,8 +349,7 @@ export async function unlistedModels(env) {
 export async function modelSettingsView(env) {
   const db = dbOf(env), s = await readModelSettings(env);
   const history = (await db.prepare(`SELECT revision,at,by,action FROM ${TABLE} WHERE environment=? ORDER BY revision DESC LIMIT 30`).bind(settingsEnvironment(env)).all()).results || [];
-  const hidden = hiddenJobs(env);
-  return { dynamicRouting: dynamicRoutingOn(env), environment: settingsEnvironment(env), revision: s.revision, config: s.config, stale: !!s.stale, hidden, options: modelSettingsOptions(s.config, hidden), history,
+  return { dynamicRouting: dynamicRoutingOn(env), environment: settingsEnvironment(env), revision: s.revision, config: s.config, stale: !!s.stale, options: modelSettingsOptions(s.config), history,
     effective: "New tasks and background calls use these settings. Running tasks keep the model and reasoning level they started with. Privacy restrictions and explicit operator revocations still apply immediately." };
 }
 
@@ -356,12 +365,13 @@ async function write(env, revision, config, by, action) {
 // already know keeps its saved record; a new chat model is checked against OpenRouter's catalog; other new models are checked for shape.
 async function validatedSelection(env, config, current) {
   if (!config || typeof config !== "object" || Array.isArray(config) || !config.jobs || typeof config.jobs !== "object") fail("Invalid settings.");
-  if (![2, 3].includes(config.version) || (config.version === 3 && (!config.routing || !Array.isArray(config.routing.categories) || config.routing.categories.some((c) => !c || typeof c !== "object" || !c.chains)))) fail("Invalid routing settings.");
-  const next = { version: config.version === 3 ? 3 : 2, jobs: clone(config.jobs), catalog: clone(current.catalog), ...(config.version === 3 ? { routing: clone(config.routing) } : {}) };
+  // The models of a reply live in the routing categories (there is no chat job), so a save always carries them: a page loaded before this release sends version 2 and must reload.
+  if (config.version !== 3) fail("Reload Models before saving routing settings.");
+  if (!config.routing || !Array.isArray(config.routing.categories) || config.routing.categories.some((c) => !c || typeof c !== "object" || !c.chains)) fail("Invalid routing settings.");
+  const next = { version: 3, jobs: clone(config.jobs), catalog: clone(current.catalog), routing: clone(config.routing) };
   // The limits (limits.js): what the page sent, kept sparse (only values that differ from the starting value); a save that sends none keeps the saved ones.
   if (own(config, "limits")) { const problem = limitsProblem(config.limits); if (problem) fail(problem); const sparse = compactLimits(config.limits); if (Object.keys(sparse).length) next.limits = sparse; }
   else if (current.limits && Object.keys(current.limits).length) next.limits = clone(current.limits);
-  if (dynamicRoutingOn(env) && next.version !== 3) fail("Reload Models before saving routing settings.");
   const need = new Map();
   for (const def of JOBS) {
     const job = next.jobs[def.id]; if (!job || typeof job !== "object") continue;

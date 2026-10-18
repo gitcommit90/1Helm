@@ -48,8 +48,8 @@ const PRICE_CEILING = { prompt: 3, completion: 15 };
 const priceFor = (facts) => { const up = (v, d) => Number.isFinite(v) && v > d ? Math.ceil(v * 1e4) / 1e4 : d; return { prompt: up(facts?.pricing?.prompt, PRICE_CEILING.prompt), completion: up(facts?.pricing?.completion, PRICE_CEILING.completion) }; };
 const SORTS = ["price", "throughput", "latency"];
 
-const KIND_ADAPTER = { chat: "chat", recovery: "chat", chore: "chat", vision: "chat", workers_ai: "chat", classic: "chat",
-  embedding_files: "embeddings", embedding_memory: "embeddings", speech: "transcribe", speech_cloudflare: "transcribe", speech_live: "transcribe_live", look: "look" };
+const KIND_ADAPTER = { chat: "chat", chore: "chat", vision: "chat", workers_ai: "chat", classic: "chat",
+  embedding_files: "embeddings", speech: "transcribe", speech_cloudflare: "transcribe", speech_live: "transcribe_live", look: "look" };
 function adapterOf(jobId, kindId, source, facts) {
   if (jobId === "web_search" || kindId === "search") return "search";
   if (kindId === "speech_live") return source === "CF" ? "transcribe_live" : "transcribe";   // a Workers AI streaming model is a WebSocket; any other model takes the recording in chunks
@@ -71,7 +71,7 @@ export function providerOf({ settings, jobId, adapter, facts, level, kindId, str
   const saved = mp && Number.isFinite(mp.prompt) && Number.isFinite(mp.completion) ? { prompt: mp.prompt, completion: mp.completion } : null;
   const max_price = saved || (TEXT_ADAPTERS.includes(adapter) ? priceFor(facts) : null);
   // require_parameters: the main chat and retry jobs always ask it (no endpoint may drop the reasoning setting); a background job only when its entry is strict.
-  const require = adapter === "decide_json" || (adapter === "chat" && (kindId === "chat" || kindId === "recovery" || !!strict));
+  const require = adapter === "decide_json" || (adapter === "chat" && (kindId === "chat" || !!strict));
   return { ...(level === "zdr" ? { zdr: true } : {}), data_collection: level === "unrestricted" ? "allow" : "deny", ...(SORTS.includes(sort) ? { sort } : {}), ...(max_price ? { max_price } : {}),
     ...(require ? { require_parameters: true } : {}), allow_fallbacks: true };
 }

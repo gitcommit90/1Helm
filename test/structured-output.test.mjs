@@ -58,7 +58,7 @@ assert.equal(fins, 2); assert.equal(paid, 200); assert.equal(rendered, renderHan
 const labelInput = { kind: "chat", chatTitle: true, msgs: [{ at: 1, text: "Plan a garden" }], steps: [], reply: "Grow peas." };
 let managedCalls = 0, release, sawAbort = false;
 const settled = [];
-globalThis.fetch = async (_url, init) => { managedCalls++; init.signal.addEventListener("abort", () => { sawAbort = true; }, { once: true }); return new Promise(resolve => { release = resolve; }); };
+globalThis.fetch = async (_url, init) => { if (/openrouter\.ai\/api\/v1\/(models|endpoints)/.test(String(_url))) return new Response("{}", { status: 503 }); managedCalls++; init.signal.addEventListener("abort", () => { sawAbort = true; }, { once: true }); return new Promise(resolve => { release = resolve; }); };
 const pendingLabels = summarizeCard({ input: labelInput, timeoutMs: 5, env: { MODEL_SETTINGS: SEED, OPENROUTER_API_KEY: "fixture" },
   ledger: { reserve: async () => ({ ok: true }), settle: async (_id, nano) => { settled.push(nano); } } });
 await new Promise(resolve => setTimeout(resolve, 20));

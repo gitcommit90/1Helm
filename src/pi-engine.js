@@ -9,6 +9,7 @@ import { withStepTitles, splitStepTitle, stepBegin, stepEnd, stepSkipped } from 
 import { SKIP_REASON, LIMIT_REPORT_ASK } from "./steer.js";
 import { untilStopped, STOPPED_TOOL_TEXT, STEP_LIMIT_CHAT_ASK } from "./stop.js";
 import { guardModel, guardTools, reportAsk, OUT_OF_TIME_REPLY } from "./spendguard.js";
+import { stallCheck } from "./stall-guard.js";
 import { isByokError, BYOK_CREDITS_REPLY } from "./byok.js";
 import { COMPUTER_BUSY_MSG, isComputerBusy } from "./computer-capacity.js";
 import { liveNudge, noteRan } from "./live-check.js";
@@ -82,7 +83,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
   const limitPrompts = new Set(); let reportInFlight = false;
   const limitPrompt = text => { const p = piUser(text); limitPrompts.add(p); return p; };
   const liftLimit = ctx => {
-    if (!limitAsked || pausesApply(tc) || opts.hard_charge || tc.abort === 'hard') return false;
+    if (!limitAsked || pausesApply(tc) || opts.hard_charge || tc.stall || tc.abort === 'hard') return false;
     limitAsked = false; stepCapped = false; delete stats.hit_limit;
     ctx.tools = tools; ctx.messages = ctx.messages.filter(m => !limitPrompts.has(m));
     finalMsgs = ctx.messages; return true;
@@ -156,6 +157,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
       if (tc.objectReset) return { content: [{ type: "text", text: "(interrupted by an update)" }], details: {} };
       trace.push({ tool: t.function.name, args: JSON.stringify(params).slice(0, 300), ms: Date.now() - x0, out: String(text).slice(0, 300) });
       guardTools(tc, [[t.function.name, params]]);   // spendguard.js: runaway signs → pause
+      stallCheck(tc, t.function.name, params, String(text), tc.limits || res.lim?.());   // stall-guard.js: the same call and result again and again → soft stop
       stepEnd(sql, tc, sv?.seq, { out: String(text), ms: Date.now() - x0, ...(tc.lastCmd ? { cmd: tc.lastCmd } : {}) });
       res.effectDone?.(tc, id, String(text));
       return { content: [{ type: "text", text: String(text) }], details: {} };
@@ -219,7 +221,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
     shouldStopAfterTurn: async () => { await res.spendRefresh?.(tc, opts); return steps >= limit() || tc.abort === "hard"; },
     getFollowUpMessages: async () => {
       await res.spendRefresh?.(tc, opts);
-      if ((limitAsked || reportInFlight) && !pausesApply(tc) && !opts.hard_charge && tc.abort !== 'hard') { reportInFlight=false; return [piUser('(The person turned off spending check-ins. Continue their task; the discretionary pause no longer applies.)')]; }
+      if ((limitAsked || reportInFlight) && !pausesApply(tc) && !opts.hard_charge && !tc.stall && tc.abort !== 'hard') { reportInFlight=false; return [piUser('(The person turned off spending check-ins. Continue their task; the discretionary pause no longer applies.)')]; }
       const last = lastAssistant;
       const late = await steerPi(true); if (late.length) return late;   // landed while the answer was being written
       if (kind === "helper" && res.helperQueued?.(tc) && steps < limit() - 1) return [piUser("(A new follow-up instruction arrived from the main helper. Read it before you finish your report.)")];

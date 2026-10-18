@@ -10,7 +10,7 @@ import { seedFresh, seedFromLegacy } from "../src/ee/model-seed.js";
 import { JOBS, JOB_IDS, jobSetting, choreRouteOf } from "../src/ee/model-jobs.js";
 import { openRouterChat } from "./helpers/or-chat.mjs";
 import { policyRoute, dispatchOrder } from "../src/ee/route2.js";
-import { ID, SEED, seedSettings, withSettings, withExtraModels, EXTRA_FACTS } from "./helpers/seed-settings.mjs";
+import { ID, SEED, seedSettings, withSettings, withExtraModels, EXTRA_FACTS, setGeneral } from "./helpers/seed-settings.mjs";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const sql = new DatabaseSync(":memory:");
@@ -31,12 +31,11 @@ console.log = (...a) => logs.push(a.join(" ")); console.error = (...a) => errs.p
 const bad = (change, re = /./) => { const c = clone(SEED); change(c); assert.throws(() => validateModelSettings(c), (e) => e.status === 400 && re.test(e.message)); };
 bad((c) => { c.evil = true; }); bad((c) => { c.version = 1; }, /version/);
 bad((c) => { delete c.jobs.handoff; }); bad((c) => { c.jobs.unknown = c.jobs.handoff; }); bad((c) => { c.jobs.handoff = null; });
-bad((c) => { c.jobs["chat.general"].effort = "none"; }, /doesn't support reasoning level/);          // Sol/DeepSeek/etc. have their own lists; Muse has no "none"
+bad((c) => { c.routing.categories[0].chains.unrestricted[0].effort = "none"; }, /doesn't support reasoning level/);          // Sol/DeepSeek/etc. have their own lists; Muse has no "none"
 bad((c) => { c.jobs.decider.effort = "low"; }, /no reasoning level/); bad((c) => { c.jobs.stt.fallbacks[0].effort = "low"; }, /no reasoning level/);
-bad((c) => { c.jobs["chat.general"].fallbacks.push({ model: ID.MUSE_C, effort: "low" }); }, /listed once/);
-bad((c) => { c.jobs["chat.general"].fallbacks = Array(6).fill(0).map((_, i) => ({ model: `x/m${i}`, effort: "low" })); });
-bad((c) => { c.jobs["recover.technical"].fallbacks = [{ model: ID.HAIKU, effort: "low" }]; }, /fallback/);
-bad((c) => { c.jobs.decider.model = ID.STT; }, /can't be used/); bad((c) => { c.jobs["chat.technical"].model = ID.STT; }, /can't be used/);
+bad((c) => { c.routing.categories[0].chains.zdr[1] = { ...c.routing.categories[0].chains.zdr[0] }; }, /three different models/);
+bad((c) => { c.routing.categories[0].chains.zdr = Array(6).fill(0).map((_, i) => ({ model: `x/m${i}`, effort: "low" })); }, /1st, 2nd and 3rd/);
+bad((c) => { c.jobs.decider.model = ID.STT; }, /can't be used/); bad((c) => { c.routing.categories[0].chains.zdr[0] = { model: ID.STT, effort: null }; }, /can't be used/);
 bad((c) => { c.jobs.handoff = { model: ID.MUSE_C, effort: "low", fallbacks: [] }; }, /can't be used/);
 bad((c) => { c.catalog["acme/leaky"] = { id: "acme/leaky", name: "Leaky", eligible: true, reasons: [], efforts: ["low"], default_effort: "low", levels: ["unrestricted"], hosts: ["h"], context_length: 1000, max_output: 100,
   input_modalities: ["text"], pricing: { prompt: 1, completion: 1 }, json: true, tool_choice: ["auto"] }; c.jobs.handoff = { model: "acme/leaky", effort: "low", fallbacks: [] }; }, /zero-data-retention/);
@@ -44,7 +43,7 @@ bad((c) => { c.jobs.handoff = { model: "not a model id", effort: "low", fallback
 bad((c) => { c.jobs.handoff.fallbacks[0].hosts = ["together"]; }, /provider lists/); bad((c) => { c.jobs.handoff.fallbacks[0].pin = false; }, /provider lists/);
 bad((c) => { c.catalog["evil/x"] = { id: "evil/x", name: "x", kinds: ["chat"], efforts: ["low"], hosts: ["a"] }; }, /metadata/);
 assert.deepEqual(Object.keys(SEED.jobs).sort(), [...JOB_IDS].sort(), "every job has a saved setting, and only the known jobs");
-assert.ok(JOBS.length === 32 && new Set(JOB_IDS).size === JOBS.length);
+assert.ok(JOBS.length === 19 && new Set(JOB_IDS).size === JOBS.length);
 for (const j of Object.values(SEED.jobs)) for (const e of [j, ...j.fallbacks]) assert.ok(SEED.catalog[e.model], `${e.model} is described in the saved settings`);
 
 // ---- 2) the first saved version: nothing saved yet → the first-run data, once, with the variable that used to choose a model carried in ----
@@ -64,10 +63,10 @@ for (const j of Object.values(SEED.jobs)) for (const e of [j, ...j.fallbacks]) a
 // ---- 3) a save is a new version; history; stale and concurrent writes ----
 let revision = 1;
 const save = async (config, e = env) => { const v = await saveModelSettings(e, { revision, config }, "unit@example.com"); revision = v.revision; return v; };
-{ const cfg = clone(SEED); cfg.jobs["chat.general"] = { model: ID.LUNA, effort: "low", fallbacks: [{ model: ID.HAIKU, effort: "medium" }] };
-  const v = await save(cfg); assert.equal(v.revision, 2); assert.deepEqual(v.config.jobs["chat.general"], cfg.jobs["chat.general"]);
+{ const cfg = clone(SEED); setGeneral(cfg, [{ model: ID.LUNA, effort: "low" }, { model: ID.HAIKU, effort: "medium" }], ["zdr"]);
+  const v = await save(cfg); assert.equal(v.revision, 2); assert.deepEqual(v.config.routing.categories[0].chains.zdr, cfg.routing.categories[0].chains.zdr);
   assert.equal(v.history[0].action, "save"); assert.equal(v.history[0].by, "unit@example.com");
-  assert.equal(v.options.groups.length, 7); assert.ok(v.options.choices.chat.some((m) => m.id === ID.LUNA));
+  assert.equal(v.options.groups.length, 6); assert.ok(v.options.choices.chat.some((m) => m.id === ID.LUNA));
   await assert.rejects(saveModelSettings(env, { revision: 1, config: cfg }, "other"), (e) => e.status === 409);
   const writes = await Promise.allSettled([saveModelSettings(env, { revision, config: cfg }, "a"), saveModelSettings(env, { revision, config: cfg }, "b")]);
   assert.equal(writes.filter((r) => r.status === "fulfilled").length, 1); assert.equal(writes.find((r) => r.status === "rejected").reason.status, 409); revision++;
@@ -86,8 +85,8 @@ try {
   await call(await route()); assert.equal(sent.at(-1).model, ID.LUNA); assert.equal(sent.at(-1).reasoning.effort, "low", "the saved effort, not the caller's");
   failures.add(ID.LUNA); let n = sent.length; await call(await route()); failures.clear();
   assert.deepEqual(sent.slice(n).map((p) => [p.model, p.reasoning.effort]), [[ID.LUNA, "low"], [ID.HAIKU, "medium"]], "each fallback uses its own saved effort");
-  const c2 = clone((await readModelSettings(env)).config); c2.jobs["chat.general"].effort = "high"; await save(c2); await call(await route()); assert.equal(sent.at(-1).reasoning.effort, "high");
-  c2.jobs["chat.general"] = { model: ID.LUNA, effort: "none", fallbacks: [] }; await save(c2); await call(await route()); assert.deepEqual(sent.at(-1).reasoning, { enabled: false });
+  const c2 = clone((await readModelSettings(env)).config); setGeneral(c2, [{ model: ID.LUNA, effort: "high" }, { model: ID.HAIKU, effort: "medium" }], ["zdr"]); await save(c2); await call(await route()); assert.equal(sent.at(-1).reasoning.effort, "high");
+  setGeneral(c2, [{ model: ID.LUNA, effort: "none" }], ["zdr"]); await save(c2); await call(await route()); assert.deepEqual(sent.at(-1).reasoning, { enabled: false });
   // background jobs, one by one: the saved model, effort and fallbacks for that job
   const c3 = clone((await readModelSettings(env)).config);
   c3.jobs.label = { model: ID.OSS120, effort: "medium", fallbacks: [] };
@@ -133,14 +132,6 @@ try {
   assert.deepEqual(level("general", "zdr"), [[ID.SOL, "low"], [ID.DEEPSEEK, "max"], [ID.HAIKU, "medium"]]);
   assert.deepEqual(level("general", "no_training"), [[ID.SOL, "low"], [ID.DEEPSEEK, "max"], [ID.MUSE_S, "xhigh"]]);
   assert.deepEqual(level("general", "unrestricted"), [[ID.SOL, "low"], [ID.MUSE_C, "xhigh"], [ID.DEEPSEEK, "max"]]);
-  assert.deepEqual(level("research", "zdr"), [[ID.DEEPSEEK, "max"], [ID.SOL, "low"], [ID.HAIKU, "medium"]]);
-  assert.deepEqual(level("research", "no_training"), [[ID.DEEPSEEK, "max"], [ID.SOL, "low"], [ID.MUSE_S, "xhigh"]]);
-  assert.deepEqual(level("research", "unrestricted"), [[ID.MUSE_C, "xhigh"], [ID.DEEPSEEK, "max"], [ID.SOL, "low"]]);
-  // a level whose earlier list was shorter than the merged list keeps its own models first and gets the others after them as fallbacks
-  // (models that level may use, so privacy is unchanged); its first choice and the order of its own models never change
-  assert.deepEqual(level("technical", "zdr"), [[ID.HAIKU, "medium"], [ID.SOL, "low"]]); assert.deepEqual(level("technical", "no_training"), [[ID.HAIKU, "medium"], [ID.SOL, "low"]]);
-  assert.deepEqual(level("technical", "unrestricted"), [[ID.HAIKU, "medium"], [ID.SOL, "low"]]);
-  assert.equal(s.jobs["recover.technical"].model, ID.HAIKU); assert.equal(s.jobs["recover.technical"].effort, "medium", "recovery uses the saved effort of the slot it uses (Haiku, since Sol left the first-run data)");
   assert.equal(jobSetting(s, "decider").model, ID.JEV);
   const lab = choreRouteOf(s, "label"); assert.deepEqual([lab.model, lab.effort, lab.host, lab.pin, lab.fallbacks.length, lab.runtimeSettings], [ID.OSS120, "medium", undefined, undefined, 0, true]);
   const notes = choreRouteOf(s, "notes"); assert.deepEqual([notes.model, notes.effort, notes.fallbacks.length], [ID.DEEPSEEK, "none", 1]);
@@ -168,11 +159,11 @@ try {
   const again = await readModelSettings(env); assert.equal(again.stale, true);
   sql.prepare("DELETE FROM model_job_settings_versions WHERE action='invalid-fixture'").run(); }
 { // a job added by a later release is filled in once, as a new version, from the first-run data; nothing else changes
-  const cur = await readModelSettings(env), c = clone(cur.config); delete c.jobs.embed_memory;
+  const cur = await readModelSettings(env), c = clone(cur.config); delete c.jobs.embed_files;
   sql.prepare("INSERT INTO model_job_settings_versions VALUES(?,?,?,?,?,?)").run("dev", cur.revision + 1, JSON.stringify(c), Date.now(), "fixture", "older-release");
-  const after = await readModelSettings(env); assert.equal(after.revision, cur.revision + 2); assert.equal(jobSetting(after.config, "embed_memory").model, ID.EMBED_MEMORY);
-  assert.deepEqual({ ...after.config.jobs, embed_memory: null }, { ...cur.config.jobs, embed_memory: null });
-  assert.match(rows().at(-1).action, /^add-jobs:embed_memory/); revision = after.revision; }
+  const after = await readModelSettings(env); assert.equal(after.revision, cur.revision + 2); assert.equal(jobSetting(after.config, "embed_files").model, ID.EMBED_FILES);
+  assert.deepEqual({ ...after.config.jobs, embed_files: null }, { ...cur.config.jobs, embed_files: null });
+  assert.match(rows().at(-1).action, /^add-jobs:embed_files/); revision = after.revision; }
 
 console.log = origLog; console.error = origErr;
 console.log("PASS model settings: validation, first version (first-run data, carried variables, earlier settings), save/history/restore, stale and concurrent writes, uncached dispatch changes, jobs, failure behavior");

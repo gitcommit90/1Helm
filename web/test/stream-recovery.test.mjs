@@ -6,7 +6,7 @@ const enc=new TextEncoder(),response=events=>new Response(new ReadableStream({st
 const owner={},lease=streamLease(owner),state=streamState(owner),now=Date.now();
 state.progress=now-50000;assert(streamCheckDue(owner,{state:'working'},now));
 streamProgress(owner,{t:'hb'});assert.equal(state.progress,now-50000,'heartbeats are not task progress');
-streamProgress(owner,{t:'model_wait',phase:'waiting'});assert.equal(state.waiting,'Waiting for the model');
+streamProgress(owner,{t:'model_wait',phase:'waiting'});assert.equal(state.waiting,'waiting');
 streamProgress(owner,{t:'text',s:'answer'});assert.equal(state.waiting,'');assert(!streamCheckDue(owner,{state:'working'}));assert(streamCheckDue(owner,{state:'idle'}));
 lease.pending=true;assert(!streamCheckDue(owner,{state:'idle'}),'old terminal state cannot cancel an unacknowledged new POST');lease.pending=false;
 const rev=state.revision;streamProgress(owner,{t:'user_input'});assert.equal(state.revision,rev+1,'same-millisecond input invalidates snapshots');

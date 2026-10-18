@@ -13,8 +13,7 @@
 //     model    run only the plan step that holds this model (a caller that already chose one entry of the job, such as a live dictation chunk)
 //     fetch    transport for the live dictation WebSocket and the decision endpoint (tests)
 //     route    the main chat only: a running task's route (route.taskAffinity, with its profile) or the routing policy's route (route.two). Its models come from the
-//              route, in its order, and each attempt reads max output, sort and price cap from its own saved job: jobId is the category's chat.* job, route.recoveryJob
-//              names the recover.* job of a retry model, and route.limitsJob (e.g. "escalate") overrides the job for every attempt.
+//              route, in its order, and each attempt reads max output, sort and price cap from the saved routing category the turn was routed to (categoryLimits in model-jobs.js).
 //
 // The plan lists the job's models in order. Each step has its own adapter, and dispatch tries the steps in order and returns the first answer.
 // When every step fails it throws the last error, with `errors` listing "model: message" for each step.
@@ -32,6 +31,7 @@
 //
 // The transport is the ID's source (isCloudflareModel); there is no ENV_NAME, TEST_MODE or DYNAMIC_ROUTING check in this file.
 import { plan } from "./model-plan.js";
+import { jsonLevelsFor } from "./model-catalog.js";
 import { noteServed } from "./model-served.js";
 import { modelSettingsEnv, readModelSettings } from "./model-settings.js";
 import { effortBody, quirkOf, jobTimeoutMs } from "./model-jobs.js";
@@ -64,6 +64,20 @@ export function liveProviderRequest(env, model) {
     "cf-aig-collect-log": "false", "cf-aig-collect-log-payload": "false", "cf-aig-skip-cache": "true" } };
 }
 
+// The levels, or null when the lookup fails or takes longer than ms (the request then goes as before).
+async function levelsWithin(ms, promise) { let t; try { return await Promise.race([promise, new Promise((r) => { t = setTimeout(() => r(null), ms); })]); } catch { return null; } finally { clearTimeout(t); } }
+// True unless the catalog record lists the levels where an endpoint accepts response_format and the job's level is not one of them (older records
+// carry no list and keep sending json_schema).
+export const structuredSupported = (facts, level) => !Array.isArray(facts?.json_levels) || !level || facts.json_levels.includes(level);
+// The body fields to replace: no response_format, and the schema as an instruction in a system message that the reply is JSON only.
+export function promptOnlyJson(body, facts, level) {
+  const f = body?.response_format;
+  if (f?.type !== "json_schema" || structuredSupported(facts, level)) return {};
+  const schema = f.json_schema?.schema;
+  const note = { role: "system", content: `Reply with only one JSON value, with no other text and no code fence, that matches this JSON schema:\n${JSON.stringify(schema ?? {})}` };
+  return { response_format: undefined, messages: [...(body.messages || []), note] };
+}
+
 const ADAPTERS = {
   // chat and decide_json: one chat completion on the step's model, built from the plan only.
   async chat(c, s) {
@@ -71,6 +85,12 @@ const ADAPTERS = {
     const facts = c.settings?.catalog?.[s.model];
     // A model that can't do JSON mode gets the request without a response format.
     if (b.response_format && b.response_format.type !== "json_schema" && (quirkOf(c.settings, s.model, "no_json") || facts?.json === false)) delete b.response_format;
+    // A request for structured outputs goes to a model with no endpoint at this privacy level that accepts response_format as a prompt-only JSON request,
+    // because json_schema with require_parameters would leave OpenRouter no endpoint (404 "No endpoints found that can handle the requested parameters").
+    if (s.source === "OR" && b.response_format?.type === "json_schema") {
+      const known = Array.isArray(facts?.json_levels) ? facts : { ...facts, json_levels: await levelsWithin(3000, (c.jsonLevels || jsonLevelsFor)(s.model, c.settings, { env: c.env })) };
+      Object.assign(b, promptOnlyJson(b, known, c.level));
+    }
     const payload = { ...b, messages: replayFor(b.messages, s.model), model: s.model, ...(Number.isFinite(s.maxOutput) ? { max_tokens: s.maxOutput } : {}), ...effortBody(s.effort, s.model, c.settings),
       ...(s.source === "OR" ? { provider: s.provider, usage: { include: true }, ...(c.session ? { session_id: String(c.session).slice(0, 256), prompt_cache_key: cacheKey(c.session) } : {}) } : {}) };
     const r = s.source === "CF" ? await cloudflareChat(c.env, payload, c.meta, c.signal, facts) : await orFetch(c.env, payload, c.meta, OR_HEADERS, c.signal);
@@ -149,7 +169,7 @@ async function servedOf(r, step) {
   } catch { return { response: r, served: null }; }
 }
 
-export async function dispatch(env, jobId, request = {}, { meta = {}, signal = null, level = null, session = null, model = null, fetch: fetchImpl = null, route = null } = {}) {
+export async function dispatch(env, jobId, request = {}, { meta = {}, signal = null, level = null, session = null, model = null, fetch: fetchImpl = null, route = null, jsonLevels = null } = {}) {
   env = await modelSettingsEnv(env);
   // Own AI key: the person's own endpoint answers every chat call, whatever the saved settings say. It needs no plan (and its env carries no copy of the settings).
   // A task's route is checked by routedChat first (a task that began on managed models stops when the mode changed to an own key).
@@ -171,7 +191,7 @@ export async function dispatch(env, jobId, request = {}, { meta = {}, signal = n
   const steps = model ? p.steps.filter((s) => s.model === model) : p.steps;
   if (!steps.length) throw Object.assign(new Error(model ? `"${model}" is not an allowed model of "${jobId}" at privacy level ${p.level}. Nothing was sent.` : `No model of "${jobId}" can run at privacy level ${p.level}. Nothing was sent.`), { privacyBlocked: true });
   // Metadata keys that start with "_" are internal: they never leave the Worker.
-  const ctx = { env, settings, jobId, request, session, signal, level: p.level, fetchImpl, meta: { ...meta, job: jobId, _privacy: p.level } };
+  const ctx = { env, settings, jobId, request, session, signal, level: p.level, fetchImpl, jsonLevels, meta: { ...meta, job: jobId, _privacy: p.level } };
   const errors = []; let last;
   // The job's saved timeout (limits.js, `timeout_ms`; null means none) is for one attempt: each step starts a fresh timer. The live dictation socket
   // only times its connect, so it keeps its own timer.

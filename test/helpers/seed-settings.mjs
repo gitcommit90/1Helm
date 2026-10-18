@@ -1,6 +1,6 @@
 // Saved model settings for tests: the first-run data (src/model-seed.js), checked by the real validator. Tests that call code which
 // reads the settings give it an env made by withSettings(); nothing in src/ has a built-in model to fall back on.
-import { seedFresh, seedFromLegacy } from "../../src/ee/model-seed.js";
+import { seedFresh, seedFromLegacy, SEED_FACTS } from "../../src/ee/model-seed.js";
 import { validateModelSettings } from "../../src/ee/model-settings.js";
 const clone = (x) => JSON.parse(JSON.stringify(x));
 // Models that are no longer in the first-run data (the catalog keeps only models a job uses) but that many tests use as extra choices.
@@ -20,4 +20,15 @@ export const withSettings = (env = {}, settings = SEED) => ({ ...env, MODEL_SETT
 // The models the first-run data uses, by the names tests use (the ids appear only here and in src/model-seed.js).
 export const ID = { MUSE_C: "meta/muse-spark-1.3-contributor", MUSE_S: "meta/muse-spark-1.3", DEEPSEEK: "deepseek/deepseek-v4.1-flash", LUNA: "openai/gpt-6-luna", SOL: "openai/gpt-6.1-sol", HAIKU: "anthropic/claude-haiku-5.5",
   OSS120: "openai/gpt-oss-120b", OSS20: "openai/gpt-oss-20b", QWEN: "qwen/qwen3.8-27b", GLM: "z-ai/glm-5.3-flash", PPLX: "perplexity/pplx-decider-v1.1-27b", JEV: "~typesafe/jev-latest",
-  STT_BEST: "assemblyai/universal-3-6-pro", STT: "qwen/qwen3-asr-0.6b", STT_FALLBACK: "openai/whisper-large-v3-turbo", STT_WAI: "@cf/openai/whisper-large-v3-turbo", LIVE: "@cf/deepgram/nova-3", EMBED_FILES: "perplexity/pplx-embed-v1-0.6b", EMBED_MEMORY: "@cf/baai/bge-m3", VISION: "@cf/google/gemma-4-26b-a4b-it", WAI_CHAT: "@cf/zai-org/glm-5.3-flash" };
+  STT_BEST: "assemblyai/universal-3-6-pro", STT: "qwen/qwen3-asr-0.6b", STT_FALLBACK: "openai/whisper-large-v3-turbo", STT_WAI: "@cf/openai/whisper-large-v3-turbo", LIVE: "@cf/deepgram/nova-3", EMBED_FILES: "perplexity/pplx-embed-v1-0.6b", VISION: "@cf/google/gemma-4-26b-a4b-it", WAI_CHAT: "@cf/zai-org/glm-5.3-flash" };
+// Sets the models of the General category at every privacy level: the given entries first, then entries of the first-run General list that fit the
+// level, up to the three each level needs (levels: which privacy levels to set, all by default). A model the first-run data describes is added to the catalog. Returns the config.
+export const setGeneral = (config, entries, levels = Object.keys(SEED.routing.categories[0].chains)) => {
+  for (const e of entries) if (!config.catalog[e.model] && SEED_FACTS[e.model]) config.catalog[e.model] = { id: e.model, ...clone(SEED_FACTS[e.model]) };
+  for (const level of levels) {
+    const list = entries.map((e) => ({ ...e }));
+    for (const e of SEED.routing.categories[0].chains[level]) if (list.length < 3 && !list.some((x) => x.model === e.model)) list.push(clone(e));
+    config.routing.categories[0].chains[level] = list.slice(0, Math.max(3, entries.length));
+  }
+  return config;
+};

@@ -24,3 +24,10 @@ export function versionedAsset(url, r, v) {
   h.set("cache-control", q === expectedAssetVersion(url.pathname, v) ? "public, max-age=31536000, immutable" : "no-store");
   return new Response(r.body, { status: r.status, statusText: r.statusText, headers: h });
 }
+
+// Every /w/<slug>/api response tells the open app which build this Worker serves (x-app-v), so a tab running older code can reload itself.
+export function withAppV(url, r, v) {
+  if (!/^\/w\/[^/]+\/api\//.test(url.pathname) || r.status === 101) return r;
+  const h = new Headers(r.headers); h.set("x-app-v", String(v.APP_V));
+  return new Response(r.body, { status: r.status, statusText: r.statusText, headers: h });
+}

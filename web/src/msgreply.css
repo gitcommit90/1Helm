@@ -5,8 +5,7 @@
    Pointer devices: the strip sits beside the bubble (left of a user bubble, right of an agent bubble), so nothing
    is reserved under it and showing or hiding it (opacity only) never moves anything.
    Touch devices: press and hold shows the strip under the bubble, in the space the bubble opens for it. */
-.msgs .m .bubble:has(>.mact){margin-bottom:6px;min-width:68px;--action-space:34px}
-.msgs .m .bubble:has(>.mact .ma-task){min-width:102px}
+.msgs .m .bubble:has(>.mact){margin-bottom:6px;--action-space:34px}
 .mact{position:absolute;display:flex;gap:4px;opacity:0;pointer-events:none;transition:opacity .12s;white-space:nowrap;z-index:2;font-size:13px;line-height:1}
 .mact button{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:30px;height:30px;padding:0 7px;border-radius:999px;border:1px solid var(--line);background:var(--sheet);color:var(--mute);cursor:pointer;font:inherit;flex:none}
 .mact button:hover{color:var(--ink);background:var(--hover)}
@@ -33,8 +32,7 @@
   .m.agent .mact{left:0}
   .m.user .mact{right:0;flex-direction:row-reverse}
   .msgs .m .bubble:has(>.mact :focus-visible),.msgs .m .bubble.macts,.msgs .m .bubble.ma-space{margin-bottom:var(--action-space)}
-  .msgs .m .bubble:has(>.mact){--action-space:48px;min-width:92px}
-  .msgs .m .bubble:has(>.mact .ma-task){min-width:140px}
+  .msgs .m .bubble:has(>.mact){--action-space:48px}
   .msgs .mact button{height:44px;min-width:44px}
 }
 @keyframes mapop{from{opacity:0;transform:translateY(4px) scale(.97)}to{opacity:1;transform:none}}

@@ -59,7 +59,7 @@ export function progressAfter(before: Before | undefined, message: object, final
   // Fade in the replacement in the same slot. No outgoing duplicate text, no
   // height animation, and no opacity flicker on every token/status repaint.
   const reveal = !final ? slot.animate([{opacity:.55,transform:'translateY(2px)'},{opacity:1,transform:'none'}],{duration:180,easing:'ease-out'}) : undefined;
-  const activity = before.row.closest('.msgs')?.querySelector<HTMLElement>('.primary-activity activity-orb');
+  const activity = before.row.closest('.msgs')?.querySelector<HTMLElement>('.turn-progress activity-orb');
   if (!activity) { effect = () => reveal?.cancel(); return; }
   // The outgoing confirmed note becomes dust at the first incoming word, which
   // might be another note or the final answer. Its old bounds are the source;

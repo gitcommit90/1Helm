@@ -1,7 +1,6 @@
 // Every place the platform uses an AI model is a "job" with its own saved setting: the model, its reasoning level and its fallback list.
 // The saved settings (model-settings.js, edited on the Models page) are the only source of those values. This file lists which jobs
 // exist, reads a job's saved setting, builds the request routes from it, and checks the privacy rule. It names no model.
-import { CATEGORIES } from "./pool.js";
 import { jobFieldDefaults } from "./model-seed.js";
 import { PRIVACY_LEVELS, eligibleHosts, hostOk, normalizePrivacy, registered } from "../privacy.js";
 
@@ -9,15 +8,14 @@ export class ModelSettingsError extends Error {
   constructor(message, status = 503) { super(message); this.name = "ModelSettingsError"; this.modelSettings = true; this.status = status; }
 }
 
-// Caps left at 0 on purpose. recovery: the request kind's own chat list already follows it. speech_cloudflare, workers_ai and vision call
-// env.AI.run with the one saved model (vision's non-dynamic path too), so a fallback would be saved and never run. embedding_files and
-// embedding_memory: a different model makes vectors that don't match the existing index, so a fallback would corrupt search.
+// Caps left at 0 on purpose. speech_cloudflare, workers_ai and vision call
+// env.AI.run with the one saved model (vision's non-dynamic path too), so a fallback would be saved and never run. embedding_files: a different
+// model makes vectors that don't match the existing index, so a fallback would corrupt search.
 // What each kind of job can have. fallbacks: the most fallback models it may list. effort: whether it has a reasoning level.
 // level: the account's AI data privacy setting filters its list. zdr: always runs on zero-data-retention endpoints, so it never
-// breaks any privacy setting. chat/recovery/chore/classic models must be able to chat; the others are named by what they do.
+// breaks any privacy setting. chat/chore/classic models must be able to chat; the others are named by what they do.
 export const JOB_KINDS = {
   chat: { fallbacks: 5, effort: true, level: true, pick: "chat" },
-  recovery: { fallbacks: 0, effort: true, level: true, pick: "chat" },
   chore: { fallbacks: 3, effort: true, zdr: true, pick: "chore" },
   // any: the work is "ask a question, read a short structured answer". The special decision models (kinds list the pick) answer through
   // their own call; every other chat model answers the same questions as strict JSON (text-decision.js). zdr applies to those chat models.
@@ -26,7 +24,6 @@ export const JOB_KINDS = {
   speech_cloudflare: { fallbacks: 0, effort: false, pick: "speech_cloudflare", needs: "Needs a speech-to-text model that runs on Cloudflare." },
   speech_live: { fallbacks: 1, effort: false, pick: "speech_live", needs: "Needs a live speech-to-text model." },
   embedding_files: { fallbacks: 0, effort: false, zdr: true, pick: "embedding_files", reindex: true, needs: "Needs a text embedding model." },
-  embedding_memory: { fallbacks: 0, effort: false, zdr: true, pick: "embedding_memory", reindex: true, needs: "Needs a text embedding model." },
   // vision has a reasoning level (starting value "none": Gemma does not think). effortNullOk: a version saved before the level existed has null, which reads as "none" (model-settings.js).
   vision: { fallbacks: 0, effort: true, effortNullOk: true, zdr: true, pick: "vision", needs: "Needs a model that can read pictures." },
   workers_ai: { fallbacks: 0, effort: false, pick: "workers_ai", needs: "Needs a Cloudflare Workers AI model." },
@@ -39,7 +36,7 @@ export const JOB_KINDS = {
   search: { fallbacks: 0, effort: false, pick: "search", resultCount: true, needs: "Needs a web search provider." },
 };
 // Kinds whose job writes no text, so max_output can only be null.
-for (const k of ["speech", "speech_cloudflare", "speech_live", "embedding_files", "embedding_memory"]) JOB_KINDS[k].noOutput = true;
+for (const k of ["speech", "speech_cloudflare", "speech_live", "embedding_files"]) JOB_KINDS[k].noOutput = true;
 // Picks that name a model able to chat. A kind with any: true also takes every chat model (through the JSON adapter).
 export const CHAT_PICKS = ["chat", "chore", "classic"];
 export const takesChat = (kind) => CHAT_PICKS.includes(kind.pick) || !!kind.any;
@@ -51,26 +48,13 @@ export const NATIVE_PICKS = ["workers_decider", "decider"];
 export const nativeFor = (meta, kind) => !!kind.any && Array.isArray(meta?.kinds) && meta.kinds.some((k) => NATIVE_PICKS.includes(k));
 // Whether the model's endpoints must be zero-data-retention for this kind.
 // Pictures and the two search indexes are not chat picks, but a model for them on OpenRouter must also have zero-data-retention endpoints.
-const ZDR_PICKS = ["vision", "embedding_files", "embedding_memory"];
+const ZDR_PICKS = ["vision", "embedding_files"];
 export const zdrApplies = (kind, meta) => !!kind.zdr && (meta?.source === "CF" || ((takesChat(kind) || ZDR_PICKS.includes(kind.pick)) && !nativeFor(meta, kind)));
 
-const CHAT_TEXT = {
-  general: ["Everyday chat", "Questions, writing, email, calendar, reminders and connected apps."],
-  research: ["Research", "Finding and comparing sources, mostly finance, legal and tax."],
-  apps_economical: ["Simple apps", "Quick, low-cost builds of small apps, sites and scripts."],
-  skills: ["Routine jobs", "Multi-step jobs such as travel, booking, forms, documents and decks."],
-  spreadsheet: ["Spreadsheets", "Creating and editing spreadsheets and workbooks."],
-  technical: ["Hard technical work", "Real coding, debugging, terminal and server work."],
-  apps_complete: ["Full apps", "Software that must be complete and fully working."],
-};
-const RETRY_TEXT = "Used first when you say an earlier result fell short. The kind of request's own list follows it.";
+// The name main chat replies carry in receipts and gateway logs. It is not a saved job: the models and the limits of a reply (max output, provider sort,
+// max price, timeout) come from the routing category the turn was routed to (routing-config.js, categoryLimits below).
+export const CHAT_JOB = "chat";
 export const JOBS = [
-  ...CATEGORIES.map((c) => ({ id: `chat.${c}`, kind: "chat", group: "chat", label: CHAT_TEXT[c][0], description: CHAT_TEXT[c][1], category: c })),
-  { id: "recover.apps_economical", kind: "recovery", group: "recovery", label: "Retry: simple apps", description: `${RETRY_TEXT} Simple apps.` },
-  { id: "recover.apps_complete", kind: "recovery", group: "recovery", label: "Retry: full apps", description: `${RETRY_TEXT} Full apps.` },
-  { id: "recover.technical", kind: "recovery", group: "recovery", label: "Retry: hard technical work", description: `${RETRY_TEXT} Hard technical work.` },
-  { id: "recover.spreadsheet", kind: "recovery", group: "recovery", label: "Retry: spreadsheets", description: `${RETRY_TEXT} Spreadsheets.` },
-  { id: "escalate", kind: "recovery", group: "recovery", label: "Switch during a task", description: "Takes over for the rest of a reply after repeated tool failures, a stalled step or getting stuck." },
   { id: "decider", kind: "decider", group: "routing", label: "Request sorter", description: "Reads each message and decides which kind of work it is, which picks the chat list." },
   { id: "handoff", kind: "chore", group: "background", label: "Task handoffs", description: "Short messages that pass context from one task to the next." },
   { id: "label", kind: "chore", group: "background", label: "Task titles", description: "Gives each task card its title." },
@@ -85,7 +69,6 @@ export const JOBS = [
   { id: "stt_cloudflare", kind: "speech_cloudflare", group: "speech", label: "Speech to text on Cloudflare", description: "Runs only for the Speech to text job, and only when every model above failed and the audio is under 20 MB." },
   { id: "live_dictation", kind: "speech_live", group: "speech", label: "Live dictation", description: "Transcribes live dictation. AssemblyAI transcribes WAV chunks cut at pauses and returns the text after each pause. Deepgram Nova 3 on Cloudflare streams is the fallback." },
   { id: "embed_files", kind: "embedding_files", group: "search", label: "File search index", description: "Makes the search index for your files. Changing it means files must be indexed again." },
-  { id: "embed_memory", kind: "embedding_memory", group: "search", label: "Ambient search index", description: "Makes the embeddings for the ambient passage index, which holds recordings from connected apps. Changing it means ambient passages must be indexed again." },
   { id: "vision_files", kind: "vision", group: "search", label: "Picture descriptions", description: "Describes pictures and reads text in them when a file is a picture." },
   { id: "workers_ai_chat", kind: "workers_ai", group: "other", label: "Backup chat", description: "Answers when OpenRouter can't be reached, or on a self-hosted install with no OpenRouter key." },
   { id: "web_search", kind: "search", group: "search", label: "Web search", description: "Finds web pages for a question when DuckDuckGo has no answer. The model is the search provider, and max output is the number of results it asks for." },
@@ -99,8 +82,7 @@ export const NO_MODEL_LINES = [
 export const JOB_IDS = JOBS.map((j) => j.id);
 export const jobDef = (id) => JOBS.find((j) => j.id === id) || null;
 export const GROUPS = [
-  { id: "chat", title: "Chat replies", note: "The model that answers you, by kind of request. The first model that your privacy setting allows answers, and the next one takes over if it fails." },
-  { id: "recovery", title: "When a reply falls short", note: "Models that take over after you say a result was not right, or when a task keeps failing." },
+  { id: "chat", title: "Chat categories", note: "The routing categories choose the models that answer you, and each category sets its own max output, provider sort, max price and timeout. The first model that your privacy setting allows answers, and the next one takes over if it fails." },
   { id: "routing", title: "Routing", note: "Picks the kind of request." },
   { id: "background", title: "Background jobs", note: "Work that runs behind the scenes. These always use zero-data-retention providers." },
   { id: "speech", title: "Speech", note: "" },
@@ -131,15 +113,16 @@ export const jobMaxPrice = (settings, id) => jobField(settings, id, "max_price")
 export const jobResults = (settings, id) => jobField(settings, id, "results");
 export const jobTimeoutMs = (settings, id) => jobField(settings, id, "timeout_ms");   // milliseconds for one model attempt, or null for no timeout (limits.js)
 export const jobLimits = (settings, id) => ({ max_output: jobMaxOutput(settings, id), sort: jobSort(settings, id), max_price: jobMaxPrice(settings, id), timeout_ms: jobTimeoutMs(settings, id) });
+// The limits a routing category saves for its replies. A category saved before the fields existed reads the starting values (no limit, no sort, the
+// default price ceiling, no timeout). An unknown category id reads General.
+export const CATEGORY_FIELDS = ["max_output", "sort", "max_price", "timeout_ms"];
+export const categoryOf = (settings, id) => { const all = settings?.routing?.categories || []; return all.find((c) => c.id === id) || all.find((c) => c.id === "general") || null; };
+export const categoryLimits = (settings, id) => { const c = categoryOf(settings, id), has = (k) => !!c && Object.prototype.hasOwnProperty.call(c, k); return Object.fromEntries(CATEGORY_FIELDS.map((k) => [k, has(k) ? c[k] : null])); };
 export const factsOf = (settings, model) => settings?.catalog?.[model] || null;
 export const quirkOf = (settings, model, name) => !!factsOf(settings, model)?.quirks?.[name];
 // A job's models in order: its main model, then its fallbacks. Each: { model, effort, strict? }. Saved entries never carry provider lists.
 export const entriesOf = (job) => [{ model: job.model, effort: job.effort ?? null, ...(job.strict ? { strict: true } : {}) },
   ...(job.fallbacks || []).map((f) => ({ ...f, effort: f.effort ?? null }))];
-export const chatJobId = (category) => `chat.${CATEGORIES.includes(category) ? category : "general"}`;
-// The saved job a main chat call belongs to: the category of a running task's frozen profile, or of the routing policy's route. Recovery models
-// (route.recoveryJob) and escalation (route.limitsJob) are read from their own saved jobs inside the dispatcher.
-export const mainChatJob = (route) => chatJobId(route?.taskAffinity ? route.taskProfile?.category : route?.category);
 
 // The effort the model's own rules allow. Some models can't turn reasoning off, so "none" is sent as "low" there.
 export const reasoningMandatory = (settings, model) => quirkOf(settings, model, "reasoning_mandatory");

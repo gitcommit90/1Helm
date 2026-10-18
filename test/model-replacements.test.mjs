@@ -10,7 +10,7 @@ import { policyRoute as policyRoute0, dispatchOrder as dispatchOrder0 } from "..
 import { browserPlan } from "./helpers/browser-plan.mjs";
 import { enforceRequest } from "../src/privacy.js";
 import { jobSetting } from "../src/ee/model-jobs.js";
-import { ID, SEED } from "./helpers/seed-settings.mjs";
+import { ID, SEED, setGeneral } from "./helpers/seed-settings.mjs";
 const SOL = ID.SOL, MUSE_C = ID.MUSE_C, MUSE_S = ID.MUSE_S;
 
 const sql = new DatabaseSync(":memory:");
@@ -23,7 +23,7 @@ const model = (id, extra = {}) => ({ id, name: `Name ${id}`, context_length: 163
 const endpoint = (model_id, extra = {}) => ({ model_id, tag: "safe-host/fp16", status: 0, context_length: 16384, max_completion_tokens: 4096,
   pricing: { prompt: "0.000001", completion: "0.000002" }, supported_parameters: ["tools", "max_tokens", "reasoning", "reasoning_effort", "response_format"], supports_tool_choice: { auto: true, none: true, required: true, function: true }, ...extra });
 const A = "example/arbitrary-alpha", B = "example/arbitrary-beta", BAD = "example/too-expensive", TOOLLESS = "example/no-tools";
-const models = [model(A), model(B), model(BAD), model(TOOLLESS), model(MUSE_C, { reasoning: { mandatory: true, supported_efforts: ["high", "xhigh"] } }), model(MUSE_S), model("example/plain", { reasoning: null }),
+const models = [model(A), model(B), model(BAD), model(TOOLLESS), model(MUSE_C, { reasoning: { mandatory: true, supported_efforts: ["high", "xhigh"] } }), model(MUSE_S, { reasoning: { mandatory: true, supported_efforts: ["high", "xhigh"] } }), model("example/plain", { reasoning: null }),
   model("openai/gpt-oss-120b", { reasoning: { mandatory: true, supported_efforts: ["low", "medium", "high"], default_effort: "medium" } })];   // a saved model that no job uses any more leaves the catalog and comes back from this list
 // OpenRouter lists the first-run models too, so choosing one again isn't refused as no longer offered.
 for (const id of Object.keys(SEED.catalog)) if (!models.some((m) => m.id === id) && !id.startsWith("@cf/")) models.push(model(id));
@@ -67,8 +67,7 @@ try {
   outage = true; const first = await modelSettingsView(env); outage = false; revision = first.revision; assert.equal(catalogRequests.length > 0, true);
   // a replacement: the server checks OpenRouter's catalog and keeps its own snapshot; whatever endpoint data the browser sent is dropped
   let view = await save((c) => {
-    c.jobs["chat.general"] = { model: A, effort: "high", fallbacks: [{ model: B, effort: "low" }]};
-    c.jobs["recover.technical"] = { model: B, effort: "low", fallbacks: [] };
+    setGeneral(c, [{ model: A, effort: "high" }, { model: B, effort: "low" }]);
     c.catalog[A] = { id: A, name: "evil", eligible: true, hosts: ["attacker"], efforts: ["max"], max_output: 99999999 };
   });
   const firstReplacement = revision;
@@ -79,28 +78,27 @@ try {
   assert.equal(sent.at(-1).provider.zdr, true); assert.equal(sent.at(-1).provider.data_collection, "deny"); assert.equal(sent.at(-1).provider.require_parameters, true);
   assert.deepEqual(sent.at(-1).provider.max_price, { prompt: 3, completion: 15 });
   assert.equal(sent.at(-1).models, undefined);
-  // the quality recovery job names its own model; an old stored route that names a model directly keeps that model first
-  await call(await policyRoute("technical", "zdr", "recovery", { recoveryJob: "recover.technical" })); assert.equal(sent.at(-1).model, B); assert.equal(sent.at(-1).reasoning.effort, "low");
+  // an old stored route that names a model directly keeps that model first
   await call({ two: true, primary: SOL, category: "general", effort: "max" }); assert.equal(sent.at(-1).model, SOL, "a route saved before these settings still names its model; the effort comes from the settings");
   failures.add(A); const before = sent.length; await call(); failures.clear();
   assert.deepEqual(sent.slice(before).map((p) => [p.model, p.reasoning.effort]), [[A, "high"], [B, "low"]]);
   // Runtime dispatch relies on the saved server snapshot, not catalog availability.
   outage = true; await call(); assert.equal(sent.at(-1).model, A);
-  await assert.rejects(save((c) => { c.jobs["chat.research"] = { model: BAD, effort: "low", fallbacks: [] }; }), (e) => e.status === 503); assert.equal((await modelSettingsView(env)).revision, revision); outage = false;
+  await assert.rejects(save((c) => { setGeneral(c, [{ model: BAD, effort: "low" }]); }), (e) => e.status === 503); assert.equal((await modelSettingsView(env)).revision, revision); outage = false;
   // Stale saves fail before hitting OpenRouter and cannot replace settings.
   const fetchCount = catalogRequests.length;
   await assert.rejects(saveModelSettings(env, { revision: 0, config: await current() }, "other"), (e) => e.status === 409); assert.equal(catalogRequests.length, fetchCount);
   for (const invalid of ["https://evil.invalid/foo", "example/../escape", "example/%2fsecret", "example/model?query", "constructor", TOOLLESS, "missing/model"]) {
-    await assert.rejects(save((c) => { c.jobs["chat.general"] = { model: invalid, effort: "low", fallbacks: [] }; }), (e) => e.status === 400 || e.status === 503, invalid);
+    await assert.rejects(save((c) => { setGeneral(c, [{ model: invalid, effort: "low" }]); }), (e) => e.status === 400 || e.status === 503, invalid);
   }
-  await assert.rejects(save((c) => { c.jobs["chat.general"].effort = "max"; }), /doesn't support reasoning level/);
+  await assert.rejects(save((c) => { c.routing.categories[0].chains.zdr[0].effort = "max"; }), /doesn't support reasoning level/);
   const beforeIncompatible = (await modelSettingsView(env)).revision, dispatchesBeforeIncompatible = sent.length;
-  await assert.rejects(save((c) => { c.jobs["chat.general"].model = ID.STT; c.jobs["chat.general"].effort = null; }), (e) => e.status === 400, "a speech model cannot replace a chat model");
+  await assert.rejects(save((c) => { c.routing.categories[0].chains.zdr[0] = { model: ID.STT, effort: null }; }), (e) => e.status === 400, "a speech model cannot replace a chat model");
   assert.equal((await modelSettingsView(env)).revision, beforeIncompatible, "an incompatible pick creates no settings revision");
   assert.equal(sent.length, dispatchesBeforeIncompatible, "validation sends no chat request");
   // a model with a forbidden privacy level is saved but never used for that level: at ZDR the list skips it, and the page shows it
   const noImage = await dispatchOrder(route, "zdr", { body: { messages: [{ content: [{ type: "image_url", image_url: { url: "https://example.test/image" } }] }] } });
-  assert.deepEqual(noImage.attempts.map((a) => a.model), [], "no listed model reads pictures here: nothing is sent to a model that can't");
+  assert.ok(!noImage.attempts.some((a) => a.model === A || a.model === B), "the replacement models read no pictures here: nothing is sent to a model that can't");
   // Background jobs take replacements too, with strict pins; their fallbacks are separate settings.
   await save((c) => { c.jobs.label = { model: A, effort: "none", strict: true, fallbacks: [] }; c.jobs.browser = { model: B, effort: "high", strict: true, fallbacks: [] }; });
   await call({ chore: true }, { messages: [{ role: "user", content: "label" }], model: "attacker/model", provider: { only: ["attacker"] }, reasoning: { effort: "max" }, max_tokens: 9999 }, "card-label");
@@ -108,7 +106,7 @@ try {
   const plan = await browserPlan(env); await orFetch(env, { ...plan[0], messages: [{ role: "user", content: "browser" }] }, { tenant: "t" });
   assert.equal(sent.at(-1).model, B); assert.equal(sent.at(-1).reasoning.effort, "high"); assert.equal(sent.at(-1).max_tokens, undefined);
   // Choosing the original model again drops the replacement; an old resumed route naming the replaced model can't resurrect it as a primary of the list.
-  await save((c) => { c.jobs["chat.general"] = clone(SEED.jobs["chat.general"]); c.jobs.label = clone(SEED.jobs.label); c.jobs.browser = clone(SEED.jobs.browser); c.jobs["recover.technical"] = clone(SEED.jobs["recover.technical"]); });
+  await save((c) => { c.routing = clone(SEED.routing); c.jobs.label = clone(SEED.jobs.label); c.jobs.browser = clone(SEED.jobs.browser); });
   assert.ok(!(await current()).catalog[A], "a replacement nothing uses is dropped from the saved catalog");
   await call(); assert.equal(sent.at(-1).model, ID.DEEPSEEK, "at zero data retention the first allowed model of the saved list answers");
   const restored = await restoreModelSettings(env, { revision, restore_revision: firstReplacement }, "admin"); revision = restored.revision;

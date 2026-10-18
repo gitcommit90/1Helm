@@ -141,11 +141,13 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
   },
   // Every step: where the loop is, what it has spent, its guard, what it said. phase "model" = before step's model call, "tools" = after it.
   journalStep(tc, { step, phase = "model", stats, said, saidMeta, checkpoints = 0 }) {
+    const hid = tc?.helper?.id ?? tc?.helperId;   // a running helper's use so far, for its card, the person and the limits' accounting
+    if (hid != null && stats) { try { this.sql.exec("UPDATE helpers SET live_tool_calls=?, live_model_steps=?, live_charge_nano=? WHERE id=? AND status='running'", Number(stats.tool_calls) || 0, Number(stats.steps) || 0, Math.round(Number(stats.charge) || 0), Number(hid)); } catch {} }
     if (!jk(tc)) return;
     if (tc.context) this.sql.exec("UPDATE turn_runs SET extra=json_set(COALESCE(extra,'{}'),'$.loadedTools',json(?)) WHERE card=?", JSON.stringify([...(tc.loadedTools || [])]), tc.turn);
     if (Array.isArray(saidMeta)) this.sql.exec("UPDATE turn_runs SET extra=json_set(COALESCE(extra,'{}'),'$.saidMeta',json(?),'$.progressOmitted',?) WHERE card=?", JSON.stringify(saidMeta), tc.progressOmitted || 0, tc.turn);
-    try { this.sql.exec("UPDATE turn_runs SET step=?, phase=?, stats=?, guard=?, said=?, route=?, extra=json_set(COALESCE(extra,'{}'),'$.checkpoints',?,'$.charged',?,'$.limitWhy',?,'$.pause',json(?)), beat=?, updated=? WHERE card=?",
-      step, phase, JSON.stringify(stats || {}), guardOut(tc.guard), JSON.stringify(said || []), tc.route ? JSON.stringify(tc.route) : null, checkpoints, tc.charged || 0, tc.limitWhy || null, tc.pause ? JSON.stringify(tc.pause) : "null", Date.now(), Date.now(), tc.turn); }
+    try { this.sql.exec("UPDATE turn_runs SET step=?, phase=?, stats=?, guard=?, said=?, route=?, extra=json_set(COALESCE(extra,'{}'),'$.checkpoints',?,'$.charged',?,'$.limitWhy',?,'$.pause',json(?),'$.stall',json(?)), beat=?, updated=? WHERE card=?",
+      step, phase, JSON.stringify(stats || {}), guardOut(tc.guard), JSON.stringify(said || []), tc.route ? JSON.stringify(tc.route) : null, checkpoints, tc.charged || 0, tc.limitWhy || null, tc.pause ? JSON.stringify(tc.pause) : "null", tc.stallState ? JSON.stringify(tc.stallState) : "null", Date.now(), Date.now(), tc.turn); }
     catch (e) { console.log("journal step", e.message); }
   },
   journalBeat(tc) {
@@ -387,6 +389,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     const note = { role: "user", content: RESUME_NOTE };
     this.save(tc.turn, note);
     tc.charged = ex.charged || 0; if (ex.limitWhy) tc.limitWhy = ex.limitWhy; if (ex.pause) tc.pause = ex.pause;
+    if (ex.stall) tc.stallState = ex.stall;   // the no-progress count carries on after a restart (stall-guard.js)
     tc.progressOmitted = Number(ex.progressOmitted) || 0;
     tc.handoff = tc.handoff || !!ex.handoff; tc.handoffFrom = tc.handoffFrom || ex.handoffFrom || null;
     if (ex.userText0 != null) tc.userText = ex.userText0; if (ex.hint) tc.hint = ex.hint;

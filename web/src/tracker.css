@@ -9,21 +9,6 @@
 @keyframes tkspin{to{transform:rotate(360deg)}}
 @keyframes tkpulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--tk-blue) 50%,transparent)}50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--tk-blue) 0%,transparent)}}
 
-/* header button: a quiet pill like the to-do button, a blue dot while a card is working */
-.tk-slot{display:contents}
-.tk-btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px 0 10px;border-radius:999px;background:var(--abub);color:var(--ink2);font-size:13px;flex:none;position:relative;transition:background .15s,color .15s,box-shadow .2s}
-.tk-btn.fresh{animation:tkin .3s cubic-bezier(.2,.8,.2,1)}
-.tk-btn:hover,.tk-btn.on{background:var(--hover);color:var(--ink)}
-.tk-btn.on{box-shadow:0 0 0 1.5px var(--line2)}
-.tk-btn span{font-weight:600}
-.tk-dot{width:7px;height:7px;border-radius:50%;background:var(--tk-blue);flex:none;animation:tkpulse 1.8s ease-in-out infinite}
-@keyframes tkin{from{opacity:0;transform:scale(.9)}}
-.tk-btn.m{padding:0;gap:0;width:48px;height:48px;border-radius:50%;display:grid;place-items:center;color:var(--ink)}
-.tk-btn.m .tk-dot{position:absolute;top:9px;right:9px;box-shadow:0 0 0 2px var(--abub)}
-.tk-btn.m.on{box-shadow:none;background:var(--hover)}
-@media (max-width:767px){.mh:has(.tk-btn){gap:5px}.mh:has(.tk-btn) .mpill{padding-right:14px}}
-/* On a phone-width header the title keeps its room: actions that don't fit (New task first) move into the ⋯ sheet (v3.ts mhFit). */
-@media (max-width:1279px) and (min-width:768px){#stage>header:has(.tk-btn):has(.tdbtn) .tk-btn span{display:none}#stage>header:has(.tk-btn):has(.tdbtn) .tk-btn{padding:0 9px}}
 
 /* the session view: chat column + the feed beside it (or over it) */
 .tk-w{flex:1;min-height:0;display:flex;position:relative}
@@ -78,25 +63,6 @@
 .tk-chip span{flex:none}
 .tk-chip>svg{flex:none;color:var(--tk-green)}.tk-chip.s-failed>svg{color:var(--tk-red)}.tk-chip.s-interrupted>svg{color:var(--tk-amber)}.tk-chip.s-stopped>svg{color:var(--mute)}
 .tk-chip:hover{background:var(--abub)}
-/* Native disclosures keep keyboard behavior while the controls share one row. */
-.tk-live{display:grid;grid-template-columns:max-content max-content minmax(0,1fr);align-items:start;justify-content:start;column-gap:10px;width:86%;max-width:86%;margin:0 0 4px;color:var(--mute)}
-.tk-live>.steps,.tk-live>.steps[open]{display:contents}
-.tk-live>.steps>summary,.tk-live>.tk-link{box-sizing:border-box;display:inline-flex;align-items:center;min-height:36px;height:36px;padding:0 4px;border:0;border-radius:5px;background:none;font-size:12px;font-weight:400;line-height:1;color:var(--mute);white-space:nowrap;cursor:pointer;text-decoration:none;transition:color .15s,background .15s}
-.tk-live>.steps>summary{grid-row:1;grid-column:1;gap:5px;max-width:none}
-.tk-live>.steps>summary>svg{width:12px;height:12px;flex:none}
-.tk-live>.tk-link{grid-row:1;grid-column:2;position:relative}
-.tk-live>.tk-link:only-child{grid-column:1}
-.tk-live>.steps+.tk-link::before{content:"";position:absolute;left:-6px;top:13px;height:10px;width:1px;background:var(--line2)}
-.tk-live>.steps>summary:hover,.tk-live>.tk-link:hover{color:var(--ink);background:var(--abub)}
-.tk-live>.steps>summary:focus-visible,.tk-live>.tk-link:focus-visible{outline:2px solid var(--ink2);outline-offset:2px}
-.tk-live>.steps::details-content{grid-row:2;grid-column:1/-1;min-width:0}
-.tk-live .tk-step-list{grid-row:2;grid-column:1/-1;min-width:0;max-height:220px;overflow:auto;overscroll-behavior:contain;padding:2px 0 2px 11px;margin:2px 0 8px 4px;border-left:1px solid var(--line2)}
-.tk-sl{display:flex;align-items:baseline;gap:8px;padding:4px 0;font-size:12px;line-height:1.5;color:var(--ink2);overflow-wrap:anywhere}
-.tk-sl span{min-width:0}
-.tk-sl i{flex:none;align-self:center;width:4px;height:4px;border-radius:50%;background:var(--tk-green)}
-.tk-sl.s-running i{background:var(--tk-blue);animation:tkpulse 1.8s ease-in-out infinite}.tk-sl.s-error i{background:var(--tk-red)}.tk-sl.s-skipped i{background:var(--faint)}.tk-sl.s-skipped{color:var(--mute)}
-@media (max-width:767px){.tk-live>.steps>summary,.tk-live>.tk-link{height:44px;min-height:44px}.tk-live>.steps+.tk-link::before{top:17px}}
-@media (prefers-reduced-motion:reduce){.tk-live>.steps>summary,.tk-live>.tk-link,.tk-live>.steps>summary>svg{transition:none}}
 .m.user.tk-sending .bubble{opacity:.62}
 .tk-note{font-size:12px;color:var(--mute);margin:4px 4px 0;display:inline-flex;align-items:center;gap:5px}
 .tk-note.joined{animation:tkjoin 2.2s ease forwards}
@@ -228,7 +194,7 @@ button.tk-rr:focus-visible{outline:0;box-shadow:inset 0 0 0 2px var(--ink2)}
   .tk-res{font-size:26px}
   .tk-out{max-height:none}
 }
-@media (prefers-reduced-motion:reduce){.tk-btn.fresh,.tk-spin,.tk-dot,.b-working i,.s-running .tk-sd,.tk-sl.s-running i{animation:none}.tk-on .tk-feed,.tk-modal,.tk-sheet{transition:none}.tk-note.joined{animation-duration:.01s;animation-delay:2s}}
+@media (prefers-reduced-motion:reduce){.tk-spin,.b-working i,.s-running .tk-sd{animation:none}.tk-on .tk-feed,.tk-modal,.tk-sheet{transition:none}.tk-note.joined{animation-duration:.01s;animation-delay:2s}}
 /* Step results (proto step-present.js): a readable line, links, items, files; the last lines of a command and Details fold away */
 .tk-res{display:flex;flex-direction:column;gap:10px}
 .tk-rtext{margin:0;font-size:15px;line-height:1.5;color:var(--ink);overflow-wrap:anywhere}

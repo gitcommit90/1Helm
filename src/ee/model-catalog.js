@@ -111,6 +111,8 @@ export function assessModelCatalog(models, endpoints, { autoOnly = () => false, 
       pricing: { prompt: limits.length ? Math.max(...limits.map((e) => price(e.pricing.prompt))) : price(m.pricing?.prompt),
         completion: limits.length ? Math.max(...limits.map((e) => price(e.pricing.completion))) : price(m.pricing?.completion) },
       json: limits.length > 0 && limits.every((e) => e.supported_parameters.includes("response_format")),
+      // The privacy levels at which some usable endpoint accepts response_format (structured outputs). dispatch sends json_schema only where this holds.
+      json_levels: PRIVACY_LEVELS.filter((l) => limits.some((e) => e.supported_parameters.includes("response_format") && (registered(policyId) ? eligibleHosts(policyId, l).some((h) => e.tag === h || e.tag.startsWith(`${h}/`)) : levelsOf(e).includes(l)))),
       tool_choice: (autoOnly(m.id) ? ["auto"] : ["auto", "none", "required", "function"]).filter((choice) => limits.length && limits.every((e) => e.supports_tool_choice?.[choice] === true)),
     };
   });
@@ -175,7 +177,7 @@ export function assessDecisionCatalog(models, endpoints) {
 export function assessNonChatCatalog(models, endpoints) {
   return models.filter(m => validModelId(m.id) && m.architecture?.output_modalities?.includes("embeddings")).map(m => {
     const eps = endpoints.filter(e => e.model_id === m.id && host(e.tag) && e.status !== -1), hosts = [...new Set(eps.map(e => e.tag))];
-    return { id: m.id, source: "OR", kinds: ["embedding_files", "embedding_memory"], name: String(m.name || m.id).slice(0, 160), eligible: hosts.length > 0, reasons: hosts.length ? [] : ["No verified zero-data-retention embedding endpoint"], efforts: ["default"], default_effort: "default", levels: hosts.length ? [...PRIVACY_LEVELS] : [], hosts, context_length: Number(m.context_length) || 8192, max_output: 1, input_modalities: ["text"], pricing: { prompt: price(m.pricing?.prompt) || 0, completion: 0 }, in_nano: (price(m.pricing?.prompt) || 0) * 1000, json: false, tool_choice: [] };
+    return { id: m.id, source: "OR", kinds: ["embedding_files"], name: String(m.name || m.id).slice(0, 160), eligible: hosts.length > 0, reasons: hosts.length ? [] : ["No verified zero-data-retention embedding endpoint"], efforts: ["default"], default_effort: "default", levels: hosts.length ? [...PRIVACY_LEVELS] : [], hosts, context_length: Number(m.context_length) || 8192, max_output: 1, input_modalities: ["text"], pricing: { prompt: price(m.pricing?.prompt) || 0, completion: 0 }, in_nano: (price(m.pricing?.prompt) || 0) * 1000, json: false, tool_choice: [] };
   });
 }
 // A new task needs published limits, including for built-in slots. Fetch once
@@ -231,3 +233,17 @@ export async function withEndpointLimits(settings, { lookup = taskModelCatalog, 
   return out;
 }
 export const resetEndpointLimitCache = () => refreshed.clear();
+
+// Records saved before json_levels existed lack it. dispatch asks the live catalog once per model per 30 minutes in this isolate; a failed lookup
+// answers null (the caller then keeps sending json_schema, as before) and is not retried for 30 minutes.
+const levelsSeen = new Map();
+export const resetJsonLevelCache = () => levelsSeen.clear();
+export async function jsonLevelsFor(id, settings, { lookup = taskModelCatalog, now = Date.now(), env = null } = {}) {
+  if (!validModelId(id) || isCloudflareModel(id)) return null;
+  let hit = levelsSeen.get(id);
+  if (!hit || now - hit.at > REFRESH_MS) {
+    try { const r = await lookup(id, settings, env); hit = { at: now, levels: Array.isArray(r?.json_levels) ? r.json_levels : null }; } catch { hit = { at: now, levels: null }; }
+    levelsSeen.set(id, hit);
+  }
+  return hit.levels;
+}

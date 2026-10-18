@@ -102,6 +102,7 @@ function end(s: Session) {
   history = s.textarea.isConnected && location.hash === s.hash ? s : null;
   s.ws?.close(1000, 'Dictation ended'); paint();
 }
+export const dictActive = () => !!active;
 export function cancel() { if (active) end(active); }
 function fail(s: Session, message: string) { if (active !== s) return; end(s); D?.note('Dictation stopped', message + ' Your text is still here.'); }
 function cursor(s: Session, force = false) {

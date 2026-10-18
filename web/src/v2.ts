@@ -108,10 +108,10 @@ const composer = (ph: string) => `<form class="composer" id="send"><textarea id=
   <div class="cbar"><span class="hint">Enter to send · Shift+Enter for a new line</span><button id="go" disabled aria-label="Send">${ic.up}</button></div></form>`;
 function msgHtml(m: Msg, ch: Channel, prev?: Msg) {
   const first = !prev || prev.role !== m.role;
-  if (m.role === "user") return `<div class="m user${first ? " first" : ""}" title="${clock(m.at)}"><div class="bubble">${esc(m.body)}</div></div>`;
+  if (m.role === "user") return `<div class="m user${first ? " first" : ""}"><div class="bubble">${esc(m.body)}</div></div>`;
   const steps = m.steps.length ? `<details class="steps"><summary>${ic.term}<span>${m.steps.length === 1 ? "Ran 1 command" : `Ran ${m.steps.length} commands`}</span>${ic.chev}</summary>
     ${m.steps.map(x => `<code>${esc(x)}</code>`).join("")}</details>` : "";
-  return `<div class="m agent${first ? " first" : ""}" title="${clock(m.at)}">${first ? `<div class="who">${esc(ch.name)}<span>${clock(m.at)}</span></div>` : ""}
+  return `<div class="m agent${first ? " first" : ""}">${first ? `<div class="who">${esc(ch.name)}<span>${clock(m.at)}</span></div>` : ""}
     <div class="bubble">${steps}<div class="body">${m.body ? md(m.body) : `<span class="typing"><i></i><i></i><i></i></span>`}</div></div></div>`;
 }
 

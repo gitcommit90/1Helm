@@ -2,7 +2,7 @@
 // applies (Captain 2026-10-17). Nothing here sets or lowers a saved limit. The call itself gets its limit from the dispatcher (model-dispatch.js), which uses the same plan.
 import { plan } from "./model-plan.js";
 import { modelSettingsEnv, readModelSettings } from "./model-settings.js";
-import { jobMaxOutput, factsOf } from "./model-jobs.js";
+import { jobMaxOutput, factsOf, categoryOf, categoryLimits } from "./model-jobs.js";
 import { OR_RESERVE_PRICE } from "../model.js";
 
 // The first model's saved limit for the job (kept below that model's context window), or the saved limit alone when no model can run at the
@@ -38,4 +38,16 @@ export async function plannedHoldNano(env, jobId, level = "zdr") {
   const settings = (await modelSettingsEnv(env)).MODEL_SETTINGS || (await readModelSettings(env)).config;
   const steps = plan(settings, jobId, { level }).steps;
   return steps.length ? Math.max(...steps.map((s) => holdOutNano(settings, s.model, s.maxOutput))) : holdOutput(settings, null, jobMaxOutput(settings, jobId)) * OR_RESERVE_PRICE.out;
+}
+
+// A chat reply's limits belong to the routing category the turn was routed to (General when it names none): the saved max output, and a spend hold sized
+// from the dearest model of the category's list for the privacy level.
+export async function plannedChatMaxOutput(env, category) {
+  const settings = (await modelSettingsEnv(env)).MODEL_SETTINGS || (await readModelSettings(env)).config;
+  return categoryLimits(settings, category).max_output;
+}
+export async function plannedChatHoldNano(env, category, level = "zdr") {
+  const settings = (await modelSettingsEnv(env)).MODEL_SETTINGS || (await readModelSettings(env)).config;
+  const saved = categoryLimits(settings, category).max_output, chain = categoryOf(settings, category)?.chains?.[level] || [];
+  return chain.length ? Math.max(...chain.map((e) => holdOutNano(settings, e.model, saved))) : holdOutput(settings, null, saved) * OR_RESERVE_PRICE.out;
 }

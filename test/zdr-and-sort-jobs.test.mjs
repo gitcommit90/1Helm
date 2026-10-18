@@ -24,7 +24,7 @@ test("only chat and Cloudflare-only kinds may leave zdr off", () => {
   // chat and recovery follow the account's privacy setting instead. The others run only on Cloudflare (no OpenRouter request exists).
   const exempt = new Set(["chat", "recovery", "speech_cloudflare", "speech_live", "workers_ai", "look", "search"]);
   for (const [name, kind] of Object.entries(JOB_KINDS)) assert.equal(!!kind.zdr, !exempt.has(name), `job kind ${name}: zdr is ${!!kind.zdr}`);
-  for (const kind of ["vision", "embedding_memory", "embedding_files"]) assert.equal(JOB_KINDS[kind].zdr, true, kind);
+  for (const kind of ["vision", "embedding_files"]) assert.equal(JOB_KINDS[kind].zdr, true, kind);
 });
 
 test("every zero-data-retention job sends provider.zdr true to OpenRouter", async () => {
@@ -53,14 +53,14 @@ test("picture descriptions sort by throughput among zero-data-retention endpoint
 
 test("the Models page shows pictures and the ambient index as zero-data-retention jobs", () => {
   const settings = withGemma(), page = modelDashboard({ config: settings, hidden: [] });
-  for (const id of ["vision_files", "embed_memory", "embed_files"]) assert.equal(page.jobs.find((j) => j.id === id).privacy, "zdr", id);
+  for (const id of ["vision_files", "embed_files"]) assert.equal(page.jobs.find((j) => j.id === id).privacy, "zdr", id);
   assert.equal(page.jobs.find((j) => j.id === "vision_files").saved.sort, "throughput");
 });
 
 test("the picker rejects a picture or ambient index model with no zero-data-retention endpoint", () => {
-  const noZdr = orRecord("example/vision-no-zdr", ["vision", "embedding_memory"], ["unrestricted", "no_training"]);
+  const noZdr = orRecord("example/vision-no-zdr", ["vision", "embedding_files"], ["unrestricted", "no_training"]);
   const settings = withGemma(); settings.catalog[noZdr.id] = noZdr;
-  for (const kind of ["vision", "embedding_memory"]) { assert.equal(zdrApplies(JOB_KINDS[kind], noZdr), true, kind); assert.equal(zdrBlocked(settings, noZdr.id), true, kind); }
+  for (const kind of ["vision", "embedding_files"]) { assert.equal(zdrApplies(JOB_KINDS[kind], noZdr), true, kind); assert.equal(zdrBlocked(settings, noZdr.id), true, kind); }
   assert.equal(zdrBlocked(settings, GEMMA), false);
   const bad = structuredClone(settings); bad.jobs.vision_files.model = noZdr.id;
   assert.throws(() => validateModelSettings(bad), /zero-data-retention/);

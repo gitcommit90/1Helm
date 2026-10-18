@@ -159,12 +159,6 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .bubble .body .chat-code-block>pre{margin:0}
 .bubble .body .chat-code-block>.chat-code-copy{position:absolute;right:7px;top:7px}
 /* tool work: a small card above the bubble */
-.steps{margin:0 0 8px;font-size:13px;color:var(--mute);max-width:86%}
-.steps summary{list-style:none;display:inline-flex;align-items:center;gap:8px;cursor:pointer;height:34px;padding:0 12px 0 5px;border-radius:999px;border:1px solid var(--line)}.steps summary::-webkit-details-marker{display:none}
-.sico{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;background:var(--abub);color:var(--ink2)}
-.steps summary:hover{color:var(--ink2);background:var(--abub)}.steps summary>svg{transition:transform .15s}.steps[open] summary>svg{transform:rotate(90deg)}
-.steps[open]{display:block;width:100%}
-.steps code{display:block;margin-top:8px;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink2);background:var(--page);border-radius:14px;padding:10px 14px;white-space:pre-wrap}
 .typing{display:inline-flex;gap:5px;padding:5px 0}.typing i{width:6px;height:6px;border-radius:50%;background:var(--faint);animation:b 1.1s infinite}.typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}@keyframes b{50%{opacity:.3}}
 
 /* composer: floating pill */
@@ -270,8 +264,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
   .field{display:block;margin-top:14px}.field span{display:block;margin:0 8px 6px;font-size:14px;font-weight:600;color:var(--mute)}
   .field input{width:100%;height:52px;border:0;outline:0;border-radius:18px;background:var(--abub);padding:0 18px;font:inherit;font-size:17px;color:var(--ink)}
   .field input:focus{box-shadow:0 0 0 2px var(--accent)}
-  .primary{width:100%;height:54px;margin-top:20px;border-radius:999px;background:var(--ink);color:var(--sheet);font-weight:600;font-size:17px}
-}
+  .primary{width:100%;height:54px;margin-top:20px;border-radius:999px;background:var(--ink);color:var(--sheet);font-weight:600;font-size:17px}}
 
 /* ---------- Tasks: Town-style Home inside the stage ---------- */
 .new.on{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 35%,transparent),var(--shadow)}
@@ -313,8 +306,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
   .task{margin:0 -10px;padding:13px 10px}.tt{font-size:16.5px}.tl{font-size:14.5px;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
   .recent{margin:0 -10px;padding:11px 10px;font-size:16px}
   .dock .hhint{margin:0 12px 6px;min-height:0}.dock .hhint:empty{display:none}
-  .ds{display:flex;align-items:center;gap:10px}.ds span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
-}
+  .ds{display:flex;align-items:center;gap:10px}.ds span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}}
 
 /* ---------- Channel Home: name line + Library ---------- */
 .hdate{display:flex;align-items:center;gap:10px}.hdate b{font-weight:600;color:var(--ink2)}.hdate span::before{content:"·";margin-right:10px;color:var(--faint)}
@@ -332,8 +324,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 @media (max-width:767px){
   .arts{grid-template-columns:1fr 1fr;gap:8px}
   .art{padding:12px;border-radius:18px}.an{font-size:15px}.am{font-size:13px}
-  .hdate span::before{margin-right:8px}
-}
+  .hdate span::before{margin-right:8px}}
 
 /* ---------- Library page: the Drive of 1Helm ---------- */
 .navrow{display:flex;align-items:center;gap:10px;height:40px;padding:0 14px;margin-top:6px;border-radius:14px;color:var(--ink2);text-decoration:none;font-size:14px;font-weight:600}
@@ -380,8 +371,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
   .lrow{grid-template-columns:40px 1fr auto;gap:12px;margin:0 -8px;padding:11px 8px}
   .lrow .ltype{display:none}.lrow .lch{display:none}.ln{font-size:16px}.lsub{font-size:13.5px}
   .pico{width:30px;height:30px;display:grid;place-items:center}
-  .dnav{padding:0 10px 10px}.dn{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:18px;font-size:17px;font-weight:600;color:var(--ink2);text-decoration:none}.dn.on{background:var(--chip);color:var(--ink);box-shadow:var(--shadow)}
-}
+  .dnav{padding:0 10px 10px}.dn{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:18px;font-size:17px;font-weight:600;color:var(--ink2);text-decoration:none}.dn.on{background:var(--chip);color:var(--ink);box-shadow:var(--shadow)}}
 
 /* ---------- New task modal + toast ---------- */
 .navrow.on[data-new]{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 35%,transparent),var(--shadow)}
@@ -418,8 +408,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
   .nkbd{display:none}.ngo{height:44px;padding:0 20px;font-size:16px}
   .nlist{top:auto;bottom:42px}
   #toast{left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom));max-width:none;transform:translateY(20px)}
-  .tview{height:38px}
-}
+  .tview{height:38px}}
 
 /* ---------- Library scoped to the channel, All channels as a toggle ---------- */
 .lhead{display:flex;align-items:center;gap:16px;margin-bottom:22px}
@@ -434,8 +423,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 @media (max-width:767px){
   .lhead{flex-wrap:wrap;gap:12px;margin-bottom:16px}.av.lh,.lh-all{width:48px;height:48px}.lht h1{font-size:23px}.lht p{font-size:14px}
   .scope{width:100%}.scope button{flex:1;height:40px;font-size:15px}
-  .lrows.one .lrow{grid-template-columns:40px 1fr auto}
-}
+  .lrows.one .lrow{grid-template-columns:40px 1fr auto}}
 
 /* ---------- Quiet nav, loud tasks (Captain 2026-09-27): eyes go to the channel's tasks and status ---------- */
 .new,.navrow{height:34px;margin-top:2px;padding:0 12px;border-radius:11px;background:none;box-shadow:none;font-size:13.5px;font-weight:400;color:var(--mute)}
@@ -477,8 +465,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 @media (max-width:767px){
   .dsub{display:flex;align-items:center;gap:6px;padding:14px 16px 6px;font-size:14px;font-weight:600;color:var(--faint)}.dsub svg{width:13px;height:13px}
   .ds .pin{width:34px;height:34px;margin-right:-8px}
-  .task .pin,.recent .pin{width:34px;height:34px}
-}
+  .task .pin,.recent .pin{width:34px;height:34px}}
 
 /* ---------- Checkbox: only the person decides a task is done. Working = a slow light tracing the box ---------- */
 .box{position:relative;flex:none;width:20px;height:20px;margin-top:1px;border-radius:6px;border:1.5px solid var(--line2);background:var(--sheet);display:grid;place-items:center;color:transparent;cursor:pointer;transition:border-color .15s,background .15s,color .15s,transform .1s}
@@ -512,8 +499,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
   .ds{gap:12px}.ds .box{flex:none;width:22px;height:22px;min-width:0}
   .task .box{width:22px;height:22px}
   .box.sm{width:20px;height:20px}
-  .mh .hdone-wrap{display:none}
-}
+  .mh .hdone-wrap{display:none}}
 @media (max-width:767px){.mdone .box{pointer-events:none;width:22px;height:22px}}
 
 /* ---------- Settings: rail menu, popover, two-pane modal (desktop), full-screen list → detail (phone) ---------- */
@@ -623,11 +609,9 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
   .sf input{height:50px;font-size:17px}
   .sprim{height:48px;flex:1;font-size:16px}
   .sphone .sbody .sc:has(.susage){margin-top:14px}
-  .smenu{left:12px;right:12px;width:auto;bottom:calc(12px + env(safe-area-inset-bottom))}
-}
+  .smenu{left:12px;right:12px;width:auto;bottom:calc(12px + env(safe-area-inset-bottom))}}
 .snav .grow{flex:1}
 /* Live mode: scheduled-run note, approval / browser / Link cards */
-.mnote{font-size:12px;color:var(--mute);margin:0 0 6px 2px}
 /* System cards in a reply (permission, Link, browser): the /genui card look, styles in genui-cards.css (.gu-sys). */
 .m.agent .gu-sys{margin-top:10px}.m.agent .gu-sys+.gu-sys{margin-top:8px}
 /* One-line results (e.g. a contact added): a quiet /genui surface with the green check. */
@@ -654,16 +638,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .ch.add.soon .tile::after{top:3px;right:3px}
 .primary .soonp{background:color-mix(in srgb,var(--warn) 30%,transparent);color:#fde68a}
 h2 .soonp,h3 .soonp{margin-left:8px}
-
-/* ---------- Notebook (2026-10-01): channel memory as a readable, editable page ---------- */
-.nbwrap{max-width:1080px}
-.ntabs{display:flex;gap:4px;margin:0 0 22px;padding-bottom:2px;border-bottom:1px solid var(--line);overflow-x:auto;position:sticky;top:0;z-index:2;background:var(--sheet)}
-.ntabs a{flex:none;padding:10px 12px;font-size:14px;font-weight:600;color:var(--mute);text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px}
-.ntabs a:hover{color:var(--ink2)}.ntabs a.on{color:var(--ink);border-bottom-color:var(--ink)}
-.nbgrid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:40px;align-items:start}
 .nsh{display:flex;align-items:baseline;gap:12px;margin:0 0 10px}.nsh h2{margin:0;font-size:20px;font-weight:600;letter-spacing:-.015em}.nsh span{color:var(--faint);font-size:13.5px}.nsh .cb{margin-left:auto}
-.nov{margin-bottom:34px}.novp{margin:0;font-size:16.5px;line-height:1.65;color:var(--ink2)}.novp.mute{color:var(--faint)}
-.nsec{margin-bottom:34px;scroll-margin-top:60px}
 .nblist{border-top:1px solid var(--line)}
 .nbrow{position:relative;display:flex;gap:12px;align-items:flex-start;padding:13px 6px;border-bottom:1px solid var(--line);border-radius:0;transition:background .15s}
 .nbrow:hover{background:color-mix(in srgb,var(--abub) 60%,transparent)}
@@ -680,14 +655,6 @@ h2 .soonp,h3 .soonp{margin-left:8px}
 .nbtns{display:flex;gap:6px}
 .nadd{display:flex;align-items:center;gap:8px;margin-top:6px;padding:9px 6px;font-size:14px;color:var(--mute);border-radius:10px}.nadd svg{width:15px;height:15px}.nadd:hover{color:var(--ink);background:var(--hover)}
 .nempty{padding:12px 6px;color:var(--faint);font-size:14px;border-bottom:1px solid var(--line)}
-.nbside{position:sticky;top:64px;display:grid;gap:14px}
-.ncard{background:var(--sheet);border:1px solid var(--line);border-radius:18px;padding:16px}
-.ncard.soft{background:var(--abub);border-color:transparent}
-.ncard h3{margin:0 0 10px;font-size:13px;font-weight:600;color:var(--mute)}
-.ncard p{margin:0 0 8px;font-size:14px;line-height:1.55;color:var(--ink2)}.ncard p:last-child{margin:0}.ncard .mute{color:var(--faint)}
-.nup{display:flex;gap:10px;padding:8px 6px;margin:0 -6px;border-radius:10px;text-decoration:none;color:inherit}.nup:hover{background:var(--hover)}
-.nupd{flex:none;width:7px;height:7px;border-radius:50%;background:var(--line2);margin-top:7px}.nupd.on{background:#d97706}
-.nup b{display:block;font-size:13.5px;font-weight:400;line-height:1.4}.nup small{display:block;font-size:12px;color:var(--faint);margin-top:1px}
 /* chat: the "saved to notebook" chip under a reply */
 .nbsaved{display:inline-flex;align-items:center;gap:10px;align-self:flex-start;max-width:86%;margin-top:8px;padding:9px 12px 9px 10px;border-radius:14px;background:color-mix(in srgb,#fde68a 30%,var(--sheet));border:1px solid color-mix(in srgb,#d97706 22%,transparent);text-decoration:none;color:var(--ink)}
 .nbsaved>svg:first-child{flex:none;color:#b45309}.nbsaved>svg:last-child{flex:none;color:var(--faint)}
@@ -747,20 +714,14 @@ a.nbsaved:hover{border-color:color-mix(in srgb,#d97706 45%,transparent)}
   .apfilters{flex-direction:column;align-items:stretch;gap:10px}
   .apcats{margin:0 -16px;padding:0 16px}
   .apgrid{grid-template-columns:1fr;gap:8px;padding-bottom:calc(16px + env(safe-area-inset-bottom))}
-  .apfoot{margin:0 -16px;padding:10px 16px calc(10px + env(safe-area-inset-bottom))}
-}
+  .apfoot{margin:0 -16px;padding:10px 16px calc(10px + env(safe-area-inset-bottom))}}
 @media (min-width:768px) and (max-width:1024px){.apgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .sbrowse{display:flex;align-items:center;gap:12px;width:100%;margin-top:14px;padding:14px 16px;border-radius:16px;background:var(--abub);font-weight:600;font-size:14.5px;text-align:left}
 .sbrowse span{flex:1}.sbrowse em{font-style:normal;font-weight:400;color:var(--faint);font-size:13px}.sbrowse:hover{background:var(--hover)}
 
 @media (max-width:767px){
-  .nbgrid{grid-template-columns:1fr;gap:0}.nbside{display:none}
-  .ncard{padding:14px}.ntabs{margin-bottom:16px;top:0}
   .nact{opacity:1}.nbrow{padding:12px 2px}.nmain p{font-size:15.5px}
-  .nov{margin-bottom:26px}.novp{font-size:16px}
-  #appw{padding:0;place-items:end stretch}
-}
-@media (max-width:767px){.nbwrap .nsh{flex-wrap:wrap;row-gap:2px}.nbwrap .nsh h2{font-size:19px}.nbwrap .nsh span{flex-basis:100%;order:3}.nbwrap .nsh .cb{order:2}}
+  #appw{padding:0;place-items:end stretch}}
 .sgroup a.srow{text-decoration:none;color:inherit;display:flex;justify-content:space-between;align-items:center;font-weight:600}
 
 /* ---------- Contacts (2026-10-01): one shared address book ---------- */
@@ -807,7 +768,6 @@ a.nbsaved:hover{border-color:color-mix(in srgb,#d97706 45%,transparent)}
 .cxfield em{display:block;font-style:normal;font-size:12.5px;color:var(--faint);margin:5px 2px 0}
 .cxf2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .cxfbtn{display:flex;gap:8px;margin-top:22px}
-.nbct{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--accent);text-decoration:none}.nbct svg{width:14px;height:14px}
 /* chat: who-it-meant chips + "add contact?" card */
 .cxused{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 8px;font-size:12.5px;color:var(--mute)}
 .cxused>span{display:inline-flex;align-items:center;gap:6px;margin-right:2px}.cxused>span svg{width:14px;height:14px}
@@ -838,8 +798,7 @@ a.nbsaved:hover{border-color:color-mix(in srgb,#d97706 45%,transparent)}
   .cxgrid{grid-template-columns:1fr}.cxf2{grid-template-columns:1fr;gap:0}
   .cxfield input,.cxfield select{height:48px;font-size:16px}
   .cxcard{max-width:100%}
-  .cximp{place-items:end stretch;padding:0}.cximpbox{width:100%;border-radius:22px 22px 0 0;padding:18px 16px 0}.cxnote{margin:6px -16px 0!important;padding:12px 16px calc(14px + env(safe-area-inset-bottom))!important}
-}
+  .cximp{place-items:end stretch;padding:0}.cximpbox{width:100%;border-radius:22px 22px 0 0;padding:18px 16px 0}.cxnote{margin:6px -16px 0!important;padding:12px 16px calc(14px + env(safe-area-inset-bottom))!important}}
 
 /* ===================== BRAND LAYER (2026-10-01) =====================
    The app now speaks the same language as the approved onboarding (the design sandbox/onboard/v1):
@@ -861,7 +820,7 @@ a.nbsaved:hover{border-color:color-mix(in srgb,#d97706 45%,transparent)}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--accent:var(--ink);--ubub:#f1f0ee;--uink:#1b1b1c;--mari-ink:#f5bd3c;--mari-soft:color-mix(in srgb,#f5bd3c 14%,var(--sheet))}}
 body,button,input,textarea,select,kbd{font-family:var(--sans)}
 kbd{font-family:var(--sans);font-size:11px;letter-spacing:.02em}
-code,.steps code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 
 /* the big lines: serif, regular weight, a little tighter, like onboarding's left column */
 .hwrap h1,.mhome h1{font:400 46px/1.05 var(--serif);letter-spacing:-.015em;margin:8px 0 6px}
@@ -871,10 +830,10 @@ code,.steps code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .chhead h2{font:400 24px/1.1 var(--serif);letter-spacing:-.01em}
 .nsh h2,.lsec h2,.lbar h2{font-family:var(--serif);font-weight:400;font-size:24px;letter-spacing:-.005em}.cxsec .nsh h2{font-size:21px}
 .shero h2{font-family:var(--serif);font-weight:400}
-@media (max-width:767px){.hwrap h1,.mhome h1{font-size:38px}.lht h1,.cxdh h1{font-size:30px}.dtop h2{font-size:30px}.nbwrap .nsh h2{font-size:22px}}
+@media (max-width:767px){.hwrap h1,.mhome h1{font-size:38px}.lht h1,.cxdh h1{font-size:30px}.dtop h2{font-size:30px}}
 
 /* marigold = noticed / needs you. Nothing else is colored. */
-.dot,.pip,.udot,.cxnew,.nupd.on{background:var(--mari)!important}
+.dot,.pip,.udot,.cxnew{background:var(--mari)!important}
 .ndot{background:var(--line2)}.nbrow.fresh .ndot{background:var(--mari)}
 .meta.waiting{color:var(--mari-ink);background:var(--mari-soft)}.meta.waiting .st{background:var(--mari)}
 .nnew{color:#6b3d00;background:var(--hl)}
@@ -885,7 +844,7 @@ code,.steps code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .chip{color:var(--ink2)}
 /* links and quiet actions: ink with an underline instead of blue */
 .sa.blue{color:var(--ink);text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px}.sa.blue:hover{background:var(--hover)}
-.nbct,.cxback,.cxdone a,.addr button{color:var(--ink)}.nbct:hover{text-decoration:underline}
+.cxback,.cxdone a,.addr button{color:var(--ink)}
 .cxchip{background:var(--sheet);box-shadow:inset 0 0 0 1px var(--line2)}
 /* focus = an ink ring, same as onboarding fields */
 :focus-visible{outline-color:var(--ink)}
@@ -944,7 +903,7 @@ code,.steps code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
    fold into ⋯ (never squeezed, never under the button). Every action keeps its full label: only the title ellipsizes. */
 body.pc-on #stage>header{padding-right:20px}
 #stage>header.th .ho{display:contents}#stage>header.th .ho.hhid{display:none}
-#stage>header.th :is(.who-chip,.hpin,.hdone-wrap,.hdone,.meta,.hdel,.lnbtn,.pmbtn,.tdbtn,.tk-btn,.hstop,.hmore){flex:none;white-space:nowrap}
+#stage>header.th :is(.who-chip,.hpin,.hdone-wrap,.hdone,.meta,.hdel,.lnbtn,.pmbtn,.tdbtn,.hstop,.hmore){flex:none;white-space:nowrap}
 .hmore{position:relative;width:34px;height:30px;border-radius:999px;display:inline-grid;place-items:center;color:var(--ink2)}
 .hmore svg{width:18px;height:18px}.hmore:hover,.hmore[aria-expanded=true]{background:var(--abub);color:var(--ink)}.hmore[hidden]{display:none}
 .hmore.lit::after{content:"";position:absolute;top:3px;right:4px;width:7px;height:7px;border-radius:50%;background:#f0ae2c;box-shadow:0 0 0 2px var(--sheet)}
@@ -959,8 +918,7 @@ body.pc-on #stage>header{padding-right:20px}
 @media (min-width:768px){
   @container pane (max-width:1099px){.lwrap>.lhead,.lwrap>#lhd>.lhead{padding-right:30px}}
   @container pane (max-width:599px){.lwrap>.lhead,.lwrap>#lhd>.lhead{padding-right:46px}}
-  body.pc-on .lwrap>.lhead,body.pc-on .lwrap>#lhd>.lhead{padding-right:0}
-}
+  body.pc-on .lwrap>.lhead,body.pc-on .lwrap>#lhd>.lhead{padding-right:0}}
 /* DEV strip (dev only, fixed at the top): the phone header starts below it */
 @media (max-width:767px){body:has(#devstrip) .mh,body:has(#devstrip) .sph{padding-top:calc(26px + env(safe-area-inset-top))}}
 .pcfab{position:absolute;top:12px;right:14px;z-index:5;width:40px;height:40px;border-radius:50%;display:grid;place-items:center;background:var(--chip);color:var(--ink);box-shadow:var(--shadow)}
@@ -1044,8 +1002,7 @@ body.pc-on{grid-template-columns:80px var(--channel-sidebar-width,272px) minmax(
   #pc.ctl{box-shadow:none}
   .pcscreen{margin:0;border-radius:0}
   .pchead{padding:10px 12px}
-  body:has(#devstrip) #pc .pchead{padding-top:26px}
-}
+  body:has(#devstrip) #pc .pchead{padding-top:26px}}
 
 /* ---------- Files: upload chips over the composer, file cards in chat, drop target, Library delete ---------- */
 .ups{max-width:760px;margin:0 auto;display:flex;flex-wrap:wrap;gap:6px}.ups:not(:empty){padding:0 4px 8px}
@@ -1074,8 +1031,7 @@ body.dropping::after{content:"Drop files to add them";position:fixed;inset:12px;
 @media (max-width: 767px){
   .uchip{max-width:calc(50% - 3px);flex:1 1 auto}
   .lrows .lrow:has(.ldel),.lrows.one .lrow:has(.ldel){grid-template-columns:40px 1fr auto 32px}
-  .ldel{opacity:1}
-}
+  .ldel{opacity:1}}
 
 /* ---------- File viewer (#fv): opens in place over the app, like Claude/ChatGPT/Gemini ---------- */
 #fv{position:fixed;inset:0;z-index:120;opacity:0;transition:opacity .18s}#fv.on{opacity:1}
@@ -1128,8 +1084,7 @@ body.fvopen{overflow:hidden}
   .fvnav{display:none}
   .fvmd{padding:24px 20px;font-size:16px}.fvpre{padding:16px;font-size:12.5px}
   .fvpages{width:calc(var(--z) * 100%)}
-  .fvcount{bottom:calc(10px + env(safe-area-inset-bottom))}
-}
+  .fvcount{bottom:calc(10px + env(safe-area-inset-bottom))}}
 /* Slide decks and Word documents: the PDF the computer made of them (1HC file-preview.js). A deck is one slide per screen,
    scroll-snapped, with a pager (‹ 3 / 12 › Download .pptx) under it; on a phone the slides stack, fit to width. */
 .fvload{display:flex;flex-direction:column;align-items:center;gap:10px}.fvload p{margin:0;color:#e8e6e1;font-size:14px;text-align:center;line-height:1.45}.fvload p[hidden]{display:none}
@@ -1149,8 +1104,7 @@ body.fvopen{overflow:hidden}
   .fvpages.fvdeck{gap:12px;padding:2px 0 24px}
   .fvslide{height:auto;padding:0;scroll-snap-align:center;scroll-snap-stop:normal}
   .fvdeck .fvpg{width:100%}
-  .fvpager{margin-top:8px}
-}
+  .fvpager{margin-top:8px}}
 body:has(#devstrip) .fvbox{top:22px}
 @media (max-width: 767px){body:has(#devstrip) .fvbox{top:0;padding-top:calc(26px + env(safe-area-inset-top))}}
 
@@ -1181,8 +1135,7 @@ body:has(#devstrip) .fvbox{top:22px}
 .utbar{position:absolute;left:0;bottom:0;height:2px;background:var(--ink);transition:width .2s}
 body.fvopen #uptray{opacity:0;pointer-events:none}
 @media (max-width: 767px){
-  #uptray{left:10px;right:10px;max-width:none;bottom:calc(84px + env(safe-area-inset-bottom))}
-}
+  #uptray{left:10px;right:10px;max-width:none;bottom:calc(84px + env(safe-area-inset-bottom))}}
 /* spreadsheet preview */
 .fv-xlsx .fvbody{flex-direction:column;align-items:center;justify-content:flex-start;padding-top:8px}
 .xtabs{display:flex;gap:4px;overflow-x:auto;padding:0 0 10px;flex:none;max-width:100%;scrollbar-width:none}.xtabs::-webkit-scrollbar{display:none}
@@ -1209,7 +1162,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .sr .stag{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
 
 /* What the helper says before it goes to work ("Let me take a quick look.") is its own bubble, above the steps (10-02) */
-.agent .bubble.pre{margin-bottom:8px}.agent .bubble.pre + .steps{margin-top:2px}
+.agent .bubble.pre{margin-bottom:8px}
 /* ---------- Apps = a calm list, not a wall of cards (10-02, Captain: Muse/Grok "this is nice") ----------
    One row per app: logo · name + one line · a quiet action. Connected apps sit on top under their own heading. */
 .apgrid{grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 18px}
@@ -1238,8 +1191,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .apgrid{grid-template-columns:1fr;gap:0;margin-top:6px}
   .apcard{padding:10px 6px;border-radius:12px}
   .aplogo{width:42px;height:42px}
-  .apfoot{display:none}
-}
+  .apfoot{display:none}}
 .apbtn{background:var(--sheet);box-shadow:inset 0 0 0 1px var(--line2)}.apbtn:hover{background:var(--hover)}
 .apbtn.on,.apbtn.built,.apbtn.soon{box-shadow:none}
 /* Settings → Passwords & keys → Import from Chrome (preview before saving; drop the CSV on the section) */
@@ -1270,8 +1222,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .pilist{max-height:46dvh}
   .pistats>span,.pisk{height:32px;font-size:14px}
   .sadd{display:flex;flex-wrap:wrap;gap:4px}.sadd .sa+.sa{margin-left:0}
-  .piwhy li{flex-direction:column;gap:0}.piwhy span{text-align:left}
-}
+  .piwhy li{flex-direction:column;gap:0}.piwhy span{text-align:left}}
 
 /* Passwords & keys: long login lists (search + show more) */
 .kysearch{max-width:none;height:42px;box-shadow:none;margin:0 0 10px}.kysearch input{font-size:15px}
@@ -1331,8 +1282,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .pkrow{padding:9px 8px;gap:14px}.pkrow .aico{width:42px;height:42px}.pkrow .ln{font-size:16px}.pkrow .lsub{font-size:13.5px}
   .pkchk{width:26px;height:26px}
   .pkfoot{padding:10px 2px 0}
-  .pkup,.pkgo{height:48px;font-size:16px}.pkup{padding:0 18px 0 14px}.pkgo{padding:0 20px}
-}
+  .pkup,.pkgo{height:48px;font-size:16px}.pkup{padding:0 18px 0 14px}.pkgo{padding:0 20px}}
 /* Compact app rows open the existing detail page; keep the focus ring inside the clipped card. */
 .sr[data-cxrow]:focus-visible{outline-offset:-2px}
 .sr[data-cxrow] .sval{flex:none;font-size:13px}
@@ -1342,8 +1292,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
    side panel and the task's header and composer clear of the notch, the rounded corners and the home bar. In a browser
    tab these are 0, except the notch side of a phone on its side in Safari. */
 @media (min-width:768px){
-  body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
-}
+  body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}}
 @media (display-mode:standalone){html,body{overscroll-behavior:none}}
 
 /* ---------- Phone + touch-tablet nav pass: a compact drawer/sidebar so the task list gets the height ---------- */
@@ -1394,8 +1343,8 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .mtool button{min-width:44px;min-height:44px}
   .mtool-label{font-size:11px;line-height:1.2;text-align:center;color:var(--ink2)}
   .mtools .mtools-live{display:none}
-  .mtools:has(.ln-rec,.tk-dot,.pmbtn:not(.idle),.busy) .mtools-live{display:block}
-  .mtools:has(.ln-rec,.tk-dot,.pmbtn:not(.idle),.busy)>summary::after{content:"";position:absolute;top:7px;right:7px;width:7px;height:7px;border-radius:50%;background:#f0ae2c;box-shadow:0 0 0 2px var(--sheet)}
+  .mtools:has(.ln-rec,.pmbtn:not(.idle),.busy) .mtools-live{display:block}
+  .mtools:has(.ln-rec,.pmbtn:not(.idle),.busy)>summary::after{content:"";position:absolute;top:7px;right:7px;width:7px;height:7px;border-radius:50%;background:#f0ae2c;box-shadow:0 0 0 2px var(--sheet)}
   .mtools:has(.ln-rec)>summary::after{background:#df4b40}
   @media(prefers-reduced-motion:reduce){.mtools>summary>svg{transition:none}}
   /* sheets */
@@ -1421,16 +1370,14 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .lnew{flex:none}.ltop .lsearch{min-width:0}
   .sfoot{flex-wrap:wrap}
   .srow span small{font-weight:400}.srow .soonp{flex:none}
-  .about{padding:0 8px 12px}.about .av.xl{width:64px;height:64px;margin:0 auto 8px}.about h2{font-size:26px}.about .purp{margin:10px 0 0;font-size:15px}
-}
+  .about{padding:0 8px 12px}.about .av.xl{width:64px;height:64px;margin:0 auto 8px}.about h2{font-size:26px}.about .purp{margin:10px 0 0;font-size:15px}}
 @media (max-width:359px){
   .dm{width:88%}.cv.open .chat{transform:translateX(90%)}
   .cv.dragging .chat{transform:translateX(calc(var(--drawer-progress) * 90%))}
   .dnav{gap:0;padding:2px 4px 6px}
   .dtl{font-size:10.5px;letter-spacing:-.015em}
   .dchsw b{font-size:22px}
-  .mpill{padding-right:12px}
-}
+  .mpill{padding-right:12px}}
 /* Touch tablets (iPad, Android tablets): the same compact idea in the side panel. A mouse/trackpad desktop never matches. */
 @media (min-width:768px) and (pointer:coarse){
   #side{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:auto auto auto auto minmax(0,1fr);column-gap:4px;row-gap:4px;padding-top:14px}
@@ -1450,8 +1397,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   #side>.search{grid-column:1/-1;grid-row:4;display:none;margin:4px 0 0;height:40px;background:var(--chip);box-shadow:var(--shadow)}
   #side.sopen>.search,#side>.search:focus-within,#side>.search:has(input:not(:placeholder-shown)){display:flex}
   #side>.search input{font-size:15px}
-  #side>.sessions{grid-column:1/-1;grid-row:5;margin-top:6px}
-}
+  #side>.sessions{grid-column:1/-1;grid-row:5;margin-top:6px}}
 /* Small phones: Home's greeting and task rows give the list more room */
 @media (max-width:400px){
   .mhome{padding:12px 16px 20px}
@@ -1461,8 +1407,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .task .pin:not(.on){display:none}
   /* New task sheet: the helper pill gives way before Start does */
   .npick{min-width:0;flex:0 1 auto}.nwho{max-width:100%;overflow:hidden;white-space:nowrap}.nrow .cbtn{flex:none}
-  .ngo{flex:none;padding:0 16px}
-}
+  .ngo{flex:none;padding:0 16px}}
 
 /* ---------- Pages fit their own pane, not the screen (2026-10-06) ----------
    On a touch tablet the side panel and rail take ~350px, so a 1024px-wide screen leaves a ~660px page and a portrait
@@ -1470,26 +1415,17 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
    one word per line). Each page now reads the width of its own scroll pane (.dhome) and gives its main column priority.
    Phones keep their own rules above; a wide desktop pane never reaches these widths, so it looks the same. */
 .dhome{container:pane/inline-size}
-@media (hover:none) and (pointer:coarse){.nact{opacity:1}.ldel{opacity:1}}   /* no hover on a touch screen: Edit/Delete stay visible */
-.novp,.nup b,.ncard p{overflow-wrap:anywhere}
+@media (hover:none) and (pointer:coarse){.nact{opacity:1}.ldel{opacity:1}}
 @media (min-width:768px){
   .cxback{display:none}
-  /* Notebook: two columns only while the notes keep ≥ 420px beside the 300px side column (pane ≥ 832px).
-     Below that the notes take the full width and "Recently learned" / "How this works" sit under them, side by side if they fit. */
-  @container pane (max-width:831px){
-    .nbgrid{grid-template-columns:minmax(0,1fr);gap:4px}
-    .nbside{position:static;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));align-items:start}
-  }
   /* Contacts: the list column narrows first, then the page becomes list → contact (with a back link), as on the phone. */
   @container pane (max-width:839px) and (min-width:752px){
     .cxsplit{grid-template-columns:290px minmax(0,1fr);gap:22px}
-    .cxright{padding:22px}.cxgrid{grid-template-columns:1fr}
-  }
+    .cxright{padding:22px}.cxgrid{grid-template-columns:1fr}}
   @container pane (max-width:751px){
     .cxsplit{grid-template-columns:minmax(0,1fr);gap:0}.cxleft{position:static}
     .cxwrap.has .cxleft{display:none}.cxwrap:not(.has) .cxright{display:none}
-    .cxback{display:inline-flex}
-  }
+    .cxback{display:inline-flex}}
   @container pane (max-width:599px){
     .lwrap{padding:24px 20px 44px}
     .lhead{flex-wrap:wrap;gap:12px}.av.lh,.lh-all{width:48px;height:48px}.lht h1{font-size:30px}
@@ -1498,13 +1434,10 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
     .lrow,.lrows.one .lrow{grid-template-columns:40px minmax(0,1fr) auto;gap:12px}.lrow .ltype,.lrow .lch{display:none}
     .lrows .lrow:has(.ldel),.lrows.one .lrow:has(.ldel){grid-template-columns:40px minmax(0,1fr) auto 32px}
     .lrows .lrow.lup,.lrows.one .lrow.lup{grid-template-columns:40px minmax(0,1fr) 32px}
-    .nbwrap .nsh{flex-wrap:wrap;row-gap:2px}.nbwrap .nsh span{flex-basis:100%;order:3}.nbwrap .nsh .cb{order:2}
     .cxwrap .lhead{flex-wrap:nowrap}.cxwrap .lht p{display:none}
     .cxright{padding:20px 18px}.cxgrid,.cxf2{grid-template-columns:1fr}.cxf2{gap:0}
     .cxdhead{flex-wrap:wrap;row-gap:14px}.cxdact{flex-basis:100%}
-    .cxsec .nsh{flex-wrap:wrap;row-gap:2px}.cxsec .nsh span{flex-basis:100%}
-  }
-}
+    .cxsec .nsh{flex-wrap:wrap;row-gap:2px}.cxsec .nsh span{flex-basis:100%}}}
 /* Phone contact page: Merge/Edit go under the name, so the name isn't squeezed to one word per line */
 @media (max-width:767px){.cxdhead{flex-wrap:wrap;row-gap:14px}.cxdact{flex-basis:100%}.cxsec .nsh{flex-wrap:wrap;row-gap:2px}.cxsec .nsh span{flex-basis:100%}}
 /* Computer pane open on a tablet / small desktop: the side panel is hidden (rule above, near .meta), but the later
@@ -1525,8 +1458,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 @media (max-width: 767px){
   .sf textarea{font-size:17px}
   .sr[data-acpend]{flex-wrap:wrap}.sr[data-acpend] .srt{flex:1 1 calc(100% - 54px)}.sr[data-acpend] .sa{margin-left:auto}
-  .sr[data-kyrow]{gap:10px}.sr[data-kyrow] .sa{padding:0 6px}.sr[data-kyrow] .srt>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-}
+  .sr[data-kyrow]{gap:10px}.sr[data-kyrow] .sa{padding:0 6px}.sr[data-kyrow] .srt>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 
 /* Settings → Connected accounts: Browse all apps sits under the lead sentence; long lists get a search box and Prev/Next pages */
 .sbrowse.cxbrowse{margin:0 0 14px}
@@ -1537,116 +1469,25 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .cxpbtn{display:inline-flex;align-items:center;gap:4px;padding:0 12px}.cxpbtn svg{flex:none}
 .cxpbtn:disabled{opacity:.4;cursor:default;box-shadow:0 0 0 1px var(--line)}
 @media (max-width:767px){.sphone .sbrowse.cxbrowse{margin:0 0 12px;background:var(--sheet);border-radius:22px;box-shadow:var(--shadow);padding:16px}.sphone .sbrowse.cxbrowse:active{background:var(--hover)}.cxpbtn{height:36px;padding:0 14px}}
-
-/* ---------- Notebook redesign (Captain, 10-07: "scroll forever… everything blends together… the most unfinished page") ----------
-   Overview = a dashboard: "How this works" (dismissible), New from Bee, the summary, then one panel per section (newest 3, "See all N")
-   plus Recently learned. A section's tab shows it whole. Panels are the Bee card's surface (sheet + hairline ring + soft shadow) on the
-   white stage; the summary and help are soft (abub) so lists and prose read apart. Scoped to .nbwrap: Contacts reuses .nbrow & co. */
-.nbwrap .grow{flex:1}
-.nbq{flex:none;display:inline-flex;align-items:center;gap:7px;min-height:36px;padding:6px 14px 6px 11px;border-radius:999px;background:var(--abub);font-size:13.5px;font-weight:600;color:var(--ink2);line-height:1.25;text-align:left}
-.nbq:hover{background:var(--hover);color:var(--ink)}.nbq svg{flex:none;color:var(--mute)}
-/* tabs: the Library's filter chips, with a count */
-.nbwrap .ntabs{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 18px;padding:4px 0 12px;border-bottom:0;overflow:visible;position:sticky;top:0;z-index:4;background:var(--sheet)}
-.nbwrap .ntabs a{flex:none;max-width:100%;display:inline-flex;align-items:center;gap:7px;min-height:34px;padding:6px 14px;margin:0;border:0;border-radius:999px;font-size:13.5px;font-weight:600;line-height:1.25;white-space:nowrap;color:var(--ink2);background:var(--abub);text-decoration:none}
-.nbwrap .ntabs a:hover{background:var(--hover);color:var(--ink)}
-.nbwrap .ntabs a.on{background:var(--ink);color:var(--sheet)}
-.ntc{font-size:12px;font-weight:600;color:var(--faint);font-variant-numeric:tabular-nums}.ntabs a.on .ntc{color:color-mix(in srgb,var(--sheet) 70%,transparent)}
-.nbdash{display:flex;flex-direction:column;gap:16px}
-/* How this works: a soft note with Got it */
-.nbhelp{display:flex;flex-wrap:wrap;align-items:center;gap:12px 16px;padding:14px 16px;border-radius:18px;background:var(--abub)}
-.nbhi{flex:none;align-self:flex-start;width:34px;height:34px;border-radius:11px;display:grid;place-items:center;background:var(--sheet);color:var(--ink2)}
-.nbht{flex:1 1 260px;min-width:0}.nbht h2{margin:0 0 2px;font-size:14px;font-weight:600;color:var(--ink)}.nbht p{margin:0;font-size:14px;line-height:1.5;color:var(--ink2);overflow-wrap:anywhere}
-.nbgot{margin-left:auto}
-/* New from Bee: the stack itself is unchanged (bee.css); here only where it sits */
-.nbdash .nbeenew{margin:0}
-/* summary: prose on a soft card; a single quiet line while there's none */
-.nbsum{padding:14px 18px 16px;border-radius:18px;background:var(--abub)}
-.nbsumh{display:flex;align-items:center;gap:8px;margin-bottom:4px}.nbsumh h2{flex:1;margin:0;font-size:13px;font-weight:600;color:var(--mute)}
-.nbsum>p{margin:0;font-size:15.5px;line-height:1.6;color:var(--ink2);overflow-wrap:anywhere;white-space:pre-wrap}
-.nbsum.empty{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;padding:8px 10px 8px 16px}.nbsum.empty p{flex:1 1 220px;margin:0;font-size:14px;color:var(--faint)}
-.nbsum .nbrow.editing{margin:0;padding:0;background:none}
-/* the panels */
-.nbpanels{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:stretch}
-.nbp{position:relative;display:flex;flex-direction:column;min-width:0;border-radius:20px;background:var(--sheet);box-shadow:0 0 0 1px var(--line),var(--shadow)}
-.nbph{height:auto;flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:12px 12px 8px 14px;min-width:0}
-.nbpa{margin-left:auto;display:flex;align-items:center;gap:4px}
-.nbpi{flex:none;width:32px;height:32px;border-radius:10px;display:grid;place-items:center;background:var(--abub);color:var(--ink2)}
-.nbph h2{margin:0;font:400 21px/1.15 var(--serif);letter-spacing:-.005em;color:var(--ink);white-space:nowrap}
-.nbph h2 a{color:inherit;text-decoration:none}.nbph h2 a:hover{text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px}
-.nbpc{flex:none;min-width:22px;padding:1px 8px;border-radius:999px;background:var(--abub);font-size:12px;font-weight:600;line-height:18px;text-align:center;color:var(--mute);font-variant-numeric:tabular-nums}
-.nbph .nbct{margin-left:0;flex:none;white-space:nowrap;padding:6px 8px;border-radius:10px}.nbph .nbct:hover{background:var(--hover);text-decoration:none}
 .nbi{flex:none;width:32px;height:32px;border-radius:10px;display:grid;place-items:center;color:var(--mute)}.nbi:hover{background:var(--hover);color:var(--ink)}
 .nbi svg{width:15px;height:15px}
-.nbpsub{margin:-2px 0 6px;padding:0 16px 0 56px;font-size:13.5px;color:var(--faint)}
-.nbaddb{display:inline-flex;align-items:center;gap:6px}.nbaddb svg{flex:none;width:15px;height:15px}
-.nbwrap .nblist{border-top:0;padding:0 6px 6px}
-.nbnone{margin:0;padding:4px 10px 12px;font-size:14px;line-height:1.5;color:var(--faint)}
-/* a note: text, then its meta on its own line; Edit / Delete float in on hover */
-.nbwrap .nbp .nbrow{gap:8px;padding:10px 10px 11px;border:0;border-radius:12px;background:none}
-.nbwrap .nbp .nbrow+.nbrow::before{content:"";position:absolute;left:10px;right:10px;top:0;height:1px;background:var(--line)}
-.nbwrap .nbp .nbrow:hover,.nbwrap .nbp .nbrow:focus-within,.nbwrap .nbp .nbrow.menu{background:var(--abub)}
-.nbwrap .nbp .nbrow:hover::before,.nbwrap .nbp .nbrow:focus-within::before,.nbwrap .nbp .nbrow.menu::before,.nbwrap .nbp .nbrow.editing::before,
-.nbwrap .nbp .nbrow:hover+.nbrow::before,.nbwrap .nbp .nbrow:focus-within+.nbrow::before,.nbwrap .nbp .nbrow.menu+.nbrow::before,.nbwrap .nbp .nbrow.editing+.nbrow::before,
-.nbwrap .nbp .nbrow.fresh::before,.nbwrap .nbp .nbrow.fresh+.nbrow::before{display:none}
-.nbwrap .nbp .nbrow.fresh{background:color-mix(in srgb,#f5bd3c 13%,transparent)}
-.nbwrap .nmain p{font-size:14.5px;line-height:1.5}
-.nbp:not(.full) .nmain p{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
-.nbp.full .nmain p{font-size:15px}
 .nbmeta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:5px;font-size:12.5px;line-height:1.35;color:var(--faint)}
 .nbmeta a{color:var(--mute);text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:2px}.nbmeta a:hover{color:var(--ink2)}
 .nbmeta .nnew{margin:0}
 .nbchip{display:inline-flex;align-items:center;gap:5px;min-height:20px;padding:1px 8px;border-radius:999px;background:var(--abub);font-size:11.5px;font-weight:600;color:var(--ink2);white-space:nowrap}
 .nbrow:hover .nbchip,.nbrow.menu .nbchip,.nbrow:focus-within .nbchip{background:var(--sheet)}
 .nbchip.bee,.nbrow:hover .nbchip.bee{background:color-mix(in srgb,#f7d64a 26%,var(--sheet))}.nbchip .beemark{border-radius:4px}
-.nbwrap .nbp .nact{position:absolute;top:6px;right:6px;gap:2px;padding:2px;border-radius:11px;background:var(--abub);box-shadow:-10px 0 10px -2px var(--abub)}
-.nbwrap .nbp .nbrow.fresh .nact{background:color-mix(in srgb,#f5bd3c 13%,var(--abub))}
 .nbmw{display:none;position:relative;flex:none;margin:-4px -4px 0 0}
 .nbmenu{position:absolute;right:0;top:calc(100% + 4px);z-index:6;display:flex;flex-direction:column;min-width:150px;padding:5px;background:var(--sheet);border:1px solid var(--line);border-radius:16px;box-shadow:var(--lift);animation:pop .14s cubic-bezier(.2,.8,.2,1)}
 .nbmenu button{display:flex;align-items:center;gap:10px;min-height:42px;padding:6px 12px;border-radius:11px;font-size:14.5px;color:var(--ink);text-align:left}
 .nbmenu button:hover,.nbmenu button:focus-visible{background:var(--abub);outline:0}.nbmenu button svg{flex:none;color:var(--ink2)}
 .nbmenu .nbdel,.nbmenu .nbdel svg{color:#dc2626}
-.nbwrap .nbp .nbrow.menu{z-index:5}
-.nbwrap .nbp .nbrow.editing{margin:4px 0;padding:10px;background:var(--abub);border-radius:14px;box-shadow:none}
-.nbwrap .nbp>.nbrow.editing{margin:0 12px 8px}
-/* See all */
-.nbsee{margin-top:auto;display:flex;align-items:center;gap:4px;padding:10px 16px 14px;font-size:13.5px;font-weight:600;color:var(--ink2);text-decoration:none;border-top:1px solid var(--line)}
-.nbsee:hover{color:var(--ink)}.nbsee:hover span{text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--line2)}.nbsee svg{flex:none}
-/* Recently learned: one line per note */
-.nbrec .nblist{padding:0 6px 8px}
-.nbwrap .nbrec .nup{display:flex;align-items:flex-start;gap:10px;margin:0;padding:8px 10px;border-radius:12px}
-.nbwrap .nbrec .nup:hover{background:var(--abub)}
-.nbrec .nupd{margin-top:7px}
-.nupt{flex:1;min-width:0}.nupt b{display:block;font-size:13.5px;font-weight:400;line-height:1.4;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.nupt small{display:block;margin-top:1px;font-size:12px;color:var(--faint)}
-.nbsecp{max-width:880px}
 /* touch: Edit / Delete behind ⋯ (no hover to reveal them) */
-@media (hover:none) and (pointer:coarse){.nbwrap .nbp .nact{display:none}.nbmw{display:block}}
-@container pane (min-width:1180px){.nbpanels{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@container pane (min-width:900px){
-  /* the Bee stack beside its heading instead of under it */
-  .nbdash .nbeenew{display:grid;grid-template-columns:minmax(170px,230px) minmax(0,1fr);column-gap:24px;align-items:start;padding:18px 18px 22px 22px}
-  .nbdash .nbeenew>.nsh{flex-direction:column;align-items:flex-start;gap:6px;margin:6px 0 0}.nbdash .nbeenew>.nsh span{white-space:normal}
-}
-@container pane (max-width:679px){
-  .nbwrap .ntabs{position:static;padding-bottom:4px}
-  .nbwrap .lht{flex:1 1 calc(100% - 76px)}
-  .nbpanels{grid-template-columns:minmax(0,1fr);gap:14px}
-  .nbwrap .nbp .nact{display:none}.nbmw{display:block}
-  .nbpsub{padding-left:16px}
-}
-@media (max-width:767px){
-  .nbpanels{grid-template-columns:minmax(0,1fr);gap:14px}
-  .nbwrap .nbp .nact{display:none}.nbmw{display:block}
-  .nbwrap .lht{flex:1 1 calc(100% - 76px)}
-  .nbwrap .ntabs{margin:0 0 14px;padding:2px 0 4px;position:static}
-  .nbwrap .ntabs a{min-height:36px;font-size:14px;padding:6px 12px}
-  .nbdash{gap:14px}
-  .nbph h2{font-size:21px}
-  .nbwrap .nmain p{font-size:15.5px}
+@media (hover:none) and (pointer:coarse){.nbmw{display:block}}
+@container pane (max-width:679px){.nbmw{display:block}}
+@media (max-width:767px){.nbmw{display:block}
   .nbmeta{font-size:13px}
-  .nbhelp{padding:14px}.nbgot{flex:1 1 100%;min-height:40px}
-  .nbi{width:38px;height:38px}
-  .nbpsub{padding-left:16px}
-}
+  .nbi{width:38px;height:38px}}
 /* ---- Buttons and pills never cut their label off (Captain, 10-07) ----
    They grow to fit (height:auto, the old height kept as a minimum) and wrap onto two lines on narrow screens: no nowrap + overflow:hidden
    + ellipsis on an action label or a pill. Real truncation stays where it's meant (long titles and previews in lists, the task header's
@@ -1665,7 +1506,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .mpill{flex:1 1 auto;min-width:0;max-width:max-content}
 .mpill>span:last-child{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mpill>.av,.mpill>.pico{flex:none}
-.mh .cb,.mh .tk-btn,.mh .pmbtn,.mh .tdbtn{flex:none}
+.mh .cb,.mh .pmbtn,.mh .tdbtn{flex:none}
 .srow.atask span{min-width:0;overflow-wrap:anywhere;line-height:1.35}.srow.atask small{margin-bottom:2px}
 /* Connection checks can cold-start a trusted client: show activity before they finish. */
 .netloading{padding:20px 0 24px;min-width:0}.netloading b{display:block;font-size:15px;font-weight:600}.netloading p{margin:8px 0 0;font-size:14px;line-height:1.5;color:var(--mute);overflow-wrap:anywhere}.netprogress{height:4px;overflow:hidden;border-radius:8px;background:var(--line);margin-bottom:18px}.netprogress i{display:block;width:38%;height:100%;border-radius:inherit;background:var(--accent);animation:net-loading 1.5s ease-in-out infinite}@keyframes net-loading{0%,100%{transform:translateX(0)}50%{transform:translateX(163%)}}@media(prefers-reduced-motion:reduce){.netprogress i{animation:none;transform:translateX(80%)}}
@@ -1709,8 +1550,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .wkbi{grid-template-columns:auto minmax(0,1fr);padding:12px}
   .wkbi>.wkbacts{grid-column:1 / -1;gap:6px}.wkbacts .sa{flex:1 1 0;min-width:0;height:40px;padding:0 8px}.wkbacts .wkbok{flex:1.3 1 0}
   .wkbi.editing .wkbacts{align-self:stretch}.wkbacts .sa:only-child{flex:0 0 auto;padding:0 18px}
-  .wkbmr .wkbok{height:36px}
-}
+  .wkbmr .wkbok{height:36px}}
 /* Notebook pages (v3.ts nbWiki). Everything answers the width of .wk (container "wk"), so the narrow layout is the default. */
 .wkwrap{padding-top:24px}
 @media (min-width:768px) and (max-width:1500px){.wkwrap{padding-right:60px}}   /* clear the computer button that floats at the top right */
@@ -1790,8 +1630,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .wkinfo .wkph{width:100%;height:auto;aspect-ratio:1;max-height:200px;--s:140px;border-radius:12px}
   .wkphw{border-radius:12px}
   .wkinfo dl{grid-template-columns:1fr;gap:0;margin:2px 0 0}
-  .wkinfo dl>div{flex-direction:row;gap:12px;padding:8px 0;border-top:1px solid var(--line)}.wkinfo dt{flex:none;width:84px;font-size:13.5px}
-}
+  .wkinfo dl>div{flex-direction:row;gap:12px;padding:8px 0;border-top:1px solid var(--line)}.wkinfo dt{flex:none;width:84px;font-size:13.5px}}
 @media (prefers-reduced-motion:reduce){.wks,.wkp{transition:none}}
 /* Phone: the Bee review is a small pill at the bottom edge that opens a tray over the article. The article keeps bottom padding equal to the pill's height and offset, so no text is hidden under it. */
 .wkdock,.wkx{display:none}
@@ -1813,8 +1652,10 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   /* a touch leaves :hover behind after a tap, so the tray shows hover only on devices that really hover */
   @media (hover:none){.wktray .sa.mute:hover{color:var(--mute);background:none}.wktray .wkbok:hover{background:var(--ink)}.wktray .sa:not(.mute):not(.wkbok):hover{box-shadow:0 0 0 1px var(--line)}}
   .wktray .sa:focus-visible{outline:2px solid var(--ink2);outline-offset:2px}
-  .wkdk{padding-bottom:calc(var(--pill) + var(--pillb) + env(safe-area-inset-bottom))}
-}
+  .wkdk{padding-bottom:calc(var(--pill) + var(--pillb) + env(safe-area-inset-bottom))}}
 .wkimg{object-fit:cover}
 
 
+/* Notebook pages that could not be read: one quiet line and a button, in the article area (v3.ts nbWiki) */
+.wkfail{min-height:100dvh;padding:48px 4px;font-size:15px;color:var(--mute)}.wkfail p{margin:0 0 12px}
+.wkfail .sa{display:inline-flex;width:auto;margin:0}

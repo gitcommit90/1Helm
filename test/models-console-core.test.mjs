@@ -35,9 +35,17 @@ const state = await read();
 await test("the first page has the sidebar, the search, History and one table", async () => {
   const html = await (await call("/models")).text();
   for (const piece of ["All jobs", "Needs attention", "Limits", "Read only", 'data-act="hist"', "data-q", '<span class="kbd">/</span>', 'role="table"']) assert.ok(html.includes(piece), piece);
-  for (const g of ["Chat categories", "Reply limits", "Retries", "Routing", "Background jobs", "Speech", "Search and media", "Other"]) assert.ok(html.includes(g), g);
-  assert.equal((html.match(/data-row="/g) || []).length, state.jobs.length - 0 + state.config.routing.categories.length, "one row per job, and one per routing category");
+  for (const g of ["Chat categories", "Routing", "Background jobs", "Speech", "Search and media", "Other"]) assert.ok(html.includes(g), g);
+  assert.equal((html.match(/data-row="/g) || []).length, state.jobs.length + state.config.routing.categories.length, "one row per job, and one per routing category");
   assert.doesNotMatch(html, /Save|Reset to default|Push to prod|Differs from Live|data-e=|1helm\.com/);
+  // the old per kind of request limits, the retry rows and the "Chat replies" row are gone: each routing category row carries the limits of its replies
+  assert.doesNotMatch(html, /Reply limits|Retries|Retry:|Switch during a task|Everyday chat|Chat replies/);
+  assert.ok(!C.rowsOf(state).some((r) => r.id === "chat" || r.group === "chatlimits"), "there is no chat job row");
+  const general = C.rowsOf(state).find((r) => r.kind === "cat" && r.id === "general"); assert.ok(general, "General has a row");
+  const v = C.viewOf(state, ui0(), general, C.snapshotFromConfig(state)); assert.ok(v.hasChain && v.chain.length === 3 && v.showOut && v.showSort && v.showTimeout, "its models and its limits can be edited on its own row");
+  // a limit edited on a category row is saved on that category only
+  const cfg = C.applyEdit(state.config, { t: "field", cat: "general", field: "max_output", value: 4000 }); assert.equal(cfg.routing.categories[0].max_output, 4000); assert.equal(cfg.jobs.label.max_output, state.config.jobs.label.max_output);
+  assert.equal(C.viewOf(state, ui0(), general, C.snapshotFromConfig({ ...state, config: cfg })).max_output, 4000);
 });
 
 await test("every model on the table and the inspector carries an OR or CF badge", () => {

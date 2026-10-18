@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { plan } from "../src/ee/model-dispatch.js";
 import { JOB_IDS } from "../src/ee/model-jobs.js";
 import { PRIVACY_LEVELS } from "../src/privacy.js";
+import { taskPayload } from "../src/model.js";
 import { isCloudflareModel } from "../src/cloudflare-models.js";
 import { SEED, withSettings } from "./helpers/seed-settings.mjs";
 
@@ -56,11 +57,14 @@ test("saved max_output, sort and max_price are used, and an empty max output sta
 });
 
 test("privacy level sets only OpenRouter's own fields", () => {
-  const s = clone(SEED), id = "chat.general";
-  const p = (level) => plan(s, id, { level }).steps[0]?.provider;
+  // the main chat is not a job: its request is made from the frozen task profile and the limits of its routing category
+  const s = clone(SEED), model = s.routing.categories[0].chains.zdr[0].model;
+  const profile = { requestedModel: model, effort: null, category: "general", catalog: { ...s.catalog[model], context_length: 200000, max_output: 32000 }, cacheSession: "s" };
+  const p = (level) => taskPayload(profile, { messages: [] }, { level, settings: s }).provider;
   assert.equal(p("zdr").zdr, true); assert.equal(p("zdr").data_collection, "deny");
-  const nt = p("no_training"); if (nt) { assert.equal(nt.zdr, undefined); assert.equal(nt.data_collection, "deny"); }
+  const nt = p("no_training"); assert.equal(nt.zdr, undefined); assert.equal(nt.data_collection, "deny");
   const un = p("unrestricted"); assert.equal(un.zdr, undefined); assert.equal(un.data_collection, "allow");
+  for (const level of PRIVACY_LEVELS) for (const k of Object.keys(p(level))) assert.ok(ALLOWED.includes(k), `${level}: ${k}`);
 });
 
 test("plan is pure: it does not change the settings", () => {

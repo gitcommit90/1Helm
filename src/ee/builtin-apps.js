@@ -19,28 +19,20 @@ export const BUILTIN_APPS_LATEST = new Map([...BUILTIN_APPS,
   ["inspo_mcp", "Inspo (design inspiration)"], ["aiwyn_tax_mcp", "Aiwyn Tax"], ["clarity_ai_mcp", "Clarity AI"], ["pophive_mcp", "PopHIVE (US public health data)"],
   ["mospi_mcp", "MoSPI (India statistics)"],
 ]);
+import { isHiddenApp, isHiddenToolkitAction } from "./app-visibility.js";
 // ---- The deny list (Captain 10-08, after the builtins audit notes/2026-10-08-composio-builtins-audit.md) ----
 // Hidden from the helper entirely: never in its catalog (find_app, offer_connect, the hint), never listed by app_actions, never run by
-// app_run, never in its built-in apps line or a Composio session. One place; every check goes through isHiddenApp / isHiddenAction.
+// app_run, never in its built-in apps line or a Composio session. The hidden apps and their reasons live in src/app-visibility.json and
+// every rule in src/app-visibility.js (Cloudflare prefix rule, Soon rule); this file re-exports them so existing imports keep working.
 // The audit lists above stay as they are (they record what Composio offers; test/builtin-apps.test.mjs keeps them in step).
-export const HIDDEN_TOOLKITS = new Map([
-  ["malwarebytes_mcp", "wrong verdicts in the audit (google.com 'not a recognized site', an obvious phishing domain 'unknown'), sends the person's link, email or phone to a third party, injects 'User Guidance' text"],
-  ["codeinterpreter", "duplicates the helper's own computer; runs code on a third-party sandbox, and every run needs a confirm card"],
-  ["text_to_pdf", "uploads the text to a third party and returns a public link; the helper makes PDFs itself"],
-  ["excalidraw_mcp", "its export publishes the diagram publicly; widget-only output"],
-  ["mermaid_chart_mcp", "a 55k-char SVG per call for a widget 1Helm doesn't have; the helper renders Mermaid on its computer"],
-  ["aiwyn_tax_mcp", "invites bank, routing and date-of-birth data; its PDF action isn't read-only"],
-  ["clarity_ai_mcp", "a demo API that asks for an email; too narrow"],
-]);
+export { HIDDEN_TOOLKITS, isHiddenApp, HIDDEN_TEXT } from "./app-visibility.js";
 export const HIDDEN_ACTIONS = new Map([
   ["COMPOSIO_SEARCH_GROQ_CHAT", "an LLM call on Composio's account, outside 1Helm's model routing, metering and zero data retention"],
   ["COMPOSIO_SEARCH_EXA_ANSWER", "deprecated by Composio"],
   ["AWS_MARKETPLACE_MCP_SUBMIT_AWS_MARKETPLACE_FEEDBACK", "a write, with 'you MUST ask the user' text aimed at the model"],
   ["YELP_GET_REVIEW_HIGHLIGHTS", "always 403 (needs Yelp Premium)"],
 ]);
-export const isHiddenApp = (slug) => HIDDEN_TOOLKITS.has(String(slug || "").toLowerCase());
-export const isHiddenAction = (slug) => { const s = String(slug || "").toUpperCase(); return HIDDEN_ACTIONS.has(s) || [...HIDDEN_TOOLKITS.keys()].some((k) => s.startsWith(`${k.toUpperCase()}_`)); };
-export const HIDDEN_TEXT = (what) => `error: ${what} isn't available in 1Helm, so nothing was run. Do it another way (your own computer, web_search, or another app), and don't offer to connect it.`;
+export const isHiddenAction = (slug) => HIDDEN_ACTIONS.has(String(slug || "").toUpperCase()) || isHiddenToolkitAction(slug);
 const visible = (m) => new Map([...m].filter(([s]) => !isHiddenApp(s)));
 const LISTS = { latest: visible(BUILTIN_APPS_LATEST), pinned: visible(BUILTIN_APPS) };
 // The built-in list for the Composio version this server uses (env = the Worker env; none = the pinned version's list), minus the deny list.

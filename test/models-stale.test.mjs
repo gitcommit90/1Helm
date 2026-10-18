@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { modelCatalog, taskModelCatalog, validModelId, isLatestAlias } from "../src/ee/model-catalog.js";
 import { saveModelSettings, restoreModelSettings, modelSettingsView, readModelSettings, unlistedModels } from "../src/ee/model-settings.js";
-import { ID, SEED } from "./helpers/seed-settings.mjs";
+import { ID, SEED, setGeneral } from "./helpers/seed-settings.mjs";
 const SOL = ID.SOL, MUSE_C = ID.MUSE_C, MUSE_S = ID.MUSE_S;
 
 const sql = new DatabaseSync(":memory:");
@@ -44,7 +44,7 @@ try {
   assert.deepEqual(r.models.map((m) => m.id).sort(), [A, C, B]);
   assert.ok(inits.length > 0 && inits.every((x) => x.init.cache === "no-store"), "every OpenRouter fetch is sent with cache: no-store");
   // 2. A job uses A and C. OpenRouter then drops A from its list and answers 404 for C's endpoints (listed, but gone).
-  let view = await save((c) => { c.jobs["chat.general"] = { model: A, effort: "low", fallbacks: [{ model: B, effort: "low" }] }; });
+  let view = await save((c) => { setGeneral(c, [{ model: A, effort: "low" }, { model: B, effort: "low" }]); });
   revision = view.revision;
   const un0 = await unlistedModels(env); assert.ok(!un0.includes(A) && !un0.includes(B), "nothing is flagged while OpenRouter lists the model (the first-run models this mock omits are)");
   list = list.filter((m) => m.id !== A);
@@ -56,16 +56,16 @@ try {
   assert.deepEqual(await unlistedIds([A, B, "@cf/meta/x"]), [A]);
   // 3. The page view flags it, and dispatch settings still hold it with its fallbacks.
   const un = await unlistedModels(env); assert.ok(un.includes(A) && !un.includes(B)); view = await modelSettingsView(env);
-  assert.equal(view.config.jobs["chat.general"].model, A); assert.equal(view.config.jobs["chat.general"].fallbacks[0].model, B);
+  assert.equal(view.config.routing.categories[0].chains.zdr[0].model, A); assert.equal(view.config.routing.categories[0].chains.zdr[1].model, B);
   // 4. Saving a model OpenRouter doesn't list is refused with the reason, for a new model and for one the settings already know.
   list = [...list, model(C)]; dead.clear(); zdr = zdr.filter((e) => e.model_id !== C);
   const gone = [C, "example/never-existed"]; list = list.filter((m) => m.id !== C);
-  for (const id of gone) await assert.rejects(save((c) => { c.jobs["chat.technical"] = { model: id, effort: "low", fallbacks: [] }; }), (e) => /no longer offered by OpenRouter/.test(e.message) && e.message.startsWith(id) && e.status === 400, id);
-  await assert.rejects(save((c) => { c.jobs["chat.technical"] = { model: A, effort: "low", fallbacks: [] }; }), (e) => /no longer offered by OpenRouter/.test(e.message), "known to the settings, still refused for a new pick");
-  assert.equal((await current()).jobs["chat.technical"].model !== A, true);
+  for (const id of gone) await assert.rejects(save((c) => { c.jobs.notes_refine = { model: id, effort: "low", fallbacks: [] }; }), (e) => /no longer offered by OpenRouter/.test(e.message) && e.message.startsWith(id) && e.status === 400, id);
+  await assert.rejects(save((c) => { c.jobs.notes_refine = { model: A, effort: "low", fallbacks: [] }; }), (e) => /no longer offered by OpenRouter/.test(e.message), "known to the settings, still refused for a new pick");
+  assert.equal((await current()).jobs.notes_refine.model !== A, true);
   // Keeping the job on A (saving something else) is not blocked.
-  await save((c) => { c.jobs["chat.general"].fallbacks = []; });
-  assert.equal((await current()).jobs["chat.general"].model, A);
+  await save((c) => { c.jobs.label.fallbacks = []; });
+  assert.equal((await current()).routing.categories[0].chains.zdr[0].model, A);
   // 5. A lookup failure flags nothing and refuses nothing it can't judge as gone.
   failLists = true; assert.deepEqual(await unlistedModels(env), []); failLists = false;
   // 6. The console flags a delisted model on its row and keeps it out of the picker's lists.

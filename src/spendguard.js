@@ -34,11 +34,11 @@ import { DEFAULT_RUNTIME_LIMITS } from "./limits.js";
 import { limitsFor } from "./ee/index.js";
 import { setStatus } from "./tracker.js";
 import { textConnected, textSend } from "./ee/index.js";
-import { ESCALATE_STALL } from "./ee/index.js";
 import { PAUSE_FACTS, callKey } from "./ee/index.js";
 import { loopWords } from "./ee/index.js";   // a live search: changing a real field (date, place) is a new search, not a loop
 import { loadCheckins, normalizeCheckins } from "./agent-checkins.js";
-import { SPEND_PAUSES_KEY, CHECKIN_PAUSES, spendPausesOn, checkinsOn, applySpendPreference, readSpendPreference } from './spend-preferences.js';
+import { stallAsk } from './stall-guard.js';
+import { SPEND_PAUSES_KEY, CHECKIN_PAUSES, isHelperTurn, spendPausesOn, checkinsOn, applySpendPreference, readSpendPreference } from './spend-preferences.js';
 
 export const BASE_ALLOWANCE = 20e9;        // Personal plan usage ($20/month): the plan the per-turn numbers are tuned for
 // The cost, day, notice and slot numbers below are the starting values of the saved limits (limits.js, edited on the Models page, read at the start of
@@ -195,7 +195,6 @@ export function guardTools(tc, calls, now = Date.now()) {
   noteCalls(g.watch, calls, now);
   const ck = normalizeCheckins(g.checkins);
   const s = spendPausesOn(tc) ? runawaySign(g.watch, now, ck) : checkinSign(g.watch, now, ck);   // spending pauses off: only the check-in signs
-  if (s?.reason === "loop" && escalatingNext(tc)) return null;   // the fast model repeating itself: route2 hands the next step to the stronger one first
   return s && pauseAt(tc, s.reason) ? tc.pause : null;
 }
 // ---- run_command: its time limit, and notes on what came back ----
@@ -219,12 +218,6 @@ export function commandNotes(r, tc = null) {
   if (rep) notes.push(`[1Helm: the same line came up ${rep.n} times in this output ("${rep.line.slice(0, 120)}"). That looks like a loop that isn't getting anywhere: don't run it again the same way. Tell the person what you found and ask before trying more.]`);
   if (rep && tc?.guard) tc.guard.watch.outLoops = (tc.guard.watch.outLoops || 0) + 1;
   return notes.length ? { ...r, out: `${r.out.replace(/\n*$/, "")}\n${notes.join("\n")}` } : r;
-}
-// Two-model router (route2.js): a Luna turn whose every call just now repeated an earlier one is about to escalate ("stalled").
-// The stronger model gets that one step; if it repeats too, the loop pauses on its next round.
-function escalatingNext(tc) {
-  const e = tc?.esc; if (!e || e.done || !tc.route?.two) return false;
-  return e.pending.length > 0 && e.pending.every((p) => p.repeat) && e.stall + 1 >= ESCALATE_STALL;
 }
 // Before every model call of a guarded turn: never start one that could cross the hard ceiling.
 export function guardCall(tc) {
@@ -250,7 +243,7 @@ export function guardResume(tc, startedAt) {
   if (spendPausesOn(tc)) tc.guard.wallT = setTimeout(async () => { await tc.refreshSpend?.(); if (!tc.finished && !tc.committed) pauseAt(tc, "time"); }, Math.max(1000, wallOf(tc.limits) - (Date.now() - tc.guard.started)));
 }
 export function noteCharge(tc, charge) { if (!tc) return; tc.charged = (tc.charged || 0) + charge; if (tc.guard) tc.guard.biggest = Math.max(tc.guard.biggest || 0, charge); }
-export const reportAsk = (tc, limitAsk) => tc?.pause && tc.kind !== "workflow" ? pauseAsk(tc.pause.reason) : limitAsk;
+export const reportAsk = (tc, limitAsk) => tc?.stall ? stallAsk(tc) : tc?.pause && tc.kind !== "workflow" ? pauseAsk(tc.pause.reason) : limitAsk;
 
 // ---- the Resident side ----
 // One pause system with stop.js: a paused turn's card closes as "paused" ("Paused … Continue?"); Continue is the app's
@@ -278,12 +271,13 @@ export function spendMix(Resident) { return Object.assign(Resident.prototype, {
     let L = null; try { L = this.ledger(); } catch { L = null; }   // no Ledger binding (old stub/test env): same as an unreadable preference, the ON policy
     const enabled = await readSpendPreference(L);
     applySpendPreference(tc, enabled);
-    if (enabled && tc.abort !== 'hard' && !tc.finished && !tc.committed) {
+    const binding = enabled || isHelperTurn(tc);   // a helper's deadline and caps apply with the spending pauses off too
+    if (binding && tc.abort !== 'hard' && !tc.finished && !tc.committed) {
       if (tc.guard && Date.now() - (tc.guard.started || tc.t0 || Date.now()) >= wallOf(tc.limits)) pauseAt(tc, 'time');
       if (opts.max_ms && Date.now() - (opts.resume?.started || tc.t0 || Date.now()) >= opts.max_ms && !tc.abort) { tc.limitWhy = 'time'; tc.abort = 'soft'; }
       if (tc.helper?.deadline && Date.now() >= tc.helper.deadline && !tc.abort) { tc.helperWhy = 'time limit'; tc.abort = 'soft'; }
     }
-    return enabled;
+    return binding;
   },
   // Durable source for task/list status; a guard pause is a question, not a finished result.
   spendWaiting(session) {

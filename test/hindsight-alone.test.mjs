@@ -1,18 +1,13 @@
-// node --import ./test/stubs/register.mjs test/legacy-flags.test.mjs
-// Memory Overhaul phase 5 (the design notes). The local ledger, the upkeep, reflection and people jobs and their four flags were
-// removed on 2026-10-15 (Hindsight alone does their work). What stays and is tested here:
-//   0. LEGACY_AMBIENT_SEARCH (the ambient passage index) and the wrangler files.
+// node --import ./test/stubs/register.mjs test/hindsight-alone.test.mjs
+// Memory Overhaul phase 5 (design notes, section 7). The local ledger, the upkeep, reflection and people jobs, their four flags, the ambient
+// passage index and its flag were removed (Hindsight alone does their work). What is tested here:
 //   1. Hindsight alone: a real turn keeps the turns table and the Hindsight conversation, recall_memory answers from Hindsight and says memory is unavailable
 //      when it is down, recall_history reads the turns table, and nothing creates or reads the old ledger tables.
-//   3. The ambient search flag on and off.
-import assert from "node:assert/strict"; import { readFileSync } from "node:fs";
+//   3. ambient_query: a search by words is always Hindsight recall over the Bee documents; the plain list and the location search read the place data.
+import assert from "node:assert/strict";
 import { world, tick } from "./deploy-harness.mjs";
 import { Resident } from "../src/resident.js";
-import { ambientSearchOn } from "../src/legacy-flags.js";
 import { MEMORY_UNAVAILABLE, MEMORY_UNAVAILABLE_NOTE } from "../src/memory-unavailable.js";
-// The ambient index call goes through dispatch, which checks the account level for a Workers AI model: the saved model gets a verified zero data retention route here.
-import { ENDPOINTS } from "../src/privacy.js";
-ENDPOINTS.transcription ||= {}; ENDPOINTS.transcription["@cf/baai/bge-m3"] = { "cloudflare-workers-ai": { zdr: true, training: false } };
 
 const log0 = console.log, LOGS = []; console.log = (...a) => { if (/^ {2}ok /.test(a.join(" "))) log0(...a); else LOGS.push(a.join(" ")); };
 process.on("exit", (c) => { if (c) log0(LOGS.slice(-40).join("\n")); });
@@ -20,7 +15,7 @@ const ok = (name) => console.log("  ok", name);
 const J = (b, s = 200) => new Response(JSON.stringify(b), { status: s });
 const sleep = (ms) => new Promise((z) => setTimeout(z, ms));
 const text = (m) => typeof m.content === "string" ? m.content : m.content?.filter((p) => p.type === "text").map((p) => p.text).join("");
-const HS = { HINDSIGHT: {}, HINDSIGHT_API_KEY: "k", MEMORY_BACKEND: "hindsight" }, FULL = { ...HS, HS_FOUNDATIONS: "on", HS_USE: "on", HS_WRITERS: "on" };
+const HS = { HINDSIGHT: {}, HINDSIGHT_API_KEY: "k", MEMORY_BACKEND: "hindsight" }, FULL = { ...HS, ONEHELM_EE: "1hc", HS_FOUNDATIONS: "on", HS_USE: "on", HS_WRITERS: "on" };
 
 function fakeHs(o = {}) {
   const banks = new Map(), calls = [], failNext = [];
@@ -48,19 +43,6 @@ function fakeHs(o = {}) {
     return J({ detail: `unhandled ${key}` }, 500);
   } };
   return { HINDSIGHT, calls, bank, failNext, banks, env: (x = {}) => ({ HINDSIGHT, HINDSIGHT_API_KEY: "k", MEMORY_BACKEND: "hindsight", ENV_NAME: "dev", HS_FOUNDATIONS: "on", HS_USE: "on", ...x }) };
-}
-
-// ================= 0. the flag =================
-{
-  assert.equal(ambientSearchOn({ ...FULL }), true, "unset means the index runs");
-  assert.equal(ambientSearchOn({ ...FULL, LEGACY_AMBIENT_SEARCH: "on" }), true); assert.equal(ambientSearchOn({ ...FULL, LEGACY_AMBIENT_SEARCH: "off" }), false, "off retires it");
-  assert.equal(ambientSearchOn({ ...FULL, LEGACY_AMBIENT_SEARCH: " OFF " }), false, "the value is trimmed and case blind"); assert.equal(ambientSearchOn({ ...FULL, LEGACY_AMBIENT_SEARCH: "0" }), true, "only off retires");
-  assert.equal(ambientSearchOn({ LEGACY_AMBIENT_SEARCH: "off" }), true, "with no Hindsight there is nothing to replace it, so it keeps running"); assert.equal(ambientSearchOn(undefined), true);
-  assert.equal(ambientSearchOn({ ...HS, LEGACY_AMBIENT_SEARCH: "off" }), true, "ambient search needs the Bee transcripts in the bank (HS_WRITERS)");
-  assert.equal(ambientSearchOn({ ...HS, HS_FOUNDATIONS: "on", HS_WRITERS: "on", LEGACY_AMBIENT_SEARCH: "off" }), false);
-  const example = readFileSync(new URL("../wrangler.example.jsonc", import.meta.url), "utf8");
-  for (const name of ["LEGACY_LEDGER", "LEGACY_UPKEEP", "LEGACY_REFLECT", "LEGACY_PEOPLE"]) assert.ok(!example.includes(name), `${name} is not in the example configuration`);
-  ok("0. the ambient search flag: unset or on = runs, off = retired, only when Hindsight and HS_WRITERS are configured; the four removed flags are not in the example configuration");
 }
 
 // ================= 1. Hindsight alone =================
@@ -120,46 +102,44 @@ const REC = [{ id: "o1", type: "observation", text: "Sam's dentist is Dr. Okafor
   ok("1e. arm B2 on an outage: adds the unavailable note (wrapped, so it is never retained)");
 }
 
-// ================= 3. LEGACY_AMBIENT_SEARCH =================
+// ================= 3. ambient_query =================
 const { makeStore, T: AT } = await import("./helpers/search-store.mjs");
 const { ambientQuery } = await import("../src/ee/ambient-query.js");
 const DAY1 = ["so um i gotta call the land lord about the leak in the bathroom", "Remind me to pick up Sarah's prescripshun tomorrow around five", "maybe I could learn the cello someday", "buy oat milk and some bread"];
 const DAY2 = ["call the guy about the leak under the sink", "email the accountant about the tax form", "need to renew the car registration by friday", "the landlord called back about the lease"];
 const task = (t, quote, line, kind = "task") => ({ kind, speech_act: "intention", text: t, quote, line, status: "open", due_text: "", relation: null, supersedes: [] });
 const extract = async (lines) => ({ items: lines.flatMap((l, i) => /call|remind|email|renew/i.test(l.text) ? [task(l.text.replace(/^so um i gotta /i, "").replace(/^remind me to /i, "").replace(/^need to /i, ""), l.text, i, /remind/i.test(l.text) ? "reminder" : "task")] : []) });
-async function buildAmbient(flag) {
-  const F = makeStore({ extract }); Object.assign(F.env, FULL, { LEGACY_AMBIENT_SEARCH: flag });
+async function buildAmbient() {
+  const F = makeStore({ extract }); Object.assign(F.env, FULL);
   await F.store.ingest("bee", 1, F.conv(1, DAY1)); await F.store.ingest("bee", 2, F.conv(2, DAY2, { at: AT + 864e5 })); for (let i = 0; i < 6; i++) await F.store.run();
   return F;
 }
 const count = (F, t) => F.store.rows(`SELECT COUNT(*) n FROM ${t}`)[0].n;
-for (const flag of ["on", "off"]) {
-  const on = flag === "on", F = await buildAmbient(flag);
-  assert.ok(count(F, "ambient_items") >= 4, "extraction (the voice inbox) runs either way"); assert.ok(count(F, "ambient_sources") === 2);
-  if (on) { assert.ok(count(F, "ambient_passages") > 0, "on: the passage index is built"); assert.ok(F.aiCalls.length > 0, "and embedded"); }
-  else { assert.equal(count(F, "ambient_passages"), 0, "off: no passage index is built"); assert.equal(count(F, "ambient_item_vec"), 0); assert.equal(count(F, "ambient_vocab"), 0); assert.equal(F.aiCalls.length, 0, "off: nothing is embedded, ever"); }
-  // the plain list (no query) is the voice inbox screen's data and is unchanged
-  const list = await F.store.search({ mode: "items" }); assert.ok(list.items.length >= 4); assert.equal((await F.store.search({ mode: "items", kind: "reminder" })).items.every((x) => x.kind === "reminder"), true);
-  // a search by meaning: the paraphrase finds the speech with the index, and does not without it
-  const aiBefore = F.aiCalls.length, r = await F.store.search({ mode: "transcript", query: "plumber", limit: 5 });
-  if (on) assert.ok(r.transcripts.some((t) => /leak/.test(t.text)), "on: meaning search finds the leak by 'plumber'"); else { assert.equal(r.transcripts.length, 0); assert.equal(r.coverage.search.retired, true); assert.equal(F.aiCalls.length, aiBefore, "off: the query is not embedded"); }
-  const w = await F.store.search({ mode: "transcript", query: "leak", limit: 5 }); assert.ok(w.transcripts.some((t) => /leak/.test(t.text)), "plain words still match raw lines either way");
-  // a location search by place text still works and builds nothing
-  const loc = await F.store.search({ mode: "locations", query: "anything", limit: 5 }); assert.ok(Array.isArray(loc.locations)); if (!on) assert.equal(count(F, "ambient_passages"), 0);
-  // deletion still clears the index tables
-  F.store.remove("bee", 1); assert.equal(F.store.rows("SELECT COUNT(*) n FROM ambient_passages WHERE source_id='1'")[0].n, 0);
-  ok(`3a(${flag}). the store: ${on ? "passage index and embeddings built, meaning search works" : "no index, no embedding, extraction and the plain list unchanged, plain word search still works"}`);
+{ // 3a. the store: extraction and the plain list; no index tables
+  const F = await buildAmbient();
+  assert.ok(count(F, "ambient_items") >= 4, "extraction (the voice inbox) runs"); assert.ok(count(F, "ambient_sources") === 2);
+  for (const t of ["ambient_passages", "ambient_item_vec", "ambient_vocab", "ambient_qvec"]) assert.equal(F.store.rows("SELECT COUNT(*) n FROM sqlite_master WHERE name=?", t)[0].n, 0, `${t} does not exist`);
+  const list = F.store.query({ mode: "items" }); assert.ok(list.items.length >= 4); assert.equal(F.store.query({ mode: "items", kind: "reminder" }).items.every((x) => x.kind === "reminder"), true);
+  const w = F.store.query({ mode: "transcript", query: "leak", limit: 5 }); assert.ok(w.transcripts.some((t) => /leak/.test(t.text)), "plain words match raw lines");
+  assert.ok(!("search" in w.coverage), "the store reports no search index");
+  const L = makeStore({ extract }); await L.store.ingest("bee", 7, L.conv(7, ["call the land lord about the leak"], { location: { address: "12 Harbour Street", latitude: 1, longitude: 2 } })); await L.store.ingest("bee", 8, L.conv(8, ["buy oat milk"], { location: { address: "Corner Market", latitude: 3, longitude: 4 } }));
+  for (let i = 0; i < 4; i++) await L.store.run();
+  assert.equal(L.store.query({ mode: "locations" }).locations.length, 2, "no query lists every place");
+  let lr = L.store.query({ mode: "locations", query: "harbour street" }); assert.deepEqual(lr.locations.map((x) => x.source_id), ["7"], "a location query matches the recorded address words");
+  lr = L.store.query({ mode: "locations", query: "nothing relevant here at all" }); assert.equal(lr.locations.length, 0); assert.ok(!lr.locations.some((x) => "matching_transcript_evidence" in x));
+  F.store.remove("bee", 1); assert.equal(count(F, "ambient_sources"), 1, "deleting a recording removes its rows");
+  ok("3a. the store: extraction and the plain list work, there is no index, plain word search over raw lines and address search for locations work");
 }
-{ // 3b. ambient_query: a query goes through Hindsight recall with the source:bee tag when the index is retired
-  const F = await buildAmbient("off"); let dsearch = 0, dquery = [];
-  const mkRes = (flag, f, extra = {}) => ({ get: (k) => ({ channel: "main", tenant: "t1" })[k], memoryMode: () => "on", forgottenNow: (json) => json.includes("cello"), hsBankId: () => "dev-t1-main", hsRecallPrice: async () => 1, byokHold: async () => ({ done: async () => {} }),
-    env: { ...FULL, ONEHELM_EE: "1hc", ENV_NAME: "dev", HINDSIGHT: f.HINDSIGHT, LEGACY_AMBIENT_SEARCH: flag, BEE_SYNC: { idFromName: (n) => n, get: () => ({ ambientSearch: async (a) => { dsearch++; return F.store.search(a); }, ambientQuery: async (a) => { dquery.push(a); return F.store.query(a); } }) } }, ...extra });
+{ // 3b. ambient_query: a query goes through Hindsight recall with the source:bee tag
+  const F = await buildAmbient(); let dquery = [];
+  const mkRes = (f, extra = {}) => ({ get: (k) => ({ channel: "main", tenant: "t1" })[k], memoryMode: () => "on", forgottenNow: (json) => json.includes("cello"), hsBankId: () => "dev-t1-main", hsRecallPrice: async () => 1, byokHold: async () => ({ done: async () => {} }),
+    env: { ...FULL, ENV_NAME: "dev", HINDSIGHT: f.HINDSIGHT, BEE_SYNC: { idFromName: (n) => n, get: () => ({ ambientQuery: async (a) => { dquery.push(a); return F.store.query(a); } }) } }, ...extra });
   const hits = [{ id: "h1", type: "experience", text: "Sam asked the plumber about the leak under the sink.", document_id: "bee:conv:2", mentioned_at: new Date(AT + 864e5).toISOString() }, { id: "h2", type: "world", text: "Sam might learn the cello.", document_id: "bee:conv:1", mentioned_at: new Date(AT).toISOString() },
     { id: "h3", type: "world", text: "Sam confirmed the dentist item.", document_id: "inbox:ambient:abc", mentioned_at: new Date(AT).toISOString() }];
-  let f = fakeHs({ recall: hits }), res = mkRes("off", f);
+  let f = fakeHs({ recall: hits }), res = mkRes(f);
   let out = await ambientQuery(res, { mode: "transcript", query: "who do I call about the pipe" }); const body = f.calls.find((c) => /memories\/recall/.test(c.key)).body;
   assert.deepEqual(body.tags, ["source:bee"]); assert.equal(body.tags_match, "any_strict"); assert.equal(body.query, "who do I call about the pipe"); assert.equal(f.calls.find((c) => /memories\/recall/.test(c.key)).p, "/banks/dev-t1-main/memories/recall", "General's own bank only");
-  assert.equal(dsearch, 0, "the index search is not called"); assert.equal(dquery.length, 1); assert.equal(dquery[0].query, undefined, "the coverage read carries no query"); assert.equal(dquery[0].limit, 1);
+  assert.equal(dquery.length, 1); assert.equal(dquery[0].query, undefined, "the coverage read carries no query"); assert.equal(dquery[0].limit, 1);
   assert.deepEqual(out.items, []); assert.deepEqual(out.transcripts, []); assert.equal(out.ranked, true); assert.equal(out.next_cursor, null); assert.equal(out.coverage.search.backend, "hindsight"); assert.ok(out.coverage.sources >= 1, "the processing coverage is still reported");
   assert.ok(out.memories.some((m) => m.source_id === "2" && /plumber/.test(m.text)), "each hit names its recording"); assert.ok(out.memories.every((m) => m.untrusted === true)); assert.ok(out.memories.find((m) => m.id === "hs:h3") && !("source_id" in out.memories.find((m) => m.id === "hs:h3")), "an inbox item document has no recording id");
   assert.ok(!JSON.stringify(out).includes("cello"), "forgotten speech does not come back through recall either"); assert.ok(out.coverage.withheld_by_memory_preferences >= 1); assert.match(out.search_note, /omit the query/);
@@ -169,24 +149,22 @@ for (const flag of ["on", "off"]) {
   // a recording kept as raw chunks (bee:conv:<id>, tag kind:raw): a hit is a stretch of the recording's own words, with its time and speaker, so the helper gets the matched text
   { const line = (n) => `[2026-10-12T08:${String(n % 60).padStart(2, "0")}:00-07:00] Ana (wearer, the user): the plumber said the leak under the sink needs a new pipe, part ${n}`, long = Array.from({ length: 20 }, (_, i) => line(i)).join("\n"), fact = "x".repeat(1200);
     const rf = fakeHs({ recall: [{ id: "r1", type: "world", text: long, document_id: "bee:conv:2", tags: ["source:bee", "kind:raw"], mentioned_at: new Date(AT + 864e5).toISOString() }, { id: "r2", type: "world", text: fact, document_id: "bee:conv:2", tags: ["source:bee"], mentioned_at: new Date(AT + 864e5).toISOString() }] });
-    const o2 = await ambientQuery(mkRes("off", rf), { mode: "transcript", query: "plumber leak" }), raw = o2.memories.find((m) => m.id === "hs:r1"), fx = o2.memories.find((m) => m.id === "hs:r2");
+    const o2 = await ambientQuery(mkRes(rf), { mode: "transcript", query: "plumber leak" }), raw = o2.memories.find((m) => m.id === "hs:r1"), fx = o2.memories.find((m) => m.id === "hs:r2");
     assert.equal(raw.kind, "transcript"); assert.equal(raw.source_id, "2", "a raw chunk names its recording like a fact does"); assert.ok(raw.text.length === 2000 && raw.text.startsWith("[2026-10-12T08:00:00-07:00] Ana (wearer, the user):"), "the matched words come back with their time and speaker lines, up to 2,000 characters");
     assert.equal(fx.kind, "world"); assert.equal(fx.text.length, 900, "an extracted fact is still clipped at 900"); assert.deepEqual(rf.calls.find((c) => /memories\/recall/.test(c.key)).body.tags, ["source:bee"], "one strict recall over source:bee finds both documents"); assert.match(o2.coverage.search.note, /kind transcript/);
-    const o3 = await ambientQuery(mkRes("off", rf), { mode: "items", query: "plumber", source_id: "2" }); assert.equal(o3.memories.length, 2, "source_id keeps the hits of that recording"); }
+    const o3 = await ambientQuery(mkRes(rf), { mode: "items", query: "plumber", source_id: "2" }); assert.equal(o3.memories.length, 2, "source_id keeps the hits of that recording"); }
   // a cursor means nothing here
   assert.equal((await ambientQuery(res, { mode: "items", query: "leak", cursor: "AAAA" })).status, "invalid_query");
   // the plain list never touches Hindsight; the location search keeps its own path
   f.calls.length = 0; out = await ambientQuery(res, { mode: "items" }); assert.ok(out.items.length >= 4); assert.equal(f.calls.length, 0, "no query: the inbox list, no recall");
-  dsearch = 0; out = await ambientQuery(res, { mode: "locations", query: "home" }); assert.equal(dsearch, 1, "a location search stays with the place data"); assert.equal(f.calls.length, 0);
+  dquery.length = 0; out = await ambientQuery(res, { mode: "locations", query: "home" }); assert.equal(dquery.length, 1, "a location search stays with the place data"); assert.equal(dquery[0].query, "home"); assert.equal(f.calls.length, 0);
   // an outage is an outage, not an empty list
   f.failNext.push({ re: /memories\/recall/, status: 500 }); out = await ambientQuery(res, { mode: "transcript", query: "leak" }); assert.equal(out.status, "unavailable"); assert.match(out.error, /could not be read right now/); assert.deepEqual(out.items, []);
   // no credits
-  out = await ambientQuery(mkRes("off", fakeHs({ recall: hits }), { byokHold: async () => null }), { mode: "transcript", query: "leak" }); assert.match(out.error, /credits are unavailable/); assert.equal(out.coverage.searched, false);
+  out = await ambientQuery(mkRes(fakeHs({ recall: hits }), { byokHold: async () => null }), { mode: "transcript", query: "leak" }); assert.match(out.error, /credits are unavailable/); assert.equal(out.coverage.searched, false);
   // memory off
-  assert.equal((await ambientQuery(mkRes("off", f, { memoryMode: () => "off" }), { mode: "items", query: "x" })).status, "memory_disabled");
-  // flag on: the old index path, no Hindsight call
-  f = fakeHs({ recall: hits }); dsearch = 0; out = await ambientQuery(mkRes("on", f), { mode: "transcript", query: "leak" }); assert.equal(dsearch, 1, "on: the index search"); assert.equal(f.calls.filter((c) => /recall/.test(c.key)).length, 0); assert.ok(!("memories" in out));
-  // retired flag but Hindsight writers off: nothing replaces the index, so the index path stays
-  dsearch = 0; res = mkRes("off", f); res.env.HS_WRITERS = "off"; out = await ambientQuery(res, { mode: "transcript", query: "leak" }); assert.equal(dsearch, 1, "without HS_WRITERS the flag cannot retire the index");
-  ok("3b. ambient_query with a query: Hindsight recall over the source:bee documents when retired (tags, filters, forgotten text, outages, credits), the index path when on or when nothing replaces it; the plain list and the location search are unchanged");
+  assert.equal((await ambientQuery(mkRes(f, { memoryMode: () => "off" }), { mode: "items", query: "x" })).status, "memory_disabled");
+  ok("3b. ambient_query with a query: always Hindsight recall over the source:bee documents (tags, filters, forgotten text, outages, credits); the plain list and the location search are unchanged");
 }
+
+console.log("hindsight-alone tests passed");

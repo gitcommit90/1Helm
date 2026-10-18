@@ -6,9 +6,9 @@ import test from "node:test";
 import { vision } from "../src/sidecar.js";
 import { seedSettings } from "./helpers/seed-settings.mjs";
 
-const GEMMA = "google/gemma-4-26b-a4b-it", BGE = "baai/bge-m3";
+const GEMMA = "google/gemma-4-26b-a4b-it";
 const orRecord = (id, kinds) => ({ id, name: id, source: "OR", kinds, eligible: true, reasons: [], efforts: ["default"], default_effort: "default", levels: ["unrestricted", "no_training", "zdr"], hosts: [], context_length: 262144, max_output: 8192, input_modalities: ["text", "image"], pricing: { prompt: 0.07, completion: 0.23 }, json: true, tool_choice: [] });
-const pushed = () => { const s = seedSettings(); s.jobs.vision_files = { model: GEMMA, effort: null, fallbacks: [] }; s.jobs.embed_memory = { model: BGE, effort: null, fallbacks: [] }; s.catalog[GEMMA] = orRecord(GEMMA, ["vision"]); s.catalog[BGE] = orRecord(BGE, ["embedding_memory"]); return s; };
+const pushed = () => { const s = seedSettings(); s.jobs.vision_files = { model: GEMMA, effort: null, fallbacks: [] }; s.catalog[GEMMA] = orRecord(GEMMA, ["vision"]); return s; };
 
 test("a pushed OpenRouter picture model goes to OpenRouter on Live, not Workers AI", async () => {
   const s = pushed(), real = globalThis.fetch; let sent = null, aiRuns = 0;

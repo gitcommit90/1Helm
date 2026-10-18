@@ -25,7 +25,8 @@ import { RETIRED_APPS, RETIRED_NOTE, SUPER_COVERS, latestVersion } from "./compo
 import { transportFor } from "./composio-transport.js";
 import { selfStatus, ENDED_LINE } from "./composio-self.js";
 import { tidyAfterConnect } from "./composio.js";
-import { BUILTIN_APPS_LATEST, byokInfo, isHiddenApp } from "./builtin-apps.js";
+import { BUILTIN_APPS_LATEST, byokInfo } from "./builtin-apps.js";
+import { isHiddenApp, connectRefusal } from "./app-visibility.js";
 import { loginSites } from "../logins.js";
 import { appLink } from "./texting.js";
 import { taskWords } from "./appfirst.js";
@@ -84,6 +85,7 @@ const ALIASES = {
   ig: "instagram", insta: "instagram", fb: "facebook", twitter: "twitter", x: "twitter", "x twitter": "twitter",
   teams: "microsoft_teams", "ms teams": "microsoft_teams", hotmail: "outlook", "outlook mail": "outlook", "microsoft outlook": "outlook", onedrive: "one_drive",
   "microsoft excel": "excel", "ms excel": "excel", qb: "quickbooks", qbo: "quickbooks", "quick books": "quickbooks", "google super": "googlesuper",
+  cloudflare: "cloudflare_mcp", "cloudflare mcp": "cloudflare_mcp", "cloudflare workers": "cloudflare_mcp", "cloudflare pages": "cloudflare_mcp",   // only Cloudflare MCP is offered (app-visibility.json)
 };
 const FILLER = new Set(["my", "our", "the", "a", "an", "app", "apps", "account", "accounts", "api", "acct", "please", "access", "to", "in", "on", "and", "for", "of", "with", "service", "can", "could", "do", "does", "i", "me", "is", "there", "connect", "use", "get", "into"]);
 const STOP = new Set(["that", "this", "with", "from", "your", "their", "into", "have", "about", "more", "what", "when", "which", "data", "tool", "tools", "platform", "service", "online", "manage", "management"]);
@@ -126,7 +128,9 @@ export function searchApps(list, query, n = 5) {
 }
 // How it connects: oauth (one-click sign-in) | key (an API key on Composio's secure page) | builtin | soon | retired.
 // A b flag counts only for an audited app (either version's list: each catalog file only flags its own version's audited apps).
-export function connectKind(a) { return RETIRED_APPS.has(a.s) ? "retired" : a.b && BUILTIN_APPS_LATEST.has(a.s) ? "builtin" : a.x ? "soon" : a.o ? "oauth" : "key"; }
+// connected: this person already has a connected account in it. A Soon app (x) they are already connected to stays usable: it is then
+// offered as oauth or key like any other (never "soon"), matching the Apps popup, which keeps connected apps visible.
+export function connectKind(a, connected = false) { return RETIRED_APPS.has(a.s) ? "retired" : a.b && BUILTIN_APPS_LATEST.has(a.s) ? "builtin" : a.x && !connected ? "soon" : a.o ? "oauth" : "key"; }
 // A key app that is an AI model provider (Gemini, OpenAI…): the person's own key, billed by that provider. → plain words, or "".
 export function byokText(a) { const b = connectKind(a) === "key" ? byokInfo(a.s, a.n, { cats: a.c || [] }) : null; return b ? `needs their own API key from ${b.provider}${b.url ? ` (${b.url})` : ""}; they pay ${b.payer} directly for what you use, and 1Helm doesn't bill for it` : ""; }
 const KIND_TEXT = { oauth: "one-click sign-in", key: "needs an API key or token from the app (pasted on a secure page)", builtin: "built in: nothing to connect", soon: "not available yet (Soon)", retired: "retired: can't be connected any more" };
@@ -136,6 +140,16 @@ export function oneLine(a) {
   d = d.replace(new RegExp(`^(the )?${a.n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( app| api)?('s)?\\s+(is|are|provides|offers|enables|lets|helps|allows)\\s+(a |an |the )?`, "i"), "");
   d = d ? d[0].toUpperCase() + d.slice(1) : (a.c || []).join(", ");
   return d.length > 170 ? d.slice(0, 167).replace(/\s+\S*$/, "") + "…" : d;
+}
+// Server side of "Soon and hidden apps can't be connected": → "" when the person may connect this app, else the refusal text.
+// Used by the Connect route (index.js) and appConnectLink (composio.js). A Soon app they are already connected to may get another account.
+export async function connectBlock(env, tenantId, slugIn) {
+  const slug = String(slugIn || "").toLowerCase();
+  if (isHiddenApp(slug)) return connectRefusal(slug);
+  const row = (await catalog(env)).find((r) => r.s === slug) || null;
+  if (!row || !row.x) return "";
+  let connected = false; try { connected = (await transportFor(env, tenantId).listConnections({ app: slug, names: false })).some((c) => c.status === "connected"); } catch {}
+  return connectRefusal(slug, row, connected);
 }
 // This workspace's connection to one app, from listConnections rows ({ app, status, email, retired }).
 export function statusFor(slug, conns = []) {
@@ -302,7 +316,7 @@ async function findApp(res, a, ctx) {
   const session = ctx.session || null, tenant = res.get("tenant");
   const off = (await offersFlag(res.env, tenant)) === "off";
   const out = named.map(({ a: x }) => {
-    const kind = connectKind(x), st = statusFor(x.s, conns), prev = session ? offerRow(res.sql, session, x.s) : null;
+    const st = statusFor(x.s, conns), kind = connectKind(x, st.status === "connected"), prev = session ? offerRow(res.sql, session, x.s) : null;
     return { app: x.s, name: x.n, what: oneLine(x), status: statusText(st, kind), connects: byokText(x) || KIND_TEXT[kind], ...(prev ? { offered_in_this_task: offeredText(prev) } : {}), _k: kind, _st: st.status, _p: prev, _x: x };
   });
   const own = mine.map((r) => ({ app: r.slug.toLowerCase(), name: displayOf(r), what: "a custom MCP server the person added in Settings → Advanced", status: "connected", connects: "already added by the person; nothing to connect" }));
@@ -355,7 +369,8 @@ async function offerConnect(res, a, ctx) {
   let x = all.find((r) => r.s === want.toLowerCase() || r._s === wc || r._c === wc);
   if (!x) { const h = searchApps(list, want, 1)[0]; if (h && h.score >= 85) x = h.a; }
   if (!x) return `error: no app called "${want}" in the catalog. Call find_app first; if nothing matches, it isn't available as a connection, so offer the browser instead.`;
-  const kind = connectKind(x);
+  let kind = connectKind(x);
+  if (kind === "soon" && statusFor(x.s, await res.conns(true)).status === "connected") kind = connectKind(x, true);   // Soon, but already connected: usable
   if (kind === "retired") return `NOT OFFERED: ${RETIRED_NOTE}`;
   if (kind === "soon") return `NOT OFFERED: ${x.n} isn't available as a connection yet. Tell them plainly, and offer to do it in the browser instead (browser_task; browser_fill_login if they saved a login for it, else browser_handoff).`;
   if (kind === "builtin") return `NOT OFFERED: ${x.n} is built in, nothing to connect. Use it right away with app_actions (app "${x.s}").`;

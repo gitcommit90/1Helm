@@ -123,6 +123,49 @@ export async function stageInputs(t, m, args, { toolkit, appName = toolkit, read
   return { args: out, staged };
 }
 
+// ---- file contents as an input's value ----
+// An input that takes text (GitHub's file content, a note's body) can't take a FileUploadable. {"file_text": ref} is replaced by the file's
+// text (UTF-8), {"file_base64": ref} by its Base64, where ref is a Library file name or a computer path (read(ref) as in stageInputs()).
+// Looked for in the arguments up to four levels deep. → { args, used: [{ name, bytes }] } | { error } (an error means nothing was run).
+export const INLINE_MAX = 3 * 1024 * 1024;
+const refKind = (v) => { if (!isPlain(v)) return null; const k = Object.keys(v); return k.length === 1 && (k[0] === "file_text" || k[0] === "file_base64") && typeof v[k[0]] === "string" ? k[0] : null; };
+const hasRef = (v, d = 0) => d > 4 ? false : refKind(v) ? true : Array.isArray(v) ? v.some((x) => hasRef(x, d + 1)) : isPlain(v) ? Object.values(v).some((x) => hasRef(x, d + 1)) : false;
+export const toBase64 = (bytes) => { let s = ""; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); };
+// A computer path passed as the text itself (the helper meant "the file's contents") would be stored as that literal path (GitHub kept
+// "/workspace/…/index.html" as the page, twice). Only inputs named like contents are checked, and only a lone path with no spaces.
+const CONTENT_INPUTS = new Set(["content", "contents", "body", "text", "html", "data", "file_content"]);
+export const pathAsContent = (args) => Object.entries(args || {}).find(([k, v]) => CONTENT_INPUTS.has(k) && typeof v === "string" && v.length < 300 && /^\/workspace\/\S+$/.test(v.trim()))?.[0] || null;
+export async function resolveFileRefs(args, read) {
+  const used = [], pc = pathAsContent(args);
+  if (pc) return { error: `error: "${pc}" is a computer path, and it would be sent as the text itself, not the file's contents. To send the file's contents, pass {"file_text": "${args[pc].trim().slice(0, 200)}"} as the value of ${pc} (or {"file_base64": "…"} for Base64). Nothing was run.`, used };
+  if (!hasRef(args)) return { args, used };
+  const fail = (why) => ({ error: `error: ${why} Nothing was run.` });
+  if (!read) return fail("files can't be read from here.");
+  let bad = null;
+  const walk = async (v, d, path) => {
+    if (bad) return v;
+    const k = refKind(v);
+    if (k) {
+      const ref = v[k].trim();
+      if (!ref) { bad = `${path}: which file? Give a Library file name or a /workspace path.`; return v; }
+      let f; try { f = await read(ref); } catch (e) { bad = `couldn't read "${ref}": ${String(e.message || e).slice(0, 200)}.`; return v; }
+      if (!f || f.error) { bad = f?.error || `couldn't read "${ref}".`; return v; }
+      const bytes = f.bytes instanceof Uint8Array ? f.bytes : new Uint8Array(f.bytes || 0), name = safeName(f.name || ref.split("/").pop());
+      if (bytes.byteLength > INLINE_MAX) { bad = `"${name}" is ${humanBytes(bytes.byteLength)}; a file sent as text can be at most ${humanBytes(INLINE_MAX)}.`; return v; }
+      used.push({ name, bytes: bytes.byteLength });
+      if (k === "file_base64") return toBase64(bytes);
+      try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+      catch { bad = `"${name}" isn't text (it isn't valid UTF-8); use {"file_base64": ...} for it.`; return v; }
+    }
+    if (d >= 4) return v;
+    if (Array.isArray(v)) { const o = []; for (let i = 0; i < v.length; i++) o.push(await walk(v[i], d + 1, `${path}[${i}]`)); return o; }
+    if (isPlain(v)) { const o = {}; for (const [kk, x] of Object.entries(v)) o[kk] = await walk(x, d + 1, path ? `${path}.${kk}` : kk); return o; }
+    return v;
+  };
+  const out = await walk(args, 0, "");
+  return bad ? fail(bad) : { args: out, used };
+}
+
 // ---- outputs ----
 // Download one staged file, at most `max` bytes (refused from the length header, else cut off while streaming).
 export async function fetchFile(url, max = APP_FILE_MAX) {

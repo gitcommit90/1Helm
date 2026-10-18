@@ -57,15 +57,16 @@ import { appsMode, selfStatus, isEnded, endedToolText, ENDED_PREFIX } from "./ee
 import { withCustomRows, isCustomSlug, CUSTOM_WORDS } from "./ee/index.js";
 import { guardedTool, afterTurn as askAfterTurn } from "./ask-first.js";
 import { notifyTask, notifyReset, textAllowed } from "./notify.js";   // Settings → Notifications: push / text when a task needs you or is finished
-import { BUILTIN_TEXT } from "./ee/index.js";
+import { BUILTIN_TEXT, isHiddenApp } from "./ee/index.js";
 import { turnCalls, recordLines, RECORD_HEAD, REC_TURNS, usedApps, usedAppsNote } from "./turnrec.js";   // compact context: earlier turns' tool record + integrations used
 import { runBrowserTask } from "./ee/index.js";
 import { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput } from "./ee/index.js";
 import { CONNECT_TOOLS, CONNECT_LINES, connectOfferInit, connectTool, offersView, offerAct, offerGet, offerConnected, composioSigninOffer, connectWriteBlock, appCatalog, catalogFile } from "./ee/index.js";
+import { jobStartedReply, ACK_UPDATE_SENT, ACK_UPDATE_UNCONFIRMED, ACK_RESULT_NOT_READY, ACK_UPDATE_FAILED, ACK_JOB_NOT_STARTED, ACK_ANSWER_RECEIVED } from "./plain-ack.js";
 import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, HELPER_NAME_MAX, HELPER_TASK_MAX, HELPER_MESSAGE_MAX, HELPER_MESSAGES_MAX, COORDINATOR_MAX_CHILDREN, COORDINATOR_LIMITS, helperExclude, helperAllowed, helperContextSnapshot, helperDir, workerOutputPath, helperJobText, coordinatorFinalText, helperStartedText, helperNoteText, helperMessageRows, helperMessagePending, helperMessageText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, helperRow, coordinatorChildren, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, helperNextWake, liveTurnOf, helperTcOf, emitHelper } from "./helpers.js";
-import { routeTwoTurn, escalationBefore, escalationAfter, dispatchOrder, HANDOFF_PREFIX } from "./ee/index.js";   // routing policy
+import { routeTwoTurn, dispatchOrder, HANDOFF_PREFIX } from "./ee/index.js";   // routing policy
 import { privacyOf, PRIVACY_EXHAUSTED } from "./privacy.js";   // AI data privacy: the account's level, read on every dispatch
-import { jobModel, modelSettingsEnv, dispatch, mainChatJob, plannedMaxOutput, plannedHold, plannedHoldNano, holdOutNano, chatJobId } from "./ee/index.js";
+import { jobModel, modelSettingsEnv, dispatch, CHAT_JOB, plannedChatMaxOutput, plannedChatHoldNano, plannedHold, holdOutNano } from "./ee/index.js";
 import { limitsFor } from "./ee/index.js";
 import { DEFAULT_RUNTIME_LIMITS } from "./limits.js";
 import { METER as BYOK_METER, BYOK_MARKUP, hsRetainBatchNano, hsRecallNano, HS_REFRESH_WINDOW_MS } from "./byok-meter.js";
@@ -87,6 +88,7 @@ import { flagTurns, FLAG_MIN_CHARGE } from "./ee/index.js";   // a step with no 
 import { repeatWatch, toolBatchWatch, stepNote, stepFallback } from "./repeat-guard.js";   // a model step that starts repeating itself
 import { guardResume, noteRepeat, commandLimitMs, commandNotes, stepNotes, spendInit, spendMix, guardModel, guardTools, guardCall, noteCharge, reportAsk, pauseFallback, DAY_PAUSE_REPLY, OUT_OF_TIME_REPLY, SPEND_CEILING } from "./spendguard.js";   // per-turn budget, runaway pause, day/month guard
 import { spendPausesOn, pausesApply, stepAllowance } from './spend-preferences.js';
+import { stallCheck } from './stall-guard.js';
 import { trimTurnState, resumedReplyState, diagnosticTrace } from './spend-retention.js';
 import { savedWorkflowHardReport } from './workflow-hard-report.js';
 import { safeName, mimeOf, humanBytes, MAX_UPLOAD, storeUpload, storeView, viewJpeg, fileTags } from "./files.js";
@@ -151,6 +153,7 @@ import { CREATE_CHANNEL_TOOL, START_TASK_TOOL, createChannelTool } from "./task-
 import { recallHistory } from "./history-search.js";
 import { appFirstBlock, repeatBlock, repeatNote } from "./ee/index.js";
 import { integrationHint, hintNudge } from "./ee/index.js";
+import { wantsWebsiteLive, websiteLiveNote } from "./website-live.js";
 import { APPS_USED_TOOL, APPS_USED_LINE, appsUsedTool, appsUsedLine, getAppsUsed, usedSlugs } from "./ee/index.js";   // "Apps I use": the person's own list, a heads-up for offers and hints   // a named service that has an integration: one hint line per message, one nudge per app per task
 import { memoryReply, isStatusNotice, looksLikeStatus, STATUS_MARK } from "./status-notes.js";
 import { liveNudge, noteRan } from "./live-check.js";   // live status (flights, prices, scores) needs a lookup in this turn   // 1Helm's pause / limit notices are past status, never work to resume   // connected app first; no repeated searches / lists / pages in a turn
@@ -467,6 +470,8 @@ export class Resident extends DurableObject {
     }
     this.put("sessions_v1", "1");
   }
+  // Next job-started line for this channel (the Resident is one channel). The counter lives in kv, written before the line is used, so a resume never repeats the line.
+  nextJobAck() { const n = Number(this.get("ack_job_n")) || 0; this.put("ack_job_n", n + 1); return jobStartedReply(n); }
   put(k, v) { this.sql.exec("INSERT INTO kv VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", k, String(v)); }
 
   // The channel computer must know its tenant (for billing and storage paths) before first use; a never-used channel's computer doesn't.
@@ -481,7 +486,7 @@ export class Resident extends DurableObject {
   async conns(fresh = false) {
     if (!this.env.COMPOSIO_KEY) return [];
     if (!fresh && this._conns && Date.now() - this._conns.at < 60000) return this._conns.list;
-    try { const list = await withCustomRows(this.env, this.get("tenant"), await transportFor(this.env, this.get("tenant")).listConnections(fresh ? { fresh: true } : {})); this._conns = { at: Date.now(), list }; return list; }   // + this workspace's own custom MCP servers (custom-mcp.js)
+    try { const list = await withCustomRows(this.env, this.get("tenant"), (await transportFor(this.env, this.get("tenant")).listConnections(fresh ? { fresh: true } : {})).filter((x) => !isHiddenApp(x.app)));  this._conns = { at: Date.now(), list }; return list; }   // + this workspace's own custom MCP servers (custom-mcp.js)
     catch (e) { if (isEnded(e)) { this._conns = { at: Date.now(), list: [] }; return []; } return this._conns?.list || []; }   // sign-in ended: cmpGate says so
   }
 
@@ -947,9 +952,6 @@ export class Resident extends DurableObject {
     if (tc && !tc.appendRuntime) tc.classicTools = list;
     return list;
   }
-  // Two mode: the step's model choice. Before the call, the previous step's results can switch the rest of the turn to the top model
-  // (route2.js escalation); after it, a Luna step that calls propose_plan or says it's stuck is redone once on the top model (the
-  // Luna attempt's cost is kept; its live text, if any, isn't repeated).
   // Repetition guard (repeat-guard.js): a step that starts repeating itself is stopped mid-stream and thrown away (its partial tool
   // call too), then tried once more with a short note; looping again → a plain message, no tools. Both engines call this. Each looped
   // step is billed (charge estimated at the price ceiling when the stream had no usage yet) and counted by the spend guard
@@ -973,7 +975,7 @@ export class Resident extends DurableObject {
     if (tc?.routingImagesDescribed) messages = withoutReviewImages(messages);
     if (tc?.appendRuntime) await this.governTaskContext(messages, tc);
     let r;
-    try { r = await this.callModelStep(messages, onComputerTool, onText, noTools, tc); }
+    try { r = await this.callModelOnce(messages, onComputerTool, onText, noTools, tc); }
     catch (e) {
       if (tc?.routingReviewHelper && !tc.routingImagesDescribed && (e.imageInputRejected || e.reason === "unsupported-image" || isRoutingImageError(e))) {
         tc.routingImagesDescribed = true;
@@ -981,7 +983,7 @@ export class Resident extends DurableObject {
         const cleaned = withoutReviewImages(messages);
         cleaned.push({ role: "user", content: fallback.preview });
         this.save(tc.turn, { role: "user", content: fallback.preview });
-        r = await this.callModelStep(cleaned, onComputerTool, onText, noTools, tc);
+        r = await this.callModelOnce(cleaned, onComputerTool, onText, noTools, tc);
       } else {
       // One durable overflow allowance per turn. Provider errors other than an
       // explicit context rejection never trigger blind compression/retries.
@@ -989,7 +991,7 @@ export class Resident extends DurableObject {
       tc.contextOverflowRetried = true;
       this.sql.exec("UPDATE turn_runs SET extra=json_set(COALESCE(extra,'{}'),'$.contextOverflowRetried',1) WHERE card=?", tc.turn);
       await this.governTaskContext(messages, tc, "provider_context_rejection");
-      r = await this.callModelStep(messages, onComputerTool, onText, noTools, tc);
+      r = await this.callModelOnce(messages, onComputerTool, onText, noTools, tc);
       }
     }
     if (tc?.appendRuntime) tc.transcript.observe(r.inTok, messages, this.modelTools(tc));
@@ -998,7 +1000,7 @@ export class Resident extends DurableObject {
     noteRepeat(tc, r.repeat); console.log("model step repeating, retrying once", JSON.stringify({ ...r.repeat, unit: r.repeat.unit.slice(0, 40) }));
     let r2;
     try { const note = { role: "user", content: stepNote(r.repeat) }; if (tc?.appendRuntime) { messages.push(note); this.save(tc.turn, note); }
-      r2 = await this.callModelStep(tc?.appendRuntime ? messages : [...messages, note], onComputerTool, onText, noTools, tc); }
+      r2 = await this.callModelOnce(tc?.appendRuntime ? messages : [...messages, note], onComputerTool, onText, noTools, tc); }
     catch (e) { retainModelUsage(this, tc, r); throw e; }
     const sum = { inTok: r.inTok + r2.inTok, cached: r.cached + r2.cached, cacheWrite: (r.cacheWrite || 0) + (r2.cacheWrite || 0), outTok: r.outTok + r2.outTok, charge: r.charge + r2.charge };
     if (!r2.repeat) return { ...r2, ...sum, repeated: r.repeat };
@@ -1059,18 +1061,6 @@ export class Resident extends DurableObject {
       return a.length > 0 && a.length === b.length;
     } catch { return false; }
   }
-  async callModelStep(messages, onComputerTool, onText = null, noTools = false, tc = null) {
-    if (tc?.appendRuntime || !tc?.route?.two) return this.callModelOnce(messages, onComputerTool, onText, noTools, tc);
-    escalationBefore(this, tc, messages);
-    let spoke = false; const said = onText ? (s) => { spoke = true; onText(s); } : null;
-    const r = await this.callModelOnce(messages, onComputerTool, said, noTools, tc);
-    if (noTools || !escalationAfter(this, tc, r)) return r;
-    let r2;
-    try { r2 = await this.callModelOnce(messages, onComputerTool, spoke ? null : onText, noTools, tc); }
-    catch (e) { retainModelUsage(this, tc, r); throw e; }
-    escalationAfter(this, tc, r2);
-    return { ...r2, inTok: r.inTok + r2.inTok, cached: r.cached + r2.cached, cacheWrite: (r.cacheWrite || 0) + (r2.cacheWrite || 0), outTok: r.outTok + r2.outTok, charge: r.charge + r2.charge, redone: r.model };
-  }
   async callModelOnce(messages, onComputerTool, onText = null, noTools = false, tc = null) {
     if (tc?.abort === "hard") throw stopError();   // stopped: no further model calls
     if (tc?.modelFailure) throw modelFault(tc.modelFailure.code, tc.modelFailure.phase);
@@ -1092,11 +1082,11 @@ export class Resident extends DurableObject {
       }
     }
     const route = tc?.route || null; let tools = noTools && !tc?.appendRuntime ? null : this.modelTools(tc);
-    // The output limit is the saved max output of the category's chat job, read again at every step; empty means no limit is sent. The model and its
+    // The output limit is the saved max output of the category the turn was routed to, read again at every step; empty means no limit is sent. The model and its
     // reasoning level stay as the task froze them. The spend hold below is sized from the model's published maximum when no limit is saved.
-    const savedOut = await plannedMaxOutput(this.env, chatJobId(tc?.taskProfile?.category || route?.category)).catch(() => null), frozen = tc?.taskProfile;
+    const frozen = tc?.taskProfile, chatCategory = frozen?.category || "general", savedOut = await plannedChatMaxOutput(this.env, chatCategory).catch(() => null);
     const requestMaxOut = savedOut;
-    const holdOutNanoNow = frozen ? holdOutNano({ catalog: { [frozen.requestedModel]: frozen.catalog } }, frozen.requestedModel, savedOut) : await plannedHoldNano(this.env, chatJobId(route?.category)).catch(() => 0);
+    const holdOutNanoNow = frozen ? holdOutNano({ catalog: { [frozen.requestedModel]: frozen.catalog } }, frozen.requestedModel, savedOut) : await plannedChatHoldNano(this.env, chatCategory).catch(() => 0);
     let backgroundFormat = tc?.appendRuntime && noTools ? (tc.taskProfile.catalog.tool_choice.includes("none") ? { tool_choice: "none" } : {}) : noTools && messages.at(-1)?.role === "user" && String(messages.at(-1)?.content).startsWith(HANDOFF_PREFIX) ? { response_format: structuredFormat("handoff_notes", HANDOFF_SCHEMA) } : {};
     const estIn = Math.ceil(JSON.stringify(messages).length / 3);
     // Own AI key (byok.js): their endpoint and models, nothing reserved or charged for the call (their provider bills them).
@@ -1150,14 +1140,14 @@ export class Resident extends DurableObject {
         const px = `${prefixPrint(messages, tools)}.${runPrint(tc)}`;   // gateway log: which cached prefix this call used, and which task/run it belongs to (model.js)
         const prov = this.provenance(messages, tc);   // what this payload carries
         try {
-          stream = (await waitModel(dispatch(this.env, mainChatJob(route), { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat", px, _prov: prov }, signal, session: sess, route }))).body;
+          stream = (await waitModel(dispatch(this.env, CHAT_JOB, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat", px, _prov: prov }, signal, session: sess, route }))).body;
           provider = "openrouter"; thinkDone = true;   // OpenRouter streams reasoning separately; content is the answer
         } catch (e) {
           // 400 = our request is wrong: surface it. Anything else (402/429/5xx/network): retry once after 1.5 s, then Workers AI.
           if (e.taskAffinity || e.contextOverflow || e.orStatus === 400 || e.privacy || signal.aborted) throw signal.aborted ? aborted() : e;
           fellBack = String(e.message || e).slice(0, 160);
           try { await waitModel(new Promise((z) => setTimeout(z, 1500))); if (signal.aborted) throw aborted();
-            stream = (await waitModel(dispatch(this.env, mainChatJob(route), { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-retry", px, _prov: prov }, signal, session: sess, route }))).body;
+            stream = (await waitModel(dispatch(this.env, CHAT_JOB, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-retry", px, _prov: prov }, signal, session: sess, route }))).body;
             provider = "openrouter"; thinkDone = true; fellBack = null;
           } catch (e2) { if (e2.orStatus === 400 || e2.privacy || signal.aborted) throw signal.aborted ? aborted() : e2; fellBack = String(e2.message || e2).slice(0, 160); console.log("openrouter unavailable twice, using workers ai", fellBack); }
         }
@@ -2456,7 +2446,9 @@ export class Resident extends DurableObject {
       const card = r.turn || tc?.turn || h.card;
       const inputQuestion=tc?.helperInputQuestion || r.input_requested || (h.input_card === card ? h.input_question : null) || null;
       const response = inputQuestion || (tc?.helperDoneResponse ?? String(r.reply || ""));
-      const limit = r.forced || r.hit_limit || tc?.helperWhy || tc?.abort ? tc?.helperWhy || "step, time or cost limit" : r.error ? `failure: ${plainError(r.error)}` : null;
+      const limit = r.forced || r.hit_limit || tc?.helperWhy || tc?.abort ? tc?.helperWhy || (r.forced ? "took too long" : "step, time or cost limit") : r.error ? `failure: ${plainError(r.error)}` : null;
+      if (r.forced && tc) tc.abort = "hard";   // a closed round's turn must not keep calling the model
+      if (r.forced) this.helperForcedCard(card, tc);
       let handoff;
       try { handoff = inputQuestion ? {files:[],imageParts:[],preview:"The worker paused before completion. Its outputs remain held, and approval requires a completed done response."} : await collectRoutingFiles(this, { ...h, card }, tc || {}); }
       catch (e) { handoff = { files: [], imageParts: [], incomplete: true, preview: `INCOMPLETE FILE HANDOFF. ${e.message}. Do not approve the result. Request a revision to recover the files.` }; }
@@ -2496,7 +2488,7 @@ export class Resident extends DurableObject {
     const opts = { kind: "helper", session: h.session, helper: h, parent_card: h.parent_card,
       coordinator_phase: coordinatorPhase, max_steps: share?.steps || this.hl().steps, max_charge: share?.charge || this.hl().charge,
       ...(share ? { hard_charge: share.charge } : {}), exclude_tools: helperExclude(this.tools(), h, coordinatorPhase).filter(n => !h.dynamic_routing || n !== "done"), ...(resume ? { resume, card } : {}) };
-    const prompt = coordinatorPhase === "aggregate" ? coordinatorFinalText(h, coordinatorChildren(this.sql, h.id), this.get("channel")) : h.dynamic_routing && h.round > 1 ? "Continue the same assigned job using the latest correction above. Call done with your response to finish this round." : helperJobText(h, this.get("channel"));
+    const prompt = coordinatorPhase === "aggregate" ? coordinatorFinalText(h, coordinatorChildren(this.sql, h.id), this.get("channel")) : h.dynamic_routing && h.round > 1 ? "Continue the same assigned job using the latest correction above. Call done with your response to finish this round." : helperJobText(h, this.get("channel"), () => readSkill({ slug: "business-setup" }, this.docFlags()));
     const p = this.runTurn(this.get("tenant"), this.get("channel"), this.get("channel_id"), prompt, null, opts);
     // runTurn registers the turn (tc.helper = opts.helper, its hidden card in tc.turn) synchronously: helpers have no session queue.
     const tc = [...this.active.values()].find((t) => t.helper?.id === h.id && !t.finished) || null;
@@ -2554,6 +2546,8 @@ export class Resident extends DurableObject {
     this.arm().catch(() => {});
     return next;
   }
+  // A helper closed because it never came back from a tool: its card ends as stopped now, not when (if ever) the tool returns.
+  helperForcedCard(card, tc) { if (!card) return; try { commitCard(this.sql, tc, card, { status: "stopped" }); } catch (e) { console.log("forced helper card", e.message); } }
   // Records how a run ended (if it's still marked running) and hands the result to the main helper when one is owed.
   // r = null: only deliver an owed handoff (alarm / restart). Stops by the person or the main helper never hand off.
   helperFinish(id, r = null, tc = null, phase = null) {
@@ -2586,6 +2580,7 @@ export class Resident extends DurableObject {
           status = "stopped"; by = "limit"; why = tc?.helperWhy || (tc?.limitWhy === "cost" || charge >= this.hl().charge ? (h.coordinator_id || h.role === "coordinator" ? "cost target" : "cost limit") : "step limit");
         }
         if (r.forced && tc) tc.abort = "hard";
+        if (r.forced) this.helperForcedCard(card, tc);
         this.sql.exec("UPDATE helpers SET status=?, ended=?, report=?, error=?, stopped_by=?, why=?, charge_nano=?, steps=?, model_steps=?, card=?, phase=CASE WHEN role='coordinator' THEN 'done' ELSE phase END WHERE id=?", status, now, rep, error, by, why, charge, steps, modelSteps, card, id);
       } else this.sql.exec("UPDATE helpers SET charge_nano=?, steps=?, model_steps=?, report=COALESCE(report, ?), card=COALESCE(card, ?), ended=COALESCE(ended, ?) WHERE id=?", charge, steps, modelSteps, rep, card, now, id);
       h = helperRow(this.sql, id); emitHelper(this, h);
@@ -2959,7 +2954,7 @@ export class Resident extends DurableObject {
   async runInputFixture(tc,text,opts) {
     if(this.env.ENV_NAME!=="dev"||this.env.TEST_MODE!=="1"||this.get(`input-fixture:${tc.session}`)!=="1")return null;
     const chooser=tc.inputReply?.ambiguous?createInputChooser(this.sql,tc,tc.inputReply):null;
-    const reply=chooser&&!chooser.error?chooser.presentation||chooser.question:"Your answer was received by Primary. The worker remains open for clarified instructions.";
+    const reply=chooser&&!chooser.error?chooser.presentation||chooser.question:ACK_ANSWER_RECEIVED;
     if(chooser&&!chooser.error){tc.inputRequest=chooser;tc.emit?.({t:"user_input",input:chooser});}
     this.commitTurn(tc,true);this.sql.exec("INSERT INTO turns (id,at,user_text,reply,kind,session,steps,tool_calls,charge_nano) VALUES (?,?,?,?,?,?,?,?,?)",tc.turn,Date.now(),String(text),reply,"chat",tc.session,0,0,0);
     commitCard(this.sql,tc,tc.turn,{status:"complete"});
@@ -3412,7 +3407,7 @@ export class Resident extends DurableObject {
     const placeNote = kind === "chat" || kind === "followup" || kind === "workflow" ? await this.placeNote(t0) : ""; tc.placeNote = placeNote; tc.placeKnown = !!this._placeKnown;
     // Integrations this message names (integration-hint.js): one line next to the time and place, never saved, never the system prompt.
     const ih = kind === "chat" && !RS ? await integrationHint(this, text) : { line: "", items: [] }; tc.hint = ih.items;
-    const hintNote = ih.line ? `\n${ih.line}` : ""; tc.hintNote = hintNote;
+    const hintNote = [ih.line, kind === "chat" && !RS && eeEnabled(this.env) && wantsWebsiteLive(text) ? websiteLiveNote() : ""].filter(Boolean).map((x) => `\n${x}`).join(""); tc.hintNote = hintNote;   // website-live.js: the business-setup skill is required reading for a website going live on a domain (Cloud only: the note names the Cloudflare MCP app)
     // Reply on a chat bubble (reply-to.js): one line naming the earlier message this answers, in front of their words. Saved with
     // them (both engines), so later turns' history and a resume read it too; the cached prefix is untouched.
     const asked = kind === "chat" ? withReply(text, opts.reply) : text;
@@ -3455,9 +3450,6 @@ export class Resident extends DurableObject {
     // ---- Routing policy (route2.js): one decider yes/no per message → Sol (task) or Luna (conversation); sets the turn's route. ----
     // Own AI key: no Jev call and no Sol/Luna; their main model runs the turn, their fast model the chores (callModelOnce).
     if (eeEnabled(this.env) && !nativeWorker && !tc.taskProfile?.backgroundGeneral && !tc.appendRuntime && useOpenRouter(this.env) && !this.env.BYOK && tc.abort !== "hard" && !RS) await routeTwoTurn(this, tc, { kind, text: asked + attNote + fileBody, hist, stats });
-    // Quality recovery that corrects the approach (pool.js RECOVERY: research / general): one context note at the end of this message
-    // (after the cached history, so the prefix stays warm). Saved in the turn's journal, so a resume keeps it.
-    if (tc.route?.note && !RS) { userText = `${userText}\n\n${tc.route.note}`; userMsg.content = pics.length ? [{ type: "text", text: userText }, ...pics] : userText; }
     const stepIn = []; let checkpoints = 0;
     const trace = [];
     const memJoin = await this.memUseJoin(memUse, tc).catch((e) => { console.log("memory arm", e?.message); return { block: "", info: null }; });   // never throws, ends by its own deadline
@@ -3554,12 +3546,12 @@ export class Resident extends DurableObject {
         await this.spendRefresh(tc, opts);
         if (tc.abort !== "hard" && (tc.delegationUncertain || tc.orchestration?.sent || tc.orchestration?.waitingInput)) {
           const q = questionForTurn(this.sql,tc.turn);
-          if (tc.delegationUncertain) { reply = "I could not confirm whether the worker update finished before the restart. I have not repeated it."; error = "delegation_outcome_unknown"; }
+          if (tc.delegationUncertain) { reply = ACK_UPDATE_UNCONFIRMED; error = "delegation_outcome_unknown"; }
           else if (tc.orchestration.waitingInput) { tc.inputRequest = q; reply = q?.status === "pending" ? q.presentation || q.question : "The question is no longer waiting for an answer."; }
-          else reply = tc.orchestration.review || tc.orchestration.steer ? "Your update was sent to the worker." : "I started the worker.";
+          else reply = tc.orchestration.review || tc.orchestration.steer ? ACK_UPDATE_SENT : this.nextJobAck();
           said.length=0; saidMeta.length=0; said.push(reply); this.commitTurn(tc,true); break;
         }
-        if (!pausesApply(tc) && !opts.hard_charge) delete stats.hit_limit;
+        if (!pausesApply(tc) && !opts.hard_charge && !tc.stall) delete stats.hit_limit;
         trimTurnState(tc, {said, saidMeta, stats, trace, stepIn, wmLog});
         const stepLimit = stepAllowance(tc, maxSteps);
         if (step >= stepLimit) { capped = true; break; }
@@ -3579,7 +3571,7 @@ export class Resident extends DurableObject {
           stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model);
           const a = { role: "assistant", content: fin.content }; messages.push(a); this.save(turn, a);
           await this.spendRefresh(tc, opts);
-          if (!pausesApply(tc) && !opts.hard_charge && tc.abort !== 'hard') {
+          if (!pausesApply(tc) && !opts.hard_charge && !tc.stall && tc.abort !== 'hard') {
             if (!tc.appendRuntime) messages.splice(messages.indexOf(ask), 1);
             const resume = {role:'user',content:'(The person turned off spending check-ins. Continue their task; the discretionary pause no longer applies.)'};
             messages.push(resume); this.save(turn, resume); send?.({t:'work'}); continue;
@@ -3711,6 +3703,7 @@ export class Resident extends DurableObject {
           }
           if (!out) { const x0 = Date.now(); out = await untilStopped(tc, this.runTool(xcall, tc), STOPPED_TOOL_TEXT); trace.push({ tool: call.function.name, args: String(sp.args).slice(0, 300), ms: Date.now() - x0, out: out.slice(0, 300) }); }
           stepEnd(this.sql, tc, sv?.seq, { out, ms: Date.now() - s0, ...(tc.lastCmd ? { cmd: tc.lastCmd } : {}) });
+          stallCheck(tc, call.function.name, sp.args, out, tc.limits || this.lim());   // stall-guard.js: the same call and result again and again → soft stop
           out = stepNotes(tc, call.function.name, res.calls, out, (() => { try { return JSON.parse(sp.args || "{}"); } catch { return {}; } })());   // spendguard.js: to-dos alone, research past a file's budget
           const dup = wm ? sameAsShown(out, messages, wmState, wmBase, call.function.name) : null, toolMsg = { role: "tool", tool_call_id: call.id, content: dup ?? out }; if (wm) wmFull.set(call.id, dup ?? out);
           messages.push(toolMsg); this.save(turn, toolMsg); this.effectDone(tc, call.id, out);
@@ -3718,7 +3711,7 @@ export class Resident extends DurableObject {
         await settle();
         } finally { tc.readBatch = null; tc.onAppQueued = null; if (batch && parked.length) batch.cancel(); }   // stopped mid-step: parked reads never run
         if (tc.helperInputQuestion != null || tc.helperDoneResponse != null || tc.orchestration?.waitingInput || tc.orchestration?.sent || tc.delegateYield) {
-          reply = tc.helperInputQuestion ?? (tc.inputRequest ? tc.inputRequest.presentation || tc.inputRequest.question : tc.helperDoneResponse ?? ((tc.orchestration?.steer || tc.orchestration?.review) ? "Your update was sent to the worker." : tc.orchestration?.requiredDelegation ? "I have the work running." : stripNotesEcho(answerText(splitProgress(said, saidMeta)))));
+          reply = tc.helperInputQuestion ?? (tc.inputRequest ? tc.inputRequest.presentation || tc.inputRequest.question : tc.helperDoneResponse ?? ((tc.orchestration?.steer || tc.orchestration?.review) ? ACK_UPDATE_SENT : tc.orchestration?.requiredDelegation ? this.nextJobAck() : stripNotesEcho(answerText(splitProgress(said, saidMeta)))));
           if (tc.inputRequest || tc.orchestration?.requiredDelegation || tc.orchestration?.steer || tc.orchestration?.review) { said.length=0; saidMeta.length=0; said.push(reply); }
           this.commitTurn(tc, true); break;
         }
@@ -3748,12 +3741,12 @@ export class Resident extends DurableObject {
       if (tc.abort === "hard") error = null; else if (publicTurnError(e)) { error = e.code; reply = publicTurnError(e); said.length = 0; saidMeta.length = 0; said.push(reply); } else if (e.budget) { error = null; reply = (kind === "workflow" ? savedWorkflowHardReport(this.sql, turn) : null) || pauseFallback(said.join("\n\n")); said.length = 0; said.push(reply); } else { error = e.message; if (!reply) reply = isByokError(e) ? e.message : e.privacy ? PRIVACY_EXHAUSTED : e.status === 402 ? (this.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : e.status === 429 ? DAY_LIMIT_REPLY : `Something went wrong: ${e.message}`; } }
     }
     if (!error && tc.orchestration && !tc.orchestration.sent && !tc.orchestration.approved && !tc.orchestration.waitingInput && !tc.stoppedTurn) {
-      if (tc.orchestration.review) { reply = "The worker's result still needs review. I have not approved it."; said.length=0; saidMeta.length=0; said.push(reply); }
-      else if (tc.orchestration.steer) { reply = "I could not send your update to the worker. It has not received the update. Please try again."; error = "worker_update_not_sent"; said.length=0; saidMeta.length=0; said.push(reply); }
-      else if (tc.orchestration.requiredDelegation && !tc.orchestration.started) { reply = "I could not start the assigned worker. Please retry the request."; error = "required_delegation_not_started"; said.length=0; saidMeta.length=0; said.push(reply); }
+      if (tc.orchestration.review) { reply = ACK_RESULT_NOT_READY; said.length=0; saidMeta.length=0; said.push(reply); }
+      else if (tc.orchestration.steer) { reply = ACK_UPDATE_FAILED; error = "worker_update_not_sent"; said.length=0; saidMeta.length=0; said.push(reply); }
+      else if (tc.orchestration.requiredDelegation && !tc.orchestration.started) { reply = ACK_JOB_NOT_STARTED; error = "required_delegation_not_started"; said.length=0; saidMeta.length=0; said.push(reply); }
     }
     if (!error && !reply && !said.join("").trim() && tc.orchestration?.started && !tc.stoppedTurn && tc.abort !== "hard") {
-      reply = "I started the worker."; said.push(reply);
+      reply = this.nextJobAck(); said.push(reply);
     }
     // Stopped by the person (stop.js): what it already did stays, the reply is one plain line, no model call.
     // (A stop that lands after the reply already closed the card changes nothing: that card is complete.)

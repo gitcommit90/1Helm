@@ -2,7 +2,7 @@
 // openRouterChat(env, body, session, route, meta, signal): the call shape older tests use. A route that names a background job (or a call kind that
 // belongs to one) dispatches that job; any other route is the main chat, so its category's chat job runs with the route.
 import { dispatch } from "../../src/ee/model-dispatch.js";
-import { chatJobId, mainChatJob } from "../../src/ee/model-jobs.js";
+import { CHAT_JOB } from "../../src/ee/model-jobs.js";
 import { backgroundRole } from "../../src/ee/background-policy.js";
 import { isHandoff } from "../../src/ee/route2.js";
 
@@ -18,5 +18,5 @@ export async function openRouterChat(env, body, session, route = null, meta = {}
   const jobId = route?.taskAffinity ? null : jobOfCall(route, meta, body);
   if (jobId) return dispatch(env, jobId, body, { meta, signal, session });
   const main = route?.taskAffinity ? route : route?.two ? route : { two: true, category: route?.category || "general" };
-  return dispatch(env, mainChatJob(main), body, { meta, signal, session, route: main });
+  return dispatch(env, CHAT_JOB, body, { meta, signal, session, route: main });
 }

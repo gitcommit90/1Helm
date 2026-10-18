@@ -18,7 +18,7 @@ export function createQuestion(sql,tc,a={}) {
   const existing=questionForTurn(sql,tc.turn); if(existing) return existing;
   const helperId=Number(a.id||tc.orchestration?.review||tc.orchestration?.steer||tc.orchestration?.started)||null;
   const helper=helperId?sql.exec('SELECT * FROM helpers WHERE id=? AND session=?',helperId,tc.session).toArray()[0]:null;
-  if(helperId&&(!helper?.dynamic_routing||!['running','awaiting_review','waiting_input'].includes(helper.status))) return {error:'No matching open worker exists in this task.',status:409};
+  if(helperId&&(!helper?.dynamic_routing||!['running','awaiting_review','waiting_input'].includes(helper.status))) return {error:'No matching open job exists in this task.',status:409};
   const id=crypto.randomUUID(),profile=tc.taskProfile?JSON.stringify({...tc.taskProfile,dispatch:{...tc.orchestration}}):null;
   sql.exec('INSERT INTO user_questions (id,session,source_turn,helper_id,round,question,presentation,profile_json,created,via) VALUES (?,?,?,?,?,?,?,?,?,?)',id,tc.session,tc.turn,helperId,helper?.round??null,question,presentation,profile,Date.now(),tc.viaText?"text":"app");
   sql.exec("UPDATE sessions SET waiting='answer' WHERE id=?",tc.session);
@@ -49,10 +49,10 @@ export function resolveInput(sql,session,meta={},text='',{typed=true}={}) {
   }
   if(q) {
     if(q.status!=='pending') return q.status==='answered' && q.answer_text===String(text) ? {duplicate:true,question:q} : {error:'This question has already been answered or replaced.',status:409};
-    if(meta.helper_id!=null&&Number(meta.helper_id)!==q.helper_id || meta.round!=null&&Number(meta.round)!==q.round) return {error:'The answer does not match the worker round.',status:409};
+    if(meta.helper_id!=null&&Number(meta.helper_id)!==q.helper_id || meta.round!=null&&Number(meta.round)!==q.round) return {error:'The answer does not match that job.',status:409};
     if(q.helper_id) {
       const h=sql.exec('SELECT * FROM helpers WHERE id=? AND session=?',q.helper_id,session).toArray()[0];
-      if(!h||!['running','awaiting_review','waiting_input'].includes(h.status)||Number(h.round)!==Number(q.round)) return {error:'The worker has moved on from this question.',status:409};
+      if(!h||!['running','awaiting_review','waiting_input'].includes(h.status)||Number(h.round)!==Number(q.round)) return {error:'That job has moved on from this question.',status:409};
     }
   }
   return {question:q,response_id:responseId||crypto.randomUUID(),source_turn:q?.source_turn||String(meta.source_turn||'')||null,meta:{...meta},text:String(text)};

@@ -2,7 +2,7 @@
   "name": "onehelm-web",
   "private": true,
   "type": "module",
-  "scripts": { "build": "node build.mjs", "test:core": "node test/byok-core.test.mjs && node test/storage-boundary.test.mjs && node test/byok-options.test.mjs && node test/imports.test.mjs && node test/file-url.test.mjs", "test:sync": "node --test test/computer-network-loading.test.mjs test/computer-offer.test.mjs test/mobile-gestures.test.mjs test/native-approval-progress.test.mjs test/notebook-bee-unread.test.mjs test/perms.test.mjs test/progress-slot.test.mjs test/browser-card.test.mjs test/reply-grouping.test.mjs test/stream-recovery.test.mjs test/ee-ui-boundary.test.mjs test/pcm.test.mjs test/notif-autoask.test.mjs" },
+  "scripts": { "build": "node build.mjs", "test:core": "node test/byok-core.test.mjs && node test/storage-boundary.test.mjs && node test/byok-options.test.mjs && node test/imports.test.mjs && node test/file-url.test.mjs", "test:sync": "node --test test/computer-network-loading.test.mjs test/computer-offer.test.mjs test/mobile-gestures.test.mjs test/native-approval-progress.test.mjs test/notebook-bee-unread.test.mjs test/perms.test.mjs test/progress-slot.test.mjs test/browser-card.test.mjs test/reply-grouping.test.mjs test/stream-recovery.test.mjs test/ee-ui-boundary.test.mjs test/pcm.test.mjs test/notif-autoask.test.mjs test/auto-reload.test.mjs" },
   "dependencies": {
     "@openuidev/lang-core": "0.3.0",
     "dompurify": "3.4.16",

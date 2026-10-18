@@ -11,9 +11,6 @@ import { loadByok, byokEnv } from "../byok.js";
 import { scrubSecrets } from "../secrets-scrub.js";
 import { ambientCueLines } from "./ambient-cues.js";
 import { readAmbientSettings } from "./ambient-settings.js";
-import { AmbientIndex } from "./ambient-index.js";
-import { ambientSearchOn } from "../legacy-flags.js";   // LEGACY_AMBIENT_SEARCH (Memory Overhaul phase 5): "off" stops the passage index, its embeddings and the ranked search
-import { normText, termVariants, groupHit } from "./ambient-search.js";
 import { ambientContextSpan } from "./ambient-output.js";
 import { locateEvidence, findPhrase, foldText } from "./ambient-ground.js";
 import { structuredChat, parseStructuredResponse } from "../structured-output.js";
@@ -241,7 +238,7 @@ export function validateAmbient(raw, lines, previous = []) {
 }
 
 export class AmbientStore {
-  constructor(host) { this.host = host; this.sql = host.sql; this.init(); this.index = new AmbientIndex(this); }
+  constructor(host) { this.host = host; this.sql = host.sql; this.init(); }
   init() { this.sql.exec(`CREATE TABLE IF NOT EXISTS ambient_sources (source TEXT NOT NULL, source_id TEXT NOT NULL, revision TEXT NOT NULL, source_at INTEGER, live INTEGER NOT NULL, ingested_at INTEGER NOT NULL, processed_at INTEGER, chunks INTEGER NOT NULL, PRIMARY KEY(source,source_id));
     CREATE TABLE IF NOT EXISTS ambient_chunks (source TEXT NOT NULL, source_id TEXT NOT NULL, hash TEXT NOT NULL, ordinal INTEGER NOT NULL, active INTEGER NOT NULL, lines TEXT NOT NULL, state TEXT NOT NULL, tries INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0, error TEXT, PRIMARY KEY(source,source_id,hash));
     CREATE TABLE IF NOT EXISTS ambient_items (id TEXT PRIMARY KEY, source TEXT NOT NULL, source_id TEXT NOT NULL, chunk_hash TEXT NOT NULL, source_at INTEGER, data TEXT NOT NULL);
@@ -250,6 +247,9 @@ export class AmbientStore {
     CREATE INDEX IF NOT EXISTS ambient_link_old ON ambient_links(old_id);
     CREATE INDEX IF NOT EXISTS ambient_queue ON ambient_chunks(active,state,retry_at);
     CREATE INDEX IF NOT EXISTS ambient_item_source ON ambient_items(source,source_id);`);
+    // The old passage index and its embeddings are gone: drop their tables and the column that tracked them.
+    for (const t of ["ambient_passages", "ambient_item_vec", "ambient_vocab", "ambient_qvec"]) this.sql.exec(`DROP TABLE IF EXISTS ${t}`);
+    if (this.rows("PRAGMA table_info(ambient_chunks)").some((c) => c.name === "passages_built")) this.sql.exec("ALTER TABLE ambient_chunks DROP COLUMN passages_built");
     const columns = this.rows("PRAGMA table_info(ambient_sources)");
     if (!columns.some((c) => c.name === "source_until")) this.sql.exec("ALTER TABLE ambient_sources ADD COLUMN source_until INTEGER");
     if (!columns.some((c) => c.name === "source_state")) this.sql.exec("ALTER TABLE ambient_sources ADD COLUMN source_state TEXT");
@@ -308,16 +308,15 @@ export class AmbientStore {
       }
       this.sql.exec("DELETE FROM ambient_items WHERE source=? AND source_id=? AND chunk_hash NOT IN (SELECT hash FROM ambient_chunks WHERE source=? AND source_id=? AND active=1)", source, id, source, id);
       this.sql.exec("DELETE FROM ambient_chunks WHERE source=? AND source_id=? AND active=0", source, id);
-      this.index.purge(source, id);
       if (chunks.length || location) this.sql.exec("UPDATE ambient_sources SET processed_at=? WHERE source=? AND source_id=? AND NOT EXISTS(SELECT 1 FROM ambient_chunks WHERE source=? AND source_id=? AND active=1 AND state<>'done')", now(), source, id, source, id);
       this.cleanLinks();
       this.changed();
     });
     await this.host.arm(now() + 1000); return true;
   }
-  cleanLinks() { this.sql.exec("DELETE FROM ambient_links WHERE new_id NOT IN (SELECT id FROM ambient_items) OR old_id NOT IN (SELECT id FROM ambient_items)"); this.sql.exec("DELETE FROM ambient_item_vec WHERE id NOT IN (SELECT id FROM ambient_items)"); }
+  cleanLinks() { this.sql.exec("DELETE FROM ambient_links WHERE new_id NOT IN (SELECT id FROM ambient_items) OR old_id NOT IN (SELECT id FROM ambient_items)"); }
   changed() { this.host.put("ambient_revision", Number(this.host.get("ambient_revision") || 0) + 1); }
-  remove(source, id) { this.transaction(() => { for (const table of ["ambient_items", "ambient_chunks", "ambient_sources"]) this.sql.exec(`DELETE FROM ${table} WHERE source=? AND source_id=?`, source, String(id)); this.cleanLinks(); this.index.purge(source, id); this.changed(); }); }
+  remove(source, id) { this.transaction(() => { for (const table of ["ambient_items", "ambient_chunks", "ambient_sources"]) this.sql.exec(`DELETE FROM ${table} WHERE source=? AND source_id=?`, source, String(id)); this.cleanLinks(); this.changed(); }); }
   // Deliberate, bounded repair of one saved projection. Raw evidence, source
   // revision, other sources, and independent billing attempts are preserved.
   retrySource(source, id) {
@@ -333,19 +332,14 @@ export class AmbientStore {
     });
     return { found: true, queued };
   }
-  clear() { for (const table of ["ambient_links", "ambient_items", "ambient_chunks", "ambient_sources"]) this.sql.exec(`DELETE FROM ${table}`); this.index.clear(); this.changed(); }
+  clear() { for (const table of ["ambient_links", "ambient_items", "ambient_chunks", "ambient_sources"]) this.sql.exec(`DELETE FROM ${table}`); this.changed(); }
   liveIds() { return this.rows("SELECT source_id FROM ambient_sources WHERE source='bee' AND live=1 ORDER BY ingested_at LIMIT 25").map((r) => Number(r.source_id)); }
   dueAt() {
     // No configured managed provider: do not spin a rapid alarm (BYOK indexing can be explicitly enabled).
     if (!this.host.env.OPENROUTER_API_KEY && !this.host.env.BYOK && !this.host.get("ambient_indexing")) return Infinity;
     if (this.backlog()) return now() + 1000;
-    const indexAt = this.searchOn() ? this.index.nextWork() ?? Infinity : Infinity;
-    const r = this.rows("SELECT MIN(c.retry_at) at FROM ambient_chunks c WHERE c.active=1 AND c.state<>'done' AND NOT EXISTS(SELECT 1 FROM ambient_chunks p WHERE p.source=c.source AND p.source_id=c.source_id AND p.active=1 AND p.state<>'done' AND p.ordinal<c.ordinal)")[0]; return Math.min(indexAt, r?.at == null ? Infinity : Math.max(now() + 1000, Number(r.at)));
+    const r = this.rows("SELECT MIN(c.retry_at) at FROM ambient_chunks c WHERE c.active=1 AND c.state<>'done' AND NOT EXISTS(SELECT 1 FROM ambient_chunks p WHERE p.source=c.source AND p.source_id=c.source_id AND p.active=1 AND p.state<>'done' AND p.ordinal<c.ordinal)")[0]; return Math.min(Infinity, r?.at == null ? Infinity : Math.max(now() + 1000, Number(r.at)));
   }
-  // false = LEGACY_AMBIENT_SEARCH is retired: nothing builds passages, nothing is embedded, a query vector is never made, and the helper searches recordings through Hindsight recall instead
-  // (ambient-query.js). The index tables stay, and deleting a recording still deletes its rows from them.
-  searchOn() { return ambientSearchOn(this.host.env); }
-  searchStatus(qv) { return this.searchOn() ? this.index.status(qv) : { retired: true, backend: "hindsight", note: "Search by words and meaning uses memory recall (Bee transcripts in General's bank), not a separate index here." }; }
   backlog() { return Number(this.rows("SELECT COUNT(*) n FROM convs c WHERE c.r2_key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM ambient_sources a WHERE a.source='bee' AND a.source_id=CAST(c.id AS TEXT) AND a.location_version=1 AND a.projection_version=?)", AMBIENT_VERSION)[0]?.n || 0); }
   running(fixture = false) { return !this.host.get("account_deleted") && (fixture || this.host.get("status") === "active" || this.host.get("ambient_indexing") === "1"); }
   async privacy(texts) {
@@ -402,11 +396,7 @@ export class AmbientStore {
     for (const r of rows) { const obj = await h.env.WS.get(r.r2_key); const conv = obj ? parse(await obj.text()) : null; if (h.gen !== gen || !this.running()) return 0; await this.ingest("bee", r.id, conv || { id: r.id, end_time: 1, transcriptions: [] }); }
     return rows.length;
   }
-  // Extraction first, then the search index (passages and embeddings) for what is stored.
-  async run(fixture = false) {
-    const done = await this.runExtraction(fixture);
-    if (done && this.host.tid() && this.running(fixture) && this.searchOn()) await this.index.run(fixture);
-  }
+  async run(fixture = false) { await this.runExtraction(fixture); }
   async runExtraction(fixture = false) {
     const h = this.host; if (!h.tid()) return;
     // BeeSync serializes batches. A new batch/reconstructed host revokes prior
@@ -526,7 +516,6 @@ export class AmbientStore {
           this.sql.exec("DELETE FROM ambient_items WHERE source=? AND source_id=? AND chunk_hash=?", c.source, c.source_id, c.hash);
           for (const item of ready) {
             this.sql.exec("INSERT OR REPLACE INTO ambient_items VALUES(?,?,?,?,?,?)", item.id, c.source, c.source_id, c.hash, item.source_at, JSON.stringify(item));
-            if (oldData.get(item.id) !== JSON.stringify(item)) this.sql.exec("DELETE FROM ambient_item_vec WHERE id=?", item.id);
             this.sql.exec("DELETE FROM ambient_links WHERE new_id=?", item.id);
             for (const id of item.supersedes) if (id !== item.id) this.sql.exec("INSERT OR IGNORE INTO ambient_links VALUES(?,?)", item.id, id);
           }
@@ -625,14 +614,7 @@ export class AmbientStore {
       return j; // The caller validates after settling EVERY provider response, including invalid ones.
     } catch (e) { if (!settled) { await L.settle(rid, 0); this.sql.exec("DELETE FROM ambient_attempts WHERE id=?", rid); } if (chunk) this.sql.exec("UPDATE ambient_chunks SET reservation_id=NULL WHERE source=? AND source_id=? AND hash=? AND reservation_id=?", chunk.source, chunk.source_id, chunk.hash, rid); throw e; }
   }
-  // Async entry for searches: embeds the query (billed, privacy checked, cached) and then runs the same query
-  // synchronously with its vector. Without a query, or if embedding is unavailable, it is the plain query.
-  async search(o = {}) {
-    if (!o.query || o.evidence_id || !this.searchOn()) return this.query(o);   // retired: no query vector, no embedding call
-    const qv = await this.index.queryVector(o.query).catch(() => ({ unavailable: "Semantic search could not run for this query; results use tolerant keyword matching only." }));
-    return this.query(o, { qv });
-  }
-  query(o = {}, ext = {}) {
+  query(o = {}) {
     const h = this.host, limit = Math.min(50, Math.max(1, Math.floor(Number(o.limit) || 30))), date = (v) => typeof v === "number" ? v : Date.parse(v);
     const from = o.from != null && Number.isFinite(date(o.from)) ? date(o.from) : null, to = o.to != null && Number.isFinite(date(o.to)) ? date(o.to) : null;
     const scope = [], scopeArgs = [];
@@ -656,13 +638,12 @@ export class AmbientStore {
       recovery: { strategy: AMBIENT_RECOVERY_VERSION, source_only_chunks: Number(recovery.n || 0), processed_source_only_chunks: Number(recovery.done || 0), legacy_activations: Number(h.get("ambient_recovery_migrated") || 0), alarm_pending: h.get("ambient_recovery_arm") === "1", historical_reconciliation_limited: !!recovery.n, note: recovery.n ? "Source-only recovery attempts withhold historical notes; processing counters separately show whether they finished. Old tasks and unresolved updates must not be treated as independent confirmed commitments or a fully reconciled list." : null },
       grounding: { located: Number(grounding.located || 0), approximate: Number(grounding.approximate || 0), unlocated: Number(grounding.unlocated || 0), malformed_model_items: Number(grounding.malformed || 0), dropped_by_review: Number(grounding.review_dropped || 0), chunks_without_counts: Number(grounding.uncounted || 0),
         note: "located: evidence copied from matching speech. approximate: best-guess span, needs review. unlocated: the extractor reported it but no matching speech was found, so treat it as unverified. Chunks without counts were processed before grounding states existed; their item text is the raw transcript quote." },
-      search: this.searchStatus(ext.qv),
       history: "Only recordings synced into 1Helm are covered. Older Bee history may require Import past conversations.", reconciliation: "Related intentions use up to 70 recent and topic-matching prior items; ambiguous speakers remain marked for review.", reminders: "Captured only; no notifications have been scheduled." };
     const revision = Number(h.get("ambient_revision") || 0), signature = JSON.stringify([o.mode || "items", o.source_id || null, o.kind || "all", o.status || "all", String(o.query || ""), from, to, o.evidence_id || null]);
     let cursor = null;
     if (o.cursor) { try { cursor = decodeCursor(String(o.cursor)); } catch {} if (!cursor || cursor.revision !== revision || cursor.signature !== signature) return { items: [], ...(o.mode === "transcript" ? { transcripts: [] } : {}), ...(o.mode === "locations" ? { locations: [] } : {}), coverage, next_cursor: null, error: "Ambient records or query changed. Restart from the first page." }; }
-    if (o.mode === "transcript") return this.transcriptQuery(o, { coverage, revision, signature, cursor, limit, from, to }, ext);
-    if (o.mode === "locations") return this.locationQuery(o, { coverage, revision, signature, cursor, limit, from, to }, ext);
+    if (o.mode === "transcript") return this.transcriptQuery(o, { coverage, revision, signature, cursor, limit, from, to });
+    if (o.mode === "locations") return this.locationQuery(o, { coverage, revision, signature, cursor, limit, from, to });
     const where = ["c.active=1", "c.state='done'"], args = [];
     if (o.evidence_id) { where.push("i.id=?"); args.push(String(o.evidence_id)); }
     if (o.source_id) { where.push("i.source_id=?"); args.push(String(o.source_id)); }
@@ -678,14 +659,8 @@ export class AmbientStore {
       where.push(`NOT EXISTS(SELECT 1 FROM ambient_links l JOIN ambient_items ni ON ni.id=l.new_id JOIN ambient_chunks nc ON nc.source=ni.source AND nc.source_id=ni.source_id AND nc.hash=ni.chunk_hash WHERE l.old_id=i.id AND nc.active=1 AND nc.state='done'${within.length ? ` AND ${within.join(" AND ")}` : ""})`);
     }
     const joins = "FROM ambient_items i JOIN ambient_sources s ON s.source=i.source AND s.source_id=i.source_id JOIN ambient_chunks c ON c.source=i.source AND c.source_id=i.source_id AND c.hash=i.chunk_hash";
-    if (o.query && !o.evidence_id) {
-      // Ranked: tolerant keywords fused with meaning. Every filter above still applies; the cursor holds the rank position.
-      const rows = this.rows(`SELECT i.*,s.revision,s.source_state ${joins} WHERE ${where.join(" AND ")} ORDER BY COALESCE(i.source_at,0) DESC,i.id LIMIT 4000`, ...args), byId = new Map(rows.map((r) => [r.id, r]));
-      const { ranked } = this.index.rankItems(o.query, rows, ext.qv); let offset = 0;
-      if (cursor) { offset = cursor.at; if (!Number.isSafeInteger(offset) || offset < 1 || ranked[offset - 1]?.id !== cursor.id) return { items: [], coverage, next_cursor: null, error: "Ambient records or query changed. Restart from the first page." }; }
-      const page = ranked.slice(offset, offset + limit), next = offset + page.length < ranked.length ? encodeCursor({ revision, signature, at: offset + page.length, id: page.at(-1).id }) : null;
-      return { items: page.map((r) => ({ ...this.itemOut(byId.get(r.id)), match: r.match })), coverage, next_cursor: next, total: ranked.length, ranked: true };
-    }
+    // A query keeps the items whose clean text or real words hold every word of it (plain substring match, like the transcript mode). Ranked search by words is memory recall in ambient_query.
+    if (o.query && !o.evidence_id) for (const word of String(o.query).trim().slice(0, 300).split(/\s+/).filter(Boolean).slice(0, 10)) { where.push("instr(lower(COALESCE(json_extract(i.data,'$.search_text'),json_extract(i.data,'$.text'),'')),lower(?))>0"); args.push(word); }
     const total = Number(this.rows(`SELECT COUNT(*) n ${joins} WHERE ${where.join(" AND ")}`, ...args)[0]?.n || 0);
     if (cursor) { where.push("(COALESCE(i.source_at,0)<? OR (COALESCE(i.source_at,0)=? AND i.id>?))"); args.push(cursor.at, cursor.at, cursor.id); }
     const rows = this.rows(`SELECT i.*,s.revision,s.source_state${o.evidence_id ? ",c.lines" : ""} ${joins} WHERE ${where.join(" AND ")} ORDER BY COALESCE(i.source_at,0) DESC,i.id LIMIT ?`, ...args, limit + 1);
@@ -709,22 +684,7 @@ export class AmbientStore {
     const later = this.rows("SELECT i.data FROM ambient_links l JOIN ambient_items i ON i.id=l.new_id JOIN ambient_chunks c ON c.source=i.source AND c.source_id=i.source_id AND c.hash=i.chunk_hash WHERE l.old_id=? AND c.active=1 AND c.state='done' ORDER BY i.source_at DESC LIMIT 1", r.id).map((x) => parse(x.data, {}))[0];
     return { ...item, ...(later ? { current_resolution: { id: later.id, status: later.status, text: later.text, evidence: later.evidence, grounding: later.grounding?.state || "legacy_quote", needs_review: later.needs_review } } : {}), ...(prior.length ? { earlier_evidence: prior.flatMap((x) => x.evidence || []), previous_ids: prior.map((x) => x.id), relationship_needs_review: item.needs_review || prior.some((x) => x.needs_review) } : {}) };
   }
-  passageOut(p, match) {
-    const ids = parse(p.utterance_ids, []);
-    return { id: p.id, kind: "passage", text: p.text, at: p.at, until: p.until, speaker: p.speaker, is_user: !!p.is_user, utterance_id: ids[0] ?? null, utterance_ids: ids, line_from: p.line_from, line_to: p.line_to, source: p.source, source_id: p.source_id, source_revision: p.revision, source_state: p.source_state, extraction_state: p.state, untrusted: true, ...(match ? { match } : {}) };
-  }
-  transcriptQuery(o, { coverage, revision, signature, cursor, limit, from, to }, ext = {}) {
-    if (String(o.query || "").trim() && this.searchOn()) {
-      // Ranked passages (windows of adjacent same-speaker lines): tolerant keywords fused with meaning. The cursor holds the rank position.
-      this.index.build(300);
-      const ranked = this.index.rankPassages(o.query, { from, to, source_id: o.source_id }, ext.qv), found = this.index.passages(ranked.map((r) => r.id)); let offset = 0;
-      const live = ranked.filter((r) => found.has(r.id));
-      if (cursor) { offset = cursor.at; if (!Number.isSafeInteger(offset) || offset < 1 || live[offset - 1]?.id !== cursor.id) return { items: [], transcripts: [], coverage, next_cursor: null, error: "Ambient records or query changed. Restart from the first page." }; }
-      let chars = 0; const transcripts = [];
-      for (const r of live.slice(offset, offset + limit)) { const out = this.passageOut(found.get(r.id), r.match), n = JSON.stringify(out).length; if (transcripts.length && chars + n > 16000) break; chars += n; transcripts.push(out); }
-      const next = transcripts.length && offset + transcripts.length < live.length ? encodeCursor({ revision, signature, at: offset + transcripts.length, id: transcripts.at(-1).id }) : null;
-      return { items: [], transcripts, coverage: { ...coverage, search: this.searchStatus(ext.qv) }, next_cursor: next, total: live.length, mode: "transcript", ranked: true };
-    }
+  transcriptQuery(o, { coverage, revision, signature, cursor, limit, from, to }) {
     const where = ["c.active=1"], args = [], at = "COALESCE(json_extract(j.value,'$.at'),0)", id = "c.source||':'||c.source_id||':'||c.hash||':'||j.key";
     if (o.source_id) { where.push("c.source_id=?"); args.push(String(o.source_id)); }
     if (from != null) { where.push(`${at}>=?`); args.push(from); }
@@ -742,30 +702,24 @@ export class AmbientStore {
     const last = transcripts.at(-1), next = last && rows.length > transcripts.length ? encodeCursor({ revision, signature, at: last.at || 0, id: last.id }) : null;
     return { items: [], transcripts, coverage, next_cursor: next, total, mode: "transcript" };
   }
-  locationQuery(o, { coverage, revision, signature, cursor, limit, from, to }, ext = {}) {
+  locationQuery(o, { coverage, revision, signature, cursor, limit, from, to }) {
     const where = ["s.location_json IS NOT NULL"], args = [], at = "COALESCE(json_extract(s.location_json,'$.conversation_from'),s.source_at,0)", id = "s.source||':'||s.source_id";
     if (o.source_id) { where.push("s.source_id=?"); args.push(String(o.source_id)); }
     // A primary place is attached to the recording interval. An instant query can locate relevant recordings, but cannot
     // claim the person stayed there throughout a long recording. The result retains that explicit limitation.
     if (from != null) { where.push("COALESCE(json_extract(s.location_json,'$.conversation_to'),s.source_until,s.ingested_at)>=?"); args.push(from); }
     if (to != null) { where.push(`${at}<=?`); args.push(to); }
-    // A query matches a recording by its place text or by its speech, tolerantly and by meaning.
-    let hits = null;
+    // A query matches a recording by its recorded address text (any word of the query, as a whole word). Speech is found through memory recall in ambient_query.
     if (String(o.query || "").trim()) {
-      hits = new Map();
-      // Retired: no passage index, so a place is matched by its recorded address text only (speech is found through memory recall in ambient_query).
-      const ranked = this.searchOn() ? (this.index.build(300), this.index.rankPassages(o.query, { from: null, to: null, source_id: o.source_id }, ext.qv)) : [], found = this.searchOn() ? this.index.passages(ranked.map((r) => r.id)) : new Map();
-      for (const r of ranked) { const p = found.get(r.id); if (!p) continue; const k = `${p.source}:${p.source_id}`; if (!hits.has(k)) hits.set(k, []); hits.get(k).push({ p, match: r.match }); }
-      const groups = termVariants(o.query, this.index.vocab());
-      for (const r of this.rows("SELECT source,source_id,json_extract(location_json,'$.address') a FROM ambient_sources WHERE location_json IS NOT NULL")) if (r.a && groups.some((g) => groupHit(g, normText(r.a)))) { const k = `${r.source}:${r.source_id}`; if (!hits.has(k)) hits.set(k, []); }
-      const keys = [...hits.keys()]; where.push(keys.length ? `(s.source||':'||s.source_id) IN (${keys.map(() => "?").join(",")})` : "0"); args.push(...keys);
+      const words = [...new Set(foldText(String(o.query).slice(0, 500)).split(" ").filter((w) => w.length > 2))].slice(0, 12), keys = [];
+      for (const r of this.rows("SELECT source,source_id,json_extract(location_json,'$.address') a FROM ambient_sources WHERE location_json IS NOT NULL")) if (r.a) { const have = new Set(foldText(r.a).split(" ")); if (words.some((w) => have.has(w))) keys.push(`${r.source}:${r.source_id}`); }
+      where.push(keys.length ? `(s.source||':'||s.source_id) IN (${keys.map(() => "?").join(",")})` : "0"); args.push(...keys);
     }
     const total = Number(this.rows(`SELECT COUNT(*) n FROM ambient_sources s WHERE ${where.join(" AND ")}`, ...args)[0]?.n || 0);
     if (cursor) { where.push(`(${at}<? OR (${at}=? AND ${id}>?))`); args.push(cursor.at, cursor.at, cursor.id); }
     const rows = this.rows(`SELECT s.source,s.source_id,s.revision,s.source_state,s.location_json,${id} id,${at} at FROM ambient_sources s WHERE ${where.join(" AND ")} ORDER BY ${at} DESC,${id} LIMIT ?`, ...args, limit + 1);
     const selected = rows.slice(0, limit), last = selected.at(-1), locations = selected.map((r) => {
-      const matched = (hits?.get(`${r.source}:${r.source_id}`) || []).slice(0, 3).map((h) => ({ text: h.p.text, at: h.p.at, until: h.p.until, speaker: h.p.speaker, utterance_id: parse(h.p.utterance_ids, [])[0] ?? null, match: h.match }));
-      return { ...parse(r.location_json, {}), id: r.id, source: r.source, source_id: r.source_id, source_revision: r.revision, source_state: r.source_state, ...(matched.length ? { matching_transcript_evidence: matched } : {}), untrusted: true };
+      return { ...parse(r.location_json, {}), id: r.id, source: r.source, source_id: r.source_id, source_revision: r.revision, source_state: r.source_state, untrusted: true };
     });
     const next = rows.length > limit ? encodeCursor({ revision, signature, at: last.at, id: last.id }) : null;
     return { items: [], locations, coverage: { ...coverage, location_index_complete: !coverage.backfill_sources, locations_matching: total, location_evidence: "Recorded provider locations only. A missing place is not proof that the person was nowhere; coordinates and metadata times do not establish continuous presence. Locations do not require speech extraction to finish." }, next_cursor: next, total, mode: "locations" };

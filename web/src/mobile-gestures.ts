@@ -1,7 +1,7 @@
 // Touch-only gestures. Nothing is claimed until the intended axis wins; native scrolling,
 // pinch zoom, cancellation and accessible click/keyboard controls keep their own paths.
 export const phoneGesture = () => matchMedia("(max-width: 767px)").matches && (window.visualViewport?.scale ?? 1) <= 1.01;
-const controls = "input,textarea,select,button,a,label,summary,[contenteditable]:not([contenteditable=false]),[role=button],[role=checkbox],[role=radio],[role=switch],[role=slider],video,audio,canvas,iframe,pre,table,.bfstack";
+const controls = "input,textarea,select,button,a,label,summary,[contenteditable]:not([contenteditable=false]),[role=button],[role=checkbox],[role=radio],[role=switch],[role=slider],video,audio,canvas,iframe,pre,table";
 // Action rows occupy most of a sheet: they can start a pull-down while an ordinary
 // tap still activates them. Editable controls and value selectors keep their touch behavior.
 const valueControls = controls.replace("button,a,", "").replace("[role=button],", "") + ",[aria-pressed]";

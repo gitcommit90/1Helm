@@ -29,7 +29,7 @@ const chatMeta = SEED.catalog[ID.DEEPSEEK], clefMeta = factsOf(CLEF), sttMeta = 
 for (const k of ["workers_decider", "decider"]) { assert.ok(kindOk(chatMeta, JOB_KINDS[k]), `a chat model can run ${k}`); assert.ok(kindOk({ eligible: true, id: "a/b" }, JOB_KINDS[k]), `a validated catalog model can run ${k}`); assert.ok(!kindOk(sttMeta, JOB_KINDS[k]), `a speech model can't run ${k}`); }
 assert.ok(kindOk(clefMeta, JOB_KINDS.workers_decider) && kindOk(clefMeta, JOB_KINDS.decider) && !kindOk(clefMeta, JOB_KINDS.chat), "Clef runs every text-decision job and still isn't a chat model");
 assert.ok(kindOk(SEED.catalog[ID.PPLX], JOB_KINDS.workers_decider) && kindOk(SEED.catalog[ID.JEV], JOB_KINDS.workers_decider) && !kindOk(SEED.catalog[ID.PPLX], JOB_KINDS.chat), "Perplexity and Jev run every text-decision job");
-for (const k of ["speech", "speech_live", "speech_cloudflare", "embedding_files", "embedding_memory", "vision", "workers_ai"]) {
+for (const k of ["speech", "speech_live", "speech_cloudflare", "embedding_files", "vision", "workers_ai"]) {
   assert.ok(!kindOk(chatMeta, JOB_KINDS[k]), `a chat model can't run ${k}`); assert.ok(!kindOk({ eligible: true }, JOB_KINDS[k]), `a catalog model can't run ${k}`); assert.ok(JOB_KINDS[k].needs, `${k} has a plain note`); }
 assert.ok(!JOB_KINDS.decider.needs && !JOB_KINDS.workers_decider.needs);
 
@@ -120,8 +120,8 @@ console.log("PASS text decisions: native Clef unchanged, JSON path for any chat 
 
 // ---- fallbacks on the request sorter and the other decision job (r39-job-fallbacks) ----
 { assert.equal(JOB_KINDS.decider.fallbacks, 3); assert.equal(JOB_KINDS.workers_decider.fallbacks, 3);
-  for (const k of ["embedding_files", "embedding_memory", "recovery", "vision", "workers_ai", "speech_cloudflare"]) assert.equal(JOB_KINDS[k].fallbacks, 0, `${k} stays at no fallbacks`);
-  for (const id of ["embed_files", "embed_memory"]) { const c = clone(SEED); c.jobs[id].fallbacks = [{ model: c.jobs[id].model, effort: null }]; assert.throws(() => validateModelSettings(c), /at most 0 fallback/, `${id} refuses a fallback`); }
+  for (const k of ["embedding_files", "vision", "workers_ai", "speech_cloudflare"]) assert.equal(JOB_KINDS[k].fallbacks, 0, `${k} stays at no fallbacks`);
+  for (const id of ["embed_files"]) { const c = clone(SEED); c.jobs[id].fallbacks = [{ model: c.jobs[id].model, effort: null }]; assert.throws(() => validateModelSettings(c), /at most 0 fallback/, `${id} refuses a fallback`); }
   for (const id of ["decider"]) { const c = clone(SEED); c.catalog[CLEF] = { id: CLEF, ...clone(SEED_FACTS[CLEF]) }; c.jobs[id].fallbacks = [{ model: ID.DEEPSEEK, effort: null }, { model: ID.PPLX === c.jobs[id].model ? CLEF : ID.PPLX, effort: null }]; assert.doesNotThrow(() => validateModelSettings(c), `${id} saves fallbacks`); }
   { const c = clone(SEED); c.jobs.decider.fallbacks = [ID.DEEPSEEK, ID.HAIKU, ID.OSS120, ID.OSS20].map((model) => ({ model, effort: null })); assert.throws(() => validateModelSettings(c), /at most 3 fallback/); }
   { const c = clone(SEED); c.jobs.decider.fallbacks = [{ model: ID.MUSE_C, effort: null }]; assert.throws(() => validateModelSettings(c), /zero-data-retention/, "a fallback must pass the same privacy rule as the main model"); }

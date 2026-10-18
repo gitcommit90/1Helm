@@ -139,6 +139,11 @@ export async function composioRequest(env, path, init = {}) {
 // so a 401 gets a fixed message and anything key-shaped is cut from the rest.
 function errorText(env, status, d) {
   if (status === 401) return "Composio didn't accept this server's key (HTTP 401).";
-  const m = String(d?.error?.message || d?.message || `Composio HTTP ${status}`);
-  return m.split(env.COMPOSIO_KEY).join("[key]").replace(/\b(ak|sk|pk)_[A-Za-z0-9*_.-]{2,}/g, "[key]").slice(0, 300);
+  const e = d?.error && typeof d.error === "object" ? d.error : {};
+  const m = String(e.message || (typeof d?.error === "string" ? d.error : "") || d?.message || `Composio HTTP ${status}`);
+  // Composio's validation errors say which field is wrong in suggested_fix and errors (e.g. "Following fields are missing: {'sha'}"); the helper
+  // needs them to correct its arguments, so they follow the message (ERROR_MAX characters in all).
+  const more = [e.suggested_fix, ...(Array.isArray(e.errors) ? e.errors : [])].map((x) => (typeof x === "string" ? x : x && typeof x === "object" ? JSON.stringify(x) : "")).map((x) => x.trim()).filter((x) => x && !m.includes(x));
+  return [m, ...more].join("\n- ").split(env.COMPOSIO_KEY).join("[key]").replace(/\b(ak|sk|pk)_[A-Za-z0-9*_.-]{2,}/g, "[key]").slice(0, ERROR_MAX);
 }
+export const ERROR_MAX = 1200;   // an action's error text as the helper sees it (field-level detail of a validation error can be long)

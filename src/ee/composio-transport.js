@@ -25,7 +25,7 @@
 // Self-managed backend (part 2, MANAGED-AND-SELF-MANAGED.md): the person's own Composio account through Connect MCP with their token.
 //   selfManagedTransport() below has the same contract over the MCP client in composio-self.js (COMPOSIO_SEARCH_TOOLS / MULTI_EXECUTE_TOOL /
 //   MANAGE_CONNECTIONS / GET_TOOL_SCHEMAS); composio-self.js also owns the choice, the sign-in and the tokens. transportFor() picks the side.
-import { composioRequest, latestVersion, versionQuery, toolVersion } from "./composio-api.js";
+import { composioRequest, latestVersion, versionQuery, toolVersion, ERROR_MAX } from "./composio-api.js";
 import { fileStoreFetch } from "./composio-files.js";
 // Stage 6: composioRequest retries reads and never re-sends a write whose outcome is unknown (its rules: composio-api.js). Each call here says
 // which it is (retry: "read" | "write"); a rate-limited or may-or-may-not-have-happened error is never re-sent by a fallback below.
@@ -34,6 +34,7 @@ import { slimInputs, exampleOf, cleanWant, fileInputs } from "./composio-schema.
 import { listManagedConnections, appConnectLink, appDisconnect, defaultsOf, notesOf, dropNotes, appName } from "./composio.js";   // a cycle on purpose: used only at call time
 import { appsMode, mcpCaller, isEnded, selfApps, rememberApps, SELF_DEFAULT_APPS, LIST } from "./composio-self.js";
 import { resolveAccountIdentity, disambiguateAccountLabels } from "./composio-identity.js";
+import { isHiddenApp } from "./app-visibility.js";
 import { isCustomSlug, customUsable, ownerOf, assertCustom, CUSTOM_DENIED } from "./custom-mcp.js";
 // Custom MCP (custom-mcp.js): a CUSTOM_* toolkit is project-wide at Composio but belongs to one workspace. Every route below that names a
 // tool or toolkit checks it against customUsable() (D1, uncached: the workspace's own, enabled, fully synced servers) before anything is
@@ -53,6 +54,7 @@ export const isMetaToolkit = (slug) => String(slug || "").toLowerCase() === "com
 // What app_run needs to know about one action: its app, read-only or not, the exact version, its input names (to catch renamed inputs).
 export const metaOf = (t, app) => ({ slug: t.slug, app: (app || t.toolkit?.slug || "").toLowerCase(), readonly: (t.tags || []).includes("readOnlyHint"),
   destructive: (t.tags || []).includes("destructiveHint"), version: t.version || undefined, inputs: Object.keys(t.input_parameters?.properties || {}),
+  required: Array.isArray(t.input_parameters?.required) ? t.input_parameters.required.filter((k) => typeof k === "string") : [],
   open: !!t.input_parameters?.additionalProperties, schema: slimInputs(t.input_parameters), files: fileInputs(t.input_parameters) });
 // One action as the helper sees it in app_actions.
 export const actionView = (t) => {
@@ -111,7 +113,7 @@ async function req(env, ctx, kind, path, init) { const t0 = Date.now(); try { re
 // (proxy_execute off keeps any proxy tool away from a model on the session; 1Helm's own app_proxy calls the session's proxy_execute
 // route, which it doesn't block: live check 10-06.)
 export function sessionConfig(tenantId, ctx = {}) {
-  const toolkits = [...new Set((ctx.toolkits || []).map((s) => String(s).toLowerCase()).filter((s) => s && !isMetaToolkit(s)))].sort();
+  const toolkits = [...new Set((ctx.toolkits || []).map((s) => String(s).toLowerCase()).filter((s) => s && !isMetaToolkit(s) && !isHiddenApp(s)))].sort();   // never a hidden app (app-visibility.js)
   const pins = {}; for (const [k, ids] of Object.entries(ctx.accounts || {})) if (toolkits.includes(k) && ids?.length) pins[k] = [...ids].sort().slice(0, 10);
   return { user_id: uid(tenantId), toolkits: { enable: toolkits }, ...(Object.keys(pins).length ? { connected_accounts: pins } : {}),
     multi_account: { enable: true, max_accounts_per_toolkit: 10, require_explicit_selection: false },
@@ -264,7 +266,7 @@ export function managedTransport(env, tenantId, ctx0 = {}) {
           if (ctx.readonly && /HTTP 40[13]|didn't accept|access/i.test(e.message)) return directExec(slug, args, version, ctx);
           throw e;
         }
-        if (d.error) throw new Error(String(d.error).slice(0, 300));
+        if (d.error) throw new Error(String(d.error).slice(0, ERROR_MAX));
         return d.data?.response_data ?? d.data;
       }
       return directExec(slug, args, version, ctx);
@@ -327,7 +329,7 @@ export function managedTransport(env, tenantId, ctx0 = {}) {
     const body = { user_id: uid(tenantId), arguments: args || {}, version: version || toolVersion(env) };
     if (ctx.account) body.connected_account_id = ctx.account;
     const d = await req(env, ctx, "execute", `/tools/execute/${slug}`, { method: "POST", retry: ctx.readonly ? "read" : "write", body: JSON.stringify(body), ...(isCustomSlug(slug) ? { custom: true } : {}) });   // custom: ownership was checked in execute()
-    if (!d.successful) throw new Error(String(d.error || "the app said no").slice(0, 300));
+    if (!d.successful) throw new Error(String(d.error || "the app said no").slice(0, ERROR_MAX));
     return d.data?.response_data ?? d.data;
   }
 }

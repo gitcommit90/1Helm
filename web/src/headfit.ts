@@ -28,7 +28,7 @@ export function hFit() {
   const folded = items.filter(x => x.classList.contains("hhid") && x.querySelector("button"));
   more.hidden = !folded.length;
   // something folded is live (recording, working, a timer running): a dot on ⋯ says so
-  more.classList.toggle("lit", folded.some(x => !!x.querySelector(".ln-rec, .tk-dot, .pmbtn:not(.idle)")));
+  more.classList.toggle("lit", folded.some(x => !!x.querySelector(".ln-rec, .pmbtn:not(.idle)")));
   if (!folded.length && document.getElementById("hmenu")) closeMenu();
 }
 // Called after every render of the desktop stage.
@@ -69,7 +69,7 @@ function closeMenu(focusBack = false) {
 function openMenu(at: HTMLElement) {
   closeMenu(); const bs = folded(); if (!bs.length) return;
   const m = document.createElement("div"); m.id = "hmenu"; m.className = "hmenu"; m.setAttribute("role", "menu"); m.setAttribute("aria-label", "More actions");
-  m.innerHTML = bs.map((b, i) => `<button type="button" role="menuitem" class="hmi${b.matches(".hdel") ? " bad" : ""}" data-hmi="${i}">${b.querySelector("svg")?.outerHTML ?? ""}<span>${esc(labelOf(b))}</span>${b.querySelector(".ln-rec, .tk-dot") ? `<i class="hmdot"></i>` : ""}</button>`).join("");
+  m.innerHTML = bs.map((b, i) => `<button type="button" role="menuitem" class="hmi${b.matches(".hdel") ? " bad" : ""}" data-hmi="${i}">${b.querySelector("svg")?.outerHTML ?? ""}<span>${esc(labelOf(b))}</span>${b.querySelector(".ln-rec") ? `<i class="hmdot"></i>` : ""}</button>`).join("");
   document.body.appendChild(m); at.setAttribute("aria-expanded", "true");
   const r = at.getBoundingClientRect(), w = m.offsetWidth, hh = m.offsetHeight;
   m.style.left = `${Math.max(8, Math.min(innerWidth - w - 8, r.right - w))}px`;

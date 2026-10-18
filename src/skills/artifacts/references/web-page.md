@@ -3,6 +3,8 @@
 A web page here is static: one HTML file (or a folder with an index.html) that you build, check, and share. There is no server
 behind it, so everything it shows is in the file when you share it (current data is a dated snapshot: the live-data reference).
 
+This reference is for a page you share from here. When the person wants a website or landing page live on their own domain (a domain they bought or own, or a public address of their own), read the `business-setup` skill first and do the hosting through Cloudflare MCP as it says; use this reference only for building the page itself. Never use GitHub or an API-key Cloudflare toolkit for that.
+
 ## Build
 
 1. Project folder `/workspace/workspace/<slug>/`. You write `.src/page.html`, with data in `.src/data.json` when there are

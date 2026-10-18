@@ -25,8 +25,8 @@ let n = 0; const test = async (name, fn) => { await fn(); console.log(`ok ${++n}
 const origLog = console.log, origErr = console.error; const quiet = (fn) => async (...a) => { console.log = () => {}; console.error = () => {}; try { return await fn(...a); } finally { console.log = origLog; console.error = origErr; } };
 
 await test("every starting value is what the code used before", () => {
-  const was = { chat_steps: 60, other_turn_steps: 12, workflow_steps: 24, model_first_response_seconds: 120, model_idle_seconds: 120, model_total_seconds: 300, turn_pause_minutes: 10, command_minutes: 4, command_max_minutes: 15,
-    helper_running: 6, helper_per_day: 200, helper_steps: 20, helper_charge: 0.5, helper_deadline_minutes: 15, helper_grace_minutes: 2, helper_force_minutes: 3, helper_report_chars: 6000,
+  const was = { chat_steps: 60, other_turn_steps: 12, workflow_steps: 24, model_first_response_seconds: 120, model_idle_seconds: 120, model_total_seconds: 300, turn_pause_minutes: 10, command_minutes: 4, command_max_minutes: 15, turn_stall_calls: 10, stall_similarity_percent: 85,
+    helper_running: 6, helper_per_day: 200, helper_steps: 20, helper_charge: 0.5, helper_deadline_minutes: 15, helper_grace_minutes: 2, helper_force_minutes: 3, helper_stall_calls: 6, helper_report_chars: 6000,
     plan_task_steps: 20, plan_task_charge: 0.25, plan_task_minutes: 10, event_runs_per_hour: 10, event_queue_max: 3, event_steps: 16, browser_steps: 25,
     turn_soft_charge: 0.15, turn_hard_charge: 0.5, turn_soft_max: 0.6, turn_hard_max: 2, scheduled_soft_percent: 80, day_factor: 2, notice_first_percent: 50, notice_second_percent: 80, task_slots: 6 };
   assert.deepEqual({ ...LIMIT_DEFAULTS }, was);

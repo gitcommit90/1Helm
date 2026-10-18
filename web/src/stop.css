@@ -1,8 +1,8 @@
-/* Stop (stop.ts): header button, composer stop, list-row stop, Activity card stop, "N tasks working · Stop all" pill, "Stopped by you". */
+/* Stop (stop.ts): header button, composer stop, list-row stop, Activity card stop, "Stopped by you". */
 .hstop{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px 0 10px;border-radius:999px;background:var(--sheet);color:var(--ink);font-size:13px;font-weight:600;box-shadow:inset 0 0 0 1px var(--line2);white-space:nowrap;transition:background .15s}
 .hstop:hover{background:var(--hover)}
 .hstop:disabled{color:var(--mute);cursor:default}
-.hstop:focus-visible,.gostop:focus-visible,.tk-rowstop:focus-visible,.rstop:focus-visible,#stopall button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.hstop:focus-visible,.gostop:focus-visible,.tk-rowstop:focus-visible,.rstop:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
 /* Composer: while the open task works and the box is empty, send becomes ■ (like ChatGPT / Claude). */
 .gostop{display:none;width:40px;height:40px;border-radius:50%;place-items:center;background:var(--ink);color:var(--sheet);flex:none;transition:opacity .15s}
@@ -29,16 +29,6 @@
 .tk-rowstop:disabled{color:var(--mute)}
 .tk-rowstop svg{width:10px;height:10px}
 
-/* 2+ tasks working anywhere */
-#stopall{position:fixed;z-index:60;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 104px);display:flex;align-items:center;gap:8px;height:36px;padding:0 6px 0 14px;border-radius:999px;background:var(--ink);color:var(--sheet);font-size:13.5px;box-shadow:var(--lift);white-space:nowrap;animation:sa-in .2s ease-out}
-#stopall .sa-dot{width:7px;height:7px;border-radius:50%;background:var(--live);box-shadow:0 0 0 3px color-mix(in srgb,var(--live) 30%,transparent)}
-#stopall .sa-sep{opacity:.5}
-#stopall button{height:26px;padding:0 12px;border-radius:999px;background:color-mix(in srgb,var(--sheet) 16%,transparent);color:var(--sheet);font-weight:600;font-size:13px}
-#stopall button:hover{background:color-mix(in srgb,var(--sheet) 26%,transparent)}
-#stopall button:disabled{opacity:.6}
-@keyframes sa-in{from{opacity:0;transform:translate(-50%,6px)}}
-@media (prefers-reduced-motion:reduce){#stopall{animation:none}}
-@media (max-width:767px){#stopall{bottom:calc(env(safe-area-inset-bottom,0px) + 92px);font-size:14px;height:38px}}
 
 /* The chat: a task the person stopped */
 .stopped-note{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:999px;background:var(--abub);color:var(--mute);font-size:13px;font-weight:500}

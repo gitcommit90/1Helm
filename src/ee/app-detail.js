@@ -6,6 +6,7 @@
 import { call, RETIRED_APPS, latestVersion, versionQuery } from "./composio.js";
 import { transportFor } from "./composio-transport.js";
 import { isBuiltin, byokInfo } from "./builtin-apps.js";
+import { isHiddenApp, HIDDEN_CONNECT_TEXT } from "./app-visibility.js";
 import { connectAuth, isOAuthScheme, keyScheme } from "./composio-auth.js";
 
 const MEM_TTL = 600e3, EDGE_TTL = 6 * 3600, CACHE_V = 5;   // v5: PayPal's customer-owned S2S setup
@@ -133,9 +134,19 @@ export async function appConnection(env, tenantId, slugIn) {
   return { status: accounts.some((a) => a.status === "connected") ? "connected" : accounts.length ? "expired" : "none", accounts };
 }
 export async function appDetail(env, tenantId, slug) {
+  // A hidden app (app-visibility.js) has no page, unless the person still has an account in it: then the page exists only so they can see
+  // and remove it, and says plainly that it can't be connected.
+  if (isHiddenApp(cleanSlug(slug))) {
+    const conn = await appConnection(env, tenantId, slug).catch(() => ({ status: "none", accounts: [] }));
+    if (!conn.accounts.length) { const e = new Error("No app by that name."); e.status = 404; throw e; }
+    const { complete, ...pub } = await appCatalog(env, slug);
+    return { ...pub, connect: { kind: "unavailable", text: `${HIDDEN_CONNECT_TEXT} You can still remove the account you saved.` }, auth: [], connection: conn };
+  }
   const [cat, conn] = await Promise.all([appCatalog(env, slug), appConnection(env, tenantId, slug).catch(() => ({ status: "unknown", accounts: [] }))]);
   const { complete, ...pub } = cat;
   // A retired app (Google Super) never offers Connect; the server refuses new connections to it anyway.
   if (RETIRED_APPS.has(cleanSlug(slug))) pub.connect = { kind: "unavailable", text: `${pub.name} is being retired. Connect the individual apps you use instead.` };
+  // Soon and not connected: nothing to connect (the server refuses it too, connectBlock). Connected ones stay as they are.
+  else if (conn.status === "none" && await import("./connect-offer.js").then((m) => m.connectBlock(env, tenantId, slug)).catch(() => "")) pub.connect = { kind: "unavailable", text: `${pub.name} isn't available in 1Helm yet.` };
   return { ...pub, connection: conn };
 }

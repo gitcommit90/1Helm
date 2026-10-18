@@ -10,8 +10,8 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { JOBS, JOB_IDS, JOB_KINDS, choreRouteOf, jobRoute } from "../src/ee/model-jobs.js";
 import { validateModelSettings, jobModel, jobCost, modelSettingsEnv, readModelSettings, ModelSettingsError } from "../src/ee/model-settings.js";
-import { SEED, ID } from "./helpers/seed-settings.mjs";
-import { policyRoute, dispatchOrder, jevAsk, escalateTurn, newEsc, choreRouteFor, HANDOFF_PREFIX } from "../src/ee/route2.js";
+import { SEED, ID, setGeneral } from "./helpers/seed-settings.mjs";
+import { policyRoute, dispatchOrder, jevAsk, choreRouteFor, HANDOFF_PREFIX } from "../src/ee/route2.js";
 import { deciderModel } from "../src/ee/decider.js";
 import { askDecider } from "../src/ee/text-decision.js";
 import { openRouterChat } from "./helpers/or-chat.mjs";
@@ -20,7 +20,6 @@ import { stt, sttModels } from "../src/transcribe.js";
 import { embedTexts, vision, lookMoondream } from "../src/sidecar.js";
 import { transcribeLive } from "../src/transcribe-live.js";
 import { ENDPOINTS } from "../src/privacy.js";
-import { CATEGORIES } from "../src/ee/pool.js";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 
@@ -81,16 +80,6 @@ const lastWire = (suffix) => wire.filter((w) => w.url.endsWith(suffix)).at(-1)?.
 const chat = async (env, route, kind, body = { messages: [{ role: "user", content: "hi" }], max_tokens: 50 }) => { wire = []; await openRouterChat(env, body, "sess", route, { tenant: "t", kind }); return lastWire("/chat/completions"); };
 // A probe returns the model the real code used for that job, given the saved settings.
 const probes = {};
-for (const c of CATEGORIES) probes[`chat.${c}`] = async (S, model) => {
-  const r = dispatchOrder(policyRoute(S, c, "zdr", "x"), "zdr", { settings: S }); assert.equal(r.attempts[0].effort, "high", "the saved effort");
-  const w = await chat(envFor(S), policyRoute(S, c, "zdr", "x"), "chat"); assert.equal(w.reasoning.effort, "high"); return [r.attempts[0].model, w.model]; };
-for (const c of ["apps_economical", "apps_complete", "technical", "spreadsheet"]) probes[`recover.${c}`] = async (S, model) => {
-  const route = policyRoute(S, c, "zdr", "recover", { recoveryJob: `recover.${c}` }), r = dispatchOrder(route, "zdr", { settings: S });
-  const w = await chat(envFor(S), route, "chat"); assert.equal(w.reasoning.effort, "high"); return [r.attempts[0].model, w.model]; };
-probes.escalate = async (S, model) => {
-  const route = policyRoute(S, "general", "zdr", "x"), tc = { two: true, route, esc: newEsc(), session: "s" }, R = { _route: null };
-  assert.equal(escalateTurn(R, tc, "stuck"), true); const r = dispatchOrder(tc.route, "zdr", { settings: S });
-  const w = await chat(envFor(S), tc.route, "chat"); return [r.attempts[0].model, w.model, tc.route.escalate.model]; };
 probes.decider = async (S) => { const env = envFor(S); wire = []; await jevAsk(env, { latest_message: "hi" }, {}); return [deciderModel(env), lastWire("/systemone").model]; };
 for (const id of ["handoff", "label", "browser", "notes", "notes_refine", "notes_final", "sidecar_card", "ambient_extract", "ambient_review"])
   probes[id] = async (S) => {
@@ -111,7 +100,6 @@ probes.live_dictation = async (S, model) => {
   } finally { delete ENDPOINTS.transcription[model]; } return [seen[0]]; };
 probes.embed_files = async (S) => { wire = []; await embedTexts(envFor(S), ["hello"], { tenant: "t" }); return [lastWire("/embeddings").model]; };
 probes.browser_decider = async (S) => { const env = envFor(S); wire = []; await askDecider(env, { task: "t" }, { done: { type: "noul", instructions: "Is it done?" } }, { job: "browser_decider" }); return [await jobModel(env, "browser_decider"), lastWire("/systemone").model]; };
-probes.embed_memory = async (S) => [await jobModel(envFor(S), "embed_memory")];   // the ambient passage index embeds with this job (the local ledger that shared it is gone)
 probes.vision_files = async (S) => { wire = [];   // the picture goes to the saved model's own transport; the stub's reply isn't a description, so the parse error is expected
   await vision(envFor(S), { tenant: "t" }, { data: new Uint8Array([1, 2, 3]), mime: "image/png" }, "chat").catch(() => {}); return [lastWire("/chat/completions")?.model]; };
 probes.workers_ai_chat = async (S) => [await jobModel(envFor(S), "workers_ai_chat")];
@@ -127,6 +115,11 @@ for (const def of JOBS) {
   for (const other of JOB_IDS) if (other !== def.id) assert.deepEqual(settings.jobs[other], SEED.jobs[other], `${def.id} changed ${other}`);
 }
 assert.deepEqual(Object.keys(probes).sort(), [...JOB_IDS].sort(), "a probe for every job and nothing else");
+// main chat replies read the General category (the chat job no longer exists): its first model, its saved reasoning level and nothing from the environment
+{ const model = "sentinel/general", s = clone(SEED); s.catalog[model] = record(model); setGeneral(s, [{ model, effort: "high" }]);
+  const S = validateModelSettings(s), route = policyRoute(S, "general", "zdr", "x"), r = dispatchOrder(route, "zdr", { settings: S });
+  assert.equal(r.attempts[0].effort, "high", "the saved effort"); const w = await chat(envFor(S), route, "chat"); assert.equal(w.reasoning.effort, "high");
+  for (const m of [r.attempts[0].model, w.model]) assert.equal(m, model, `general: the runtime used ${m}, not the saved ${model}`); }
 console.log(`  ok every one of ${JOBS.length} jobs uses only its own saved model, with decoy environment variables set`);
 
 // a hand-off request is recognized and read from the saved handoff job
@@ -145,7 +138,7 @@ assert.equal(wire.length, 0);
   assert.equal(open.MODEL_SETTINGS.jobs.label.model, SEED.jobs.label.model);
   assert.equal(open.MODEL_SETTINGS_REVISION, 0);
   assert.equal((await readModelSettings({ DB: { prepare() { throw new Error("the shared settings table must not be read without the EE switch"); } } })).revision, 0);
-  assert.equal(await jobModel({ DB: null }, "embed_memory"), SEED.jobs.embed_memory.model);
+  assert.equal(await jobModel({ DB: null }, "label"), SEED.jobs.label.model);
   assert.equal(await modelSettingsEnv({ BYOK: { model: "own" } }).then((e) => e.MODEL_SETTINGS), undefined, "own-key accounts keep their own endpoint and model");
 }
 globalThis.fetch = originalFetch;

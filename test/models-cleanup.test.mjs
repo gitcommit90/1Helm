@@ -17,7 +17,7 @@ import { ID, SEED, EXTRA_FACTS, withExtraModels } from "./helpers/seed-settings.
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 let checks = 0; const test = async (name, fn) => { await fn(); console.log(`ok ${++checks} - ${name}`); };
-const RETIRED = ["memory_summary", "upkeep_write", "upkeep_verify", "people_write", "people_verify", "reflect_write", "reflect_verify", "memory_supersede"];
+const RETIRED = ["memory_summary", "upkeep_write", "upkeep_verify", "people_write", "people_verify", "reflect_write", "reflect_verify", "memory_supersede", "embed_memory"];
 
 function database() {
   const sql = new DatabaseSync(":memory:");
@@ -26,11 +26,9 @@ function database() {
     all: async () => ({ results: s.all(...a) }), run: async () => ({ meta: { changes: Number(s.run(...a).changes) } }) }; return o; } };
   return { sql, DB };
 }
-const ambientOff = { HINDSIGHT: {}, HINDSIGHT_API_KEY: "k", MEMORY_BACKEND: "hindsight", HS_FOUNDATIONS: "on", HS_WRITERS: "on", LEGACY_AMBIENT_SEARCH: "off" };
-
-await test("the eight retired jobs are not in the registry, and the registry has no memory wording left", () => {
-  for (const id of RETIRED) assert.ok(!JOB_IDS.includes(id), id); assert.equal(JOBS.length, 32);
-  assert.ok(!JOBS.some((j) => /memory/i.test(`${j.label} ${j.description}`) && j.id !== "embed_memory"), "no job describes memory work that no longer runs");
+await test("the nine retired jobs are not in the registry, and the registry has no memory wording left", () => {
+  for (const id of RETIRED) assert.ok(!JOB_IDS.includes(id), id); assert.equal(JOBS.length, 19);
+  assert.ok(!JOBS.some((j) => /memory/i.test(`${j.label} ${j.description}`)), "no job describes memory work that no longer runs");
   const seed = seedFresh({}); for (const id of RETIRED) assert.ok(!(id in seed.jobs), `${id} is not seeded`);
 });
 
@@ -48,20 +46,8 @@ await test("tolerant read: a saved version with retired or unknown jobs reads as
   // the strict validator itself still refuses extra jobs, and a missing current job is still repaired the old way
   assert.throws(() => validateModelSettings(raw), (e) => e.status === 400); assert.deepEqual(withoutRetiredJobs(raw).jobs.handoff, raw.jobs.handoff);
   // a save through the page writes a clean version
-  const view = await saveModelSettings(env, { revision: 3, config: { version: 2, jobs: r.config.jobs } }, "admin"); assert.equal(view.revision, 4);
+  const view = await saveModelSettings(env, { revision: 3, config: { version: 3, jobs: r.config.jobs, routing: r.config.routing } }, "admin"); assert.equal(view.revision, 4);
   assert.ok(!Object.keys(JSON.parse(sql.prepare("SELECT config FROM model_job_settings_versions WHERE revision=4").get().config).jobs).some((id) => RETIRED.includes(id)));
-});
-
-await test("the ambient search index job is hidden from the settings view when the ambient passage index is off, shown by the dashboard, and stays in the saved settings", async () => {
-  const { DB } = database(), on = { ONEHELM_EE: "1hc", DB, ENV_NAME: "dev" }, off = { ONEHELM_EE: "1hc", DB, ENV_NAME: "dev", ...ambientOff };
-  const shown = await modelSettingsView(on), hidden = await modelSettingsView(off);
-  assert.ok(shown.options.jobs.some((j) => j.id === "embed_memory")); assert.deepEqual(shown.hidden, []);
-  assert.ok(!hidden.options.jobs.some((j) => j.id === "embed_memory")); assert.deepEqual(hidden.hidden, ["embed_memory"]);
-  assert.ok(hidden.config.jobs.embed_memory, "its saved setting stays, so saves from the page still validate");
-  // The Models page now shows the job on every environment (total model control), whether or not the ambient index runs.
-  assert.ok(modelDashboard(hidden).jobs.some((j) => j.id === "embed_memory")); assert.ok(modelDashboard(shown).jobs.some((j) => j.id === "embed_memory"));
-  const saved = await saveModelSettings(off, { revision: hidden.revision, config: { version: 2, jobs: hidden.config.jobs } }, "admin"); assert.equal(saved.revision, hidden.revision + 1);
-  const def = jobDef("embed_memory"); assert.match(def.description, /ambient passage index/); assert.doesNotMatch(def.description, /saved memory\. Changing/);
 });
 
 await test("descriptions: speech jobs, group name, page lead, router jobs", async () => {
@@ -87,8 +73,8 @@ await test("model facts match the live data read on 2026-10-15", () => {
   assert.equal(WAI_NANO_PER_MIN, Math.round(46.63 * 0.011 / 1000 * 1e6) * 1000, "46.63 neurons at $0.011 per 1,000 neurons is $0.000513 a minute; the pricing page rounds it to $0.0005");
 });
 
-await test("the catalog keeps only models a job uses; Sol, Qwen 3.8, gpt-oss-20b and Jev are gone from the first-run data", () => {
-  const seed = validateModelSettings(seedFresh({})), used = new Set(Object.values(seed.jobs).flatMap((j) => entriesOf(j).map((e) => e.model)));
+await test("the catalog keeps only models a job or a category uses; Sol, Qwen 3.8, gpt-oss-20b and Jev are gone from the first-run data", () => {
+  const seed = validateModelSettings(seedFresh({})), used = new Set([...Object.values(seed.jobs).flatMap((j) => entriesOf(j).map((e) => e.model)), ...seed.routing.categories.flatMap((c) => Object.values(c.chains).flat().map((e) => e.model))]);
   assert.deepEqual(Object.keys(seed.catalog).sort(), [...used].sort());
   for (const id of ["openai/gpt-6.1-sol", "qwen/qwen3.8-27b", "openai/gpt-oss-20b", "~typesafe/jev-latest"]) { assert.ok(!(id in seed.catalog), id); assert.ok(!(id in SEED_FACTS), id); }
   const withExtra = withExtraModels(seed); assert.ok(Object.keys(withExtra.catalog).length > Object.keys(seed.catalog).length);
@@ -99,11 +85,11 @@ await test("a save that leaves a model unused drops it from the catalog, and the
   const { DB } = database(), env = { ONEHELM_EE: "1hc", DB, ENV_NAME: "dev" }, v0 = await modelSettingsView(env);
   assert.ok(v0.config.catalog[ID.STT_FALLBACK]);
   const jobs = clone(v0.config.jobs); jobs.stt.fallbacks = jobs.stt.fallbacks.filter((f) => f.model !== ID.STT_FALLBACK);
-  const v1 = await saveModelSettings(env, { revision: v0.revision, config: { version: 2, jobs } }, "admin");
+  const v1 = await saveModelSettings(env, { revision: v0.revision, config: { version: 3, jobs, routing: v0.config.routing } }, "admin");
   assert.ok(!(ID.STT_FALLBACK in v1.config.catalog), "no job uses it, so it left the catalog");
   assert.ok(v1.options.choices.speech.some((m) => m.id === ID.STT_FALLBACK), "the picker still lists it, from the known facts");
   const jobs2 = clone(v1.config.jobs); jobs2.stt.fallbacks.push({ model: ID.STT_FALLBACK, effort: null });
-  const v2 = await saveModelSettings(env, { revision: v1.revision, config: { version: 2, jobs: jobs2 } }, "admin");
+  const v2 = await saveModelSettings(env, { revision: v1.revision, config: { version: 3, jobs: jobs2, routing: v1.config.routing } }, "admin");
   assert.deepEqual(v2.config.catalog[ID.STT_FALLBACK], { id: ID.STT_FALLBACK, ...SEED_FACTS[ID.STT_FALLBACK] }, "added again with its known facts");
 });
 

@@ -7,7 +7,7 @@ import { openRouterChat } from "./helpers/or-chat.mjs";
 import { seedSettings, ID } from "./helpers/seed-settings.mjs";
 import { taskModelCatalog } from "../src/ee/model-catalog.js";
 const MUSE_C = ID.MUSE_C, SOL = ID.SOL;
-import { dispatchOrder, escalationAfter, escalationBefore, newEsc } from "../src/ee/route2.js";
+import { dispatchOrder } from "../src/ee/route2.js";
 
 const catalog = (id, hosts, context = 262144) => ({ id, eligible: true, hosts, efforts: ["minimal", "low", "high"],
   levels: id === MUSE_C ? ["unrestricted"] : ["unrestricted", "zdr", "no_training"], context_length: context,
@@ -52,7 +52,7 @@ const tools = [{ type: "function", function: { name: "lookup", parameters: { typ
 for (let turn = 1; turn <= 50; turn++) {
   // Rebuild the resident/turn view from serialized state each time (restart-equivalent profile boundary).
   tc = { session: "task-a" };
-  if (turn === 2) { settings.jobs["chat.general"] = { model: SOL, effort: "high", fallbacks: [] }; revision++; }
+  if (turn === 2) { for (const chain of Object.values(settings.routing.categories[0].chains)) chain[0] = { model: SOL, effort: "high" }; revision++; }
   profile = await ensureTaskRuntime(R, tc, args());
   assert.deepEqual(profile, original, "defaults and effort edits cannot mutate an existing task");
   messages.push({ role: "user", content: `Message ${turn}: ${"keep the decision ".repeat(100)}` });
@@ -116,9 +116,6 @@ calls = 0; globalThis.fetch = async () => { calls++; level = "zdr"; return new R
 await assert.rejects(openRouterChat(env, { messages }, "s", tc.route, { tenant: "tenant-a" }), e => e.privacy);
 assert.equal(calls, 1, "privacy tightening blocks even the same-model retry"); level = "unrestricted";
 assert.deepEqual(dispatchOrder(tc.route, level, { settings }).models, [MUSE_C]);
-tc.esc = newEsc(); tc.esc.tools = 2;
-assert.equal(escalationAfter(R, tc, { content: "I'm stuck", calls: [] }), null);
-assert.equal(escalationBefore(R, tc, []), null);
 assert.equal(tc.route.model, MUSE_C);
 
 assert.throws(() => approvedTaskTransition(profile, readTaskProfile(R, "task-b")), /approved migration/);

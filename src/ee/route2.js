@@ -1,17 +1,12 @@
-// Task-aware model routing (Captain 2026-10-08, notes/2026-10-08-privacy-routing/PROMPT.md). Replaces the two-model
-// Sol/Luna rule (Sol is no longer in the catalog). Per message from the person, ONE decider call (decider.js; its model is the saved setting of the job "decider") answers
-// three questions on the last few messages: is it part of a task (stats only), which task CATEGORY it is (pool.js CATEGORIES), and
-// whether an earlier result fell short (quality recovery). The category's saved list (the job "chat.<category>", model-jobs.js), filtered
-// by the account's AI data privacy level (privacy.js), gives the ordered models. The decider never chooses reasoning effort: each model in
-// the list carries its own saved reasoning level, applied on the wire in model.js twoChat, fallbacks included.
+// Task-aware model routing (Captain 2026-10-08, notes/2026-10-08-privacy-routing/PROMPT.md). Per message from the person, ONE decider call
+// (decider.js; its model is the saved setting of the job "decider") answers questions on the last few messages: is it part of a task (stats only),
+// which task category it is, and whether an earlier result fell short (stats only). With category routing on (the setting on dev and Live), the saved
+// routing categories give the ordered models (routing-config.js, filtered by the account's AI data privacy level, privacy.js), and the same category
+// gives the output limit, provider sort and price ceiling. With it off, every kind of request answers from the saved General list.
+// The decider never chooses reasoning effort: each model in a list carries its own saved reasoning level, applied on the wire in model.js, fallbacks included.
 // No decider call: unattended runs (scheduled jobs, follow-ups, helpers) and a bare "keep going" with work open reuse the task's
 // category (stored per session), else "general". A decider error/timeout/garbage → the task's category, else "general" (cheapest).
-// One model per turn (switching breaks the prompt cache), except a deliberate quality-recovery switch:
-//   - before the turn: the person says an earlier result fell short (decider `unmet`) or asks for the best model → pool.js RECOVERY by
-//     category (apps → Haiku, technical/spreadsheet → their saved Retry jobs, directly; research/general → a corrected approach, research may also take
-//     the chain's alternate). Requirements, corrections and tool state are in the context the new model reads.
-//   - inside the turn: concrete failures (the same tool failing twice, stalled steps, two malformed calls, "I'm stuck" after tool
-//     work) → the saved "Switch during a task" model for the rest of the turn, once. No walk down the availability chain.
+// One model per turn (switching breaks the prompt cache); a running task keeps the model it started with.
 // Availability fallback (model.js twoChat): the chain for the category at the CURRENT privacy level (re-read on every dispatch),
 // filtered by endpoint eligibility, deduplicated, bounded; each attempt carries the destination model's fixed effort.
 // Prompt cache: one key per channel (Resident.callModel), so the shared prefix stays warm across the channel's tasks.
@@ -23,12 +18,10 @@ import { dynamicRoutingOn, routingCategories, routingCategory, routingChain, gen
 import { dispatch } from "./model-dispatch.js";
 import { askDecider, usesSystemone } from "./text-decision.js";
 import { modelSettingsEnv } from "./model-settings.js";
-import { settingsOf, jobSetting, entriesOf, allowedEntries, chatJobId, configuredHosts, choreRouteOf, jobRoute, factsOf, jobTimeoutMs } from "./model-jobs.js";
+import { settingsOf, jobSetting, entriesOf, allowedEntries, configuredHosts, choreRouteOf, jobRoute, factsOf, jobTimeoutMs } from "./model-jobs.js";
 import { privacyOf, normalizePrivacy, eligibleHosts, ineligibleWhy } from "../privacy.js";
-import { CATEGORIES, CATEGORY_LABEL, DEFAULT_CATEGORY, RECOVERY, IN_TURN_JOB, MAX_MODELS, normalizeCategory, guessCategory } from "./pool.js";
+import { CATEGORIES, CATEGORY_LABEL, DEFAULT_CATEGORY, MAX_MODELS, normalizeCategory, guessCategory } from "./pool.js";
 
-// The person asks for the best model → treated as an explicit request for a more thorough attempt (RECOVERY), never an effort change.
-export const BEST_RE = /\b(use (your|the) (best|smartest|strongest|top|most powerful|biggest) (model|brain|ai)|your (best|smartest|strongest|most powerful) (model|ai))\b/i;
 // A bare go-on ("Keep going.", "continue", "ok, go ahead") that carries on work already under way keeps the task's category, no decider call.
 export const CONTINUE_RE = /^\s*(?:(?:ok(?:ay)?|yes|sure)[,.!]?\s+)?(?:please\s+)?(?:keep going|continue|carry on|go on|go ahead|proceed|resume|keep at it|finish (?:it|up))(?:,?\s*please)?[.!]*\s*$/i;
 // Background jobs (chores: nobody waits on them or reads them directly) each have their own saved setting (model-jobs.js choreRouteOf):
@@ -36,7 +29,6 @@ export const CONTINUE_RE = /^\s*(?:(?:ok(?:ay)?|yes|sure)[,.!]?\s+)?(?:please\s+
 
 // A slow decider never holds the reply: its saved timeout (limits.js, 4 seconds to start with) passes, and the task's category or General is used.
 export const JEV_CONVO_BELOW = 0.35, JEV_TASK_FROM = 0.65;   // is_task bands (stats only)
-export const UNMET_FROM = 0.6;                           // P(unmet) at or above this → quality recovery
 export const JEV_CONTEXT_MSGS = 4;                      // last few user/assistant messages the decider sees
 export const JEV_MSG_CHARS = 800, JEV_TEXT_CHARS = 2000;
 export const JEV_MARKUP = 1.15;                         // billed like every model call: usage.cost × 1.15 (resident.js MARKUP)
@@ -64,8 +56,7 @@ export const UNMET_QUESTION = "Does the latest message say an earlier result in 
 // settings: the saved model settings (env.MODEL_SETTINGS). The route records the first model that would run and, for a turn that may
 // switch models mid-way, the saved "escalate" model; the model list itself is read again from the settings on every dispatch.
 export const modelLabel = (settings, model) => String(factsOf(settings, model)?.name || String(model).split("/").pop()).toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-|-$/g, "");
-const entryOf = (settings, id) => entriesOf(jobSetting(settings, id))[0];
-export function policyRoute(settings, category, level, why, { recoveryJob = null, alternate = false, recovery = null, recoveryEffort = null, note = null, dynamic = false } = {}) {
+export function policyRoute(settings, category, level, why, { recovery = null, recoveryEffort = null, dynamic = false } = {}) {
   if (dynamic && settings?.routing?.categories?.length) {
     const categories = routingCategories(settings), selected = categories.find(c => c.id === category || c.title === category) || categories.find(c => c.id === "general") || categories[0];
     const general = categories.find(c => c.id === "general") || categories[0];
@@ -77,15 +68,11 @@ export function policyRoute(settings, category, level, why, { recoveryJob = null
       requiredDelegation: selected.id !== general.id, fallbacks: main.slice(1).map(e => e.model), only: true,
       label: `${modelLabel(settings, first.model)}/general ${why}`, reason: "dynamic-routing", floor: "General" };
   }
+  // Category routing off: every kind of request answers from General's saved list for the privacy level.
   category = normalizeCategory(category); level = normalizePrivacy(level);
-  const job = jobSetting(settings, chatJobId(category)), list = allowedEntries(settings, job, level), all = entriesOf(job);
-  let rec = null;
-  if (recoveryJob) rec = entryOf(settings, recoveryJob);
-  else if (alternate) rec = list[1] || null;
-  else if (recovery) rec = { model: recovery, effort: recoveryEffort };
-  const first = rec || list[0] || all[0], esc = settings.jobs?.[IN_TURN_JOB] ? entryOf(settings, IN_TURN_JOB) : null;
-  return { two: true, policy: true, category, level, why, primary: first.model, model: first.model, effort: first.effort, ...(rec ? { recovery: rec.model, recoveryEffort: rec.effort ?? null } : {}), ...(note ? { note } : {}),
-    ...(esc ? { escalate: { model: esc.model, effort: esc.effort ?? null } } : {}),
+  const chain = routingChain(settings, "general", level), job = { model: chain[0].model, effort: chain[0].effort ?? null, fallbacks: chain.slice(1) }, list = allowedEntries(settings, job, level), all = entriesOf(job);
+  const rec = recovery ? { model: recovery, effort: recoveryEffort } : null, first = rec || list[0] || all[0];
+  return { two: true, policy: true, category, level, why, primary: first.model, model: first.model, effort: first.effort, ...(rec ? { recovery: rec.model, recoveryEffort: rec.effort ?? null } : {}),
     fallbacks: all.map((e) => e.model).filter((m) => m !== first.model), only: true, label: `${modelLabel(settings, first.model)}/${category} ${why}`, reason: "policy", floor: `${modelLabel(settings, first.model)} ${category}·${level} ${why}` };
 }
 // Legacy: a route stored on a turn journaled before the saved settings existed names its model directly; that model goes first.
@@ -172,17 +159,11 @@ export function jevState({ hist = [], text = "", prevTools = 0, openWork = [], p
 
 // The decider's answers → the route. Pure.
 //   category: the decider's choice; missing → the task's category so far, else general.
-//   recovery: unmet ≥ UNMET_FROM, or "use your best model" → RECOVERY for the task's category (the work that fell short).
-export function routeFromAnswers(env, text, { p = null, category = null, unmet = null, error = null } = {}, { level = "zdr", prevCategory = null } = {}) {
+export function routeFromAnswers(env, text, { p = null, category = null, error = null } = {}, { level = "zdr", prevCategory = null } = {}) {
   const settings = settingsOf(env);
   const v = error && !category ? "unsure" : verdict(p);
   if (dynamicRoutingOn(env)) return { route: policyRoute(settings, category || DEFAULT_CATEGORY, level, category ? "decider" : "decider:unsure", { dynamic: true }), verdict: v };
   const cat = normalizeCategory(category || prevCategory || DEFAULT_CATEGORY);
-  const best = BEST_RE.test(String(text || "")), fell = typeof unmet === "number" && unmet >= UNMET_FROM;
-  if (fell || best) {
-    const base = normalizeCategory(prevCategory || cat), rc = RECOVERY[base], why = fell ? `recover:${base}` : "ask:best";
-    return { route: policyRoute(settings, base, level, why, { recoveryJob: rc.job || null, alternate: !!rc.alternate, note: rc.note || null }), verdict: "recover" };
-  }
   return { route: policyRoute(settings, cat, level, category ? "decider" : error ? "decider:unsure" : "default"), verdict: v };
 }
 // The routes decided without asking the decider (a job, a bare go-on with work open), or null when the message goes to the decider.
@@ -233,57 +214,8 @@ export async function routeTwoTurn(R, tc, { kind, text, hist, stats, audioContex
   setTurnRoute(R, tc, d.route);
   saveSessionCategory(R, tc?.session, d.route.category);
   if (stats) stats.route = { label: d.route.label, category: d.route.category, level, p: d.jev?.p ?? null, unmet: d.jev?.unmet ?? null, ms: d.jev?.ms ?? null, error: d.jev?.error || null, ...(dynamicRoutingOn(env) ? { answers: d.jev?.answers || null, steer: d.route.steer || null, categoryTitle: d.route.categoryTitle, settingsRevision: env.MODEL_SETTINGS_REVISION || 0, primaryChain: d.route.chain, workerChain: d.route.workerChain } : {}) };
-  if (tc) { tc.esc = newEsc(); tc.routeStats = stats?.route || null; }
+  if (tc) tc.routeStats = stats?.route || null;
   return d;
-}
-
-// ---- In-turn quality recovery (both engines: Resident.callModel calls these around every main-chat model call) ----
-// State on tc.esc. Before a call, the tool results of the previous step's calls (found in the messages by call id) are judged:
-//   - the same tool failed in two steps in a row (an "error…" result, invalid/cut-off JSON, a command killed or not found)  → "tool-errors"
-//   - ESCALATE_STALL steps in a row with no progress (every call repeats one made earlier this turn, or every result failed) → "stalled"
-// After a call: two malformed tool calls this turn → "bad-calls"; a final answer saying it's stuck after tool work → that same step
-// is redone on the saved "escalate" model. Every switch moves the rest of the turn to that model (model-jobs.js), once; a turn already on it never switches.
-export const ESCALATE_FAILS = 2, ESCALATE_STALL = 3;
-export const STUCK_RE = /\b(I'?m|I am|I've been|I have been) (stuck|going (around )?in circles)\b|\bkeep(s)? (getting|hitting|running into) (the same |this |that )?(error|failure|problem)|\bI (can'?t|cannot|couldn'?t|could not) (figure out|get (it|this|that) to work|make (it|this) work)\b|\b(ran|run) out of (ideas|things to try)\b/i;
-export const newEsc = () => ({ pending: [], seen: new Set(), failTool: null, fails: 0, stall: 0, bad: 0, tools: 0, done: null });
-const sigOf = (c) => { let a = {}; try { a = JSON.parse(c.function?.arguments || "{}"); } catch {} const { step_title, ...rest } = a || {}; return `${c.function?.name}:${JSON.stringify(rest)}`; };
-export function failedResult(text) {
-  const t = String(text ?? "").replace(/^(\[[^\]]*\]\n)+/, "").trimStart();   // egress / Sentinel notes come first
-  if (/^(error\b|Your tool arguments were not valid JSON|Validation failed for tool|Tool \S+ not found)/i.test(t)) return true;   // classic + pi
-  const m = t.match(/^exit (\d+)/); return !!m && [2, 124, 126, 127, 137].includes(Number(m[1]));   // exit 1 is often just "no match"
-}
-const recoverable = (tc) => !!tc?.route?.two && !tc.route.taskAffinity && !tc.route.test && !!tc.esc && !tc.esc.done && !!tc.route.escalate && (tc.route.served || tc.route.primary) !== tc.route.escalate.model;
-export function escalateTurn(R, tc, reason) {
-  if (!recoverable(tc)) return false;
-  tc.esc.done = reason;
-  const to = tc.route.escalate, k = modelLabel(null, to.model), why = `escalated:${reason}`, { served, ...keep } = tc.route;
-  setTurnRoute(R, tc, { ...keep, why, model: to.model, primary: to.model, effort: to.effort, recovery: to.model, recoveryEffort: to.effort, label: `${k}/${keep.category} ${why}`, floor: `${k} ${keep.category}·${keep.level} ${why}` });
-  if (tc.routeStats) tc.routeStats.escalated = reason;
-  console.log("router: rest of the turn on the recovery model", JSON.stringify({ reason, session: tc.session || null, kind: tc.kind || null, category: tc.route.category }));
-  return true;
-}
-export function escalationBefore(R, tc, messages) {
-  if (!recoverable(tc)) return null;
-  const e = tc.esc, ids = new Map(e.pending.map((p) => [p.id, p])); if (!ids.size) return null;
-  const res = (messages || []).filter((m) => m?.role === "tool" && ids.has(m.tool_call_id));
-  if (!res.length) return null;                           // e.g. a checkpoint call: nothing new to judge
-  e.pending = [];
-  const failed = res.filter((m) => failedResult(typeof m.content === "string" ? m.content : JSON.stringify(m.content))).map((m) => ids.get(m.tool_call_id).name);
-  const allFailed = failed.length === res.length, allRepeat = res.every((m) => ids.get(m.tool_call_id).repeat);
-  if (failed.length) { const t = failed.includes(e.failTool) ? e.failTool : failed[0]; e.fails = t === e.failTool ? e.fails + 1 : 1; e.failTool = t; } else { e.fails = 0; e.failTool = null; }
-  e.stall = allFailed || allRepeat ? e.stall + 1 : 0;
-  const why = e.fails >= ESCALATE_FAILS ? "tool-errors" : e.stall >= ESCALATE_STALL ? "stalled" : null;
-  return why && escalateTurn(R, tc, why) ? why : null;
-}
-// Returns the reason when this step must be redone on the recovery model (the switch is already made), else null.
-export function escalationAfter(R, tc, r) {
-  if (!recoverable(tc) || !r) return null;
-  const e = tc.esc, calls = r.calls || [];
-  for (const c of calls) { const s = sigOf(c); e.pending.push({ id: c.id, name: c.function?.name, repeat: e.seen.has(s) }); e.seen.add(s); }
-  e.tools += calls.length;
-  if (calls.some((c) => c.bad_args != null) && ++e.bad >= ESCALATE_FAILS) { escalateTurn(R, tc, "bad-calls"); return null; }
-  if (!calls.length && e.tools > 0 && STUCK_RE.test(r.content || "")) return escalateTurn(R, tc, "stuck") ? "stuck" : null;
-  return null;
 }
 
 // Hand-off notes (written after the reply, read only by the helper's future self) are a chore: gpt-oss-120b, not the pool.
@@ -309,9 +241,10 @@ export function dispatchOrder(route, level, { prov = null, body = null, settings
     return model ? { models: [model], attempts: [{ model, effort: route.taskProfile?.effort ?? null }], skipped: [] } : { models: [], attempts: [], skipped: [{ model: null, why: "missing task profile" }] };
   }
   level = normalizePrivacy(level);
-  const job = jobSetting(settings, chatJobId(route?.category)), own = entriesOf(job);
+  // A category routing route carries its own saved chain for this level; any other route lists the saved General list.
+  const own = route?.dynamicRouting && Array.isArray(route.chain) && route.chain.length ? route.chain.map((e) => ({ model: e.model, effort: e.effort ?? null })) : routingChain(settings, "general", level);
   // A model named directly on a route (a recovery switch, or a route saved before these settings) goes first with its saved effort.
-  const effortOf = (model) => [...Object.values(settings.jobs)].flatMap((j) => j ? entriesOf(j) : []).find((e) => e.model === model)?.effort ?? null;
+  const effortOf = (model) => [...(settings.routing?.categories || []).flatMap((c) => Object.values(c.chains || {}).flat()), ...Object.values(settings.jobs).flatMap((j) => j ? entriesOf(j) : [])].find((e) => e.model === model)?.effort ?? null;
   const lead = [route?.recovery, route?.policy ? null : route?.primary].filter(Boolean).map((model) => ({ model, effort: route?.recovery === model && route.recoveryEffort !== undefined ? route.recoveryEffort : effortOf(model) }));
   const list = [...lead, ...own];
   const forced = body?.tool_choice != null && body.tool_choice !== "auto";

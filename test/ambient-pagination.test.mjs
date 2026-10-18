@@ -79,10 +79,6 @@ try {
   assert.match(changed.error, /changed/); assert.equal(changed.next_cursor, null, "backend still rejects stale revision");
   const unicode = "図".repeat(500);
   for (let i = 4; i <= 5; i++) await store.ingest("fixture", i, { id: i, state: "COMPLETED", start_time: T + i * 60000, end_time: T + i * 60000 + 1000, primary_location: { address: unicode, latitude: 37.8, longitude: -122.27 }, transcriptions: [{ utterances: [{ text: unicode, spoken_at: T + i * 60000 }] }] });
-  const firstUnicode = await ambientQuery(res, { mode: "transcript", query: unicode, limit: 1 });
-  assert.ok(firstUnicode.next_cursor.length > 2000, "valid max-length Unicode query exceeds old opaque cursor bound");
-  const nextUnicode = await ambientQuery(res, { mode: "transcript", query: unicode, limit: 1, cursor: firstUnicode.next_cursor });
-  assert.equal(nextUnicode.transcripts.length, 1); assert.notEqual(firstUnicode.transcripts[0].id, nextUnicode.transcripts[0].id);
   const placeUnicode = await locationQuery(res, { query: unicode, limit: 1 });
   assert.ok(placeUnicode.next_cursor.length > 2000);
   const placeNextUnicode = await locationQuery(res, { query: unicode, limit: 1, cursor: placeUnicode.next_cursor });

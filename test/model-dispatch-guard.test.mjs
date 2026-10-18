@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { JOB_IDS } from "../src/ee/model-jobs.js";
+import { JOB_IDS, MODEL_PAGE_JOBS } from "../src/ee/model-jobs.js";
 
 const SKIP = new Set(["prompt", "vendor", "skills", "docs"]);
 const walk = (d) => readdirSync(d).flatMap((f) => { const p = join(d, f); return SKIP.has(f) ? [] : statSync(p).isDirectory() ? walk(p) : /\.(js|ts)$/.test(f) ? [p.replace(/\\/g, "/")] : []; });
@@ -39,21 +39,17 @@ test("only the dispatcher imports the transport functions", () => {
 const DESCRIBES = new Set(["src/ee/model-jobs.js", "src/ee/model-seed.js", "src/ee/model-settings.js", "src/ee/model-plan.js", "src/ee/model-dashboard.js", "src/ee/models-console.js", "src/ee/model-served.js", "src/ee/routing-config.js", "src/ee/model-dispatch.js", "src/ee/outside-models.js"]);
 test("every job has a dispatch call site, and every dispatched job exists", () => {
   const known = new Set(JOB_IDS), used = new Set();
-  // A job is named by a literal in dispatch(env, "job", ...), a dispatchMedia(...) call, the chat.<category> and recover.<category> families, or the ids a call site lists.
+  // A job is named by a literal in dispatch(env, "job", ...) or a dispatchMedia(...) call, or by the ids a call site lists.
   const lit = /\b(?:dispatch|dispatchMedia)\(\s*[\w.$?]+\s*,\s*["'`]([a-z0-9_.]+)["'`]/g;
   for (const f of files) for (const m of text[f].matchAll(lit)) { assert.ok(known.has(m[1]), `${f}: dispatch names "${m[1]}", which is not a job (model-jobs.js)`); used.add(m[1]); }
-  // Call sites that pass the job through a variable name where the id comes from.
-  const viaVariable = {
-    "chat.": ["src/model.js", "src/ee/model-jobs.js", "src/resident.js"],   // mainChatJob(route) in resident.js: chat.<category>
-    "recover.": ["src/ee/route2.js", "src/ee/pool.js"],                       // route.recoveryJob, read from the saved recover.* jobs inside the dispatcher
-    "escalate": ["src/ee/route2.js", "src/ee/pool.js"],                       // route.limitsJob
-  };
   for (const id of JOB_IDS) {
     if (used.has(id)) continue;
-    const family = Object.keys(viaVariable).find((p) => id.startsWith(p));
-    if (family) { assert.ok(viaVariable[family].some((f) => text[f] && (new RegExp(`\\b${id.split(".")[0]}`).test(text[f]))), `${id} has no call site`); continue; }
     // Any other job is named in a file that runs it: not in the settings, plan, push or page code, which only describe jobs.
     const named = files.some((f) => !DESCRIBES.has(f) && new RegExp(`["'\`]${id}["'\`]`).test(text[f]));
     assert.ok(named, `job ${id} has no call site: nothing runs it, so remove it from model-jobs.js or add the call`);
   }
+  // Every job is listed on the Models page: none is saved only for the runtime, and none is hidden from the page.
+  assert.deepEqual(MODEL_PAGE_JOBS.map((j) => j.id), JOB_IDS, "every job has a row on the Models page");
+  // No job of an earlier release (a chat job per kind of request, the retry jobs, the switch job) is listed or named by a call site any more.
+  for (const id of JOB_IDS) assert.ok(!/^(chat\.|recover\.)|^escalate$/.test(id), `${id} belonged to the classic router that was removed`);
 });

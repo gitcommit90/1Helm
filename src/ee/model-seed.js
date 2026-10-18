@@ -9,9 +9,9 @@
 //   seedFromLegacy(env, c)  an environment that already ran the earlier slot-based settings: exactly what was in effect there,
 //                           including a saved earlier settings row (c).
 // Literals only: no environment variable chooses a model, a provider list or a limit here. A saved entry never carries provider lists (hosts, pin).
-import { CATEGORIES } from "./pool.js";
-import { JOBS, JOB_KINDS, configuredHosts } from "./model-jobs.js";
+import { JOBS, JOB_KINDS, CHAT_JOB, configuredHosts } from "./model-jobs.js";
 import { jobTimeoutDefault } from "../limits.js";
+import { withRoutingConfig } from "./routing-config.js";
 
 const MUSE_C = "meta/muse-spark-1.3-contributor", MUSE_S = "meta/muse-spark-1.3", DEEPSEEK = "deepseek/deepseek-v4.1-flash";
 const LUNA = "openai/gpt-6-luna", HAIKU = "anthropic/claude-haiku-5.5";
@@ -20,7 +20,7 @@ const PPLX_DECIDER = "perplexity/pplx-decider-v1.1-27b";
 // Speech to text, in order (the Captain, 2026-10-15, "it is an accuracy choice"): AssemblyAI Universal-3.6 Pro first, then the earlier order.
 const STT_BEST = "assemblyai/universal-3-6-pro", STT = "qwen/qwen3-asr-0.6b", STT_FALLBACK = "openai/whisper-large-v3-turbo", STT_WAI = "@cf/openai/whisper-large-v3-turbo", LIVE_STT = "@cf/deepgram/nova-3";
 const CLEF = "@cf/cloudflare/clef", CLEF_FLASH = "@cf/cloudflare/clef-flash";
-const EMBED_FILES = "perplexity/pplx-embed-v1-0.6b", EMBED_MEMORY = "@cf/baai/bge-m3", VISION = "@cf/google/gemma-4-26b-a4b-it", WAI_CHAT = "@cf/zai-org/glm-5.3-flash";
+const EMBED_FILES = "perplexity/pplx-embed-v1-0.6b", VISION = "@cf/google/gemma-4-26b-a4b-it", WAI_CHAT = "@cf/zai-org/glm-5.3-flash";
 // The browser look's starting model: Moondream 3.1 on Workers AI. It is the saved job "look".
 export const MOONDREAM = "@cf/moondream/moondream3.1-9B-A2B";
 // The web search provider the search job starts on: Linkup through the Cloudflare Web Search API.
@@ -75,7 +75,6 @@ export const SEED_FACTS = {
   [MOONDREAM]: { name: "Moondream 3.1 (Cloudflare)", kinds: ["look"], efforts: [], pricing: { prompt: 0.3, completion: 1.0 } },
   [SEARCH_LINKUP]: { name: "Linkup (Cloudflare Web Search)", kinds: ["search"], efforts: [] },
   [EMBED_FILES]: { name: "Perplexity Embed 0.6B", kinds: ["embedding_files"], efforts: [] },
-  [EMBED_MEMORY]: { name: "BGE M3 (Cloudflare)", kinds: ["embedding_memory"], efforts: [] },
   [VISION]: { name: "Gemma 4 26B (Cloudflare)", kinds: ["vision"], efforts: VISION_EFFORTS },
   [WAI_CHAT]: { name: "GLM 5.3 Flash (Cloudflare)", kinds: ["workers_ai"], efforts: [] },
 };
@@ -84,17 +83,7 @@ export const SEED_FACTS = {
 const OLD_POOL = { "muse-c": [MUSE_C, "xhigh"], "muse-s": [MUSE_S, "xhigh"], deepseek: [DEEPSEEK, "max"], luna: [LUNA, "xhigh"], haiku: [HAIKU, "xhigh"] };
 const C = "muse-c", S = "muse-s", D = "deepseek", L = "luna", H = "haiku";
 // Sol left the first-run data (Captain, 2026-10-15), so Haiku takes its place in each list, once per list.
-const OLD_CHAINS = {
-  general: { unrestricted: [C, D, L], no_training: [D, S, L], zdr: [D, L, H] },
-  research: { unrestricted: [C, D, H], no_training: [S, D, H], zdr: [D, H] },
-  apps_economical: { unrestricted: [C, D, H], no_training: [D, S, H], zdr: [D, H] },
-  skills: { unrestricted: [C, D, H], no_training: [D, H, S], zdr: [D, H] },
-  spreadsheet: { unrestricted: [L, H, C], no_training: [L, H, S], zdr: [L, H] },
-  technical: { unrestricted: [H, D], no_training: [H, D], zdr: [H, D] },
-  apps_complete: { unrestricted: [H, D], no_training: [H, D], zdr: [H, D] },
-};
-const OLD_RECOVERY = { apps_economical: H, apps_complete: H, technical: H, spreadsheet: H };
-const OLD_IN_TURN = H;
+const OLD_GENERAL_CHAIN = { unrestricted: [C, D, L], no_training: [D, S, L], zdr: [D, L, H] };
 // The earlier chore model keys: the model and its own reasoning default.
 const OLD_CHORE = { oss120: { model: OSS120 }, dsflash: { model: DEEPSEEK, effort: "none" }, haiku: { model: HAIKU, effort: "none" }, luna: { model: LUNA } };
 const bg = (model, effort = "low") => ({ model, effort });
@@ -165,7 +154,6 @@ function otherJobs() {
     stt_cloudflare: { model: STT_WAI, effort: null, fallbacks: [] },
     live_dictation: { model: STT_BEST, effort: null, fallbacks: [entry(LIVE_STT, null)] },
     embed_files: { model: EMBED_FILES, effort: null, fallbacks: [] },
-    embed_memory: { model: EMBED_MEMORY, effort: null, fallbacks: [] },
     vision_files: { model: VISION, effort: "none", fallbacks: [] },
     workers_ai_chat: { model: WAI_CHAT, effort: null, fallbacks: [] },
     look: optionalJobDefault("look").job,
@@ -193,17 +181,16 @@ export function seedFresh(env = {}) { return seedFromLegacy(env, null); }
 export function seedFromLegacy(env = {}, legacy = null) {
   const slot = (key) => entry(legacy?.models?.[key] || OLD_POOL[key]?.[0], legacy?.efforts?.[key] ?? OLD_POOL[key]?.[1]);
   const jobs = {};
-  for (const cat of CATEGORIES) {
-    const chains0 = legacy?.chains?.[cat] || OLD_CHAINS[cat], chains = Object.fromEntries(Object.entries(chains0).map(([lv, l]) => [lv, (l || []).filter((k) => own(OLD_POOL, k) || legacy?.models?.[k])])), list = mergeLevels(chains, (k, lv) => configuredHosts({ catalog: legacy?.catalog || {} }, slot(k).model, lv).length > 0).map(slot).filter((e, i, a) => a.findIndex((x) => x.model === e.model) === i);
-    const [first, ...rest] = list;
-    jobs[`chat.${cat}`] = { ...first, fallbacks: rest };
-  }
-  for (const [cat, key] of Object.entries(OLD_RECOVERY)) jobs[`recover.${cat}`] = { ...slot(key), fallbacks: [] };
-  jobs.escalate = { ...slot(OLD_IN_TURN), fallbacks: [] };
+  // The chat job starts as the earlier General list (the other earlier category lists no longer exist).
+  const chains = Object.fromEntries(Object.entries(legacy?.chains?.general || OLD_GENERAL_CHAIN).map(([lv, l]) => [lv, (l || []).filter((k) => own(OLD_POOL, k) || legacy?.models?.[k])]));
+  const list = mergeLevels(chains, (k, lv) => configuredHosts({ catalog: legacy?.catalog || {} }, slot(k).model, lv).length > 0).map(slot).filter((e, i, a) => a.findIndex((x) => x.model === e.model) === i);
+  const [first, ...rest] = list;
+  jobs[CHAT_JOB] = { ...first, fallbacks: rest };
   const deciderSaved = legacy?.decider && legacy.decider !== "default" ? legacy.decider : null;
   jobs.decider = { model: deciderSaved || PPLX_DECIDER, effort: null, fallbacks: [] };
   for (const role of LEGACY_CHORES) jobs[role] = savedChore(legacy, role) || inEffectChore(role);
   Object.assign(jobs, otherJobs());
   jobs.browser_decider = optionalJobDefault("browser_decider", jobs).job;
-  return finish(jobs, legacy?.catalog || {});
+  // The chat list becomes the General category (its models are in the catalog because the list is a job while the catalog is made), then the job goes.
+  return withRoutingConfig(finish(jobs, legacy?.catalog || {}), { zdrThirdModel: ROUTING_ZDR_THIRD_MODEL });
 }

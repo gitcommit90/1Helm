@@ -24,7 +24,7 @@
 //   - Disconnect: keep (memories and transcripts stay; the cursor goes) or remove (every bee:conv:<id> document in General's bank
 //     and every transcript under t/<tenant>/bee/ are deleted, then this DO's storage).
 // The token is never stored here (token_ref names the sealed D1 row), never logged, never in an event, never returned.
-// Dedicated Ambient extraction additionally indexes full transcripts (including recordings in progress) in this tenant's
+// Dedicated Ambient extraction additionally stores full transcripts (including recordings in progress) in this tenant's
 // provider-neutral store. General retrieves typed items and raw evidence through ambientQuery; spoken words never execute tools.
 import { DurableObject } from "cloudflare:workers";
 import { tolerantEnv, codeV } from "../do-stub.js";
@@ -259,8 +259,6 @@ export class BeeSync extends DurableObject {
     const at = Math.min(bfNext, liveNext, this.writesDueAt(), this.ambient.running() ? this.ambient.dueAt() : Infinity); if (at < Infinity) await this.ctx.storage.setAlarm(Math.max(at, now() + 500));
   }
   ambientQuery(args = {}) { return this.ambient.query(args); }
-  // Added alongside ambientQuery (RPC methods are only ever added): same query, plus meaning based search.
-  async ambientSearch(args = {}) { return this.ambient.search(args); }
   async armAmbientRecovery() { if (this.get("ambient_recovery_arm") === "1" && this.ambient.running()) { await this.arm(now() + 1000); this.put("ambient_recovery_arm", null); } }
   async ambientStatus() { await this.armAmbientRecovery(); return { ...this.ambient.query({ limit: 1 }).coverage, worker_version: codeV(this.env), counters: this.counters(), diagnostic: (() => { try { return JSON.parse(this.get("ambient_error") || "null"); } catch { return null; } })() }; }
   async ambientReindex(tenant) {

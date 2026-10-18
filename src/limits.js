@@ -7,8 +7,8 @@
 //
 // The per job timeout (`timeout_ms` on a saved job) is defined at the bottom of this file, with the jobs that have one today.
 export const LIMIT_GROUPS = [
-  { id: "chat", title: "Chat turns", note: "How long and how far one turn of work may go before it stops." },
-  { id: "helpers", title: "Helpers", note: "Helpers are the workers a chat turn starts for a side job." },
+  { id: "chat", title: "Chat turns", note: "How long and how far one reply may go before it stops." },
+  { id: "helpers", title: "Helpers", note: "Helpers are background jobs that a chat message starts for a side job." },
   { id: "plan_tasks", title: "Tasks a plan starts", note: "The safety budget of each task that a plan or a delegated brief starts." },
   { id: "events", title: "App events", note: "Workflows that run when something happens in a connected app." },
   { id: "browser", title: "Browser", note: "" },
@@ -27,6 +27,8 @@ export const LIMIT_DEFS = Object.freeze([
   D("turn_pause_minutes", "chat", "Minutes before a turn checks in", "A turn that works this long without its reply pauses to ask the person.", "minutes", 10, 1, 240),
   D("command_minutes", "chat", "Minutes for a command", "How long one command on the computer may run before it is stopped.", "minutes", 4, 1, 60),
   D("command_max_minutes", "chat", "Most minutes a command may ask for", "The longest time a command may request for itself.", "minutes", 15, 1, 240),
+  D("turn_stall_calls", "chat", "Repeated calls before a turn is stopped", "A turn that makes this many tool calls in a row with nearly the same input and the same result is stopped and asked to report what it is stuck on.", "calls", 10, 2, 100),
+  D("stall_similarity_percent", "chat", "How alike repeated calls must be", "Two tool calls count as nearly the same when this share of the words in their input match and their results are the same.", "percent", 85, 50, 100),
 
   D("helper_running", "helpers", "Helpers working at once in a task", "The most helpers that may work in one task at the same time.", "count", 6, 1, 50),
   D("helper_per_day", "helpers", "Helpers started per day", "The most helpers started in one channel in a rolling 24 hours.", "count", 200, 1, 10000),
@@ -35,6 +37,7 @@ export const LIMIT_DEFS = Object.freeze([
   D("helper_deadline_minutes", "helpers", "Minutes before a helper wraps up", "After this long a helper stops using tools and writes its report.", "minutes", 15, 1, 240),
   D("helper_grace_minutes", "helpers", "Minutes to write the report", "After the wrap up time a helper has this long before it is stopped.", "minutes", 2, 1, 60),
   D("helper_force_minutes", "helpers", "Minutes before a stuck helper is closed", "A helper still stuck in a tool this long after the report time is closed as stopped.", "minutes", 3, 1, 60),
+  D("helper_stall_calls", "helpers", "Repeated calls before a helper is stopped", "A helper that makes this many tool calls in a row with nearly the same input and the same result is stopped and asked to report what it is stuck on.", "calls", 6, 2, 100),
   D("helper_report_chars", "helpers", "Length of a helper report", "The most characters of a helper's report that go back to the main helper.", "characters", 6000, 500, 100000),
 
   D("plan_task_steps", "plan_tasks", "Steps for a plan task", "A task a plan starts runs this many steps, then pauses with a short report.", "steps", 20, 1, 1000),
@@ -113,6 +116,7 @@ export function runtimeLimits(settings) {
     // Only the times that were saved; spendguard.js applies them over its starting values (TIMING).
     timingSaved: Object.freeze(Object.fromEntries([["turn_pause_minutes", "wallMs"], ["command_minutes", "cmdMs"], ["command_max_minutes", "cmdMaxMs"]].filter(([k]) => own(settings?.limits, k) && Number.isFinite(settings.limits[k])).map(([k, f]) => [f, minutes(settings.limits[k])]))),
     helper: Object.freeze({ running: v.helper_running, perDay: v.helper_per_day, steps: v.helper_steps, charge: nano(v.helper_charge), deadlineMs: minutes(v.helper_deadline_minutes), graceMs: minutes(v.helper_grace_minutes), forceMs: minutes(v.helper_force_minutes), reportMax: v.helper_report_chars }),
+    stall: Object.freeze({ helperCalls: v.helper_stall_calls, turnCalls: v.turn_stall_calls, similarity: v.stall_similarity_percent / 100 }),
     planTask: Object.freeze({ steps: v.plan_task_steps, charge: nano(v.plan_task_charge), ms: minutes(v.plan_task_minutes) }),
     events: Object.freeze({ runsPerHour: v.event_runs_per_hour, queueMax: v.event_queue_max, steps: v.event_steps }),
     browserSteps: v.browser_steps,

@@ -16,7 +16,7 @@ export const LEVELS = ["unrestricted", "no_training", "zdr"];
 export const LEVEL_NAME = { unrestricted: "Unrestricted", no_training: "No training", zdr: "ZDR" };
 export const EFFORT = { none: "None", default: "Default", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Maximum" };
 export const SORT = { "": "Default", price: "Price", throughput: "Throughput", latency: "Latency" };
-export const GROUP_TITLE = { chat: "Chat categories", recovery: "Retries", routing: "Routing", background: "Background jobs", speech: "Speech", search: "Search and media", other: "Other", chatlimits: "Reply limits" };
+export const GROUP_TITLE = { chat: "Chat categories", routing: "Routing", background: "Background jobs", speech: "Speech", search: "Search and media", other: "Other" };
 export const EDITABLE_VIEWS = ["all", "attention"];
 const CHAT_PICKS = ["chat", "chore", "classic"];
 
@@ -33,7 +33,7 @@ export const priceText = (p) => (p ? `$${p.prompt} / $${p.completion}` : "No cap
 export const agoText = (ms, now) => { const m = Math.max(0, Math.round((now - ms) / 60000)); return m < 1 ? "just now" : m < 60 ? m + " min ago" : m < 1440 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; };
 export const badge = (src) => { const s = src === "CF" ? "CF" : "OR"; return h`<span class="badge ${s}" title="${s === "OR" ? "OpenRouter" : "Cloudflare"}">${s}</span>`; };
 // ---------------------------------------------------------------- rows
-// A row is one line of the table: a saved job, a routing category, or (with category routing on) the reply limits of a chat job.
+// A row is one line of the table: a saved job or a routing category. A category row also carries the limits of its replies (max output, sort, max price, timeout).
 export function rowsOf(state) {
   const out = [], dyn = !!state.dynamicRouting && state.config?.version === 3;
   const jobs = state.jobs || [];
@@ -42,8 +42,6 @@ export function rowsOf(state) {
     if (seen.has(g.id)) continue; seen.add(g.id);
     if (g.id === "chat" && dyn) {
       for (const c of state.config.routing.categories) out.push({ key: "cat:" + c.id, kind: "cat", id: c.id, label: c.title, desc: c.id === "general" ? "The primary model. Other categories are for delegated tasks." : "Delegated tasks", group: "chat", cat: c });
-      const lim = jobs.filter((j) => j.group === "chat").map((j) => ({ key: j.id, kind: "lim", id: j.id, label: j.label, desc: j.description, group: "chatlimits", jv: j }));
-      out.push(...lim);
       continue;
     }
     for (const j of jobs) if (j.group === g.id) out.push({ key: j.id, kind: "job", id: j.id, label: j.label, desc: j.description, group: g.id, jv: j });
@@ -53,7 +51,7 @@ export function rowsOf(state) {
 export const groupsOf = (state) => {
   const dyn = !!state.dynamicRouting && state.config?.version === 3, out = [];
   const seen = new Set();
-  for (const g of state.groups || []) { if (seen.has(g.id)) continue; seen.add(g.id); out.push({ id: g.id, title: GROUP_TITLE[g.id] || g.title }); if (g.id === "chat" && dyn) out.push({ id: "chatlimits", title: GROUP_TITLE.chatlimits }); }
+  for (const g of state.groups || []) { if (seen.has(g.id)) continue; seen.add(g.id); out.push({ id: g.id, title: GROUP_TITLE[g.id] || g.title }); }
   return out;
 };
 export const rowByKey = (state, key) => rowsOf(state).find((r) => r.key === key) || null;
@@ -69,7 +67,7 @@ export function snapshotFromConfig(state) {
       max_output: f("max_output") ?? null, sort: f("sort") ?? null, max_price: f("max_price") ?? null, timeout_ms: f("timeout_ms") ?? null, results: f("results") ?? null };
   }
   const cats = {};
-  for (const c of cfg.routing?.categories || []) cats[c.id] = { levels: c.chains };
+  for (const c of cfg.routing?.categories || []) cats[c.id] = { levels: c.chains, max_output: c.max_output ?? null, sort: c.sort ?? null, max_price: c.max_price ?? null, timeout_ms: c.timeout_ms ?? null };
   return { jobs, cats, limits: state.limits ? { ...state.limits.values } : null };
 }
 
@@ -81,21 +79,21 @@ export function viewOf(state, ui, row, snap) {
   // snap: the snapshot being shown (the saved settings).
   const lv = levelOf(row, ui);
   let chain = [], f = {};
-  if (row.kind === "cat") chain = (snap.cats[row.id]?.levels?.[lv] || []).map((e) => ({ ...e, source: e.source }));
+  if (row.kind === "cat") { chain = (snap.cats[row.id]?.levels?.[lv] || []).map((e) => ({ ...e, source: e.source })); f = snap.cats[row.id] || {}; }
   else if (snap.jobs[row.id]) { chain = snap.jobs[row.id].chain; f = snap.jobs[row.id]; }
   const jv = row.jv, kindText = row.kind === "cat";
-  const noOut = kindText ? true : !!jv.no_output;
+  const noOut = kindText ? false : !!jv.no_output;
   const orOnly = kindText ? false : !!jv.on_openrouter;
   return { chain, level: lv, max_output: f.max_output ?? null, sort: f.sort ?? null, max_price: f.max_price ?? null, timeout_ms: f.timeout_ms, results: f.results,
     hasEffort: kindText ? true : !!jv.has_effort,
-    showOut: row.kind !== "cat" && !noOut, showResults: row.kind !== "cat" && jv.results != null,
-    showSort: row.kind !== "cat" && (orOnly || (!jv.no_output && jv.on_openrouter)), showTimeout: row.kind === "job" && jv.group !== "recovery",
-    maxChain: kindText ? 3 : row.kind === "lim" ? 0 : 1 + (jv.max_fallbacks || 0), fixedChain: kindText, hasChain: row.kind !== "lim" };
+    showOut: !noOut, showResults: row.kind !== "cat" && jv.results != null,
+    showSort: kindText || orOnly || (!jv.no_output && jv.on_openrouter), showTimeout: true,
+    maxChain: kindText ? 3 : 1 + (jv.max_fallbacks || 0), fixedChain: kindText, hasChain: true };
 }
 
 // ---------------------------------------------------------------- last served and flags
 const baseId = (id) => String(id || "").replace(/-\d{8}$/, "").replace(/^~/, "").replace(/-latest$/, "");
-export function servedKey(row) { return row.kind === "cat" ? (row.id === "general" ? "chat.general" : null) : row.id; }
+export function servedKey(row) { return row.kind === "cat" ? (row.id === "general" ? "chat" : null) : row.id; }
 export function servedState(state, row, chains, served) {
   const sv = (served || {})[servedKey(row)];
   if (!sv) return { k: "none" };
@@ -152,7 +150,7 @@ export function applyEdit(config, edit) {
   const cat = edit.cat ? cfg.routing.categories.find((c) => c.id === edit.cat) : null;
   const chainOf = () => (cat ? cat.chains[edit.level] : null);
   switch (edit.t) {
-    case "field": job[edit.field] = edit.value; return cfg;
+    case "field": (cat || job)[edit.field] = edit.value; return cfg;
     case "limit": { const cur = { ...(cfg.limits || {}) }; if (edit.value === null) delete cur[edit.limitKey]; else cur[edit.limitKey] = edit.value; cfg.limits = cur; return cfg; }
     case "effort": if (cat) chainOf()[edit.idx].effort = edit.value; else { const arr = entriesOfJob(job); arr[edit.idx].effort = edit.value; cfg.jobs[edit.id] = packJob(job, arr); } return cfg;
     case "entry": {
@@ -178,7 +176,9 @@ export function applyEdit(config, edit) {
     case "catAdd": {
       const general = cfg.routing.categories.find((c) => c.id === "general"), titles = cfg.routing.categories.map((c) => c.title.toLowerCase());
       let n = 1, title = "New category"; while (titles.includes(title.toLowerCase())) title = "New category " + ++n;
-      cfg.routing.categories.push({ id: edit.newId, title, chains: clone(general.chains) }); return cfg;
+      const added = { id: edit.newId, title, chains: clone(general.chains) };
+      for (const k of ["max_output", "sort", "max_price", "timeout_ms"]) if (own(general, k)) added[k] = clone(general[k]);   // a new category starts with General's limits
+      cfg.routing.categories.push(added); return cfg;
     }
     case "catDelete": { if (!cat || cat.id === "general") return null; cfg.routing.categories = cfg.routing.categories.filter((c) => c.id !== cat.id); return cfg; }
     default: return null;

@@ -1,3 +1,21 @@
+# Source update: 2026-10-18 (one Notebook, one progress row, hidden apps)
+
+## Notebook, ambient search, progress row, hidden apps and chat limits
+
+The Worker source is reconciled from `ecd084bb7f5b4359aef666bc7d90bdd1fd1cd607` to
+`43c36a5510fb1b071e7caf0e670725333a22daa9`. The web source is reconciled from
+`46fb5c0c258d7591cc08e9a8397546478b7338d3` to
+`e6ad635c9573bd0dbeaa4595fe62b958ded08d12`. The public base is
+`2797e73f6e1292b1e56b2604882b05df87e3dbed`.
+
+The old Notebook screen and the old ambient search index are deleted. The flag `LEGACY_AMBIENT_SEARCH`, `src/legacy-flags.js`, `src/ee/ambient-index.js` and `src/ee/ambient-search.js` are gone, and a search by words in `ambient_query` is always a Hindsight recall over the Bee documents. The Notebook pages screen is the only Notebook. When its pages cannot be read it shows "Couldn't load the Notebook." with a Try again button. The public source keeps one safeguard: the boot answer still sets `flags.notebook_pages` to whether the Hindsight service is configured, and when it is `false` the web app says that memory is off and makes no pages request, so a deployment without Hindsight does not report a failed load. `test/notebook-pages-flag.test.mjs` covers both sides.
+
+Each turn now shows one progress row (one orb with two lines of text) in a fixed place. The Activity button, the Activity link, the "N tasks working" pill and the live steps list are removed. Every answer from `/w/<slug>/api` carries an `x-app-v` header, and an open tab reloads itself quietly when the header shows a newer build, at a moment when nothing is typed, uploading or recording (`web/src/auto-reload.ts`). `APP_V` is 272 and `app.js` is rebuilt from public web source.
+
+The list of hidden apps lives in `src/ee/app-visibility.json` and `src/ee/app-visibility.js`. Only Cloudflare MCP is offered for Cloudflare, and the catalog the app loads, `find_app`, the integration hint, the app tools and the Connect and app page routes apply the same rules. `app_run` sends a file's contents as an input and refuses a call that leaves out a required input. A request to put a website live on a domain puts the business-setup skill in front of the model (`src/website-live.js`), and in the public source that note is added only when the Cloud switch `ONEHELM_EE` is on, because it names the Cloudflare MCP app. The app answers a handed-off job with fixed plain sentences (`src/plain-ack.js`), and `src/stall-guard.js` stops a run that repeats nearly the same tool call with the same result.
+
+Chat reply limits (maximum output, provider sort, price ceiling and timeout) are saved on each routing category, and the single chat job and the retry rows are gone. A saved version that still has them is converted when it is read, and the old version stays in the history. The `/api/chat` route and the quality recovery switch are removed. Core sign-in, own-key access, EE gates, storage limits, backup, native clients, schema and the example configuration are unchanged, and no migration is added. Private deployment configuration, the dev to Live push, the ops read tools, coordinator instructions and the hosted end to end checks stay excluded. Local checks do not establish live provider or device behavior.
+
 # Source update: 2026-10-18 (Notebook pages and memory settings)
 
 ## Notebook pages screen and the memory test arm

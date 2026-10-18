@@ -1,10 +1,9 @@
-// Stop (1HC stop.js): a clear Stop wherever a task is working, and "Stop all" when several are.
+// Stop (1HC stop.js): a clear Stop wherever a task is working.
 //   Header: "■ Stop" next to the Working status · Composer: the send button becomes ■ while the helper works and the box is empty
 //   · Activity feed: a Stop on the working card · Side list / Home rows: a small ■ on hover (always faintly visible on touch),
-//   and "Stop" in the row's ⋯ menu · A pill "3 tasks working · Stop all" (in-app ask() confirm) when 2+ are working anywhere.
+//   and "Stop" in the row's ⋯ menu.
 //   Esc never stops (too easy to hit): only explicit taps.
 // Server: POST /res/<ch>/sessions/<id>/stop → { card, session } · POST /stop-all → every channel.
-import { ask } from "./dialog";
 import { pauseOf, stopHereBusy } from "./spendguard";   // why a card paused (1HC spendguard.js)
 
 type Working = { slug: string; sid: string; title: string };
@@ -17,7 +16,6 @@ type Deps = {
 };
 let D: Deps | null = null;
 const BUSY = new Set<string>();
-let ALL = false;
 const esc = (s: any = "") => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 const k = (slug: string, sid: any) => `${slug}|${sid}`;
 export const SQ = `<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="3" fill="currentColor"/></svg>`;
@@ -57,33 +55,12 @@ export async function stopTask(slug: string, sid: any) {
 }
 /** Several tasks at once (the plan card's "Stop these tasks"). */
 export const stopMany = (list: { slug: string; sid: any }[]) => Promise.all(list.map((x) => stopTask(x.slug, x.sid)));
-export async function stopAll() {
-  if (!D || ALL) return;
-  const n = D.working().length;
-  const ok = await ask({ title: `Stop ${n === 1 ? "this task" : `all ${n} tasks`}?`, body: "Each one stops where it is. What's already done stays, and you can pick any of them up again with a message.", confirm: "Stop all", danger: true });
-  if (!ok) return;
-  ALL = true; sync(CUR);
-  try {
-    const r = await D.api(`/stop-all`, {});
-    for (const c of r?.channels || []) for (const s of c.sessions || []) D.apply(c.slug, s);
-    if (r?.error) D.note("Couldn't stop them", String(r.error));
-  } catch (e: any) { D.note("Couldn't stop them", e?.message || "Try again."); }
-  finally { ALL = false; D.repaint(); sync(CUR); }
-}
-
 let CUR: { slug: string; sid: string; working: boolean } | null = null;
-/** After every render / repaint: the composer's stop follows the open task, the pill follows every task. */
+/** After every render / repaint: the composer's stop follows the open task, */
 export function sync(cur: { slug: string; sid: string; working: boolean } | null) {
   CUR = cur;
   const f = document.getElementById("send");
   if (f) { f.classList.toggle("working", !!cur?.working); const g = document.getElementById("gostop") as HTMLButtonElement | null; if (g) { const b = !!cur && stopBusy(cur.slug, cur.sid); g.disabled = b; g.classList.toggle("busy", b); } }
-  if (!D) return;
-  const n = D.working().length;
-  let p = document.getElementById("stopall");
-  if (n < 2) { p?.remove(); return; }
-  if (!p) { p = document.createElement("div"); p.id = "stopall"; p.setAttribute("role", "status"); document.body.appendChild(p); }
-  const h = `<span class="sa-dot" aria-hidden="true"></span><span>${n} tasks working</span><span class="sa-sep" aria-hidden="true">·</span><button type="button" data-stopall${ALL ? " disabled" : ""}>${ALL ? "Stopping…" : "Stop all"}</button>`;
-  if (p.dataset.h !== h) { p.dataset.h = h; p.innerHTML = h; }
 }
 
 export function stInit(d: Deps) {
@@ -92,7 +69,6 @@ export function stInit(d: Deps) {
     const b = t.closest<HTMLElement>("[data-stop]");
     if (b) { e.preventDefault(); e.stopImmediatePropagation(); const [slug, sid] = b.dataset.stop!.split("|"); void stopTask(slug, sid); return; }
     if (t.closest("[data-stopcur]")) { e.preventDefault(); e.stopImmediatePropagation(); if (CUR?.working) void stopTask(CUR.slug, CUR.sid); return; }
-    if (t.closest("[data-stopall]")) { e.preventDefault(); e.stopImmediatePropagation(); void stopAll(); }
   };
   window.addEventListener("click", (e) => act(e.target as HTMLElement, e), true);
   window.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && (e.target as HTMLElement).closest?.("span[data-stop]")) act(e.target as HTMLElement, e); }, true);
