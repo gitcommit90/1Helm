@@ -251,7 +251,7 @@ export async function stateOf(env, ctx) {
 export async function createServer(env, ctx, body) {
   await gate(env, ctx);
   const p = parseCreate(body);
-  try { await dnsCheck(p.u.hostname, { resolve: hooks.resolve }); if (p.discovery) await dnsCheck(new URL(p.discovery).hostname, { resolve: hooks.resolve }); }
+  try { await dnsCheck(p.u.host, { resolve: hooks.resolve }); if (p.discovery) await dnsCheck(new URL(p.discovery).hostname, { resolve: hooks.resolve }); }
   catch (e) { if (e instanceof UrlError) throw new ApiError(e.code, e.message); throw e; }
   let row = await env.DB.prepare("SELECT * FROM custom_mcp_server WHERE tenant_id=? AND request_id=?").bind(ctx.tenantId, p.requestId).first();
   if (row) {

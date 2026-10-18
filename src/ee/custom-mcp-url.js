@@ -63,7 +63,7 @@ export function checkPublicUrl(raw, { what = "server URL", allowQuery = false } 
 // range (a public-looking name pointed at an internal address). Fails OPEN when the resolver is unreachable (Composio connects from its own
 // network and runs its own checks); NXDOMAIN is a bad_url. Pass `resolve` to stub in tests.
 export async function dnsCheck(host, { resolve = null, timeoutMs = 3000 } = {}) {
-  const ask = resolve || (async (type) => {
+  const ask = resolve ? (type) => resolve(type, host) : (async (type) => {
     const r = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${type}`, { headers: { accept: "application/dns-json" }, signal: AbortSignal.timeout(timeoutMs), redirect: "manual" });
     if (!r.ok) throw new Error(`doh ${r.status}`);
     return r.json();

@@ -91,6 +91,18 @@ const upsertBodies = () => C.reqs.filter((r) => r.p === "/custom/toolkits/upsert
   await api(1, "DELETE", `/servers/${r2.json.server.id}`);
   hooks.resolve = async () => ({ Status: 0, Answer: [{ type: 1, data: "93.184.216.34" }] });
   assert.equal(upsertBodies().length, 1, "no bad request reached Composio (the one upsert is the resolver-outage server)");
+  // Regression: createServer must look up the real host name (it once looked up the literal name "undefined"). The stub answers only for known names.
+  { const seen = [], known = new Set(["mcp.acme-demo.dev", "auth.acme-demo.dev"]);
+    hooks.resolve = async (t, host) => { seen.push(host); return known.has(host) ? { Status: 0, Answer: [{ type: t === "A" ? 1 : 28, data: t === "A" ? "93.184.216.34" : "2606:2800:220:1:248:1893:25c8:1946" }] } : { Status: 3 }; };
+    const c0 = C.reqs.length;
+    const g = await mk(1, { url: URL1 }); assert.equal(g.status, 200, "a valid public host registers");
+    assert.ok(seen.length && seen.every((h) => h === "mcp.acme-demo.dev"), `looked up the real host, saw ${seen}`);
+    await api(1, "DELETE", `/servers/${g.json.server.id}`);
+    seen.length = 0; const nx = await mk(1, { url: "https://nope.acme-demo.dev/mcp" }); assert.equal(nx.json.error.code, "bad_url"); assert.ok(seen.every((h) => h === "nope.acme-demo.dev"));
+    seen.length = 0; const dd = await mk(1, { url: URL1, auth: { type: "oauth", discovery_url: "https://gone.acme-demo.dev/.well-known/x" } });
+    assert.equal(dd.json.error.code, "bad_url", "the discovery host is checked on its own"); assert.ok(seen.includes("mcp.acme-demo.dev") && seen.includes("gone.acme-demo.dev"));
+    C.reqs.splice(c0);   // keep the later upsert counts about their own servers
+    hooks.resolve = async () => ({ Status: 0, Answer: [{ type: 1, data: "93.184.216.34" }] }); }
   assert.equal(isPrivateIp("::ffff:127.0.0.1"), true); assert.equal(isPrivateIp("2606:4700:4700::1111"), false); assert.equal(isPrivateIp("100.64.0.1"), true);
   assert.equal(checkPublicUrl("https://mcp.deepwiki.com/mcp").endpoint, "https://mcp.deepwiki.com/mcp");
   assert.ok(!C.otherFetch?.some((u) => !/cloudflare-dns/.test(u)), "the backend never fetches the user's URL");

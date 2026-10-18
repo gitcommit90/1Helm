@@ -1,3 +1,9 @@
+# Source update: 2026-10-18 (custom MCP server host lookup fix)
+
+## Custom MCP servers
+
+The Worker source is reconciled from `c2cff2694b50baf2545e988437e942eec13907e1` to `10eab62d874f1e9c990d871a17057a48e127f2f9`. Adding a custom MCP server looked up the DNS name "undefined" instead of the server's host, because `createServer` in `src/ee/custom-mcp.js` read `p.u.hostname` where the parsed address has `host`. It now checks the real host (`dnsCheck(p.u.host)`), and the test resolver in `src/ee/custom-mcp-url.js` receives the host name. `test/custom-mcp.test.mjs` has a regression case that fails when the lookup uses any other name. The web source is unchanged at `bc6ba298211dfc5d5962cd0fa74f5b25cf8abf35`.
+
 # Source update: 2026-10-18 (memory server model endpoint, twice daily memory refresh, routed browser requests)
 
 ## Memory model jobs, routed worker browser requests and web source
