@@ -21,7 +21,7 @@ export const EDITABLE_VIEWS = ["all", "attention"];
 const CHAT_PICKS = ["chat", "chore", "classic"];
 
 // ---------------------------------------------------------------- names, sources, times
-export const srcOf = (state, id, hint) => (hint === "CF" || hint === "OR" ? hint : state.config?.catalog?.[id]?.source === "CF" || /^(@cf\/|cloudflare\/)/.test(String(id)) ? "CF" : "OR");
+export const srcOf = (state, id, hint) => (hint === "CF" || hint === "OR" || hint === "SELF" ? hint : /^@1hc\//.test(String(id)) ? "SELF" : state.config?.catalog?.[id]?.source === "CF" || /^(@cf\/|cloudflare\/)/.test(String(id)) ? "CF" : "OR");
 export const shortName = (id) => String(id || "").replace(/^[~@]/, "").replace(/^(cf|cloudflare)\//, "").split("/").pop();
 export const nameOf = (state, id) => state.config?.catalog?.[id]?.name || shortName(id);
 export const effortsOf = (state, id) => state.config?.catalog?.[id]?.efforts || [];
@@ -31,7 +31,7 @@ export const outText = (v) => (v == null ? "Provider max" : num(v));
 export const secText = (ms) => (ms == null ? "None" : (ms % 1000 ? ms / 1000 : num(ms / 1000)) + "s");
 export const priceText = (p) => (p ? `$${p.prompt} / $${p.completion}` : "No cap");
 export const agoText = (ms, now) => { const m = Math.max(0, Math.round((now - ms) / 60000)); return m < 1 ? "just now" : m < 60 ? m + " min ago" : m < 1440 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; };
-export const badge = (src) => { const s = src === "CF" ? "CF" : "OR"; return h`<span class="badge ${s}" title="${s === "OR" ? "OpenRouter" : "Cloudflare"}">${s}</span>`; };
+export const badge = (src) => { const s = src === "CF" ? "CF" : src === "SELF" ? "SELF" : "OR"; return h`<span class="badge ${s}" title="${s === "OR" ? "OpenRouter" : s === "SELF" ? "Runs in 1Helm's own container" : "Cloudflare"}">${s === "SELF" ? "1H" : s}</span>`; };
 // ---------------------------------------------------------------- rows
 // A row is one line of the table: a saved job or a routing category. A category row also carries the limits of its replies (max output, sort, max price, timeout).
 export function rowsOf(state) {
@@ -92,19 +92,25 @@ export function viewOf(state, ui, row, snap) {
 }
 
 // ---------------------------------------------------------------- last served and flags
-const baseId = (id) => String(id || "").replace(/-\d{8}$/, "").replace(/^~/, "").replace(/-latest$/, "");
-export function servedKey(row) { return row.kind === "cat" ? (row.id === "general" ? "chat" : null) : row.id; }
+// The flag comes from `requested`, the exact list entry the dispatcher recorded as the one that answered. The model and provider the provider reported
+// are shown as information and never decide a flag. Each routing category has its own row, "chat:<category id>".
+export const servedKey = (row) => (row.kind === "cat" ? "chat:" + row.id : row.id);
+// The row of a job or category. A Live that is older than this page reports one "chat" row for every category, so General alone reads it, and only
+// when no "chat:" row exists at all; it is marked legacy because the category it came from is unknown.
+export function servedRow(row, served) {
+  const all = served || {}, own = all[servedKey(row)];
+  if (own || row.kind !== "cat" || row.id !== "general" || !all.chat || Object.keys(all).some((k) => k.startsWith("chat:"))) return own || null;
+  return { ...all.chat, legacy: true };
+}
 export function servedState(state, row, chains, served) {
-  const sv = (served || {})[servedKey(row)];
+  const sv = servedRow(row, served);
   if (!sv) return { k: "none" };
-  const ids = chains.flat().map((e) => e.model), firsts = chains.map((c) => c[0]?.model).filter(Boolean);
   if (sv.last_status && sv.last_status !== "ok") return { k: "error", t: "Last call failed", sv };
-  if (!sv.served_model) return { k: "none", sv };
-  const m = baseId(sv.served_model), family = (id) => baseId(id).split("/")[0];
-  const isMain = firsts.some((id) => baseId(id) === m || (String(id).startsWith("~") && family(id) === m.split("/")[0]));
-  if (isMain) return { k: "ok", sv };
-  if (ids.some((id) => baseId(id) === m || (String(id).startsWith("~") && family(id) === m.split("/")[0]))) return { k: "fallback", t: "Served a fallback", sv };
-  return { k: "other", t: "Served an unlisted model", sv };
+  if (!sv.requested) return { k: "none", sv };
+  const firsts = chains.map((c) => c[0]?.model).filter(Boolean), ids = chains.flat().map((e) => e.model);
+  if (firsts.includes(sv.requested)) return { k: "ok", sv };
+  if (ids.includes(sv.requested)) return { k: "fallback", t: "Served a fallback", sv };
+  return sv.legacy ? { k: "none", sv } : { k: "other", t: "Served an unlisted model", sv };
 }
 export function chainsOf(state, row, snap) {
   if (row.kind === "cat") return LEVELS.map((lv) => snap.cats[row.id]?.levels?.[lv] || []);
@@ -204,7 +210,9 @@ export function pickerAllowed(state, target, m, ignorePrivacy) {
 export function pickerChoices(state, target) {
   const taken = new Set(takenModels(state, target));
   const base = target.kind === "cat" ? state.choices.chat || [] : state.choices[target.jv.pick] || [];
-  return base.filter((m) => !taken.has(m.id) && !(state.unlisted || []).includes(m.id));
+  // A fallback of the file search index may only be a model the main model lists as equivalent (the save refuses any other).
+  const onlyEquivalent = target.kind !== "cat" && target.jv.equivalent_only && target.idx > 0;
+  return base.filter((m) => !taken.has(m.id) && (!onlyEquivalent || m.main_equivalent) && !(state.unlisted || []).includes(m.id));
 }
 export function takenModels(state, target) {
   const row = rowByKey(state, target.key);
@@ -285,7 +293,10 @@ function rowHtml(state, ui, V, x, now) {
   const { row, v, flags } = x, ro = !V.editable, dis = ro ? "disabled" : "", id = row.key;
   const m = v.chain[0], fb = v.chain.slice(1);
   const sv = x.ss.sv, st = x.ss.k;
-  const served = !sv ? "" : !sv.served_model ? (st === "error" ? h`<div class="sv bad"><span class="mut2">Failed ${agoText(sv.last_error_at || sv.last_at, now)}</span></div>` : "") : h`<div class="sv ${st === "error" || st === "other" ? "bad" : st === "fallback" ? "warn" : ""}"><span class="ell">${nameOf(state, sv.served_model)}</span><span class="mut2">${st === "error" ? "Failed " + agoText(sv.last_error_at || sv.last_at, now) : agoText(sv.last_at, now)}</span></div>`;
+  const bad = st === "error" || st === "other" ? "bad" : st === "fallback" ? "warn" : "";
+  const served = !sv ? "" : st === "error" && !sv.served_model ? h`<div class="sv bad"><span class="mut2">Failed ${agoText(sv.last_error_at || sv.last_at, now)}</span></div>`
+    : sv.served_model ? h`<div class="sv ${bad}"><span class="ell">${nameOf(state, sv.served_model)}</span><span class="mut2">${st === "error" ? "Failed " + agoText(sv.last_error_at || sv.last_at, now) : agoText(sv.last_at, now)}</span></div>`
+    : sv.requested ? h`<div class="sv ${bad}" title="The answer named no model, so this is the model that was asked"><span class="ell">${nameOf(state, sv.requested)}</span><span class="mut2">Requested name, ${agoText(sv.last_at, now)}</span></div>` : "";
   const first = attentionKinds(flags)[0] || flags[0];
   const phone = first ? h`<span class="tag ${first.k}">${{ warn: "Warning", bad: "Problem" }[first.k]}</span>` : "";
   const out = v.showOut ? h`<input class="cell r2" ${dis} data-f="max_output" data-id="${id}" data-k="${id}.o" inputmode="numeric" value="${v.max_output ?? ""}" placeholder="Max" title="Empty means the provider's maximum" aria-label="Max output for ${row.label}">` : v.showResults ? h`<span class="mut2 pad r2">${v.results} results</span>` : h`<span class="mut2">n/a</span>`;
@@ -349,7 +360,7 @@ export function drawerHtml(state, ui, V, now) {
   if (v.showSort) fl.push(h`<div><label>Max price per M tokens</label><div class="two"><input class="inp r" ${ro ? "disabled" : ""} data-df="pi" placeholder="in" value="${v.max_price ? v.max_price.prompt : ""}" aria-label="Max input price per million tokens"><input class="inp r" ${ro ? "disabled" : ""} data-df="po" placeholder="out" value="${v.max_price ? v.max_price.completion : ""}" aria-label="Max output price per million tokens"></div></div>`);
   const limSec = fl.length ? h`<div class="sec"><h4>Limits</h4><div class="fg">${fl}</div>${jv?.limit_note ? h`<p class="note ${jv.limit_note.level}">${jv.limit_note.text}</p>` : ""}</div>` : "";
   const sv = x.ss.sv;
-  const svSec = !sv || (!sv.served_model && x.ss.k !== "error") ? "" : h`<div class="sec"><h4>Last served</h4>${sv && sv.served_model ? h`<dl class="kv"><dt>Model</dt><dd>${sv.served_model}</dd><dt>Provider</dt><dd>${sv.served_provider || ""}</dd><dt>When</dt><dd>${agoText(sv.last_at, now)}</dd><dt>Calls</dt><dd>${num(sv.calls)}</dd><dt>Status</dt><dd>${sv.last_status && sv.last_status !== "ok" ? h`<span class="tag bad">${sv.last_status}</span>` : "OK"}</dd></dl>` : ""}</div>`;
+  const svSec = !sv || (!sv.served_model && !sv.requested) ? "" : h`<div class="sec"><h4>Last served</h4><dl class="kv"><dt>Model</dt><dd>${sv.served_model ? sv.served_model : h`${sv.requested} (requested name, the answer named no model)`}</dd>${sv.served_model && sv.requested && sv.requested !== sv.served_model ? h`<dt>Requested</dt><dd>${sv.requested}</dd>` : ""}${sv.served_provider ? h`<dt>Provider</dt><dd>${sv.served_provider}</dd>` : ""}<dt>When</dt><dd>${agoText(sv.last_at, now)}</dd><dt>Calls</dt><dd>${num(sv.calls)}</dd><dt>Status</dt><dd>${sv.last_status && sv.last_status !== "ok" ? h`<span class="tag bad">${sv.last_status}</span>` : "OK"}</dd></dl></div>`;
   const del = row.kind === "cat" && row.id !== "general" && !ro ? h`<button class="btn sm danger" data-act="catdelete">Delete</button>` : "";
   return h`<div class="dh"><div class="t">${title}<button class="btn sm ghost ico" data-act="close" aria-label="Close">${icon("x")}</button></div><div class="tg">${flags.map((f) => h`<span class="tag ${f.k}">${f.t}</span>`)}</div><p>${row.desc}</p>${seg}</div><div class="db">${modelsSec}${limSec}${svSec}</div><div class="dfoot"><button class="btn sm ico" data-act="prev" aria-label="Previous job" ${pos < 1 ? "disabled" : ""}>${icon("up")}</button><button class="btn sm ico" data-act="next" aria-label="Next job" ${pos < 0 || pos >= ids.length - 1 ? "disabled" : ""}>${icon("down")}</button><span class="grow"></span>${del}<button class="btn sm pri" data-act="close">Done</button></div>`;
 }

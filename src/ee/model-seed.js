@@ -20,7 +20,7 @@ const PPLX_DECIDER = "perplexity/pplx-decider-v1.1-27b";
 // Speech to text, in order (the Captain, 2026-10-15, "it is an accuracy choice"): AssemblyAI Universal-3.6 Pro first, then the earlier order.
 const STT_BEST = "assemblyai/universal-3-6-pro", STT = "qwen/qwen3-asr-0.6b", STT_FALLBACK = "openai/whisper-large-v3-turbo", STT_WAI = "@cf/openai/whisper-large-v3-turbo", LIVE_STT = "@cf/deepgram/nova-3";
 const CLEF = "@cf/cloudflare/clef", CLEF_FLASH = "@cf/cloudflare/clef-flash";
-const EMBED_FILES = "perplexity/pplx-embed-v1-0.6b", VISION = "@cf/google/gemma-4-26b-a4b-it", WAI_CHAT = "@cf/zai-org/glm-5.3-flash";
+const EMBED_FILES = "perplexity/pplx-embed-v1-0.6b", EMBED_SELF = "@1hc/perplexity-ai/pplx-embed-v1-0.6b", VISION = "@cf/google/gemma-4-26b-a4b-it", WAI_CHAT = "@cf/zai-org/glm-5.3-flash";
 // The browser look's starting model: Moondream 3.1 on Workers AI. It is the saved job "look".
 export const MOONDREAM = "@cf/moondream/moondream3.1-9B-A2B";
 // The web search provider the search job starts on: Linkup through the Cloudflare Web Search API.
@@ -74,7 +74,13 @@ export const SEED_FACTS = {
   // pricing: dollars per million tokens (Workers AI list price), the look job's cost comes from it.
   [MOONDREAM]: { name: "Moondream 3.1 (Cloudflare)", kinds: ["look"], efforts: [], pricing: { prompt: 0.3, completion: 1.0 } },
   [SEARCH_LINKUP]: { name: "Linkup (Cloudflare Web Search)", kinds: ["search"], efforts: [] },
-  [EMBED_FILES]: { name: "Perplexity Embed 0.6B", kinds: ["embedding_files"], efforts: [] },
+  // The same weights, run by 1Helm in its own container (selfhost-models.js). Each lists the other as equivalent: measured 2026-10-18 on 364 chunks and 181
+  // queries, the vectors have a mean cosine of 0.995 against Perplexity's API, the top result is the same for 96 to 98 percent of
+  // queries, and hit rates and mean reciprocal rank are the same (0.570 to 0.577 against 0.576). An index made by one is searched with the other with no re-index.
+  // pricing: dollars per million tokens, used only to size reservations. 117 tokens a second were measured on the 2 vCPU instance, whose container costs
+  // $0.0000611 a second, so $0.52 per million tokens. The charge is the container's own measured running time.
+  [EMBED_FILES]: { name: "Perplexity Embed 0.6B", kinds: ["embedding_files"], efforts: [], embedding_equivalents: [EMBED_SELF] },
+  [EMBED_SELF]: { name: "Perplexity Embed 0.6B (1Helm container)", kinds: ["embedding_files"], efforts: [], pricing: { prompt: 0.6, completion: 0 }, embedding_equivalents: [EMBED_FILES] },
   [VISION]: { name: "Gemma 4 26B (Cloudflare)", kinds: ["vision"], efforts: VISION_EFFORTS },
   [WAI_CHAT]: { name: "GLM 5.3 Flash (Cloudflare)", kinds: ["workers_ai"], efforts: [] },
 };
@@ -153,7 +159,7 @@ function otherJobs() {
     stt: { model: sttList[0], effort: null, fallbacks: sttList.slice(1).map((m) => entry(m, null)) },
     stt_cloudflare: { model: STT_WAI, effort: null, fallbacks: [] },
     live_dictation: { model: STT_BEST, effort: null, fallbacks: [entry(LIVE_STT, null)] },
-    embed_files: { model: EMBED_FILES, effort: null, fallbacks: [] },
+    embed_files: { model: EMBED_FILES, effort: null, fallbacks: [entry(EMBED_SELF, null)] },
     vision_files: { model: VISION, effort: "none", fallbacks: [] },
     workers_ai_chat: { model: WAI_CHAT, effort: null, fallbacks: [] },
     look: optionalJobDefault("look").job,

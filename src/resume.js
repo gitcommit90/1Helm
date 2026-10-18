@@ -38,10 +38,19 @@ export const JOURNALED = new Set(["chat", "workflow", "followup", "helper"]);
 export const runIdOf = (card, callId) => `${String(card).replace(/[^A-Za-z0-9]/g, "").slice(0, 16)}_${String(callId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64)}`;
 const COMPUTER_EXEC = new Set(["run_command", "write_file", "edit_file"]);
 const jk = (tc) => JOURNALED.has(tc?.kind) && !!tc?.turn;
-export const RESUME_NOTE = "(Context note, not from the person: 1Helm was updated while you were working on this. You're continuing the same request; everything above already happened. Don't repeat finished steps.)";
-export const MAYBE_DONE = "(1Helm was updated at the moment this ran. It may or may not have gone through. Check first (e.g. the Sent folder, or the item itself) before doing it again. If you do redo it and it needs the person's confirm, they'll be asked again; don't ask them yourself unless it clearly didn't happen.)";
-export const MAYBE_RAN = "(1Helm was updated while this command was running. It may have finished or been cut off. Check its effects (e.g. the files it writes) before running it again.)";
-export const WAITING_CONFIRM = (title) => `WAITING FOR CONFIRM: 1Helm was updated while this waited for the person's tap on its confirm card (${title}). Nothing was done yet, and the card is still there for them. End your turn now with one short line, e.g. "It's ready: tap Confirm to send it." Don't ask again in your own words.`;
+// What happened to the object: "1Helm was updated" only when the code version differs from the one the turn was journaled with;
+// otherwise the object restarted on the same code (the platform moved or replaced it), and the notes say "1Helm restarted".
+export const whatHappened = (updated = true) => (updated ? "1Helm was updated" : "1Helm restarted");
+export const resumeNote = (updated = true) => `(Context note, not from the person: ${whatHappened(updated)} while you were working on this. You're continuing the same request; everything above already happened. Don't repeat finished steps.)`;
+export const maybeDone = (updated = true) => `(${whatHappened(updated)} at the moment this ran. It may or may not have gone through. Check first (e.g. the Sent folder, or the item itself) before doing it again. If you do redo it and it needs the person's confirm, they'll be asked again; don't ask them yourself unless it clearly didn't happen.)`;
+export const maybeRan = (updated = true) => `(${whatHappened(updated)} while this command was running. It may have finished or been cut off. Check its effects (e.g. the files it writes) before running it again.)`;
+export const RESUME_NOTE = resumeNote(true), MAYBE_DONE = maybeDone(true), MAYBE_RAN = maybeRan(true);
+// True only when the turn was journaled under a different code version than the one running now (a deploy). Unknown counts as a plain restart.
+export const journalWasUpdated = (row, env) => !!(row?.code_v && row.code_v !== codeV(env));
+const isMaybe = (t) => t === MAYBE_DONE || t === MAYBE_RAN || t === maybeDone(false) || t === maybeRan(false);
+export const WAITING_CONFIRM = (title, updated = true) => `WAITING FOR CONFIRM: ${whatHappened(updated)} while this waited for the person's tap on its confirm card (${title}). Nothing was done yet, and the card is still there for them. End your turn now with one short line, e.g. "It's ready: tap Confirm to send it." Don't ask again in your own words.`;
+// Helper-review calls 1Helm can check itself: the helper's saved row says whether the call took effect.
+export const HELPER_REVIEW = new Set(["approve_subagent", "message_subagent"]);
 
 // ---- what kind of call (§3.3.2) ----
 const READ = new Set(["web_search", "search_web_vertical", "fetch_url", "read_file", "search_files", "calendar_events", "gmail_search", "gmail_read", "work_log", "bring_back", "recall_history",
@@ -132,12 +141,27 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     // restore a start. Other possibly completed control writes must not run
     // again or be described as successful without an authoritative outcome.
     const effects = this.sql.exec("SELECT call_id,tool FROM turn_effects WHERE card=? AND tool IN ('start_helper','message_subagent','approve_subagent')", tc.turn).toArray();
+    tc.delegationUncertain = false;
     for (const effect of effects) {
+      if (tc.delegationChecked?.has(String(effect.call_id))) continue;   // resumeClose already checked this call (and ran it again if needed)
       if (effect.tool === "start_helper") {
         const h = this.sql.exec("SELECT id FROM helpers WHERE parent_card=? AND spawn_call_id=? AND session=?", tc.turn, effect.call_id, tc.session).toArray()[0];
         if (h) { tc.orchestration ||= {}; tc.orchestration.started = h.id; if (tc.orchestration.requiredDelegation) tc.orchestration.sent = true; }
       } else tc.delegationUncertain = true;
     }
+  },
+  // Did an open approve_subagent / message_subagent call take effect? Reads only the helper's own rows. -> { text, state } or null (it didn't).
+  helperReviewEffect(tc, name, a, eff) {
+    const id = Number(a?.id || tc.orchestration?.review || tc.orchestration?.steer);
+    const h = Number.isInteger(id) && id > 0 ? this.sql.exec("SELECT id,session,status FROM helpers WHERE id=?", id).toArray()[0] : null;
+    if (!h || h.session !== tc.session) return null;
+    if (name === "approve_subagent") {
+      if (h.status !== "approved") return null;
+      return { text: `Worker #${id} approved. The session is closed.`, state: { approved: id } };
+    }
+    const msg = this.sql.exec("SELECT id FROM helper_messages WHERE helper_id=? AND session=? AND queued_at>=? LIMIT 1", id, tc.session, eff.at).toArray()[0];
+    if (!msg) return null;
+    return { text: `Sent your correction to the same worker #${id}. Its next done will return the response, files and system log.`, state: { sent: true } };
   },
   // Every step: where the loop is, what it has spent, its guard, what it said. phase "model" = before step's model call, "tools" = after it.
   journalStep(tc, { step, phase = "model", stats, said, saidMeta, checkpoints = 0 }) {
@@ -226,6 +250,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
         if (r.session && !this.inputs.has(r.session)) this.inputs.set(r.session, this.pendOf(r.card, r.session));
       }
     }
+    if (keep.size) console.log("resume: new object found journaled turns", [...keep].join(","), "code", codeV(this.env));   // tells a replaced object from the heartbeat path in Workers Logs
     if (wake != null) this.ctx.waitUntil?.(this.ctx.storage.getAlarm().then((a) => (a == null || a > wake ? this.ctx.storage.setAlarm(wake) : null)).catch((e) => console.log("resume alarm", e.message)));
     return keep;
   },
@@ -241,7 +266,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     try {
       // a running row whose turn isn't in this object and hasn't beaten for a while: it died here without a restart (rare)
       for (const r of this.sql.exec("SELECT card FROM turn_runs WHERE status='running' AND beat<?", now - BEAT_MS).toArray())
-        if (![...this.active.values()].some((t) => t.turn === r.card)) this.sql.exec("UPDATE turn_runs SET status='resuming', resume_at=? WHERE card=?", now, r.card);
+        if (![...this.active.values()].some((t) => t.turn === r.card)) { console.log("resume: running turn missed its heartbeat and is not in this object", r.card); this.sql.exec("UPDATE turn_runs SET status='resuming', resume_at=? WHERE card=?", now, r.card); }
       rows = this.sql.exec("SELECT * FROM turn_runs WHERE status IN ('resuming','queued') AND (? OR resume_at<=?) ORDER BY started", force ? 1 : 0, now).toArray();
     } catch (e) { console.log("resume due", e.message); return []; }
     const runs = [];
@@ -335,7 +360,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
   // The tool calls the kill left open (the last assistant message's calls with no result yet), each closed by its type. Results are
   // saved like any tool result, and the card's step rows are finished. → [{ role: "tool", tool_call_id, content }]
   async resumeClose(tc, prior) {
-    const turn = tc.turn, out = [];
+    const turn = tc.turn, out = [], upd = tc.resumeUpdated !== false;
     const ai = prior.map((m, i) => [m, i]).filter(([m]) => m.role === "assistant").at(-1);
     if (!ai || !ai[0].tool_calls?.length) return out;
     const answered = new Set(prior.slice(ai[1] + 1).filter((m) => m.role === "tool").map((m) => m.tool_call_id));
@@ -347,25 +372,32 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
       let text, rerun = false;
       if (eff?.status === "done") text = eff.result ?? "";
       else if (!eff) rerun = true;   // never started: nothing happened yet, so it runs now like any call (every gate applies)
+      else if (HELPER_REVIEW.has(name)) {
+        // An internal call 1Helm can check itself: the helper's saved row shows whether it took effect. Done: carry on from there.
+        // Not done: run it again through every normal gate. Never reported to the person as "couldn't confirm".
+        const v = this.helperReviewEffect(tc, name, a, eff);
+        if (v) { text = v.text; tc.callId = String(call.id); tc.orchestration = { ...(tc.orchestration || {}), ...v.state }; this.journalDelegation(tc, name, text); (tc.delegationChecked ||= new Set()).add(String(call.id)); }
+        else { rerun = true; (tc.delegationChecked ||= new Set()).add(String(call.id)); }
+      }
       else if (eff.cls === "read" || eff.cls === "local") rerun = true;
       else if (eff.cls === "exec") {
         // The command kept running in the computer through the deploy: wait for it (what's left of its time limit) and take its real result.
         let r = null;
         if (COMPUTER_EXEC.has(name)) { try { r = await this.computer().reattach(runIdOf(turn, call.id), { timeoutMs: Math.max(5e3, commandLimitMs(name, a, this._limits?.timingSaved) - (Date.now() - eff.at)) }); } catch (e) { console.log("reattach", e.message); } }
-        text = r && !r.lost ? `exit ${r.code}\n${String(r.out ?? "")}`.slice(-20000) + (r.timed_out ? `\n${RUN_TIMED_OUT}` : "") : MAYBE_RAN;
+        text = r && !r.lost ? `exit ${r.code}\n${String(r.out ?? "")}`.slice(-20000) + (r.timed_out ? `\n${RUN_TIMED_OUT}` : "") : maybeRan(upd);
         if (r && !r.lost) tc.reattached = (tc.reattached || 0) + 1;
       }
       else if (eff.cls === "once") {
         const h = name === "start_helper" ? this.sql.exec("SELECT id, name FROM helpers WHERE parent_card=? AND spawn_call_id=? LIMIT 1", turn, String(call.id)).toArray()[0] ||
           this.sql.exec("SELECT id, name FROM helpers WHERE parent_card=? AND spawn_call_id IS NULL AND started>=? ORDER BY id LIMIT 1", turn, eff.at).toArray()[0] : null;
         const w = name !== "start_helper" ? this.sql.exec("SELECT id, name FROM workflows WHERE COALESCE(session,'')=? AND created>=? ORDER BY id LIMIT 1", tc.session || "", eff.at).toArray()[0] : null;
-        if (h) text = `Helper #${h.id} "${h.name}" was already started (1Helm was updated just after). It's still yours: don't start it again.`;
-        else if (w) text = `Already scheduled as #${w.id} "${w.name}" (1Helm was updated just after). Don't schedule it again.`;
+        if (h) text = `Helper #${h.id} "${h.name}" was already started (${whatHappened(upd)} just after). It's still yours: don't start it again.`;
+        else if (w) text = `Already scheduled as #${w.id} "${w.name}" (${whatHappened(upd)} just after). Don't schedule it again.`;
         else rerun = true;   // nothing was made: safe to run
       } else {
         // a confirm card this call showed, still waiting for the tap: nothing was done
         const pend = CONFIRM_TOOLS.has(name) ? this.sql.exec("SELECT what FROM approvals WHERE perm=? AND turn=? AND status='pending' AND at>=? ORDER BY id DESC LIMIT 1", CONFIRM, turn, eff.at).toArray()[0] : null;
-        text = pend ? WAITING_CONFIRM(pend.what || "") : MAYBE_DONE;
+        text = pend ? WAITING_CONFIRM(pend.what || "", upd) : maybeDone(upd);
       }
       if (rerun) {
         const sv = step ? { seq: step.seq } : stepBegin(this.sql, tc, { tool: name, args: a, call_id: call.id }), s0 = Date.now();
@@ -373,7 +405,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
         try { text = await this.runTool(call, tc); } catch (e) { text = `error: ${e.message}`; }
         if (sv?.seq != null) stepEnd(this.sql, tc, sv.seq, { out: text, ms: Date.now() - s0 });
         tc.resumeRan = (tc.resumeRan || 0) + 1;
-      } else if (step) stepEnd(this.sql, tc, step.seq, { out: text, ms: 0, ...(text === MAYBE_DONE || text === MAYBE_RAN ? { status: "error" } : {}) });
+      } else if (step) stepEnd(this.sql, tc, step.seq, { out: text, ms: 0, ...(isMaybe(text) ? { status: "error" } : {}) });
       this.effectDone(tc, call.id, text);
       const m = { role: "tool", tool_call_id: call.id, content: String(text) };
       this.save(turn, m); out.push(m);
@@ -383,10 +415,11 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
   // Everything a resumed turn needs, in one place (runTurnInner calls it). → { prior (closed and noted), stats, said, step, phase, checkpoints }
   async resumeState(tc, r, hist, userMsg) {
     const ex = J(r.extra, {});
+    tc.resumeUpdated = journalWasUpdated(r, this.env);
     const { prior, checkpoints } = tc.appendRuntime ? { prior: tc.transcript.messages(), checkpoints: tc.transcript.state().compactions } : this.resumePrior(tc.turn, hist, userMsg);
     tc.contextOverflowRetried = !!ex.contextOverflowRetried;
     const closed = await this.resumeClose(tc, prior);
-    const note = { role: "user", content: RESUME_NOTE };
+    const note = { role: "user", content: resumeNote(tc.resumeUpdated !== false) };
     this.save(tc.turn, note);
     tc.charged = ex.charged || 0; if (ex.limitWhy) tc.limitWhy = ex.limitWhy; if (ex.pause) tc.pause = ex.pause;
     if (ex.stall) tc.stallState = ex.stall;   // the no-progress count carries on after a restart (stall-guard.js)

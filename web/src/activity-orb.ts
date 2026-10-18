@@ -28,8 +28,9 @@ import { resolvePreset } from './vendor/thinking-orbs/presets';
 import type { OrbState } from './vendor/thinking-orbs/types';
 
 export type ActivityState = 'working' | 'searching' | 'solving' | 'listening' | 'connecting' | 'composing' | 'breathing';
-export function orb(state: ActivityState = 'working', paused = false, theme?: 'dark' | 'light') {
-  return `<activity-orb state="${state}"${paused ? ' paused' : ''}${theme ? ` theme="${theme}"` : ''} aria-hidden="true"></activity-orb>`;
+// An orb always moves while it is on screen. A row that is waiting on the person shows a still icon, never an orb.
+export function orb(state: ActivityState = 'working', theme?: 'dark' | 'light') {
+  return `<activity-orb state="${state}"${theme ? ` theme="${theme}"` : ''} aria-hidden="true"></activity-orb>`;
 }
 
 // One clock and frame scheduler for the whole app. Shadow DOM protects each
@@ -40,19 +41,22 @@ const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const scheme = matchMedia('(prefers-color-scheme: dark)');
 let raf = 0, lastFrame = 0;
 const dark = () => document.documentElement.dataset.theme === 'dark' || (document.documentElement.dataset.theme !== 'light' && scheme.matches);
-const running = () => !document.hidden && !reduced.matches && [...mounted].some(o => o.visible && !o.hasAttribute('paused'));
+// Reduced motion slows the same orb down to a fraction of its speed and a lower frame rate. It never paints a still frame.
+const SLOW = .25;
+const running = () => !document.hidden && [...mounted].some(o => o.visible);
+const interval = () => 1000 / (reduced.matches ? 8 : 30);
 function schedule() { if (!raf && running()) raf = requestAnimationFrame(frame); }
 function frame(now: number) {
   raf = 0;
-  if (now - lastFrame >= 1000 / 30) {
+  if (now - lastFrame >= interval()) {
     lastFrame = now;
-    for (const o of mounted) if (o.visible && !o.hasAttribute('paused')) o.paint(now / 1000);
+    for (const o of mounted) if (o.visible) o.paint(now / 1000);
   }
   schedule();
 }
 function refresh() {
   if (raf) { cancelAnimationFrame(raf); raf = 0; }
-  for (const o of mounted) o.paint(reduced.matches || o.hasAttribute('paused') ? .6 : performance.now() / 1000);
+  for (const o of mounted) o.paint(performance.now() / 1000);
   schedule();
 }
 const visibility = typeof IntersectionObserver === 'undefined' ? null : new IntersectionObserver(entries => {
@@ -78,8 +82,10 @@ function disconnectGlobals() {
   raf = 0;
 }
 class ActivityOrb extends HTMLElement {
-  static observedAttributes = ['state', 'paused', 'theme'];
-  visible = !visibility;
+  static observedAttributes = ['state', 'theme'];
+  // A new orb counts as visible until the observer says otherwise. The chat repaints the progress row in place, and an orb
+  // that is replaced before the observer reports on it would otherwise never be animated.
+  visible = true;
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D | null;
   constructor() {
@@ -93,8 +99,9 @@ class ActivityOrb extends HTMLElement {
   }
   connectedCallback() {
     if (!mounted.size) connectGlobals();
+    this.visible = true;
     mounted.add(this); visibility?.observe(this);
-    this.paint(reduced.matches || this.hasAttribute('paused') ? .6 : performance.now() / 1000);
+    this.paint(performance.now() / 1000);
     schedule();
   }
   disconnectedCallback() {
@@ -104,7 +111,7 @@ class ActivityOrb extends HTMLElement {
   }
   attributeChangedCallback() {
     if (!this.isConnected) return;
-    this.paint(reduced.matches || this.hasAttribute('paused') ? .6 : performance.now() / 1000);
+    this.paint(performance.now() / 1000);
     if (!running() && raf) { cancelAnimationFrame(raf); raf = 0; }
     schedule();
   }
@@ -117,7 +124,7 @@ class ActivityOrb extends HTMLElement {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.ctx.clearRect(0, 0, 20, 20);
     // A slower shared clock keeps movement restrained at inline size.
-    const t = reduced.matches || this.hasAttribute('paused') ? .6 : seconds * preset.speed * .68;
+    const t = seconds * preset.speed * .68 * (reduced.matches ? SLOW : 1);
     paintFrame(this.ctx, MODE_FRAMES[preset.mode](20, t, preset.opts), this.getAttribute('theme') === 'dark' || (this.getAttribute('theme') !== 'light' && dark()));
   }
 }

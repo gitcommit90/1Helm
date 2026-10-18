@@ -29,7 +29,7 @@ const WORKSPACE = [
   /^\/api\/apps(?:\/|$)/, /^\/api\/apps-used$/, /^\/apps\/done$/, /^\/google\/done$/,
   /^\/composio\/connect$/, /^\/api\/connect-offer$/, /^\/api\/meetings\//,
   /^\/api\/bee(?:\/|$)/, /^\/api\/link(?:\/|$)/, /^\/api\/plan(?:\/|$)/, /^\/api\/portal$/,
-  /^\/api\/fix-payment$/, /^\/api\/topup$/, /^\/api\/storage\/blocks$/, /^\/api\/test\/(?:cancel|pastdue)/,
+  /^\/api\/fix-payment$/, /^\/api\/topup(?:\/confirm)?$/, /^\/api\/storage\/blocks$/, /^\/api\/test\/(?:cancel|pastdue)/,
   /^\/api\/res\/[^/]+\/sessions\/[^/]+\/livenotes(?:\/|$)/,
   /^\/api\/res\/[^/]+\/(?:event-log|event-workflow)$/,
 ];

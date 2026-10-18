@@ -120,8 +120,10 @@ console.log("PASS text decisions: native Clef unchanged, JSON path for any chat 
 
 // ---- fallbacks on the request sorter and the other decision job (r39-job-fallbacks) ----
 { assert.equal(JOB_KINDS.decider.fallbacks, 3); assert.equal(JOB_KINDS.workers_decider.fallbacks, 3);
-  for (const k of ["embedding_files", "vision", "workers_ai", "speech_cloudflare"]) assert.equal(JOB_KINDS[k].fallbacks, 0, `${k} stays at no fallbacks`);
-  for (const id of ["embed_files"]) { const c = clone(SEED); c.jobs[id].fallbacks = [{ model: c.jobs[id].model, effort: null }]; assert.throws(() => validateModelSettings(c), /at most 0 fallback/, `${id} refuses a fallback`); }
+  for (const k of ["vision", "workers_ai", "speech_cloudflare"]) assert.equal(JOB_KINDS[k].fallbacks, 0, `${k} stays at no fallbacks`);
+  // The file search index may have fallbacks, but only equivalent models (test/embedding-fallback.test.mjs); the job's own model twice is still refused.
+  assert.equal(JOB_KINDS.embedding_files.fallbacks, 2); assert.equal(JOB_KINDS.embedding_files.equivalentOnly, true);
+  for (const id of ["embed_files"]) { const c = clone(SEED); c.jobs[id].fallbacks = [{ model: c.jobs[id].model, effort: null }]; assert.throws(() => validateModelSettings(c), /each model can be listed once/, `${id} refuses its own model as a fallback`); }
   for (const id of ["decider"]) { const c = clone(SEED); c.catalog[CLEF] = { id: CLEF, ...clone(SEED_FACTS[CLEF]) }; c.jobs[id].fallbacks = [{ model: ID.DEEPSEEK, effort: null }, { model: ID.PPLX === c.jobs[id].model ? CLEF : ID.PPLX, effort: null }]; assert.doesNotThrow(() => validateModelSettings(c), `${id} saves fallbacks`); }
   { const c = clone(SEED); c.jobs.decider.fallbacks = [ID.DEEPSEEK, ID.HAIKU, ID.OSS120, ID.OSS20].map((model) => ({ model, effort: null })); assert.throws(() => validateModelSettings(c), /at most 3 fallback/); }
   { const c = clone(SEED); c.jobs.decider.fallbacks = [{ model: ID.MUSE_C, effort: null }]; assert.throws(() => validateModelSettings(c), /zero-data-retention/, "a fallback must pass the same privacy rule as the main model"); }

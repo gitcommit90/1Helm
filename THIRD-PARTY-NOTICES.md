@@ -111,6 +111,10 @@ The converter turns audio inside uploaded files into 16 kHz mono WAV for speech 
 
 src/vendor/audio/sym.wasm is built from tools/symphonia-wasm (this project's own glue, MPL-2.0 like the crates it is linked with) and the exact crate versions in tools/symphonia-wasm/Cargo.lock. Symphonia is under the Mozilla Public License 2.0, which applies to the files of Symphonia itself. The source of the files in the module is the unmodified crates at those versions (https://crates.io and the Symphonia repository, tag v0.6.1), and the rebuild steps are in tools/symphonia-wasm/build.sh.
 
+## pplx-embed-v1-0.6b weights, ONNX Runtime and tokenizers (src/selfhost-models.js)
+
+The file search index can run its embedding model in the preparation container. The weights are the public pplx-embed-v1-0.6b model published by Perplexity AI, https://huggingface.co/perplexity-ai/pplx-embed-v1-0.6b, under the MIT License as stated on the model page. The container downloads the ONNX file with int8 weights (onnx/model_quantized.onnx) and the tokenizer at one pinned commit, checks each file by SHA-256, and runs them with ONNX Runtime (MIT, Copyright (c) Microsoft Corporation) and the Hugging Face tokenizers package (Apache License 2.0). The weights are not copied into this repository.
+
 ## Thinking orbs engine (web/src/vendor/thinking-orbs)
 
 The animated activity indicator in the web app (`web/src/activity-orb.ts`) draws with the thinking orbs engine and presets, copied without geometry changes into `web/src/vendor/thinking-orbs`. The local types file keeps only the geometry types and leaves out React.

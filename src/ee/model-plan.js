@@ -1,7 +1,7 @@
 // The model plan: what one job runs, worked out from the saved model settings alone.
 // Pure. It reads no env, no network and no clock, so the same settings give the same plan in every environment.
 // The one source of the model ID decides where a step goes: an ID that isCloudflareModel accepts runs on Workers AI ("CF"),
-// every other ID runs on OpenRouter ("OR"). Nothing here looks at ENV_NAME, TEST_MODE or DYNAMIC_ROUTING.
+// an ID that isSelfHostedModel accepts ("@1hc/...") runs in 1Helm's own container ("SELF", selfhost-models.js), every other ID runs on OpenRouter ("OR"). Nothing here looks at ENV_NAME, TEST_MODE or DYNAMIC_ROUTING.
 //
 // ---- Shapes other lanes code against (frozen in commit A1) ----
 //
@@ -13,11 +13,11 @@
 //   }
 //   Step = {
 //     model: string,                                    // the saved model ID
-//     source: "OR" | "CF",
+//     source: "OR" | "CF" | "SELF",
 //     adapter: "chat" | "embeddings" | "transcribe" | "transcribe_live" | "decide_systemone" | "decide_clef" | "decide_json" | "look" | "search",
 //     effort: string | null,                            // the saved reasoning level, "none" already raised to "low" when the model can't turn reasoning off; null when the job has none
 //     maxOutput: number | null,                         // tokens; null when the saved job has none (no limit is sent). results: a web search step's number of results
-//     provider: Provider | null,                        // null for CF steps
+//     provider: Provider | null,                        // null for CF and SELF steps
 //     privacy_note?: string,                            // CF steps only: shown on /models where the level asks for more than Cloudflare promises (the step still runs)
 //     strict?: true,                                    // the saved entry's strict flag, copied as is
 //   }
@@ -41,6 +41,7 @@
 //             (still clamped to the model's facts). Nothing else can be overridden.
 import { JOB_KINDS, jobDef, jobSetting, entriesOf, factsOf, effortFor, jobLimits, jobResults } from "./model-jobs.js";
 import { isCloudflareModel, cloudflarePrivacyNote } from "../cloudflare-models.js";
+import { isSelfHostedModel } from "../selfhost-models.js";
 import { normalizePrivacy } from "../privacy.js";
 
 // Today's price ceiling: $3 in and $15 out per million tokens, raised to the model's own saved price (same rule as maxPriceFor in model.js).
@@ -84,11 +85,11 @@ export function plan(settings, jobId, { level, call = null } = {}) {
   for (const e of entriesOf(job)) {   // saved hosts and pin on an entry are ignored: no provider list is ever built from them
     const facts = factsOf(settings, e.model), kindIsSearch = jobId === "web_search" || kindId === "search";
     // A web search provider is not a model: its step is a Cloudflare AI Gateway call ("CF"), with no OpenRouter provider object.
-    const source = kindIsSearch || isCloudflareModel(e.model) ? "CF" : "OR";
+    const source = kindIsSearch || isCloudflareModel(e.model) ? "CF" : isSelfHostedModel(e.model) ? "SELF" : "OR";
     if (source === "OR" && Array.isArray(facts?.levels) && !facts.levels.includes(lvl)) { skipped.push({ model: e.model, why: `no endpoint allowed at ${lvl}` }); continue; }
     const adapter = call?.adapter || adapterOf(jobId, kindId, source, facts);
     steps.push({ model: e.model, source, adapter, effort: kind.effort === false ? null : (effortFor(e.effort ?? null, e.model, settings) ?? null), maxOutput: kindIsSearch ? null : maxOutputOf(settings, jobId, facts), ...(kindIsSearch ? { results: jobResults(settings, jobId) } : {}),
-      provider: source === "CF" ? null : providerOf({ settings, jobId, adapter, facts, level: lvl, kindId, strict: e.strict }), ...(e.strict ? { strict: true } : {}), ...(source === "CF" && !kindIsSearch && cloudflarePrivacyNote(e.model, lvl, facts) ? { privacy_note: cloudflarePrivacyNote(e.model, lvl, facts) } : {}) });
+      provider: source !== "OR" ? null : providerOf({ settings, jobId, adapter, facts, level: lvl, kindId, strict: e.strict }), ...(e.strict ? { strict: true } : {}), ...(source === "CF" && !kindIsSearch && cloudflarePrivacyNote(e.model, lvl, facts) ? { privacy_note: cloudflarePrivacyNote(e.model, lvl, facts) } : {}) });
   }
   return { jobId, level: lvl, steps, skipped };
 }

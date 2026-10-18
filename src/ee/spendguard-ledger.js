@@ -26,9 +26,24 @@ export const ledgerGuard = {
     const plan = rows.find((r) => [20e9, 40e9, 80e9, 160e9].includes(Number(r.nano))) || rows[0];
     return plan ? Number(plan.at) : 0;
   },
+  // What this month is measured against, for the bar, the 50/80% notices, the turn budget and the day share:
+  //   plan usage granted this period (kind 'included', upgrades too)
+  // + credits bought this period (kind 'topup'), so a top-up lowers the bar at once
+  // + credits bought earlier that are still unspent when the period began (carry-over).
+  // Carry-over is the ledger balance just before the renewal, after the renewal expired the unused plan usage, so only bought credits
+  // are left in it. Bought credits never expire, so they stay in the allowance until they are spent. Reads only; nothing is written.
+  guardCarry(start) {
+    if (!start) return 0;
+    const put = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE at<? OR (kind='included_expire' AND at>=?)", start, start).toArray()[0].n);
+    const out = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM spend WHERE at<?", start).toArray()[0].n);
+    const bought = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE kind='topup' AND nano>0 AND at<?", start).toArray()[0].n);
+    return Math.max(0, Math.min(put - out, bought));   // never more than was bought before the period
+  },
   guardInfo() {
     const d = this.dayInfo(), now = Date.now(), start = this.guardPeriod();
-    let allowance = start ? Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE kind='included' AND nano>0 AND at>=?", start).toArray()[0].n) : 0;
+    const sum = (kind) => Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE kind=? AND nano>0 AND at>=?", kind, start).toArray()[0].n);
+    let allowance = start ? sum("included") : 0;
+    if (allowance) allowance += sum("topup") + this.guardCarry(start);
     const from = start || now - 31 * 86400e3;
     if (!allowance) allowance = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE nano>0 AND kind IN ('included','topup','test') AND at>=?", from).toArray()[0].n);
     const used = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM spend WHERE at>=?", from).toArray()[0].n);

@@ -48,7 +48,7 @@ function keys(o, expected, path) {
 }
 function validFacts(m, id) {
   if (m?.eligible === true) return validCatalogRecord(m, id);
-  const allowed = ["id", "name", "kinds", "efforts", "quirks", "json", "in_nano", "formats", "sec_nano", "pricing"];
+  const allowed = ["id", "name", "kinds", "efforts", "quirks", "json", "in_nano", "formats", "sec_nano", "pricing", "embedding_equivalents"];
   return !!m && typeof m === "object" && m.id === id && Object.keys(m).every((k) => allowed.includes(k)) && typeof m.name === "string" && m.name.length <= 160
     && (m.kinds == null || (Array.isArray(m.kinds) && m.kinds.length <= 8 && m.kinds.every((k) => typeof k === "string" && k.length <= 40)))
     && Array.isArray(m.efforts) && m.efforts.length <= 12 && m.efforts.every((e) => EFFORTS.includes(e))
@@ -56,7 +56,24 @@ function validFacts(m, id) {
     && (m.json == null || typeof m.json === "boolean") && (m.in_nano == null || (Number.isFinite(m.in_nano) && m.in_nano >= 0 && m.in_nano <= 100000))
     && (m.formats == null || (Array.isArray(m.formats) && m.formats.length >= 1 && m.formats.length <= 12 && m.formats.every((f) => typeof f === "string" && /^[a-z0-9]{2,8}$/.test(f))))
     && (m.pricing == null || (typeof m.pricing === "object" && !Array.isArray(m.pricing) && Object.keys(m.pricing).length === 2 && [m.pricing.prompt, m.pricing.completion].every((v) => Number.isFinite(v) && v >= 0 && v <= 10000)))
-    && (m.sec_nano == null || (Number.isFinite(m.sec_nano) && m.sec_nano >= 0 && m.sec_nano <= 1000000));
+    && (m.sec_nano == null || (Number.isFinite(m.sec_nano) && m.sec_nano >= 0 && m.sec_nano <= 1000000))
+    && (m.embedding_equivalents == null || (Array.isArray(m.embedding_equivalents) && m.embedding_equivalents.length <= 8 && new Set(m.embedding_equivalents).size === m.embedding_equivalents.length && m.embedding_equivalents.every((x) => looseId(x) && x !== id)));
+}
+
+// ---- the file search index job (embed_files) ----
+// An index records the model that made its vectors, and a search must use vectors from the same model. So:
+//  - the main model and every fallback must be a specific model: a latest-version alias ("~author/family-latest", or any ID ending in "-latest") can switch to a
+//    different model without a save, which would put vectors of two models in one index;
+//  - a fallback must be a model the main model lists in its catalog facts as embedding_equivalents (measured to give the same search results).
+// Checked on every save (write below), never on a read, so a version saved earlier can always be read.
+export const isAliasId = (id) => typeof id === "string" && (id.startsWith("~") || /-latest$/.test(id));
+export function embeddingProblem(config) {
+  const job = config?.jobs?.embed_files; if (!job || typeof job !== "object") return null;
+  const label = jobDef("embed_files").label, entries = entriesOf(job);
+  for (const e of entries) if (isAliasId(e.model)) return `${label}: ${e.model} is a latest-version alias, which can switch to a different model without anyone saving a change. Choose a specific model.`;
+  const equivalents = config.catalog?.[job.model]?.embedding_equivalents || [];
+  for (const f of job.fallbacks || []) if (!equivalents.includes(f.model)) return `${label}: ${f.model} can't be a fallback, because ${config.catalog?.[job.model]?.name || job.model} doesn't list it as equivalent. A fallback that makes different vectors would match the wrong passages in the index that already exists. Choose a model listed as equivalent, or leave the fallbacks empty.`;
+  return null;
 }
 // Whether a model can run a kind of job: models for the kind's own call, plus (for any-model kinds) every model that can chat.
 export const kindOk = (meta, kind) => meta?.eligible === true
@@ -331,10 +348,12 @@ function choicesOf(config) {
   const out = {}, kinds = new Map();
   for (const k of Object.values(JOB_KINDS)) { out[k.pick] = []; kinds.set(k.pick, k); }
   const known = Object.fromEntries(Object.entries(SEED_FACTS).map(([id, f]) => [id, { id, ...clone(f) }]));
+  // The models the file search index's main model lists as equivalent (saved facts, else the first-run facts): the only ones a fallback may be.
+  const mainEmbed = config.jobs?.embed_files?.model, equivalents = new Set([...(config.catalog?.[mainEmbed]?.embedding_equivalents || []), ...(SEED_FACTS[mainEmbed]?.embedding_equivalents || [])]);
   for (const [id, m] of Object.entries({ ...known, ...config.catalog })) {
     for (const [pick, kind] of kinds) {
       if (!kindOk(m, kind) || (zdrApplies(kind, m) && zdrBlocked(config, id))) continue;
-      out[pick].push({ id, name: m.name || id, efforts: m.efforts || [], validated: m.eligible === true, chat: canChat(m), kinds: m.kinds || [], eligible: m.eligible === true, source: m.source || (id.startsWith("@cf/") ? "CF" : "OR"), levels: m.levels || PRIVACY_LEVELS.filter((level) => configuredHosts(config, id, level).length) });
+      out[pick].push({ id, name: m.name || id, efforts: m.efforts || [], validated: m.eligible === true, chat: canChat(m), kinds: m.kinds || [], eligible: m.eligible === true, source: m.source || (id.startsWith("@cf/") ? "CF" : id.startsWith("@1hc/") ? "SELF" : "OR"), levels: m.levels || PRIVACY_LEVELS.filter((level) => configuredHosts(config, id, level).length), ...(kind.equivalentOnly ? { main_equivalent: equivalents.has(id) } : {}) });
     }
   }
   return out;
@@ -357,6 +376,7 @@ export async function modelSettingsView(env) {
 function revisionOf(value) { if (!Number.isSafeInteger(value) || value < 0) fail("A valid settings revision is required."); return value; }
 async function write(env, revision, config, by, action) {
   revisionOf(revision);
+  const problem = embeddingProblem(config); if (problem) fail(problem);
   if (!dbOf(env)) throw new ModelSettingsError("Model settings storage is unavailable.");
   if (!(await insertRow(env, revision, config, by, action))) fail("Settings changed in another window. Reload before saving.", 409);
   return modelSettingsView(env);
@@ -404,6 +424,11 @@ async function validatedSelection(env, config, current) {
   for (const c of next.routing?.categories || []) { const was = (current.routing?.categories || []).find((x) => x.id === c.id); for (const [level, chain] of Object.entries(c.chains || {})) for (const e of Array.isArray(chain) ? chain : []) if (e?.model && !(was?.chains?.[level] || []).some((x) => x?.model === e.model)) fresh.add(e.model); }
   const check = [...fresh].filter((id) => !need.has(id) && validModelId(id) && own(next.catalog, id) && listedKinds({ [id]: next.catalog[id] })[id]);
   if (check.length) { const gone = await unlistedIds(check).catch(() => []); if (gone.length) fail(`${gone[0]}: ${NO_LONGER_OFFERED}. Nothing was saved.`); }
+  // The embedding models' equivalents are facts the first-run data holds (SEED_FACTS), so a record saved before they existed is completed here.
+  for (const e of entriesOf(next.jobs.embed_files || { model: null, fallbacks: [] })) {
+    const m = next.catalog[e.model], eq = SEED_FACTS[e.model]?.embedding_equivalents;
+    if (m && typeof m === "object" && !m.eligible && eq && !own(m, "embedding_equivalents")) m.embedding_equivalents = clone(eq);
+  }
   return validateModelSettings(pruneCatalog(next));
 }
 export async function saveModelSettings(env, { revision, config }, by, action = "save") {

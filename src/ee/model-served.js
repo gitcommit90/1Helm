@@ -6,6 +6,10 @@ const seen = new Map();   // `${environment}:${job}` -> { key, at, calls }
 export const resetServedCache = () => seen.clear();
 export const environmentOf = (env) => env?.ENV_NAME || "live";
 
+// The row a call is recorded under. A main chat reply (a call with a route) has one row for each routing category, "chat:<category id>"; every other call
+// has the row of its job. A route that names no category is General's.
+export const servedJobOf = (jobId, route = null) => route ? `${jobId}:${String(route.category || route.taskProfile?.category || "general")}` : jobId;
+
 // ok: whether the step answered. served: { model, provider } from the response (CF steps: the requested ID). error: a short text for a failed step.
 export function noteServed(env, { job, requested, served = null, ok = true, error = null, now = Date.now() }) {
   try {

@@ -156,15 +156,20 @@ await scenario("memory bound: an hour of mp3 (stereo 44.1 kHz), of Opus (900 cha
     const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-stream_loop", "899", "-i", new URL("./fixtures/audio/ref16k.wav", import.meta.url).pathname, "-f", "lavfi", "-i", "testsrc=size=64x48:rate=2", "-t", "3600", "-c:v", "mpeg4", "-b:v", "20k", "-c:a", "aac", "-b:a", "32k", d + "/long.mp4"], { timeout: 120000 });
     if (r.status === 0) inputs.push(["long.mp4 (1 h, video)", new Uint8Array(rf(d + "/long.mp4"))]); rmSync(d, { recursive: true, force: true });
   } catch {}
-  const v8 = await import("node:v8"), vm = await import("node:vm"); v8.setFlagsFromString("--expose-gc"); const gc = vm.runInNewContext("gc");   // collect before each reading, so it is live memory and not garbage
+  const v8 = await import("node:v8"), vm = await import("node:vm"); v8.setFlagsFromString("--expose-gc"); const gc0 = vm.runInNewContext("gc");
+  // Collect before each reading, so it is live memory and not garbage. gc() returns before V8 has released the WebAssembly memories and
+  // array buffers it found dead (a helper thread and a later event loop turn do that), and on a busy machine that lag is long: with 900
+  // Opus decoders dead and waiting, the reading was 130 to 190 MB instead of 75. So collect again, with a turn between, until the
+  // external memory stops falling (live memory never does, so this ends after three reads when nothing is pending).
+  const gc = async () => { let last = Infinity, still = 0; for (let i = 0; i < 400 && still < 3; i++) { gc0(); await new Promise((r) => setTimeout(r, 25)); const e = process.memoryUsage().external; still = e >= last ? still + 1 : 0; last = e; } };
   for (const [name, big] of inputs) {
     // The readings are of process memory and move with garbage collection timing on a busy machine, so a run that is over a bound is measured again
     // (at most 3 runs). A real leak is over the bound in every run, so the check still fails for one.
     let miss = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      gc(); const base = process.memoryUsage(); let peakHeap = 0, peakExt = 0; const t0 = Date.now(), log = [], ext = [];
+      await gc(); const base = process.memoryUsage(); let peakHeap = 0, peakExt = 0; const t0 = Date.now(), log = [], ext = [];
       const c = await convertAudio(reader(big, log), big.length); let pieces = 0, samples = 0;
-      for await (const p of c.pieces) { pieces++; samples += (p.data.length - 44) / 2; assert.ok(p.data.length <= PIECE_BYTES); gc(); const m = process.memoryUsage(); peakHeap = Math.max(peakHeap, m.heapUsed); peakExt = Math.max(peakExt, m.external); ext.push(m.external); }   // the piece in hand counts
+      for await (const p of c.pieces) { pieces++; samples += (p.data.length - 44) / 2; assert.ok(p.data.length <= PIECE_BYTES); await gc(); const m = process.memoryUsage(); peakHeap = Math.max(peakHeap, m.heapUsed); peakExt = Math.max(peakExt, m.external); ext.push(m.external); }   // the piece in hand counts
       assert.ok(samples / RATE > 3600 * 0.99 && samples / RATE < 3600 * 1.06, `${name}: ${samples / RATE} s`); assert.equal(pieces, Math.ceil(samples / ((PIECE_BYTES - 44) / 2)));
       assert.ok(log.every(([, l]) => l <= READ_WINDOW || /long\.mp4/.test(name)), "no read longer than a window (the mp4's index is read whole)"); assert.ok(log.length >= Math.floor(big.length / READ_WINDOW) / (/long/.test(name) ? 4 : 1), "read window by window");
       // what the converter adds over the test's own copy of the file

@@ -139,21 +139,55 @@ await test("only MODEL_ADMINS can write, and only from the same site", async () 
   assert.equal((await read()).revision, v.revision);
 });
 
-await test("last served: the model that answered is shown, and a model off the saved list or a failed call is flagged", () => {
-  const now = Date.now(), row = C.rowByKey(state, "label"), snap = C.snapshotFromConfig(state), main = state.config.jobs.label.model;
+await test("last served: the flag comes from the requested list entry, never from the name the provider reported", () => {
+  const now = Date.now(), row = C.rowByKey(state, "label"), snap = C.snapshotFromConfig(state), main = state.config.jobs.label.model, fb = state.config.jobs.label.fallbacks[0].model;
   const st = (sv) => C.servedState(state, row, C.chainsOf(state, row, snap), { label: sv });
-  assert.equal(st({ served_model: main + "-20261001", last_status: "ok" }).k, "ok", "a dated version of the saved model is the saved model");
-  assert.equal(st({ served_model: state.config.jobs.label.fallbacks[0].model, last_status: "ok" }).k, "fallback");
-  assert.equal(st({ served_model: "other/unexpected", last_status: "ok" }).k, "other");
-  assert.equal(st({ served_model: main, last_status: "HTTP 502" }).k, "error");
+  assert.equal(st({ requested: main, served_model: main + "-20261001", last_status: "ok" }).k, "ok", "the first entry is normal, whatever dated name answered");
+  assert.equal(st({ requested: main, served_model: "other/unexpected", last_status: "ok" }).k, "ok", "the provider's name is information only");
+  assert.equal(st({ requested: main, served_model: null, last_status: "ok" }).k, "ok", "an answer that names no model is still judged by the requested entry");
+  assert.equal(st({ requested: fb, served_model: fb, last_status: "ok" }).k, "fallback");
+  assert.equal(st({ requested: "other/not-in-the-list", served_model: main, last_status: "ok" }).k, "other", "a requested entry that is not in the list");
+  assert.equal(st({ requested: main, served_model: main, last_status: "HTTP 502" }).k, "error");
+  assert.equal(st({ served_model: main, last_status: "ok" }).k, "none", "a row with no requested entry gets no flag");
   assert.equal(st(undefined).k, "none");
-  const withServed = { ...state, served: { label: { served_model: "other/unexpected", served_provider: "openrouter", last_at: now - 120000, calls: 4, last_status: "ok" } } };
+  const withServed = { ...state, served: { label: { requested: "other/not-in-the-list", served_model: "other/unexpected", served_provider: "openrouter", last_at: now - 120000, calls: 4, last_status: "ok" } } };
   const html = page(withServed); assert.match(html, /unexpected/); assert.match(html, /Served an unlisted model|dot bad/);
   assert.match(C.drawerHtml(withServed, ui0({ sel: "label" }), C.view(withServed, ui0({ sel: "label" })), now).toString(), /other\/unexpected[\s\S]*openrouter/);
 });
 
+await test("last served, real dev cases: the embed prefix, alias entries, and a model from the same company", () => {
+  const flag = (id, sv) => { const row = C.rowByKey(state, id), snap = C.snapshotFromConfig(state); return C.servedState(state, row, C.chainsOf(state, row, snap), { [id]: sv }); };
+  // embed_files asked for perplexity/pplx-embed-v1-0.6b and Perplexity reported pplx-embed-v1-0.6b with no prefix: normal
+  const embed = state.config.jobs.embed_files; assert.ok(embed, "embed_files is saved");
+  assert.equal(flag("embed_files", { requested: embed.model, served_model: "pplx-embed-v1-0.6b", served_provider: "Perplexity", last_status: "ok" }).k, "ok");
+  // an alias entry: the requested alias is the entry, and a different model of the same company does not turn a fallback or an unlisted request into normal
+  const label = state.config.jobs.label, alias = label.model;
+  assert.equal(flag("label", { requested: alias, served_model: "anthropic/claude-haiku-4.5", last_status: "ok" }).k, "ok");
+  assert.equal(flag("label", { requested: "anthropic/claude-opus-5", served_model: "anthropic/claude-haiku-4.5", last_status: "ok" }).k, "other", "same company is not the same entry");
+  assert.equal(flag("label", { requested: alias, served_model: null, served_provider: null, last_status: "ok" }).k, "ok", "label with no served name");
+});
+
+await test("last served: each routing category reads its own row, and an older Live's single chat row serves General only", () => {
+  const cfg = C.applyEdit(C.applyEdit(state.config, { t: "catAdd", newId: "technical" }), { t: "catAdd", newId: "research" });
+  const st2 = { ...state, config: cfg }, snap = C.snapshotFromConfig(st2), cats = cfg.routing.categories, row = (id) => ({ key: "cat:" + id, kind: "cat", id });
+  const general = cats.find((c) => c.id === "general"), other = cats.find((c) => c.id === "technical");
+  assert.ok(general && other && cats.length >= 3, "the settings have General and two more categories");
+  const first = (c) => c.chains.zdr[0].model;
+  const served = { "chat:general": { requested: first(general), served_model: "x/g", last_at: 1, calls: 3, last_status: "ok" }, ["chat:" + other.id]: { requested: first(other), served_model: "x/o", last_at: 2, calls: 5, last_status: "ok" } };
+  const sv = (id, data = served) => C.servedState(st2, row(id), C.chainsOf(st2, row(id), snap), data);
+  assert.equal(sv("general").sv.served_model, "x/g"); assert.equal(sv(other.id).sv.served_model, "x/o");
+  assert.equal(sv("research").k, "none", "a category with no reply yet shows nothing");
+  assert.equal(C.servedKey(row(other.id)), "chat:" + other.id); assert.equal(C.servedKey(C.rowByKey(state, "label")), "label");
+  // an older Live reports one "chat" row: General reads it, other categories do not, and a request outside General's list is not called unlisted
+  const legacy = { chat: { requested: "some/other-categorys-model", served_model: "y/z", last_at: 3, calls: 9, last_status: "ok" } };
+  assert.equal(sv("general", legacy).sv.served_model, "y/z"); assert.equal(sv("general", legacy).k, "none");
+  assert.equal(sv(other.id, legacy).k, "none");
+  assert.equal(sv("general", { ...legacy, "chat:technical": served["chat:general"] }).k, "none", "once a chat: row exists, the old row is ignored");
+  assert.equal(sv("general", { chat: { requested: first(general), last_at: 3, last_status: "ok" } }).k, "ok");
+});
+
 await test("Needs attention lists only jobs with a warning or a problem; search finds a job by its name or model", () => {
-  const st = { ...state, served: { label: { served_model: "other/unexpected", last_at: Date.now(), last_status: "ok" } } };
+  const st = { ...state, served: { label: { requested: "other/not-in-the-list", served_model: "other/unexpected", last_at: Date.now(), last_status: "ok" } } };
   const att = C.visibleInfo(st, ui0({ view: "attention" }), C.view(st, ui0({ view: "attention" }))).map((x) => x.row.key);
   assert.deepEqual(att, ["label"]);
   const found = C.visibleInfo(state, ui0({ q: "task titles" }), C.view(state, ui0())).map((x) => x.row.key); assert.deepEqual(found, ["label"]);
@@ -175,10 +209,13 @@ await test("the picker lists every model, and shows a model that the chain's pri
   assert.equal(e.effort, "low"); assert.equal(e.strict, true);
 });
 
-await test("a job whose last call recorded no served model shows nothing for it, not a placeholder", () => {
-  const st = { ...state, served: { label: { served_model: null, served_provider: null, last_at: Date.now(), calls: 2, last_status: "ok" } } };
+await test("a job whose answer named no model shows the requested model marked as the requested name, never as the served model", () => {
+  const main = state.config.jobs.label.model;
+  const st = { ...state, served: { label: { requested: main, served_model: null, served_provider: null, last_at: Date.now(), calls: 2, last_status: "ok" } } };
   const row = page(st).split('data-row="label"')[1].split('data-row=')[0];
-  assert.doesNotMatch(row, /No calls yet|null|undefined/); assert.doesNotMatch(C.drawerHtml(st, ui0({ sel: "label" }), C.view(st, ui0({ sel: "label" })), Date.now()).toString(), /Last served/);
+  assert.doesNotMatch(row, /No calls yet|null|undefined/); assert.match(row, /Requested name/);
+  const drawer = C.drawerHtml(st, ui0({ sel: "label" }), C.view(st, ui0({ sel: "label" })), Date.now()).toString();
+  assert.match(drawer, /Last served/); assert.match(drawer, /requested name, the answer named no model/); assert.doesNotMatch(drawer, /<dt>Provider<\/dt>/);
 });
 
 await test("the old page is gone: no models-page.js, no inline script, and no private host or Live and push exports", () => {

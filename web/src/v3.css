@@ -927,7 +927,9 @@ body.pc-on #stage>header{padding-right:20px}
 .mh .cb.busy::after{content:"";top:9px;right:9px}
 body.pc-on .pcfab{display:none}
 /* Add credits: three amounts inline under the usage bar (why: one decision, no new page) */
-.crpick{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:0 20px 16px}.crpick span{color:var(--mute);font-size:13px;flex-basis:100%}
+.crpick{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:0 20px 16px}.crask{display:flex;align-items:center;gap:8px;flex-basis:100%;min-height:36px}.crask span{color:var(--mute);font-size:13px;flex:1;min-width:0}
+@media(max-width:500px){.crask{min-height:72px}}
+.crb.on{outline:2px solid var(--ink);outline-offset:2px}.crb.crx{background:transparent;color:var(--ink);border:1px solid var(--line,currentColor)}
 .crb{height:36px;padding:0 16px;border-radius:999px;background:var(--ink);color:var(--page);font-weight:600}.crb[disabled]{opacity:.55}
 .lkcode{font-weight:600;letter-spacing:.04em;color:var(--ink)}
 

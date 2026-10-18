@@ -288,19 +288,27 @@ function closeSheet() {
 // The turn's one progress row: one orb in a fixed slot and two lines of text. Line 1 is the open helper's title, else the
 // assistant's name. Line 2 is the status. The row never gains or loses a part; only its text changes. The same row stays after the
 // turn's reply while a helper is open, and a click on it opens that helper.
-const helperOrb = (h: HelperView) => orb("working", h.status !== "running");   // the one orb animation, still when the helper is not running
-const openHelpers = (k: string) => ss(k).helpers.filter(h => ["running", "waiting_input", "awaiting_review"].includes(h.status));
+// The orb always animates. A helper that is waiting on the person gets the still helper icon in the same slot, unless the turn itself is running.
+const helperMark = (h: HelperView, turnRunning = false) => h.status === "running" || turnRunning ? orb("working") : svg(P.helper, 15);
+const isOpenHelper = (h: HelperView) => ["running", "waiting_input", "awaiting_review"].includes(h.status);
+const openHelpers = (k: string) => ss(k).helpers.filter(isOpenHelper);
+// The turn's own card: the card that is working now, else the newest card (the turn that just replied).
+const turnCardId = (k: string) => { const s = ss(k); return s.on ? (s.cards.find(isOpen) || s.cards[0])?.id || "" : ""; };
+// A helper belongs to the turn when that turn's card started it (parent_card) or is its own or result card. An older turn's helper that is still open
+// never shows in a later turn's row; it stays reachable in the task's job list. With no turn card known, only a helper with no parent card counts.
+export const turnHelpers = (k: string) => { const id = turnCardId(k);
+  return openHelpers(k).filter(h => id ? h.parent_card === id || h.card === id || h.result_card === id : !h.parent_card); };
 const progressStatus = (h: HelperView) => h.status === "waiting_input" ? "Needs your answer" : h.status === "awaiting_review" ? "Ready for review" : "Subagent working";
 export function tkProgress(slug: string, sid: any, name: string, primary: string) {
-  const h = openHelpers(key(slug, sid))[0];
+  const h = turnHelpers(key(slug, sid))[0];
   if (!h && !primary) return `<div class="turn-progress" role="status"></div>`;
   const open = h ? ` data-tkhelper="${esc(String(h.id))}" tabindex="0" aria-label="${esc(h.name || "Subagent")}. ${progressStatus(h)}. Open task"` : "";
-  return `<div class="turn-progress" role="status"${open}><span class="tp-orb">${h ? helperOrb(h) : orb("working")}</span><span class="tp-text"><b>${esc((h ? h.name : "") || name)}</b><span>${esc(h ? progressStatus(h) : primary)}</span></span></div>`;
+  return `<div class="turn-progress" role="status"${open}><span class="tp-orb">${h ? helperMark(h, !!primary) : orb("working")}</span><span class="tp-text"><b>${esc((h ? h.name : "") || name)}</b><span>${esc(h ? progressStatus(h) : primary)}</span></span></div>`;
 }
 // A helper change repaints the chat once, so the row's text follows it. The repaint calls tkSync again with the same signature.
 const progressSig = new Map<string, string>();
 function paintProgress(k: string) {
-  const sig = openHelpers(k).map(h => `${h.id}:${h.status}:${h.name}`).join("|");
+  const sig = turnHelpers(k).map(h => `${h.id}:${h.status}:${h.name}`).join("|");
   if ((progressSig.get(k) ?? "") === sig) return; progressSig.set(k, sig);
   const [slug, sid] = k.split("|"); if (D?.current() === k) D.repaint(slug, sid);
 }
@@ -385,7 +393,7 @@ function summaryHtml(d: CardDetail, k: string) {
     <div class="tk-stext">${text}</div>
     ${d.progress?.length || d.progress_omitted ? `<section class="tk-progress"><h3>Progress notes</h3>${d.progress_omitted ? `<p class="tk-mute">${esc(d.progress_omitted)} earlier notes are no longer retained. The available steps remain in this card.</p>` : ""}${(d.progress || []).map(p => `<p>${esc(p)}</p>`).join("")}</section>` : ""}
     ${d.saved?.length ? `<section class="tk-saved"><h3>Saved memory</h3>${d.saved.map(x => D?.savedChip?.(slug, x) || "").join("")}</section>` : ""}
-    ${hs.map(h => `<div class="tk-hcard"><span class="tk-hico">${["running", "waiting_input", "awaiting_review"].includes(h.status) ? helperOrb(h) : svg(P.helper, 15)}</span><div><b>Background job #${h.id}: ${esc(h.name)}</b><span>${esc(h.status === "running" ? `Working · ${ago(h.started)}` : h.status === "stopped" ? `Stopped${h.stopped_by ? ` by ${h.stopped_by === "person" ? "you" : h.stopped_by === "limit" ? "its limit" : who}` : ""}` : helperStatus(h.status))}</span></div>
+    ${hs.map(h => `<div class="tk-hcard"><span class="tk-hico">${helperMark(h)}</span><div><b>Background job #${h.id}: ${esc(h.name)}</b><span>${esc(h.status === "running" ? `Working · ${ago(h.started)}` : h.status === "stopped" ? `Stopped${h.stopped_by ? ` by ${h.stopped_by === "person" ? "you" : h.stopped_by === "limit" ? "its limit" : who}` : ""}` : helperStatus(h.status))}</span></div>
       ${["running", "waiting_input", "awaiting_review"].includes(h.status) ? `<button type="button" class="tk-stop" data-tkstop="${h.id}"${BUSY[`stop${h.id}`] ? " disabled" : ""}>${svg(P.stop, 13, 2)}<span>${BUSY[`stop${h.id}`] ? "Stopping…" : "Stop"}</span></button>` : ""}
       ${h.card && h.card !== d.id ? `<button type="button" class="tk-lnk" data-tkopen="${esc(h.card)}">Open</button>` : ""}</div>`).join("")}
     ${reply ? `<div class="tk-reply"><h3>${d.kind === "helper" ? "Report" : "Reply"}</h3><p>${esc(reply.length > 420 ? reply.slice(0, 418).replace(/\s+\S*$/, "") + "…" : reply)}</p>${d.kind === "helper" ? "" : `<button type="button" class="tk-lnk" data-tkchat>Show in chat</button>`}</div>` : ""}</div>`;

@@ -3,14 +3,17 @@
 // exist, reads a job's saved setting, builds the request routes from it, and checks the privacy rule. It names no model.
 import { jobFieldDefaults } from "./model-seed.js";
 import { PRIVACY_LEVELS, eligibleHosts, hostOk, normalizePrivacy, registered } from "../privacy.js";
+import { isSelfHostedModel } from "../selfhost-models.js";
 
 export class ModelSettingsError extends Error {
   constructor(message, status = 503) { super(message); this.name = "ModelSettingsError"; this.modelSettings = true; this.status = status; }
 }
 
 // Caps left at 0 on purpose. speech_cloudflare, workers_ai and vision call
-// env.AI.run with the one saved model (vision's non-dynamic path too), so a fallback would be saved and never run. embedding_files: a different
-// model makes vectors that don't match the existing index, so a fallback would corrupt search.
+// env.AI.run with the one saved model (vision's non-dynamic path too), so a fallback would be saved and never run.
+// embedding_files may list fallbacks, but only models its main model lists in its catalog facts as embedding_equivalents (equivalentOnly): vectors
+// from a different model don't match an index made by the main model, so such a fallback would make search return wrong matches. The save
+// check (model-settings.js embeddingProblem) refuses any other fallback.
 // What each kind of job can have. fallbacks: the most fallback models it may list. effort: whether it has a reasoning level.
 // level: the account's AI data privacy setting filters its list. zdr: always runs on zero-data-retention endpoints, so it never
 // breaks any privacy setting. chat/chore/classic models must be able to chat; the others are named by what they do.
@@ -23,7 +26,7 @@ export const JOB_KINDS = {
   speech: { fallbacks: 3, effort: false, zdr: true, pick: "speech", needs: "Needs a speech-to-text model." },
   speech_cloudflare: { fallbacks: 0, effort: false, pick: "speech_cloudflare", needs: "Needs a speech-to-text model that runs on Cloudflare." },
   speech_live: { fallbacks: 1, effort: false, pick: "speech_live", needs: "Needs a live speech-to-text model." },
-  embedding_files: { fallbacks: 0, effort: false, zdr: true, pick: "embedding_files", reindex: true, needs: "Needs a text embedding model." },
+  embedding_files: { fallbacks: 2, equivalentOnly: true, effort: false, zdr: true, pick: "embedding_files", reindex: true, needs: "Needs a text embedding model." },
   // vision has a reasoning level (starting value "none": Gemma does not think). effortNullOk: a version saved before the level existed has null, which reads as "none" (model-settings.js).
   vision: { fallbacks: 0, effort: true, effortNullOk: true, zdr: true, pick: "vision", needs: "Needs a model that can read pictures." },
   workers_ai: { fallbacks: 0, effort: false, pick: "workers_ai", needs: "Needs a Cloudflare Workers AI model." },
@@ -68,7 +71,7 @@ export const JOBS = [
   { id: "stt", kind: "speech", group: "speech", label: "Speech to text", description: "Transcribes dictation uploads (/api/transcribe), Live notes audio chunks and file audio. AssemblyAI goes first for WAV audio, and other formats go to Qwen3 ASR and then Whisper. The fallbacks run when a model fails." },
   { id: "stt_cloudflare", kind: "speech_cloudflare", group: "speech", label: "Speech to text on Cloudflare", description: "Runs only for the Speech to text job, and only when every model above failed and the audio is under 20 MB." },
   { id: "live_dictation", kind: "speech_live", group: "speech", label: "Live dictation", description: "Transcribes live dictation. AssemblyAI transcribes WAV chunks cut at pauses and returns the text after each pause. Deepgram Nova 3 on Cloudflare streams is the fallback." },
-  { id: "embed_files", kind: "embedding_files", group: "search", label: "File search index", description: "Makes the search index for your files. Changing it means files must be indexed again." },
+  { id: "embed_files", kind: "embedding_files", group: "search", label: "File search index", description: "Makes the search index for your files. A fallback must be a model that the main model lists as equivalent. Changing the main model to a different one means each channel rebuilds its file indexes." },
   { id: "vision_files", kind: "vision", group: "search", label: "Picture descriptions", description: "Describes pictures and reads text in them when a file is a picture." },
   { id: "workers_ai_chat", kind: "workers_ai", group: "other", label: "Backup chat", description: "Answers when OpenRouter can't be reached, or on a self-hosted install with no OpenRouter key." },
   { id: "web_search", kind: "search", group: "search", label: "Web search", description: "Finds web pages for a question when DuckDuckGo has no answer. The model is the search provider, and max output is the number of results it asks for." },
@@ -134,6 +137,7 @@ export const effortBody = (e, model, settings) => { e = effortFor(e, model, sett
 export function configuredHosts(settings, model, level) {
   const meta = settings?.catalog?.[model];
   if (meta?.source === "CF") return meta.levels?.includes(level) ? ["cloudflare"] : [];
+  if (isSelfHostedModel(model)) return ["1helm"];   // runs in 1Helm's own container: no outside provider sees the text, at any privacy level
   if (!meta?.hosts) return eligibleHosts(model, level);
   if (!meta.levels?.includes(level)) return [];
   // A model the registry lists keeps only the hosts the registry allows at this level. Any other model follows its provider's recorded terms;

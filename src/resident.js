@@ -63,7 +63,7 @@ import { runBrowserTask } from "./ee/index.js";
 import { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput } from "./ee/index.js";
 import { CONNECT_TOOLS, CONNECT_LINES, connectOfferInit, connectTool, offersView, offerAct, offerGet, offerConnected, composioSigninOffer, connectWriteBlock, appCatalog, catalogFile } from "./ee/index.js";
 import { jobStartedReply, ACK_UPDATE_SENT, ACK_UPDATE_UNCONFIRMED, ACK_RESULT_NOT_READY, ACK_UPDATE_FAILED, ACK_JOB_NOT_STARTED, ACK_ANSWER_RECEIVED } from "./plain-ack.js";
-import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, HELPER_NAME_MAX, HELPER_TASK_MAX, HELPER_MESSAGE_MAX, HELPER_MESSAGES_MAX, COORDINATOR_MAX_CHILDREN, COORDINATOR_LIMITS, helperExclude, helperAllowed, helperContextSnapshot, helperDir, workerOutputPath, helperJobText, coordinatorFinalText, helperStartedText, helperNoteText, helperMessageRows, helperMessagePending, helperMessageText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, helperRow, coordinatorChildren, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, helperNextWake, liveTurnOf, helperTcOf, emitHelper } from "./helpers.js";
+import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, HELPER_NAME_MAX, HELPER_TASK_MAX, HELPER_MESSAGE_MAX, HELPER_MESSAGES_MAX, COORDINATOR_MAX_CHILDREN, COORDINATOR_LIMITS, helperExclude, helperAllowed, helperContextSnapshot, helperDir, workerOutputPath, helperJobText, coordinatorFinalText, helperStartedText, helperNoteText, helperMessageRows, helperMessagePending, helperMessageText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, helperRow, coordinatorChildren, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, reconcileHelperReviews, helperNextWake, liveTurnOf, helperTcOf, emitHelper } from "./helpers.js";
 import { routeTwoTurn, dispatchOrder, HANDOFF_PREFIX } from "./ee/index.js";   // routing policy
 import { privacyOf, PRIVACY_EXHAUSTED } from "./privacy.js";   // AI data privacy: the account's level, read on every dispatch
 import { jobModel, modelSettingsEnv, dispatch, CHAT_JOB, plannedChatMaxOutput, plannedChatHoldNano, plannedHold, holdOutNano } from "./ee/index.js";
@@ -2437,6 +2437,25 @@ export class Resident extends DurableObject {
     }
     return "error: unknown delegation tool.";
   }
+  // A worker round that ended in an error. It ends "failed" with the reason and keeps its step log. Out of credits is not handed back to the
+  // task (the handoff turn could not run either); any other failure is handed back like a failed non-routing helper.
+  orchestrationFailed(h, r, card) {
+    const credits = /out_of_credits/.test(String(r.error)) || String(r.reply || "") === OUT_OF_TIME_REPLY, now = Date.now();
+    const error = credits ? "Out of credits: the month's helper time is used up." : plainError(r.error);
+    this.sql.exec("UPDATE helpers SET status='failed',error=?,why=?,report=?,history_json=NULL,ended=?,charge_nano=charge_nano+?,steps=steps+?,model_steps=model_steps+?,card=?,handed=? WHERE id=? AND status IN ('running','interrupted')",
+      error, credits ? "out of credits" : null, String(r.reply || "").slice(0, 20000) || null, now, Math.round(r.charge || 0), Number(r.tool_calls || 0), Number(r.steps || 0), card, credits ? 1 : 0, h.id);
+    this.sql.exec("UPDATE helper_messages SET status='not_seen', ended_at=? WHERE helper_id=? AND status IN ('queued','presented')", now, h.id);
+    this.sql.exec("UPDATE user_questions SET status='cancelled' WHERE helper_id=? AND status='pending'", h.id);
+    let f = helperRow(this.sql, h.id); emitHelper(this, f);
+    if (!credits && !f.handed) {
+      this.sql.exec("UPDATE helpers SET handed=1 WHERE id=?", h.id);
+      const res = this.handoff(f.session, { text: handoffSteerText(f, 0, this.hl().reportMax), away: handoffAwayText(f, 0, this.hl().reportMax), ref: String(f.id), from: { type: "helper", id: f.id, title: f.name } });
+      if (res?.card?.id) this.sql.exec("UPDATE helpers SET result_card=? WHERE id=?", res.card.id, h.id);
+      f = helperRow(this.sql, h.id);
+    }
+    this.arm().catch(() => {});
+    return f;
+  }
   async orchestrationFinish(h, r = null, tc = null) {
     if (!r && h.status === "interrupted" && h.card) {
       const saved = this.sql.exec("SELECT id,reply,error,charge_nano,tool_calls,steps FROM turns WHERE id=?", h.card).toArray()[0];
@@ -2449,6 +2468,8 @@ export class Resident extends DurableObject {
       const limit = r.forced || r.hit_limit || tc?.helperWhy || tc?.abort ? tc?.helperWhy || (r.forced ? "took too long" : "step, time or cost limit") : r.error ? `failure: ${plainError(r.error)}` : null;
       if (r.forced && tc) tc.abort = "hard";   // a closed round's turn must not keep calling the model
       if (r.forced) this.helperForcedCard(card, tc);
+      // The worker's own run failed (an error such as out of credits, no done): it is a failed helper, not one waiting for review.
+      if (r.error && !r.forced && !inputQuestion && !tc?.helperDoneResponse) return this.orchestrationFailed(h, r, card);
       let handoff;
       try { handoff = inputQuestion ? {files:[],imageParts:[],preview:"The worker paused before completion. Its outputs remain held, and approval requires a completed done response."} : await collectRoutingFiles(this, { ...h, card }, tc || {}); }
       catch (e) { handoff = { files: [], imageParts: [], incomplete: true, preview: `INCOMPLETE FILE HANDOFF. ${e.message}. Do not approve the result. Request a revision to recover the files.` }; }
@@ -2619,8 +2640,16 @@ export class Resident extends DurableObject {
   helperNote(session) { return session ? helperNoteText(runningHelpers(this.sql, session)) : ""; }
   helperPrompt() { return HELPER_PROMPT; }
   helperCount(session) { return this.sql.exec("SELECT COUNT(*) n FROM helpers WHERE session=? AND status='running'", String(session)).one().n; }
+  // Helpers whose review never finished are resolved by reconcileHelperReviews (helpers.js) whenever they are read, in the alarm and at boot.
+  reconcileReviews() {
+    let r; try { r = reconcileHelperReviews(this.sql); } catch (e) { console.log("review reconcile", e.message); return null; }
+    for (const id of [...r.failed, ...r.reoffered]) { const h = helperRow(this.sql, id); if (h) emitHelper(this, h); }
+    if (r.reoffered.length) this.arm().catch(() => {});
+    return r;
+  }
   async helpersList(session) {
     if (!this.session(session)) return { error: "No such task in this channel." };
+    this.reconcileReviews();
     return { helpers: this.sql.exec("SELECT * FROM helpers WHERE session=? ORDER BY id DESC LIMIT 50", String(session)).toArray().map(helperView) };
   }
   // The person (POST …/helpers/<id>/stop) or the main helper (stop_helper): no more model calls, no handoff.
@@ -2651,6 +2680,7 @@ export class Resident extends DurableObject {
   hl() { return this.lim().helper; }   // the saved helper limits as of the last turn or alarm that read them (limits.js)
   async helpersRecover({ boot = false } = {}) {
     await flushAgentMemory(this);
+    this.reconcileReviews();   // a review that never finished: handed back once, then closed as failed (helpers.js reconcileHelperReviews)
     if (this.sql.exec("SELECT 1 x FROM helpers WHERE status='running' LIMIT 1").toArray().length) this._limits = await limitsFor(this.env);   // the saved helper limits (limits.js), only when a helper is running
     const now = Date.now();
     // resume.js: a helper whose run is journaled carries on after a deploy (it's interrupted only when its resume gives up)

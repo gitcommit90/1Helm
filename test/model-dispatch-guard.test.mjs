@@ -13,8 +13,8 @@ const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/
 const files = walk("src"), text = Object.fromEntries(files.map((f) => [f, strip(readFileSync(f, "utf8"))]));
 
 // The dispatcher and the two transport modules it calls (OpenRouter requests in model.js, Workers AI requests in cloudflare-models.js) may hold the network
-// code. The public catalog and the person's own key (byok) are not model calls made on the account's behalf.
-const TRANSPORT = new Set(["src/ee/model-dispatch.js", "src/model.js", "src/cloudflare-models.js"]);
+// code. selfhost-models.js is the transport of models 1Helm runs in its own container (it calls a Durable Object, not an AI endpoint). The public catalog and the person's own key (byok) are not model calls made on the account's behalf.
+const TRANSPORT = new Set(["src/ee/model-dispatch.js", "src/model.js", "src/cloudflare-models.js", "src/selfhost-models.js"]);
 const OTHER_ALLOWED = { "src/ee/model-catalog.js": "public OpenRouter catalog reads, no key", "src/byok-openrouter.js": "sign in with OpenRouter for the person's own key", "src/byok.js": "the person's own AI key and endpoint" };
 const CALL = /\bAI\??\.(?:run|websearch)\s*\(|openrouter\.ai\/api|gateway\.ai\.cloudflare\.com|\bOR_API\b|\bOR_BASE\b/;
 
@@ -27,10 +27,10 @@ test("only the dispatcher and its transport modules call an AI endpoint", () => 
 });
 
 test("only the dispatcher imports the transport functions", () => {
-  const FN = /\b(orFetch|orFetchPath|orSend|routedChat|cloudflareChat|cloudflareEmbeddings|authorizeCloudflare)\b/;
+  const FN = /\b(orFetch|orFetchPath|orSend|routedChat|cloudflareChat|cloudflareEmbeddings|authorizeCloudflare|selfHostedEmbeddings)\b/;
   for (const f of files) {
     if (TRANSPORT.has(f)) continue;
-    for (const m of text[f].matchAll(/import\s*\{([^}]*)\}\s*from\s*["']\.{1,2}\/(?:model|cloudflare-models)\.js["']/g)) assert.ok(!FN.test(m[1]), `${f} imports a transport function (${m[1].match(FN)?.[1]}) from model.js or cloudflare-models.js: only src/ee/model-dispatch.js may`);
+    for (const m of text[f].matchAll(/import\s*\{([^}]*)\}\s*from\s*["']\.{1,2}\/(?:model|cloudflare-models|selfhost-models)\.js["']/g)) assert.ok(!FN.test(m[1]), `${f} imports a transport function (${m[1].match(FN)?.[1]}) from model.js or cloudflare-models.js: only src/ee/model-dispatch.js may`);
   }
   assert.ok(!files.some((f) => /^src\/(?:ee\/)?(router|router-lab|router-page|decision-shadow|test-model|models-page)\.js$/.test(f)), "the classic router, router lab, decision shadow and test model are deleted");
 });

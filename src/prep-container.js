@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { prepJobOn, prepJobAlarm, PREP_SETUP } from "./sidecar.js";
+import { embedSetup, EMBED_INSTANCE } from "./selfhost-models.js";
 import { bounded, ready, runSetup, withCurlRetry, templateVersion, templateUsable, readJson, buildTemplate, startFromTemplate, claimSlotIn, releaseSlotIn } from "./job-template.js";
 
 // The shared helpers live in job-template.js. These names stay exported from here for existing callers and tests.
@@ -13,6 +14,9 @@ const VERIFY_ENV = { INDRA_OCR_MODEL_DIR: "/opt/1hc-prep/models", HF_HUB_OFFLINE
 export const TEMPLATE_VARIANTS = {
   full: { key: "template", tag: "", ops: ["md", "ocr"], verify: { command: `${VERIFY_NODE} && /opt/1hc-prep/venv/bin/python -c 'import indra_ocr, onnxruntime, cv2, pypdfium2'`, env: VERIFY_ENV }, namePrefix: "prep-deps-" },
   md: { key: "template_md", tag: "md-only", ops: ["md"], verify: { command: VERIFY_NODE }, namePrefix: "prep-deps-md-" },
+  // The self-hosted embedding model (selfhost-models.js): its own Python environment and pinned weights, built and restored on its own instance size.
+  // It has its own setup script, so the "full" template's version (the image digest plus PREP_SETUP) is not changed by it.
+  embed: { key: "template_embed", tag: "embed-selfhost", ops: ["embed"], script: () => embedSetup(), instance: EMBED_INSTANCE, verify: { command: "/opt/1hc-prep/venv-embed/bin/python -c 'import onnxruntime, tokenizers, numpy' && test -f /opt/1hc-prep/embed-models/model_quantized.onnx_data" }, namePrefix: "prep-deps-embed-" },
 };
 const variantOf = v => TEMPLATE_VARIANTS[v] || TEMPLATE_VARIANTS.full;
 
@@ -27,7 +31,7 @@ export class PrepContainer extends DurableObject {
   get(k) { return this.sql.exec("SELECT v FROM kv WHERE k=?", k).toArray()[0]?.v; }
   put(k, v) { this.sql.exec("INSERT INTO kv VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", k, String(v)); }
   async version() { return this.versionFor("full"); }
-  async versionFor(variant = "full") { const v = variantOf(variant); return templateVersion(this.ctx.container.images.base, PREP_SETUP, v.tag); }
+  async versionFor(variant = "full") { const v = variantOf(variant); return templateVersion(this.ctx.container.images.base, v.script ? v.script() : PREP_SETUP, v.tag); }
   async prepJob(input) { if (this.get("builder") === "1") throw new Error("template object cannot process files"); return prepJobOn(this, input); }
   coordinator() { return this.env.PREP_CONTAINER.get(this.env.PREP_CONTAINER.idFromName("dependencies:coordinator")); }
   // No cap: every account's prep object can start its own container. The leases only record which objects are up.
@@ -60,7 +64,7 @@ export class PrepContainer extends DurableObject {
       this.put(v.key, "null");
       const built = await buildTemplate(this.ctx.container, {
         version, name: `${v.namePrefix}${version.slice(0, 16)}`, label: "prep",
-        steps: v.ops.map(op => ({ script: TEMPLATE_SETUP, args: [op] })), verify: v.verify,
+        steps: v.ops.map(op => ({ script: v.script ? withCurlRetry(v.script()) : TEMPLATE_SETUP, args: [op] })), verify: v.verify, ...(v.instance ? { instance: v.instance } : {}),
       });
       this.put(v.key, JSON.stringify(built)); return built;
     };
@@ -68,7 +72,7 @@ export class PrepContainer extends DurableObject {
     return this._templateQ;
   }
   async prepStart({ snapshot = "restore", template: requested = "full" } = {}) {
-    const variant = requested === "md" ? "md" : "full", version = await this.versionFor(variant);
+    const variant = requested === "md" ? "md" : requested === "embed" ? "embed" : "full", version = await this.versionFor(variant);
     if (this.get("builder") === "1") throw new Error("template object cannot process files");
     if (!(await this.coordinator().claimSlot(this.ctx.id.toString()))) throw new Error("prep container capacity reached; retry later");
     try {
@@ -78,15 +82,15 @@ export class PrepContainer extends DurableObject {
       if (snapshot !== "bypass") {
         const builder = this.coordinator();
         try {
-          template = await bounded(variant === "md" ? builder.peekDependencySnapshotFor("md") : builder.peekDependencySnapshot(), 5000, "template lookup timed out");
-          if (!template) { fallback = "template_missing"; this.ctx.waitUntil((variant === "md" ? builder.dependencySnapshotFor("md") : builder.dependencySnapshot()).catch(() => {})); }
+          template = await bounded(variant === "full" ? builder.peekDependencySnapshot() : builder.peekDependencySnapshotFor(variant), 5000, "template lookup timed out");
+          if (!template) { fallback = "template_missing"; this.ctx.waitUntil((variant === "full" ? builder.dependencySnapshot() : builder.dependencySnapshotFor(variant)).catch(() => {})); }
         } catch { fallback = "template_unavailable"; }
       }
       const started = await startFromTemplate(this.ctx.container, {
-        template, version, control: snapshot === "bypass", fallback, label: "prep",
+        template, version, control: snapshot === "bypass", fallback, label: "prep", ...(variantOf(variant).instance ? { instance: variantOf(variant).instance } : {}),
         // Invalidate the exact failed handle, without touching a replacement
         // another requester may have created. Rebuild before a later request.
-        onRestoreFailed: id => { const builder = this.coordinator(); this.ctx.waitUntil((variant === "md" ? builder.invalidateDependencySnapshotFor("md", id) : builder.invalidateDependencySnapshot(id)).catch(() => {})); },
+        onRestoreFailed: id => { const builder = this.coordinator(); this.ctx.waitUntil((variant === "full" ? builder.invalidateDependencySnapshot(id) : builder.invalidateDependencySnapshotFor(variant, id)).catch(() => {})); },
       });
       this.put("prep_source", started.source); this.put("prep_snapshot_id", started.snapshot_id || "");
       this.put("prep_version", version);

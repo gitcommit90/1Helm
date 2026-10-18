@@ -1,3 +1,19 @@
+# Source update: 2026-10-18 (Add credits confirmation, self-hosted embedding model, review resume)
+
+## Credits, file search embedding, helper reviews and the Models page
+
+The Worker source is reconciled from `c2b8bce338d815958408b7386b1fa988b0ce0b64` to
+`701499c00179ec0feb84cd0ff3fa4021a374919c`. The web source is reconciled from
+`88cee249122764d5d78646153799b576fe7bac19` to `b3461c749b2e59f0f39b094c22ae495bb137dbfd`.
+
+Add credits now asks before it charges. `POST /api/topup/confirm` names the saved card (brand and last four digits only) and returns a token signed for that account and amount that is valid for two minutes, and `POST /api/topup` refuses to charge without a valid token (`src/topup.js`). Both routes are Cloud routes in this edition (`src/ee/index.js`), so an install without the Cloud switch answers 404 for both, as it did for `/api/topup` before. Credits bought in the current month, and bought credits left over from earlier months, count in the monthly usage allowance, so a top-up lowers the usage bar at once (`src/ee/spendguard-ledger.js`).
+
+The file search index can run its embedding model in the preparation container (`src/selfhost-models.js`). The model ID `@1hc/perplexity-ai/pplx-embed-v1-0.6b` names the public MIT licensed weights of pplx-embed-v1-0.6b, which the container downloads at one pinned commit and checks by SHA-256, and a third party notice for the weights, ONNX Runtime and tokenizers is added. The saved model of the job "File search index" can list it as a fallback of the Perplexity API model, and a fallback must be listed by the main model as equivalent (`embedding_equivalents`), so one index never holds vectors of two different models. A change to a model that is not equivalent rebuilds each channel's file vectors from the saved text, one file at a time, and does not charge the account. The Models page shows a "last served" row for each routing category, and its drawer shows the requested name when an answer names no model.
+
+A background helper whose review never finishes is handed back once and then closed as failed, and a helper whose own run failed ends as failed (`src/helpers.js`, `src/resident.js`). After an object restart that is not a deploy, the resume notes say "1Helm restarted" in place of "1Helm was updated", and an open approve or message call to a helper is checked against the helper's saved row (`src/resume.js`). The web app shows the progress row only for the turn's own helper. APP_V is 276, and the generated web assets are rebuilt from the public web source.
+
+The audio converter memory test (`test/audio-convert.test.mjs`) now waits until the external memory reading stops falling before each reading, so a busy machine no longer counts decoders that are dead but not yet released as live memory, and its limits are unchanged. Core sign-in, own-key access, EE gates, storage limits, backup, native clients, schema and the example configuration are unchanged, and no migration is added. Private deployment configuration, release scripts and release records, the dev to Live push, the dev admin script for the embedding fallback, coordinator instructions and the hosted end to end checks stay excluded. Local checks do not establish live provider, container or device behavior.
+
 # Source update: 2026-10-18 (one Notebook, one progress row, hidden apps)
 
 ## Notebook, ambient search, progress row, hidden apps and chat limits

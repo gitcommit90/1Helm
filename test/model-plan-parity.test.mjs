@@ -8,6 +8,7 @@ import { modelSettingsEnv } from "../src/ee/model-settings.js";
 import { JOB_IDS } from "../src/ee/model-jobs.js";
 import { PRIVACY_LEVELS } from "../src/privacy.js";
 import { isCloudflareModel } from "../src/cloudflare-models.js";
+import { isSelfHostedModel } from "../src/selfhost-models.js";
 import { SEED, seedSettings, withSettings } from "./helpers/seed-settings.mjs";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -33,8 +34,9 @@ test("no plan carries order, only or ignore, even when saved entries still hold 
 test("a model's transport follows its ID: an @cf/ ID is a Cloudflare step and every other ID goes to OpenRouter", () => {
   const CF_ADAPTERS = new Set(["decide_clef", "look", "search", "transcribe_live", "chat", "embeddings", "transcribe"]);
   for (const level of PRIVACY_LEVELS) for (const id of JOB_IDS) for (const st of plan(SEED, id, { level }).steps) {
-    const cf = isCloudflareModel(st.model) || id === "web_search";
-    assert.equal(st.source, cf ? "CF" : "OR", `${id}: ${st.model}`);
+    const cf = isCloudflareModel(st.model) || id === "web_search", own = isSelfHostedModel(st.model);
+    assert.equal(st.source, cf ? "CF" : own ? "SELF" : "OR", `${id}: ${st.model}`);
+    if (own) { assert.equal(st.provider, null, `${id}: a step in 1Helm's own container has no OpenRouter provider object`); assert.equal(st.adapter, "embeddings", `${id}: only embeddings run in the container`); continue; }
     if (st.source === "OR") { assert.ok(st.provider && typeof st.provider === "object", `${id}: an OpenRouter step has its provider fields`); assert.ok(!["decide_clef", "look", "search", "transcribe_live"].includes(st.adapter), `${id}: ${st.model} is on OpenRouter with the ${st.adapter} adapter`); }
     else { assert.equal(st.provider, null, `${id}: a Cloudflare step has no OpenRouter provider object`); assert.ok(CF_ADAPTERS.has(st.adapter), `${id}: ${st.adapter}`); assert.ok(!["decide_systemone", "decide_json"].includes(st.adapter), `${id}: ${st.model} is on Cloudflare with the ${st.adapter} adapter`); }
   }

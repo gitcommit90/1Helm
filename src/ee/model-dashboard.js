@@ -2,11 +2,12 @@
 // for it, which is exactly what the runtime uses (it reads the same saved settings, model-jobs.js). For jobs the account's privacy setting filters,
 // it also says whether each privacy setting would leave the job with no allowed model, and it carries the notes about a saved max output.
 import { PRIVACY_LABEL } from "../privacy.js";
+import { isSelfHostedModel } from "../selfhost-models.js";
 import { JOBS, JOB_KINDS, GROUPS, entriesOf, privacyCoverage, factsOf, zdrBlocked, zdrApplies, jobLimits, jobResults } from "./model-jobs.js";
 
 const nameOf = (settings, id) => factsOf(settings, id)?.name || String(id || "");
-// OR (OpenRouter) or CF (Cloudflare Workers AI): the transport the dispatcher uses for the model, which is the ID's source (plan() says the same; a web search provider is a Cloudflare call).
-const sourceOf = (settings, id) => isCloudflare(settings, id) || /^cloudflare\//.test(String(id)) ? "CF" : "OR";
+// OR (OpenRouter), CF (Cloudflare Workers AI) or SELF (1Helm's own container): the transport the dispatcher uses for the model, which is the ID's source (plan() says the same; a web search provider is a Cloudflare call).
+const sourceOf = (settings, id) => isSelfHostedModel(id) ? "SELF" : isCloudflare(settings, id) || /^cloudflare\//.test(String(id)) ? "CF" : "OR";
 const isCloudflare = (settings, id) => factsOf(settings, id)?.source === "CF" || String(id).startsWith("@cf/");
 // Every job has a place on the page: the group Other is one of the groups of model-jobs.js.
 export const PAGE_GROUPS = GROUPS;
@@ -39,11 +40,11 @@ export function jobView(settings, def) {
   const coverage = privacyCoverage(settings, def.id), warnings = [];
   if (coverage) for (const [level, c] of Object.entries(coverage)) if (!c.allowed) warnings.push(`${PRIVACY_LABEL[level]}: no allowed model, so requests fail with a privacy message instead of using one that setting forbids.`);
   if (kind.zdr) for (const e of entries) if (zdrApplies(kind, factsOf(settings, e.model)) && zdrBlocked(settings, e.model)) warnings.push(`${nameOf(settings, e.model)} has no zero-data-retention provider and can't run here.`);
-  if (kind.reindex) warnings.push("Changing this model does not re-index existing data. Re-index before relying on search.");
+  if (kind.reindex) warnings.push("If you change the main model to one that is not listed as equivalent, each channel rebuilds its file indexes from the saved text of the files the next time someone searches a file or adds one. Until a file is rebuilt, its search uses keywords only. The rebuild is not charged to the account.");
   const limits = jobLimits(settings, def.id), main = entry(entries[0]), fallbacks = entries.slice(1).map(entry);
   return { id: def.id, kind: def.kind, group: def.group, label: def.label, description: def.description, main, fallbacks,
-    has_effort: kind.effort, max_fallbacks: kind.fallbacks, pick: kind.pick, any: !!kind.any, needs: kind.needs || null, privacy: kind.level ? "list" : kind.zdr ? "zdr" : "none",
-    limits, limit_note: kind.noOutput || kind.resultCount ? null : limitNote(settings, entries, limits.max_output, kind), results: kind.resultCount ? jobResults(settings, def.id) : null, no_output: !!kind.noOutput || !!kind.resultCount, on_openrouter: entries.some((e) => !isCloudflare(settings, e.model)),
+    has_effort: kind.effort, max_fallbacks: kind.fallbacks, equivalent_only: !!kind.equivalentOnly, pick: kind.pick, any: !!kind.any, needs: kind.needs || null, privacy: kind.level ? "list" : kind.zdr ? "zdr" : "none",
+    limits, limit_note: kind.noOutput || kind.resultCount ? null : limitNote(settings, entries, limits.max_output, kind), results: kind.resultCount ? jobResults(settings, def.id) : null, no_output: !!kind.noOutput || !!kind.resultCount, on_openrouter: entries.some((e) => !isCloudflare(settings, e.model) && !isSelfHostedModel(e.model)),
     saved: { model: main.id, effort: main.effort, fallbacks: fallbacks.map((f) => f.id), max_output: limits.max_output, sort: limits.sort, max_price: limits.max_price, results: kind.resultCount ? jobResults(settings, def.id) : null, timeout_ms: limits.timeout_ms },
     coverage: coverage ? Object.fromEntries(Object.entries(coverage).map(([l, c]) => [l, { allowed: c.allowed, first: c.first ? nameOf(settings, c.first) : null, first_source: c.first ? sourceOf(settings, c.first) : null }])) : null, warnings };
 }

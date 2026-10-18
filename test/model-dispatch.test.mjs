@@ -223,7 +223,44 @@ test("served model: the main chat (a routed call) records its category job, with
   const route = policyRoute(env.MODEL_SETTINGS, "technical", "zdr", "x");
   const n = net((c) => new Response(`data: ${JSON.stringify({ model: `${c.body.model}-served`, provider: "Fireworks", choices: [{ delta: { content: "hi" } }] })}\n\ndata: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } }));
   try { const r = await dispatch(env, "chat", { ...msgs, stream: true }, { meta: { tenant: "t1" }, route, session: "s1" }); await r.text(); await new Promise((z) => setTimeout(z, 5)); } finally { n.done(); }
-  const row = served(writes); assert.equal(row[1], "chat"); assert.match(row[3], /-served$/); assert.equal(row[4], "Fireworks");
+  const row = served(writes); assert.equal(row[1], "chat:technical"); assert.match(row[3], /-served$/); assert.equal(row[4], "Fireworks");
+  assert.equal(row[2], route.served, "requested is the exact list entry that answered");
+});
+
+test("served model: each routing category has its own row, a route with no category is General's, and a failed reply is recorded on its category row", async () => {
+  const { resetServedCache, servedJobOf } = await import("../src/ee/model-served.js");
+  const { policyRoute } = await import("../src/ee/route2.js");
+  assert.equal(servedJobOf("label"), "label"); assert.equal(servedJobOf("chat", {}), "chat:general"); assert.equal(servedJobOf("chat", { taskProfile: { category: "research" } }), "chat:research"); assert.equal(servedJobOf("chat", { category: "skills", taskProfile: { category: "research" } }), "chat:skills");
+  resetServedCache(); const writes = []; const env = servedEnv(writes);
+  const n = net((c) => new Response(`data: ${JSON.stringify({ model: c.body.model, provider: "P", choices: [{ delta: { content: "hi" } }] })}\n\ndata: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } }));
+  try {
+    for (const cat of ["general", "technical", "research"]) { const r = await dispatch(env, "chat", { ...msgs, stream: true }, { meta: { tenant: "t1" }, route: policyRoute(env.MODEL_SETTINGS, cat, "zdr", "x"), session: "s1" }); await r.text(); }
+    await new Promise((z) => setTimeout(z, 5));
+  } finally { n.done(); }
+  const rows = new Set(writes.map((w) => w.a[1]));
+  assert.ok(rows.has("chat:general") && rows.has("chat:technical") && rows.has("chat:research"), "one row for each category: " + [...rows]);
+    assert.ok(!writes.some((w) => w.a[1] === "chat"), "nothing is recorded under the shared chat row any more");
+});
+
+test("served model: a job that answers records its requested entry even when the answer names no model", async () => {
+  const { resetServedCache } = await import("../src/ee/model-served.js");
+  resetServedCache(); const writes = []; const env = servedEnv(writes);
+  const n = net(() => new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 }));
+  try { await dispatch(env, "label", msgs, { meta: { tenant: "t1" } }); await new Promise((z) => setTimeout(z, 5)); } finally { n.done(); }
+  assert.equal(served(writes)[1], "label"); assert.equal(served(writes)[2], env.MODEL_SETTINGS.jobs.label.model); assert.equal(served(writes)[3], null);
+});
+
+test("served model: Workers AI jobs (the backup chat, the browser look) and web search each record their requested entry", async () => {
+  const { resetServedCache } = await import("../src/ee/model-served.js");
+  resetServedCache(); const writes = []; const env = servedEnv(writes);
+  env.AI = { run: async (m) => (m.includes("moondream") ? { answer: "a page", caption: "x", points: [] } : { response: "ok" }), websearch: async () => ({ ok: true, results: [] }) };
+  env.AIG_ID = "g";
+  await dispatch(env, "workers_ai_chat", msgs, { meta: { tenant: "t1" } });
+  await dispatch(env, "look", { task: "query", image: "data:image/png;base64,AA==", question: "q" }, { meta: { tenant: "t1" } });
+  await dispatch(env, "web_search", { query: "q", limit: 3 }, { meta: { kind: "web-search" } });
+  await new Promise((z) => setTimeout(z, 5));
+  const rows = Object.fromEntries(writes.map((w) => [w.a[1], w.a]));
+  for (const job of ["workers_ai_chat", "look", "web_search"]) { assert.ok(rows[job], `${job} has a row`); assert.equal(rows[job][2], env.MODEL_SETTINGS.jobs[job].model, `${job} records the entry that answered`); }
 });
 
 test("structured request: a model with no endpoint accepting response_format at the job's level gets prompt-only JSON, and one with support keeps json_schema", async () => {

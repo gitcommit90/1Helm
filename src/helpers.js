@@ -44,6 +44,7 @@ export function helpersInit(sql) {
   try { sql.exec("ALTER TABLE helpers ADD COLUMN model_steps INTEGER NOT NULL DEFAULT 0"); } catch {}
   // What the running turn has used so far, written at every step (resident.js journalStep). steps and charge_nano stay the final totals.
   for (const c of ["live_tool_calls", "live_model_steps", "live_charge_nano"]) { try { sql.exec(`ALTER TABLE helpers ADD COLUMN ${c} INTEGER NOT NULL DEFAULT 0`); } catch {} }
+  try { sql.exec("ALTER TABLE helpers ADD COLUMN review_tries INTEGER NOT NULL DEFAULT 0"); } catch {}   // reconcileHelperReviews: how often an unfinished review was handed back
   sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS helpers_spawn_call ON helpers(parent_card,spawn_call_id) WHERE spawn_call_id IS NOT NULL");
 }
 
@@ -258,6 +259,33 @@ export function recoverHelpers(sql, now = Date.now(), keep = null) {
 }
 // Undelivered results (a finished helper whose handoff didn't go out, e.g. after a restart). Running ones are handed by their run.
 export const pendingHandoffs = (sql) => sql.exec("SELECT * FROM helpers WHERE handed=0 AND coordinator_id IS NULL AND status IN ('interrupted','done','stopped','failed','awaiting_review','waiting_input') AND (stopped_by IS NULL OR stopped_by='limit') ORDER BY id").toArray();
+// RULE for a background helper that waits for its review (awaiting_review / waiting_input) and never gets an approve or a message:
+//  1. Its own run failed (its card ended failed, e.g. out of credits): it is a failed helper, never a reviewable one. It ends "failed" with the reason.
+//  2. Its review handoff card ended failed, interrupted or stopped (a restart, out of credits, a crash): the result is handed to the task once more
+//     (handed=0, review_tries=1; the alarm sends it).
+//  3. The second review handoff also ended that way: the helper closes as "failed" with why "review did not finish". Its response and log stay in
+//     helper_rounds. Nothing is deleted.
+// Runs when helpers are read (helpersList) and in the alarm and boot recovery, so rows stuck before this rule are resolved the same way.
+// Pure SQL over the helper and card rows. -> { failed: [ids], reoffered: [ids] }
+export function reconcileHelperReviews(sql, now = Date.now()) {
+  const out = { failed: [], reoffered: [] };
+  const rows = sql.exec("SELECT h.id, h.session, h.handed, h.review_tries, h.result_card, h.card, (SELECT status FROM cards WHERE id=h.card) own, (SELECT status FROM cards WHERE id=h.result_card) rev FROM helpers h WHERE h.dynamic_routing=1 AND h.coordinator_id IS NULL AND h.status IN ('awaiting_review','waiting_input')").toArray();
+  const dead = (st) => st === "failed" || st === "interrupted" || st === "stopped";
+  for (const x of rows) {
+    let why = null, error = null;
+    if (x.own === "failed") { why = "its own run failed"; error = "The worker's run failed before its result could be reviewed."; }
+    else if (x.handed && x.result_card && dead(x.rev)) {
+      if (!x.review_tries) { sql.exec("UPDATE helpers SET handed=0, result_card=NULL, review_tries=1 WHERE id=? AND status IN ('awaiting_review','waiting_input')", x.id); out.reoffered.push(x.id); continue; }
+      why = "review did not finish"; error = "The review of this worker's result did not finish, so the result was not approved. Its response and log are kept.";
+    }
+    if (!why) continue;
+    sql.exec("UPDATE helpers SET status='failed', error=?, why=?, ended=COALESCE(ended, ?), handed=1 WHERE id=? AND status IN ('awaiting_review','waiting_input')", error, why, now, x.id);
+    sql.exec("UPDATE helper_messages SET status='not_seen', ended_at=? WHERE helper_id=? AND status IN ('queued','presented')", now, x.id);
+    try { sql.exec("UPDATE user_questions SET status='cancelled' WHERE helper_id=? AND status='pending'", x.id); } catch {}
+    out.failed.push(x.id);
+  }
+  return out;
+}
 // The next time the alarm must wake for helpers: now for undelivered results, else the next future deadline step.
 export function helperNextWake(sql, now = Date.now(), L = DEFAULT_RUNTIME_LIMITS.helper) {
   if (pendingHandoffs(sql).length) return now;

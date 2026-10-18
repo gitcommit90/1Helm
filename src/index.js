@@ -5,6 +5,7 @@ import { UsageLedger } from "./usage-ledger.js";
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { backupControl, isBackupPath } from "./backup-control.js";
 import { enabled as eeEnabled, features as eeFeatures, routeEnabled as eeRouteEnabled } from "./ee/index.js";
+import { TOPUP_CENTS, issueConfirm, checkConfirm, savedCard } from "./topup.js";
 import { tolerantEnv, DO_TRANSIENT_RE, RPC_SKEW_RE, rpcSkew, codeV, isResetErr } from "./do-stub.js";
 import { opsRoute, viewAsGate, viewAsToken } from "./internal-shim.js";
 import { ambientSettingsRoute, dailyBillingFlag, deciderModel, modelSettingsEnv } from "./ee/index.js";
@@ -178,7 +179,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "273";
+const APP_V = "276";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -1401,7 +1402,7 @@ export default {
         if (sub === "/api/plan/cancel" || sub === "/api/plan/keep" || sub === "/api/test/cancel-notices" || sub === "/api/test/cancel-tick") return cancelApi(req, env, t, user, sub, { stripe, json });
         if (sub === "/api/fix-payment" && req.method === "POST") return json(await fixPayment(env, t, origin));
         if (sub === "/api/test/pastdue") return pastdueApi(req, env, t, user, { json, stripe });
-        if (sub === "/api/topup" && access.mode === "read_only")
+        if ((sub === "/api/topup" || sub === "/api/topup/confirm") && access.mode === "read_only")
           return payRequired(access);
         // TEST_MODE only, test accounts only: deploy measurements (e2e/dev/measure-deploy.mjs, notes/2026-10-08-deploy-safe-agents.md §6).
         //   GET ?c=<channel>: which code version the Worker and that channel's Resident run, its boots, released reservations and the
@@ -1435,14 +1436,20 @@ export default {
         if (sub === "/api/transcribe/live") return access.mode === "read_only" ? payRequired(access) : transcribeLive(req, env, L, { tenant: t.id, look: !!viewAsToken(req) }, { waitUntil: p => ctx.waitUntil(p) });
         if (sub === "/api/transcribe") return access.mode === "read_only" ? payRequired(access) : transcribe(req, env, L, { tenant: t.id, kind: "transcribe" });
 
+        // Add credits step 1: the person tapped an amount. Answers with the saved card (brand and last 4 only, or null) and a short-lived
+        // token for this amount; nothing is charged. Step 2 (/api/topup) needs the token.
+        if (sub === "/api/topup/confirm" && req.method === "POST") {
+          const { pack } = (await boundedJson(req, 4096).catch((e) => { if (e instanceof BodyTooLargeError) throw e; return null; })) || {};
+          if (!TOPUP_CENTS[pack]) return json({ error: "Pick $10, $25 or $50." }, 400);
+          const card = await savedCard((p, a, m) => stripe(env, p, a, m), t);
+          return json({ pack, card: card ? { brand: card.brand, last4: card.last4 } : null, confirm: await issueConfirm(env, t.id, pack) });
+        }
         if (sub === "/api/topup" && req.method === "POST") {
-          const { pack } = await boundedJson(req);
-          const cents = { 10: 1000, 25: 2500, 50: 5000 }[pack];
+          const { pack, confirm } = (await boundedJson(req, 4096).catch((e) => { if (e instanceof BodyTooLargeError) throw e; return null; })) || {};
+          const cents = TOPUP_CENTS[pack];
           if (!cents) return json({ error: "Pick $10, $25 or $50." }, 400);
-          const cust = await stripe(env, `customers/${t.stripe_customer}`, {}, "GET");
-          let pm = cust.invoice_settings?.default_payment_method;
-          if (!pm && t.stripe_subscription) pm = (await stripe(env, `subscriptions/${t.stripe_subscription}`, {}, "GET")).default_payment_method;
-          if (!pm) pm = (await stripe(env, `customers/${t.stripe_customer}/payment_methods?limit=1`, {}, "GET")).data?.[0]?.id;
+          if (!(await checkConfirm(env, t.id, pack, confirm))) return json({ error: "Please confirm the amount again. Nothing was charged." }, 409);
+          const pm = (await savedCard((p, a, m) => stripe(env, p, a, m), t, { details: false }))?.id;
           const md = { app: "1hc-proto", kind: "topup", tenant_id: t.id };
           try {
             if (!pm) throw new Error("no saved card");
@@ -2027,7 +2034,9 @@ async function send(msg){const r=await fetch(base+'/api/chat',{method:'POST',hea
  if(r.status===402){pending=msg;$('#modal').style.display='block';return;} if(!r.ok){add('bot','⚠ '+d.error);return;}
  add('bot',d.reply,'cost '+usd(d.charge_nano)+' · '+d.usage.in+' in / '+d.usage.out+' out');paint(d.state);}
 $('#f').onsubmit=e=>{e.preventDefault();const m=$('#m').value.trim();if(!m)return;$('#m').value='';add('me',m);send(m);};
-async function topup(p){const r=await (await fetch(base+'/api/topup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pack:p})})).json();
+async function topup(p){const j=b=>({method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});const c=await (await fetch(base+'/api/topup/confirm',j({pack:p}))).json();if(!c.confirm)return;
+ if(!await ask({title:c.card?'Charge $'+p+' to '+c.card.brand+' ending '+c.card.last4+'?':'Add $'+p+' in credits?',body:c.card?'':'No card is saved, so the payment page opens.',confirm:c.card?'Confirm':'Continue'}))return;
+ const r=await (await fetch(base+'/api/topup',j({pack:p,confirm:c.confirm}))).json();
  if(r.url){location.href=r.url;return;} $('#mt').textContent='Adding credits…';
  const before=last?.balance_nano||0; for(let i=0;i<20;i++){await new Promise(z=>setTimeout(z,1500));await state();if(last.balance_nano>before)break;}
  $('#modal').style.display='none';$('#mt').textContent='Out of credits';if(pending){const m=pending;pending=null;send(m);}}

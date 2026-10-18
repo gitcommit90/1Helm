@@ -890,8 +890,8 @@ function fvPaint() {
     <div class="fvbody" id="fvbody">${k === "image" ? `<img class="fvimg" src="${u}" alt="${esc(f.name)}" draggable="false">`
       : k === "video" ? `<video src="${u}" controls playsinline autoplay></video>` : k === "audio" ? `<div class="fvaud"><span class="aico k-doc">${I(kd, 28)}</span><audio src="${u}" controls autoplay></audio></div>`
       : k === "other" ? `<div class="fvnonebox"><span class="aico k-${fkind(f.name, f.mime)}">${I(kd, 30)}</span><b>${esc(f.name)}</b><p>There's no preview for this kind of file yet. Download it, or ask ${esc(who(channels.find(c => c.slug === f.slug)!))} to work with it; it's on its computer at <code>files/${esc(f.name)}</code>.</p><a class="fvdl" href="${fileUrl(f.slug, f.id, true)}" download>Download</a></div>`
-      : k === "deck" || k === "word" ? `<div class="fvload">${orb("working", false, "dark")}<p>Opening ${k === "deck" ? "the slides" : "the document"}…</p><p class="fvslow" hidden>The first time takes a few seconds.</p></div>`
-      : `<div class="fvload">${orb("working", false, "dark")}</div>`}</div>
+      : k === "deck" || k === "word" ? `<div class="fvload">${orb("working", "dark")}<p>Opening ${k === "deck" ? "the slides" : "the document"}…</p><p class="fvslow" hidden>The first time takes a few seconds.</p></div>`
+      : `<div class="fvload">${orb("working", "dark")}</div>`}</div>
     ${n > 1 ? `<button class="fvnav prev" data-fvn="-1" aria-label="Previous file"${FVS.i ? "" : " disabled"}>${I('<path d="m15 18-6-6 6-6"/>', 22)}</button><button class="fvnav next" data-fvn="1" aria-label="Next file"${FVS.i < n - 1 ? "" : " disabled"}>${I('<path d="m9 18 6-6-6-6"/>', 22)}</button><span class="fvcount">${FVS.i + 1} of ${n}</span>` : ""}</div>`;
   const body = document.getElementById("fvbody")!;
   if (f.transcript) fetch(u, { credentials: "same-origin", cache: "no-store" }).then(r => { if (!r.ok) throw new Error(r.status === 404 ? "This transcript is no longer available." : "Couldn't load the transcript. Please try again."); return r.json(); }).then(data => {
@@ -997,7 +997,7 @@ if (LIVE) {
       const nv = t.closest<HTMLElement>("[data-fvn]"); if (nv) { e.preventDefault(); FVS.i = Math.max(0, Math.min(FVS.list.length - 1, FVS.i + +nv.dataset.fvn!)); fvPaint(); return; }
       const z = t.closest<HTMLElement>("[data-fvz]"); if (z) { e.preventDefault(); fvZoom(+z.dataset.fvz!); return; }
       const sl = t.closest<HTMLElement>("[data-fvs]"); if (sl) { e.preventDefault(); FVS.slide?.(+sl.dataset.fvs!); return; }
-      if (t.closest("[data-fvretry]")) { e.preventDefault(); const f = FVS.list[FVS.i], k = fvKind(f), body = document.getElementById("fvbody"); if (body && (k === "deck" || k === "word")) { const gen = ++FVS.gen; body.innerHTML = `<div class="fvload">${orb("working", false, "dark")}<p>Trying again…</p></div>`; fvOffice(f, fileUrl(f.slug, f.id), body, gen, k === "deck", true); } return; }
+      if (t.closest("[data-fvretry]")) { e.preventDefault(); const f = FVS.list[FVS.i], k = fvKind(f), body = document.getElementById("fvbody"); if (body && (k === "deck" || k === "word")) { const gen = ++FVS.gen; body.innerHTML = `<div class="fvload">${orb("working", "dark")}<p>Trying again…</p></div>`; fvOffice(f, fileUrl(f.slug, f.id), body, gen, k === "deck", true); } return; }
       if (t.classList.contains("fvimg")) { if (FVS.zoom > 1) fvZoom(0); else { fvZoom(1); fvZoom(1); fvZoom(1); } return; }   // tap a picture: 2× / back to fit
       if (t.classList.contains("fvbody") || t.classList.contains("fvload") || t.classList.contains("fvslide")) { closeFile(); return; }
       return;
@@ -1746,7 +1746,30 @@ function linkAppHtml() {
   return `<h3>Link on your phone</h3><div class="sc lkapp"><p>Get push notifications for agent purchase requests, approve or decline them, and manage your saved payment methods in the Link app. Allow notifications when prompted to receive alerts.</p><div class="lkdownloads"><a class="sa" href="https://apps.apple.com/app/link-a-smarter-way-to-pay/id1623228342" target="_blank" rel="noopener noreferrer">Download for iOS</a><a class="sa" href="https://play.google.com/store/apps/details?id=com.stripe.link.android" target="_blank" rel="noopener noreferrer">Download for Android</a></div></div>`;
 }
 // Add credits (live): $10 / $25 / $50 on the card already on file; falls back to Stripe Checkout if that card can't be charged.
-const CR = { open: false, busy: 0 };
+const CR: { open: boolean; busy: number; pick: number; info: { card: { brand: string; last4: string } | null; confirm: string } | null } = { open: false, busy: 0, pick: 0, info: null };
+const CARD_BRANDS: Record<string, string> = { visa: "Visa", mastercard: "Mastercard", amex: "American Express", discover: "Discover", diners: "Diners Club", jcb: "JCB", unionpay: "UnionPay" };
+function crAsk(): string {   // the line under the amounts: the charge question once the person has tapped one, else the usual note
+  const i = CR.info; if (!CR.pick || !i) return "Charged to the card on your plan.";
+  return i.card ? `Charge $${CR.pick} to ${esc(CARD_BRANDS[i.card.brand] || "your card")} ending ${esc(i.card.last4)}?` : `No saved card. A payment page opens for $${CR.pick}.`;
+}
+// A payment's credits are added by the payment webhook, which can land after the page's answer. Ask for the account numbers every
+// 2 seconds, at most 12 times, until the balance changes, then repaint the usage bar and rows. Stops early if the page can't reach the server.
+async function creditsRefresh() {
+  if (!LIVE || !BOOT) return;
+  const num = (v: any) => Number(String(v ?? "").replace(/[^0-9.]/g, "")) || 0, before = num(BOOT.account?.balance);
+  for (let i = 0; i < 12; i++) {
+    await new Promise(z => setTimeout(z, i ? 2000 : 1500));
+    const d = await api(`/app/boot?light=1`, undefined, { signal: AbortSignal.timeout(8000) }).catch(() => null);
+    if (!d?.account) continue;
+    const changed = num(d.account.balance) > before;   // a turn spending meanwhile only lowers it; the top-up raises it
+    BOOT.account = d.account;
+    if (changed) {
+      if (S.open) sRender();
+      if (mState.sheet === "set") { const sh = document.querySelector<HTMLElement>("#sheet .sheet"); const fresh = new DOMParser().parseFromString(`<div>${sheetHtml("set")}</div>`, "text/html").querySelector(".suse"), old = sh?.querySelector(".suse"); if (fresh && old) old.replaceWith(fresh); }
+      return;
+    }
+  }
+}
 // Connected apps (live): ONE store for Settings → Connected accounts and the Apps popup. Last known list is cached per workspace
 // (localStorage) and drawn at once; GET /api/apps refreshes it quietly at boot, on open, and after a sign-in. Rows are Composio's own data.
 // Several accounts per app (two Gmails…): each has a label (its email/username, else "Account 2") and one per app is the default.
@@ -2174,7 +2197,7 @@ function usageCard() {
   const planName = LIVE ? String(BOOT?.account?.plan || "Plus") : "Plus";
   return `<div class="sc"><div class="susage"><div class="sut"><b>${esc(planName)} plan</b><span>${pct}% used</span></div><p>${esc(detail)}</p><div class="sbar"><i style="width:${pct}%"></i></div>${bykUsageNote()}</div>
     <div class="sfoot">${sa("Change plan", `data-stplans aria-expanded="${storPlansOpen()}"`, "blue")}${LIVE ? sa("Add credits", "data-crt", "blue") : sa("Add credits", 'data-snote="credits"', "blue")}${bcxUsage("foot")}</div>${storPlans()}${bcxUsage("card")}
-    ${LIVE && CR.open ? `<div class="crpick">${[10, 25, 50].map(n => `<button class="crb" data-crp="${n}"${CR.busy ? " disabled" : ""}>${CR.busy === n ? "Adding…" : `$${n}`}</button>`).join("")}<span>Charged to the card on your plan.</span></div>` : ""}</div>`;
+    ${LIVE && CR.open ? `<div class="crpick">${[10, 25, 50].map(n => `<button class="crb${CR.pick === n ? " on" : ""}" data-crp="${n}"${CR.busy ? " disabled" : ""}>${CR.busy === n ? "Adding…" : `$${n}`}</button>`).join("")}<div class="crask"><span>${crAsk()}</span>${CR.pick && CR.info ? `<button class="crb" data-crgo${CR.busy ? " disabled" : ""}>${CR.info.card ? "Confirm" : "Continue"}</button><button class="crb crx" data-crno${CR.busy ? " disabled" : ""}>Cancel</button>` : ""}</div></div>` : ""}</div>`;
 }
 const accountRow = (go: boolean) => srow(`<span class="sme">${esc(INITIALS)}</span>`, esc(PERSON), esc(EMAIL), chev(), nav("account"));
 // ---------- Settings → General → Your account (proto src/account.js): name, sign-in email, signed-in devices ----------
@@ -2516,14 +2539,22 @@ document.addEventListener("click", e => {
   if (LIVE && t.closest("[data-texting]")) { location.assign(`/w/${LIVE.slug}/texting`); return; }
   if (LIVE && cmClick(t)) return;   // How apps connect (apps-mode.ts)
   if (LIVE && t.closest("[data-cxretry]")) { CX.err = ""; cxLoad(true); sRender(); return; }
-  if (LIVE && t.closest("[data-crt]")) { CR.open = !CR.open; sRender(); return; }
-  const crp = t.closest<HTMLElement>("[data-crp]"); if (LIVE && crp && !CR.busy) {
-    CR.busy = +crp.dataset.crp!; sRender();
-    fetch(`${LIVE.api}/topup`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ pack: CR.busy }) }).then(r => r.json()).then(d => {
+  if (LIVE && t.closest("[data-crt]")) { CR.open = !CR.open; CR.pick = 0; CR.info = null; sRender(); return; }
+  const crJson = (path: string, body: object) => fetch(`${LIVE.api}${path}`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(r => r.json());
+  const crFail = (msg?: string) => { CR.busy = 0; CR.pick = 0; CR.info = null; sRender(); note(g("help", 14), "Couldn't add credits", msg || "Try again in a minute.", ""); };
+  const crp = t.closest<HTMLElement>("[data-crp]"); if (LIVE && crp && !CR.busy) {   // step 1: ask the server for the saved card and a confirm token; nothing is charged yet
+    const n = +crp.dataset.crp!; CR.pick = n; CR.info = null; sRender();
+    crJson("/topup/confirm", { pack: n }).then(d => { if (CR.pick !== n) return; if (!d.confirm) return crFail(d.error); CR.info = { card: d.card, confirm: d.confirm }; sRender(); }).catch(() => crFail());
+    return;
+  }
+  if (LIVE && t.closest("[data-crno]") && !CR.busy) { CR.pick = 0; CR.info = null; sRender(); return; }
+  if (LIVE && t.closest("[data-crgo]") && !CR.busy && CR.pick && CR.info) {   // step 2: the person confirmed, so the server may charge
+    const n = CR.pick; CR.busy = n; sRender();
+    crJson("/topup", { pack: n, confirm: CR.info.confirm }).then(d => {
       if (d.url) { location.assign(d.url); return; }
-      if (d.status === "succeeded") { note(ic.check, `$${CR.busy} added`, "It shows in your balance in a few seconds.", ""); setTimeout(() => location.reload(), 3500); }
+      if (d.status === "succeeded") { note(ic.check, `$${n} added`, "It shows in your balance in a few seconds.", ""); creditsRefresh(); }
       else note(g("help", 14), "Couldn't add credits", d.error || "Try again in a minute.", "");
-      CR.busy = 0; CR.open = false; sRender(); }).catch(() => { CR.busy = 0; sRender(); note(g("help", 14), "Couldn't add credits", "Try again in a minute.", ""); });
+      CR.busy = 0; CR.open = false; CR.pick = 0; CR.info = null; sRender(); }).catch(() => crFail());
     return;
   }
   if (LIVE && t.closest("[data-lkon]") && !LK.busy) {
@@ -3664,8 +3695,7 @@ if (LIVE) {
     if (topup) {
       setTimeout(() => note(ic.check, "Credits added", "They show in your balance in a few seconds.", ""), 400);
       // The payment posts by webhook: pick up the new balance once it has landed.
-      setTimeout(() => fetch(`${LIVE.api}/app/boot?light=1`, { credentials: "same-origin" }).then(r => r.json())
-        .then(d => { if (d?.account && BOOT) { BOOT.account = d.account; if (S.open) sRender(); } }).catch(() => {}), 4000);
+      creditsRefresh();
     }
     if (resub) setTimeout(() => note(ic.check, "Your plan is back on", "Everything works again in a few seconds.", ""), 400);
   }

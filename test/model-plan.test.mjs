@@ -7,6 +7,7 @@ import { JOB_IDS } from "../src/ee/model-jobs.js";
 import { PRIVACY_LEVELS } from "../src/privacy.js";
 import { taskPayload } from "../src/model.js";
 import { isCloudflareModel } from "../src/cloudflare-models.js";
+import { isSelfHostedModel } from "../src/selfhost-models.js";
 import { SEED, withSettings } from "./helpers/seed-settings.mjs";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -36,9 +37,9 @@ test("no provider list key is ever produced, even when the saved entries carry h
 test("@cf/ IDs go to CF and every other ID goes to OR", () => {
   for (const id of JOB_IDS) for (const st of plan(SEED, id, { level: "zdr" }).steps) {
     if (st.adapter === "search") { assert.equal(st.source, "CF", "a search provider is a gateway call, not an OpenRouter model"); assert.equal(st.provider, null); continue; }
-    assert.equal(st.source, isCloudflareModel(st.model) ? "CF" : "OR", `${id} ${st.model}`);
+    assert.equal(st.source, isCloudflareModel(st.model) ? "CF" : isSelfHostedModel(st.model) ? "SELF" : "OR", `${id} ${st.model}`);
     assert.equal(st.source === "CF", st.model.startsWith("@cf/"), st.model);
-    assert.equal(st.provider === null, st.source === "CF", st.model);
+    assert.equal(st.provider === null, st.source !== "OR", st.model);
   }
   assert.ok(Object.values(SEED.jobs).some((j) => j.model.startsWith("@cf/")) );
 });

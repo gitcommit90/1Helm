@@ -29,10 +29,10 @@
 //   look              the Moondream body ({ task, image, question | target | caption_length }). The job's max_output applies to the "query" task when it is saved. Returns the answer as a JSON Response.
 //   search            { query, limit }. The saved job's model is "cloudflare/<provider>". Returns the Cloudflare Web Search Response.
 //
-// The transport is the ID's source (isCloudflareModel); there is no ENV_NAME, TEST_MODE or DYNAMIC_ROUTING check in this file.
+// The transport is the ID's source (isCloudflareModel, isSelfHostedModel); there is no ENV_NAME, TEST_MODE or DYNAMIC_ROUTING check in this file.
 import { plan } from "./model-plan.js";
 import { jsonLevelsFor } from "./model-catalog.js";
-import { noteServed } from "./model-served.js";
+import { noteServed, servedJobOf } from "./model-served.js";
 import { modelSettingsEnv, readModelSettings } from "./model-settings.js";
 import { effortBody, quirkOf, jobTimeoutMs } from "./model-jobs.js";
 import { privacyOf } from "../privacy.js";
@@ -41,6 +41,7 @@ import { cappedResponseBytes } from "../bounded-response.js";
 import { byokChat } from "../byok.js";
 import { orFetch, orFetchPath, firstOk, replayFor, cacheKey, aiOpts, routedChat, byokFast } from "../model.js";
 import { cloudflareChat, cloudflareEmbeddings, authorizeCloudflare, cfOptions, abortable, isCloudflareModel } from "../cloudflare-models.js";
+import { selfHostedEmbeddings } from "../selfhost-models.js";
 export { plan };
 
 const OR_HEADERS = { "x-openrouter-metadata": "enabled" };
@@ -99,6 +100,7 @@ const ADAPTERS = {
   },
   async embeddings(c, s) {
     if (s.source === "CF") return Response.json(await cloudflareEmbeddings(c.env, s.model, c.request.input, c.meta));
+    if (s.source === "SELF") return Response.json(await selfHostedEmbeddings(c.env, s.model, c.request.input, c.meta));
     return okOrThrow(await orFetchPath(c.env, "embeddings", { model: s.model, input: c.request.input, provider: s.provider }, c.meta, {}, c.signal), `embeddings ${s.model}`);
   },
   async transcribe(c, s) {
@@ -162,6 +164,7 @@ const cloudflareServed = (model) => isCloudflareModel(model) ? { model, provider
 // A plain answer (not a stream or a socket) is read once, bounded, to see which model and provider named themselves. → { response, served }.
 async function servedOf(r, step) {
   if (step.source === "CF") return { response: r, served: { model: step.model, provider: "cloudflare" } };
+  if (step.source === "SELF") return { response: r, served: { model: step.model, provider: "1helm-container" } };
   if (!r || typeof r.clone !== "function" || r.webSocket || r.status === 101 || /event-stream/i.test(r.headers?.get?.("content-type") || "")) return { response: r, served: null };
   try {
     const { json: j, response } = await hold(r, 16 << 20);
@@ -180,11 +183,13 @@ export async function dispatch(env, jobId, request = {}, { meta = {}, signal = n
   // The main chat: a route (a running task's profile, or the routing policy) says which models to try, in which order; each attempt reads its limits from its saved job.
   if (route) {
     const asked = () => route.served || route.model || route.primary || route.taskProfile?.requestedModel || "";
+    // Each routing category keeps its own last-served row: "chat:<category id>" (the category the turn was routed to, General when it names none).
+    const servedJob = servedJobOf(jobId, route);
     try {
       const r = await routedChat(env, request, session, route, { ...meta, job: jobId }, signal);
-      noteServed(env, { job: jobId, requested: asked(), served: cloudflareServed(route.served || route.taskProfile?.requestedModel) || r?.served || null, ok: true });
+      noteServed(env, { job: servedJob, requested: asked(), served: cloudflareServed(route.served || route.taskProfile?.requestedModel) || r?.served || null, ok: true });
       return r;
-    } catch (e) { if (!signal?.aborted) noteServed(env, { job: jobId, requested: asked(), ok: false, error: e?.message }); throw e; }
+    } catch (e) { if (!signal?.aborted) noteServed(env, { job: servedJob, requested: asked(), ok: false, error: e?.message }); throw e; }
   }
   const settings = env.MODEL_SETTINGS, lvl = level ?? await privacyOf(env, meta?.tenant);
   const p = plan(settings, jobId, { level: lvl });

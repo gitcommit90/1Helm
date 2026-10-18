@@ -35,6 +35,8 @@
 // runs from its alarm (retried by Cloudflare after a reset; MAX_TRIES of our own); paid results (OCR pages, transcript pieces, the card,
 // vector batches) are kept as they finish so a retry doesn't pay twice; sidecarDone is idempotent (keyed by file + r2key).
 //
+// The index's model is the saved model of the job embed_files (the Models page, "File search index"): its main model may have equivalent fallbacks, and a
+// change to a model that is not equivalent rebuilds each channel's indexes from the saved text (runReindex, Resident.sidecarReindexCheck).
 // Embedding choice (2026-10-08, tmp-shots/sidecar/emb/results*.json): 549 chunks (~160k tokens) of the prompt/skill docs + an employee
 // handbook + an annual report, 32 questions with a known answer passage, ZDR endpoints only. hit@1 / hit@3 / hit@5, MRR, ms per chunk, $ for all:
 //   perplexity/pplx-embed-v1-0.6b (OpenRouter, Perplexity)  0.72 / 0.88 / 0.97  MRR 0.808  12.5 ms  $0.0006   ← chosen
@@ -63,6 +65,7 @@ import { SC_V, kindOf, convertBytes, textToMd, sectionsOf, outlineLines, chunksO
   WORKER_MAX_BYTES, XLSX_WORKER_MAX, MD_MAX_CHARS, CHARS_PER_TOKEN, anydocFormat } from "./sidecar-convert.js";
 import { PLAIN_STYLE } from "./plain-style.js";
 import { indraSetup } from "./sidecar-ocr.js";
+import { embedSetup, EMBED_JOB_CHARS, EMBED_JOB_TEXTS, selfCallReserveNano } from "./selfhost-models.js";
 
 // A file this small goes into the message whole (~25-30 pages of text). Live check 2026-10-08 (tmp-shots/sidecar2/probe): given a
 // 12.7k-token, 15-page report's first 4k tokens and outline (its card not made yet), the helper still searched the rest for "net income"
@@ -132,6 +135,8 @@ export const JOB_MAX_MS = 6 * 60e3, JOB_RESERVE = Math.ceil((JOB_MAX_MS / 1000 +
 export const sidecarKeyOf = (r2key) => `${r2key}.sidecar.json`;
 export const vecKeyOf = (r2key) => `${r2key}.sidecar.vec`;
 export const prepName = (r2key) => `prep:${r2key}`;
+export const reindexName = (r2key, model) => `reindex:${h32(model)}:${r2key}`;
+export const REINDEX_RECHECK_MS = 10 * 60e3;
 const now = () => Date.now();
 const jp = (s, d = null) => { try { return s == null ? d : JSON.parse(s); } catch { return d; } };
 
@@ -159,6 +164,18 @@ export class FilePrep extends DurableObject {
     await this.arm(now());
     return { status: this.get("status") };
   }
+  // Rebuild one file's search vectors with the model the settings name now (after a change to a model that isn't equivalent). One object per file and target
+  // model ("reindex:<model hash>:<r2key>"), so a file is never rebuilt twice for the same model. Idempotent like prepStart. The job reads the saved text
+  // (the sidecar), embeds its chunks, keeps each batch as it finishes (a deploy resumes from the next batch), writes the new vectors over the old ones only at
+  // the end, and tells the channel. It charges nobody: a rebuild is the platform's doing, not the account's (see runReindex).
+  async reindexStart(job) {
+    if (!job?.r2key || !job.tenant || !job.channel || !job.file_id || !job.model || !String(job.r2key).startsWith(`t/${job.tenant}/files/`)) return { error: "bad job" };
+    const st = this.get("status");
+    if (!st) { this.put("job", { ...job, reindex: true }); this.put("status", "queued"); this.put("queued_at", String(now())); }
+    if (st === "working" && now() - Number(this.get("working_at") || 0) < 9 * 60e3) return { status: "working" };
+    await this.arm(now());
+    return { status: this.get("status") };
+  }
   async prepState() { return { status: this.get("status"), tries: Number(this.get("tries") || 0), job: this.getJ("job"), result: this.getJ("result") ? { ...this.getJ("result"), card: undefined } : null }; }
   async alarm() {
     if (this.env.ENV_NAME === "selfhost" && this.env.BACKUP_MAINTENANCE === "1") { await this.ctx.storage.setAlarm(Date.now() + 60e3); return; }
@@ -174,7 +191,7 @@ export class FilePrep extends DurableObject {
       if (tries > MAX_TRIES) result = text ? { ...text, status: "ready", notes: [...(text.notes || []), `no summary card or index (${this.get("last_error") || "it stopped partway"})`] } : { status: "failed", error: `couldn't prepare it (${this.get("last_error") || "it stopped partway"})` };
       else {
         this.put("status", "working"); this.put("working_at", String(now()));
-        try { result = await runPrep(this, job, tries); }
+        try { result = job.reindex ? await runReindex(this, job, tries) : await runPrep(this, job, tries); }
         catch (e) {
           if (isResetErr(e)) throw e;   // a deploy: Cloudflare runs the alarm again on the new code
           this.put("last_error", String(e?.message || e).slice(0, 200)); this.put("status", "queued"); console.log("prep failed", job.r2key, String(e?.message || e).slice(0, 200));
@@ -185,9 +202,17 @@ export class FilePrep extends DurableObject {
     }
     // Hand the result to the channel. It answers ok (kept) or stale (the file changed or went: it deleted what we wrote). Then nothing of
     // this object is needed any more; if the channel can't be reached, try again in a minute.
-    let ok = false; try { const r = await this.res(job).sidecarDone(job.file_id, job.r2key, this.getJ("result")); ok = !!(r?.ok || r?.stale); } catch (e) { console.log("prep report", e?.message); }
+    let ok = false; try { const r = job.reindex ? await this.res(job).sidecarReindexed(job.file_id, job.r2key, this.getJ("result")) : await this.res(job).sidecarDone(job.file_id, job.r2key, this.getJ("result")); ok = !!(r?.ok || r?.stale); } catch (e) { console.log("prep report", e?.message); }
     if (!ok) { const n = Number(this.get("reports") || 0) + 1; this.put("reports", String(n)); if (n < 30) await this.ctx.storage.setAlarm(now() + 60e3); return; }
     await this.ctx.storage.deleteAll();
+  }
+  // A step that is not charged to the account (a rebuild after a model change): run it once, keep the answer, and add what it would have cost to this object's platform_nano.
+  async free(step, fn) {
+    const kept = this.get(`step:${step}`); if (kept != null) return jp(kept);
+    const r = await fn(), v = { value: r.value, nano: 0 };
+    this.put("platform_nano", String(Number(this.get("platform_nano") || 0) + Math.ceil(r.nano || 0)));
+    const js = JSON.stringify(v); if (js.length < 1_500_000) this.put(`step:${step}`, js);
+    return v;
   }
   // A paid step: reserve first (refused → { refused }), run, settle at the real cost (never above the reservation), keep the answer.
   // id is stable per step and try, so a retry after a crash reserves afresh and the Ledger never settles one id twice.
@@ -243,6 +268,27 @@ export async function runPrep(P, job, tries = 1) {
   const w2 = await writeSidecar(P, job, { ...doc, card, notes, made_at: now(), ...(vec ? { vec: { model: embModel, dims: vecDims } } : {}) }, vec ? { bytes: vec, dims: vecDims, model: embModel } : null, doc);
   if (w2.skipped) return { ...text, status: "ready", notes: [...notes, "no summary card or index (storage is full)"] };
   return result({ card, vec_key: vec ? vecKeyOf(job.r2key) : null, bytes: w2.bytes, stage_ms: text.stage_ms });
+}
+// The rebuild of one file's vectors (FilePrep.reindexStart). → { status: "current" | "reindexed" | "skipped" | "failed", ... }
+//  current: the vectors on file already come from the saved model or one the catalog lists as equivalent, so nothing is sent.
+//  Never charged to the account: the batches go through P.free, which keeps them for a resume and adds their cost to this object's platform_nano. The ledger
+//  has no place for a cost the platform carries (every entry belongs to a tenant), so the cost is logged with the tenant-free line below and tagged
+//  kind "sidecar-reindex" in the AI Gateway log and the receipt of the call.
+export async function runReindex(P, job, tries = 1) {
+  const env = P.env, t0 = now(), { env: e, steps } = await stepsOf(env, "embed_files"), model = steps[0]?.model || null;
+  if (!model) return { status: "skipped", error: "no search index model is saved" };
+  const vo = await env.WS.head(vecKeyOf(job.r2key));
+  if (vo && sameIndexModel(e.MODEL_SETTINGS, vo.customMetadata?.model || null, model)) return { status: "current", model };
+  const so = await env.WS.get(sidecarKeyOf(job.r2key)); if (!so) return { status: "skipped", error: "the saved text of the file is missing" };
+  let doc; try { doc = JSON.parse(await so.text()); } catch { return { status: "failed", error: "the saved text of the file can't be read" }; }
+  const chunks = Array.isArray(doc.chunks) ? doc.chunks.slice(0, INDEX_MAX_CHUNKS) : [];
+  if (!chunks.length || typeof doc.md !== "string") return { status: "skipped", error: "the file has no chunks to index" };
+  const v = await indexChunks(P, { ...job, emb_model: model }, doc.md, chunks, meta(job, doc.kind || "doc"), { charge: false });
+  const w = await writeSidecar(P, job, { ...doc, vec: { model, dims: v.dims } }, { bytes: v.packed, dims: v.dims, model });
+  if (w.skipped) return { status: "skipped", error: "storage is full, so the old vectors stay" };
+  const platform = Number(P.get("platform_nano") || 0);
+  console.log("reindex", JSON.stringify({ model, chunks: chunks.length, platform_nano: platform, ms: now() - t0, tries }));
+  return { status: "reindexed", model, vec_key: vecKeyOf(job.r2key), bytes: w.bytes, chunks: chunks.length, platform_nano: platform, ms: now() - t0, tries };
 }
 const meta = (job, kind) => ({ tenant: job.tenant, channel: job.channel, kind: `sidecar-${kind}` });
 // The companions (storage.js: counted, refused when full). → { bytes } written | { skipped: the result }
@@ -562,30 +608,54 @@ export function splitWav(b, max) {
 
 // ---- the index: vectors for each chunk, in batches, each batch kept as it's paid for ----
 // texts → { vectors, nano } through dispatch (the saved embed_files job; the model, the provider fields and the transport come from /models).
-// model: the model the index was made with. A saved model that isn't it (or an equivalent the catalog lists) can't continue or search that
-// index, so the call throws with .modelChanged and nothing is sent.
+// model: the model the index was made with. A search must embed its query with that model or one the catalog lists as equivalent (embedding_equivalents of
+// the saved model, and the saved model's own steps are only used when they are equivalent), so a saved model that isn't it (or an equivalent) can't continue
+// or search that index: the call throws with .modelChanged and nothing is sent.
+// sameIndexModel: whether vectors of model b may be searched or continued with vectors of model a. The catalog's embedding_equivalents of either one counts.
+export function sameIndexModel(settings, a, b) {
+  if (!a || !b || a === b) return true;
+  const eq = (x, y) => Array.isArray(settings?.catalog?.[x]?.embedding_equivalents) && settings.catalog[x].embedding_equivalents.includes(y);
+  return eq(a, b) || eq(b, a);
+}
 export async function embedTexts(env, texts, meta, model = null) {
   const first = await firstStep(env, "embed_files", await privacyOf(env, meta?.tenant));
   if (!first) await dispatch(env, "embed_files", { input: texts }, { meta });   // no model is allowed at this account's privacy level: dispatch throws the privacy error
-  const m = first.model;
-  if (model && model !== m) { const same = (await stepsOf(env, "embed_files")).env.MODEL_SETTINGS?.catalog?.[m]?.embedding_equivalents; if (!Array.isArray(same) || !same.includes(model)) throw Object.assign(new Error(`the file index was made with ${model}, and the saved model is ${m}`), { modelChanged: true }); }
-  const r = await dispatch(env, "embed_files", { input: texts }, { meta });
+  const m = first.model, { env: e, steps } = await stepsOf(env, "embed_files");
+  // Only steps that make vectors for this index may answer. The saved model first, then the fallbacks, each only when equivalent.
+  const allowed = model ? steps.filter((st) => sameIndexModel(e.MODEL_SETTINGS, model, st.model)) : steps;
+  if (model && !allowed.length) throw Object.assign(new Error(`the file index was made with ${model}, and the saved model is ${m}`), { modelChanged: true });
+  // A deploy that reset this object during a step must not be hidden by the answer of a later step: the job runs again on the new code.
+  const resetFirst = (err) => { const hit = (err?.errors || []).find((x) => /Durable Object reset/i.test(x)); return hit ? Object.assign(new Error(String(hit).replace(/^[^:]*:\s*/, "")), { objectReset: true }) : err; };
+  let r;
+  if (allowed.length === steps.length) { try { r = await dispatch(env, "embed_files", { input: texts }, { meta }); } catch (err) { throw resetFirst(err); } }
+  else {
+    let last; const errors = [];
+    for (const st of allowed) { try { r = await dispatch(env, "embed_files", { input: texts }, { meta, model: st.model }); break; } catch (err) { last = err; errors.push(`${st.model}: ${err?.message || err}`); } }
+    if (!r) throw resetFirst(Object.assign(last, { errors }));
+  }
   const j = await cappedResponseJson(r, 8 << 20).catch(() => null);
   if (!r.ok || !Array.isArray(j?.data) || j.data.length !== texts.length) throw new Error(`embeddings ${r.status}: ${JSON.stringify(j?.error || j || {}).slice(0, 160)}`);
   const vectors = j.data.slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((d) => d.embedding);
   const tok = Number(j.usage?.prompt_tokens) || texts.reduce((a, t) => a + tokensOf(t), 0);
-  return { vectors, model: m, nano: Math.ceil(Math.ceil(Number(j.usage?.cost) * 1e9 || tok * await embedNano(env)) * MARKUP) };
+  return { vectors, model: r.requested || m, nano: Math.ceil(Math.ceil(Number(j.usage?.cost) * 1e9 || tok * await embedNano(env)) * MARKUP) };
 }
-async function indexChunks(P, job, md, chunks, meta) {
+// The hold for one embedding call: the tokens at the dearest saved price, plus, when a step runs in 1Helm's own container, the container's start and wait
+// for each job the texts need (selfhost-models.js SELF_CALL_SECONDS).
+export async function embedReserve(env, texts) {
+  const tok = texts.reduce((a, t) => a + tokensOf(t), 0), { steps } = await stepsOf(env, "embed_files");
+  const self = steps.some((st) => st.source === "SELF") ? selfCallReserveNano(texts) : 0;
+  return Math.ceil((Math.ceil(tok * 1.5 * await embedNano(env)) + self) * MARKUP) + 1000;
+}
+async function indexChunks(P, job, md, chunks, meta, { charge = true } = {}) {
   const vecs = [];
   for (let i = 0; i < chunks.length; i += EMBED_BATCH) {
     const texts = chunks.slice(i, i + EMBED_BATCH).map(([s, e]) => md.slice(s, e).slice(0, 6000));
-    const tok = texts.reduce((a, t) => a + tokensOf(t), 0), reserve = Math.ceil(tok * 1.5 * await embedNano(P.env) * MARKUP) + 1000;
-    const r = await P.paid(job, `emb:${i}`, reserve, async () => {
-      const x = await embedTexts(P.env, texts, { ...meta, kind: "sidecar-embed" }, job.emb_model);
+    const run = async () => {
+      const x = await embedTexts(P.env, texts, { ...meta, kind: charge ? "sidecar-embed" : "sidecar-reindex" }, job.emb_model);
       const q = quantize(x.vectors); let bin = ""; for (let k = 0; k < q.length; k += 0x8000) bin += String.fromCharCode.apply(null, new Uint8Array(q.buffer, q.byteOffset + k, Math.min(0x8000, q.length - k)));
       return { value: btoa(bin), nano: x.nano };
-    });
+    };
+    const r = charge ? await P.paid(job, `emb:${i}`, await embedReserve(P.env, texts), run) : await P.free(`emb:${i}`, run);
     if (r.refused) return r;
     const raw = atob(r.value), a = new Int8Array(raw.length); for (let k = 0; k < raw.length; k++) a[k] = (raw.charCodeAt(k) << 24) >> 24; vecs.push(a);
   }
@@ -625,6 +695,11 @@ const [dir,ext,op,pagesArg]=process.argv.slice(2),inp=path.join(dir,"in."+ext),r
   const line=String(r.stdout||"").split("\\n").filter((l)=>l.startsWith("{")).pop();
   if(!line)return out({error:"the OCR stopped without an answer (exit "+r.status+"): "+String(r.stderr||"").trim().split("\\n").pop().slice(0,200)});
   return out(JSON.parse(line));}
+ if(op==="embed"){
+  const r=require("child_process").spawnSync(T+"/venv-embed/bin/python",[T+"/embed.py",inp,T+"/embed-models",String(pagesArg||"1")],{encoding:"utf8",maxBuffer:256*1024*1024,env:{...process.env,HF_HUB_OFFLINE:"1",PYTHONDONTWRITEBYTECODE:"1",TOKENIZERS_PARALLELISM:"false"}});
+  const line=String(r.stdout||"").split("\\n").filter((l)=>l.startsWith("{")).pop();
+  if(!line)return out({error:"the embedding stopped without an answer (exit "+r.status+"): "+String(r.stderr||"").trim().split("\\n").pop().slice(0,200)});
+  return out(JSON.parse(line));}
  if(op==="md"){
   if(ext==="pdf"){const pi=req("@firecrawl/pdf-inspector");const r=pi.extractPagesMarkdown(fs.readFileSync(inp));
    const pages=(r.pages||[]).map((p)=>({page:(p.page??0)+1,md:String(p.markdown||""),ocr:!!p.needsOcr}));
@@ -660,27 +735,31 @@ async function prepExecOutput(ctx, command, options, deadline) {
     ]);
   } finally { clearTimeout(timer); }
 }
-export async function prepJobOn(dobj, { r2key, ext, op, pages = [], snapshot, template, idle }) {
-  if (!/^t\/[^/]+\/files\//.test(String(r2key)) || !/^[a-z0-9]{1,8}$/.test(String(ext)) || !["md", "ocr"].includes(op)) return { error: "bad job" };
+// Text embedding with a self-hosted model (selfhost-models.js): the texts come in the call, not from R2, and the vectors go back in the answer.
+export const embedInputOk = (texts) => Array.isArray(texts) && texts.length >= 1 && texts.length <= EMBED_JOB_TEXTS && texts.every((t) => typeof t === "string") && texts.reduce((n, t) => n + t.length, 0) <= EMBED_JOB_CHARS + 6000 * 2;
+export async function prepJobOn(dobj, { r2key, ext, op, pages = [], snapshot, template, idle, texts, threads }) {
+  const embed = op === "embed";
+  if (embed ? !embedInputOk(texts) || ext !== "json" : !/^t\/[^/]+\/files\//.test(String(r2key)) || !/^[a-z0-9]{1,8}$/.test(String(ext)) || !["md", "ocr"].includes(op)) return { error: "bad job" };
+  if (embed) { template = "embed"; pages = [Math.min(4, Math.max(1, Math.floor(Number(threads)) || 1))]; }
   const policy = prepIdlePolicy(dobj, idle); let stoppedNow = false;
   dobj._prepPending = (dobj._prepPending || 0) + 1; if (dobj.prepStart) dobj.put("prep_idle", policy);
   const withTiming = !!dobj.prepStart || dobj.env?.TEST_MODE === "1";   // Live results keep their old shape
   const run = async () => {
     const t0 = now(), ctx = dobj.ctx; const startup = await prepUp(dobj, { snapshot, ...(template ? { template } : {}) }); const readyAt = now(), startupMs = readyAt - t0; const deadline = t0 + JOB_MAX_MS - 30e3; let copyMs = 0, setupMs = 0, processMs = 0, setupDoneAt = 0, processDoneAt = 0; dobj.put("prep_last", String(now()));
-    const src = await dobj.env.WS.get(r2key); if (!src) return { error: "the file is missing from storage", ms: now() - t0 };
+    const src = embed ? { body: new Blob([JSON.stringify({ texts })]).stream() } : await dobj.env.WS.get(r2key); if (!src) return { error: "the file is missing from storage", ms: now() - t0 };
     const dir = `/tmp/1hc-prep-${crypto.randomUUID()}`;
     try {
       let phase = now();
       const w = await prepExecOutput(ctx, ["bash", "-c", 'mkdir -p "$1" && cat > "$1/in.$2"', "_", dir, ext], { stdin: src.body, stderr: "combined" }, deadline);
       if (w.exitCode !== 0) return { error: "couldn't copy the file in", ms: now() - t0 };
       copyMs = now() - phase; phase = now();
-      const inst = await prepExecOutput(ctx, ["bash", "-c", PREP_SETUP, "_", op], { stderr: "combined" }, deadline);
+      const inst = await prepExecOutput(ctx, ["bash", "-c", embed ? embedSetup() : PREP_SETUP, "_", op], { stderr: "combined" }, deadline);
       setupDoneAt = now(); setupMs = setupDoneAt - phase; phase = setupDoneAt;
       if (inst.exitCode !== 0) return { error: `couldn't set up the tools (${dec.decode(inst.stdout).slice(-160)})`, ms: now() - t0 };
       const o = await prepExecOutput(ctx, ["node", "-e", PREP_JS, "_", dir, ext, op, (pages || []).map(Number).filter((n) => n > 0).join(",")], { stderr: "combined" }, deadline);
       processDoneAt = now(); processMs = processDoneAt - phase;
       const line = dec.decode(o.stdout).split("\n").find((l) => l.startsWith(PREP_MARK));
-      let r; try { r = JSON.parse(line.slice(PREP_MARK.length)); } catch { r = { error: `the job stopped without an answer (exit ${o.exitCode})` }; }
+      let r; try { r = JSON.parse(line.slice(PREP_MARK.length)); } catch { r = { error: `the job stopped without an answer (exit ${o.exitCode})`, output_tail: dec.decode(o.stdout).slice(-600) }; }
       // timing is additive: epoch ms taken inside the object. stopped_at is filled in when this job's policy stops the container before returning.
       return { ...r, ms: now() - t0, ...(startup ? { startup, startup_ms: startupMs, copy_ms: copyMs, setup_ms: setupMs, process_ms: processMs } : {}), ...(withTiming ? { idle: policy, timing: { start_at: startup?.start_called_at || t0, ready_at: startup?.ready_at || readyAt, setup_done_at: setupDoneAt, process_done_at: processDoneAt, stopped_at: null } } : {}) };
     } catch (error) {
@@ -837,6 +916,7 @@ export function residentSidecar() { return {
       String(fileId), srcKey, status, r?.v ?? null, r?.kind ?? null, r?.key ?? null, r?.vec_key ?? null, r?.bytes ?? null, r?.tokens ?? null, r?.card ? JSON.stringify(r.card) : null,
       r?.outline ? JSON.stringify(r.outline) : null, r?.notes?.length ? JSON.stringify(r.notes) : null, r?.error ?? null, r?.cost_nano ?? null, r?.ms ?? null, row?.queued_at ?? now(), now());
     // HS_WRITERS (hindsight-writers.js): the Markdown is ready, so the file goes into the channel's bank as file:<id> (once per version of its bytes).
+    if (r?.vec_key) this.ctx?.waitUntil?.(this.sidecarReindexCheck().catch((err) => console.log("reindex check", String(err?.message || err).slice(0, 120))));   // a new index was made here: any older one from another model is rebuilt too
     if (status === "ready" || status === "text") { const p = this.hsFileSync?.(fileId); if (p) this.ctx?.waitUntil?.(p.catch((e) => console.log("file memory", String(e?.message || e).slice(0, 120)))); }
     return { ok: true };
   },
@@ -1007,14 +1087,46 @@ export function residentSidecar() { return {
     if (tokensOf(d.md) <= INLINE_TOKENS) return `${head}, the whole text:\n${untrustedFile(f.name, d.md)}`;
     return `${head}. Read a section with "section": N, or search with "query".\n${untrustedFile(f.name, `${card ? cardText(card) : r.status === "text" ? "(Its summary card is still being made.)" : cardText(card)}\n\nOutline:\n${outlineLines(secs, 80).join("\n")}`)}`;
   },
+  // After a change of the saved search index model to one that isn't equivalent (embedding_equivalents), this channel's files that have vectors from another
+  // model get their vectors rebuilt from their saved text, one FilePrep job per file (runReindex). Nothing runs at the moment of the change and no account is
+  // swept: the channel does it the next time it needs it, which is (1) a search that finds a file whose vectors can't be used (sidecarVecRank), and (2) a new
+  // index made here (sidecarDone with a vec_key). Meanwhile the file is searched by keywords alone, as before. The check is cheap and repeats only when the
+  // saved model changed, or ten minutes after a check that found files to rebuild (a job that gave up is asked again then). Safe to call any time.
+  async sidecarReindexCheck() {
+    if (!hasTable(this.sql) || !this.scOn() || !this.env.FILE_PREP) return { skipped: "off" };
+    const { env: e, steps } = await stepsOf(this.env, "embed_files"), model = steps[0]?.model;
+    if (!model) return { skipped: "no model" };
+    const mark = jp(this.get("sc_reidx"));
+    if (mark && mark.model === model && (!mark.queued || now() - mark.at < REINDEX_RECHECK_MS)) return { skipped: "checked" };
+    const rows = this.sql.exec("SELECT s.file_id, s.src_key, s.vec_key, f.name, f.mime, f.bytes, f.view_key FROM file_sidecars s JOIN files f ON f.id=s.file_id AND f.r2key=s.src_key AND f.deleted=0 WHERE s.vec_key IS NOT NULL AND s.status='ready' LIMIT 1000").toArray();
+    const stale = [];
+    for (const r of rows) { const h = await this.env.WS.head(r.vec_key).catch(() => null); const had = h?.customMetadata?.model || null; if (h && had && !sameIndexModel(e.MODEL_SETTINGS, had, model)) stale.push(r); }
+    const tenant = this.get("tenant"), channel = this.get("channel"); let started = 0;
+    for (const r of stale) {
+      const job = { v: SC_V, tenant, channel, file_id: String(r.file_id), r2key: r.src_key, name: r.name, mime: r.mime, bytes: Number(r.bytes) || 0, view_key: r.view_key || null, model };
+      try { await this.env.FILE_PREP.get(this.env.FILE_PREP.idFromName(reindexName(r.src_key, model))).reindexStart(job); started++; } catch (err) { console.log("reindex start", r.file_id, String(err?.message || err).slice(0, 120)); }
+    }
+    this.put("sc_reidx", JSON.stringify({ model, at: now(), queued: started > 0 }));
+    return { model, indexed: rows.length, stale: stale.length, started };
+  },
+  // FilePrep's report of a rebuild. Kept only if the file still has exactly those bytes; otherwise what it wrote is deleted, like sidecarDone.
+  async sidecarReindexed(fileId, srcKey, r) {
+    const f = this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(fileId)).toArray()[0], row = this.scRow(fileId);
+    if (!f || f.r2key !== srcKey || !row || row.src_key !== srcKey) {
+      if (r?.status === "reindexed") { try { await sidecarPurge(this.env, srcKey); } catch (e) { console.log("stale reindex", e.message); } }
+      return { stale: true };
+    }
+    if (r?.status === "reindexed") this.sql.exec("UPDATE file_sidecars SET vec_key=?, bytes=?, at=? WHERE file_id=? AND src_key=?", r.vec_key, r.bytes ?? row.bytes, now(), String(fileId), srcKey);
+    return { ok: true };
+  },
   // The query's vector against the file's chunk vectors, with the model the file was indexed with. Paid like any step (a few tokens).
   async sidecarVecRank(vecKey, q) {
     const o = await this.env.WS.get(vecKey); if (!o) return [];
     const dims = Number(o.customMetadata?.dims) || EMBED_DIMS, model = o.customMetadata?.model || null;
     const packed = new Int8Array(await o.arrayBuffer());
-    const rid = `fq:${crypto.randomUUID()}`, L = this.ledger(), reserve = Math.ceil((tokensOf(q) + 16) * await embedNano(this.env) * MARKUP) + 100;
+    const rid = `fq:${crypto.randomUUID()}`, L = this.ledger(), reserve = await embedReserve(this.env, [q]);
     const held = await L.reserve(rid, reserve).catch(() => ({ ok: false })); if (!held?.ok) return [];
-    let x; try { x = await embedTexts(this.env, [q], { tenant: this.get("tenant"), channel: this.get("channel"), kind: "sidecar-query" }, model); } catch (e) { await L.settle(rid, 0).catch(() => {}); if (e?.modelChanged) return []; throw e; }
+    let x; try { x = await embedTexts(this.env, [q], { tenant: this.get("tenant"), channel: this.get("channel"), kind: "sidecar-query" }, model); } catch (e) { await L.settle(rid, 0).catch(() => {}); if (e?.modelChanged) { this.ctx?.waitUntil?.(this.sidecarReindexCheck().catch((err) => console.log("reindex check", String(err?.message || err).slice(0, 120)))); return []; } throw e; }
     await L.settle(rid, Math.min(reserve, x.nano)).catch(() => {});
     return x.vectors[0] ? vectorRank(x.vectors[0], packed, dims) : [];
   },
