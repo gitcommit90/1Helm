@@ -41,7 +41,7 @@ const store = () => { const m = new Map(); return { get: (k) => m.get(k), put: (
   assert.equal(hsUse({ HS_USE: "off", HS_FOUNDATIONS: "on" }), false); assert.equal(hsUse({}), false); assert.equal(hsUse(undefined), false);
   assert.equal(armOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "dev" }, "B"), "B");
   assert.equal(armOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "dev" }, "C"), "B2", "arm C was removed, so its setting is unknown");
-  assert.equal(armOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "live" }, "B"), "B2", "the test setting is dev only, so Live always runs the default B2");
+  assert.equal(armOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "live" }, "B"), "B", "armOf does not look at the environment; only the dev ops route can store a setting");
   assert.equal(armOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "live" }, ""), "B2"); assert.equal(armOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "dev" }, ""), "B2", "B2 is the default for every channel");
   assert.equal(armOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "dev" }, "A"), "A", "dev can override to A");
   assert.equal(armOf({ HS_USE: "off", HS_FOUNDATIONS: "on", ENV_NAME: "dev" }, "B"), "A", "flag off");

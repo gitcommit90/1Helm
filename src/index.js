@@ -180,7 +180,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "260";
+const APP_V = "261";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -1118,7 +1118,7 @@ export default {
           const account = eeEnabled(env)
             ? { plan: PLANS[planKey(t.plan)].name, plan_key: planKey(t.plan), price: PLANS[planKey(t.plan)].price, ...(t.plan === BYOK_PLAN ? { byok: true } : {}), ...(storage ? { storage } : {}), balance: usd(ls.balance_nano), usagePercent: month ? month.pct : Math.min(100, Math.round(used / granted * 100)), ...(month ? { month } : {}), ...(notice ? { notice } : {}), spend_pauses: gi?.spend_pauses === true, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t) }
             : { plan: "Self-hosted", plan_key: "byok", price: 0, byok: true, ...(publicStorage ? { storage: publicStorage } : {}), today: ls.today, spend_pauses: gi?.spend_pauses !== false, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t) };
-          return json({ tenant: t.slug, features: eeFeatures(env), access, flags: { notebook_pages: env.ENV_NAME === "dev" }, contacts, contactDups, person: { name: t.first_name || "", email: user.email }, helper: { name: helperName(t), avatar: Number(t.helper_avatar || 8) }, account, ...(light ? {} : { interview: interviewBoot(iv) }), ...(look ? { look: true } : {}), channels: out, pomodoro_global: await A.pomoGlobalView().catch(() => null) });   // look: a dev "view as" (the app never asks it for location or the mic)
+          return json({ tenant: t.slug, features: eeFeatures(env), access, flags: { notebook_pages: hsOn(env) }, contacts, contactDups, person: { name: t.first_name || "", email: user.email }, helper: { name: helperName(t), avatar: Number(t.helper_avatar || 8) }, account, ...(light ? {} : { interview: interviewBoot(iv) }), ...(look ? { look: true } : {}), channels: out, pomodoro_global: await A.pomoGlobalView().catch(() => null) });   // look: a dev "view as" (the app never asks it for location or the mic)
         }
         // Share links and published pages (src/share.js): the owner's list, create / revoke, publish / unpublish, offer taps.
         if (sub === "/api/share" || sub.startsWith("/api/share/")) return await shareApi(req, env, t, sub, access);

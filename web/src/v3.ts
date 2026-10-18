@@ -3950,11 +3950,10 @@ document.addEventListener("pointerup", swEnd); document.addEventListener("pointe
 // ---------- Notebook as pages (Memory Overhaul phase 6, DESIGN.md section 8) ----------
 // Design A, "Encyclopedia": a page list on the left, one article in the middle, the portrait and facts box on the right, and one Edit button
 // for the whole page. Live, the pages come from GET /notebook/<channel>/pages (a Hindsight knowledge page per topic, read by its ## headings)
-// and the screen is on only when the server sends boot.flags.notebook_pages === true (the old Notebook is the rollback). If the pages can't
-// be read, the old Notebook shows instead. In the design sandbox (LIVE unset) the same screen runs on demo data at #/main/notebook-a.
+// and the screen is on for a signed-in person unless the server sends boot.flags.notebook_pages === false (the public Worker does that when no Hindsight
+// service is configured). If the pages can't be read, the plain note lists show instead. In the design sandbox (LIVE unset) the same screen runs on demo data at #/main/notebook-a.
 // The Bee review reuses the real handlers (data-bfok, data-spkok, ...) in one queue: a slim row above the article, and on a phone a pill.
-const nbPagesFlag = () => !!LIVE && BOOT?.flags?.notebook_pages === true;
-const nbVar = (): "" | "a" => LIVE ? (nbPagesFlag() ? "a" : "") : (/^#\/[^/]+\/notebook-a[13]?(?:\/|$)/.test(location.hash) ? "a" : "");
+const nbVar = (): "" | "a" => LIVE ? (BOOT?.flags?.notebook_pages === false ? "" : "a") : (/^#\/[^/]+\/notebook-a[13]?(?:\/|$)/.test(location.hash) ? "a" : "");
 const wkPhone = () => matchMedia("(max-width:767px)").matches;
 window.matchMedia("(max-width:767px)").addEventListener("change", () => { if (isNb() && nbVar()) nbRefresh(); });
 window.addEventListener("hashchange", () => { if (!isNb()) NBW.sheet = false; });   // leaving the Notebook closes the Bee tray, so it is the pill on the way back

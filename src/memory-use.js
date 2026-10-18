@@ -52,10 +52,10 @@ export const ARMS = ["A", "B", "B2"];
 export const ARM_DEADLINE_MS = 1500;     // the Captain's limit: at most this much added to a turn at p95. An arm that is not ready by then is left out of the turn.
 // HS_USE_DEADLINE_MS (dev tuning) replaces it, between 100 and 5000.
 export const armDeadline = (env) => { const n = Number(env?.HS_USE_DEADLINE_MS); return Number.isFinite(n) && n >= 100 && n <= 5000 ? n : ARM_DEADLINE_MS; };
-// B2 is the default arm of every channel while HS_USE is on (Captain decision, 2026-10-14). The dev only test setting (Resident kv "mem_arm", written by
-// POST /_ops/mem-arm) overrides it per channel, so a test can still run A or B. With the flag off nothing runs, which is arm A.
+// B2 is the default arm of every channel while HS_USE is on (Captain decision, 2026-10-14). The test setting (Resident kv "mem_arm", only the dev ops route
+// POST /_ops/mem-arm writes it, and the public edition has no route that writes it, so no channel has one) overrides it per channel, so a test can still run A or B. With the flag off nothing runs, which is arm A.
 export const DEFAULT_ARM = "B2";
-export const armOf = (env, stored) => (!hsUse(env) ? "A" : env?.ENV_NAME === "dev" && ARMS.includes(stored) ? stored : DEFAULT_ARM);
+export const armOf = (env, stored) => (!hsUse(env) ? "A" : ARMS.includes(stored) ? stored : DEFAULT_ARM);
 
 // ---- arm B: automatic recall ----
 // The latest message alone, as the person wrote it.

@@ -1,3 +1,19 @@
+# Source update: 2026-10-18 (Notebook pages and memory settings)
+
+## Notebook pages screen and the memory test arm
+
+The Worker source is reconciled from `80e50ee4516097b07e4b67c8ba89c0c25d805250` to
+`ecd084bb7f5b4359aef666bc7d90bdd1fd1cd607`. The web source is reconciled from
+`4203134316accb0c5e4b39afc6044186082b4c87` to
+`46fb5c0c258d7591cc08e9a8397546478b7338d3`. The public base is
+`07f115f4d67c68ebb2fa0b8d637a2537053b977a`.
+
+The Notebook pages screen is now shown for every signed-in person, and when its pages cannot be read the web app shows the plain note lists. In the public source the boot answer sets `flags.notebook_pages` to whether the Hindsight service is configured (it was set only when `ENV_NAME` was `dev`), and the web app turns the pages screen off only when that flag is `false`. A deployment without Hindsight therefore keeps the plain note lists, and a deployment with Hindsight shows the pages. `test/notebook-pages-flag.test.mjs` covers both sides.
+
+The memory test arm (`armOf` in `src/memory-use.js`) no longer checks the environment name. Only a development ops route stores a test arm, and the public source has no route that writes one, so every channel runs the default arm. The memory variables `HS_FOUNDATIONS`, `HS_WRITERS`, `HS_USE`, `HS_WALLS` and `HS_ENVELOPE` stay off unless set to `on`, and none is in the example configuration. `APP_V` is 261 and `app.js` is rebuilt from public web source.
+
+Public sign-in, own-key access, EE gates, storage limits, backup, native clients, schema and the example configuration are unchanged. Private deployment configuration, the Live OCR Worker, the configuration parity test, coordinator instructions and the affiliate readiness tooling stay excluded. Local checks do not establish live provider or device behavior.
+
 # Source update: 2026-10-17 (models and limits)
 
 ## Model calls, saved limits and the Models console
@@ -99,7 +115,7 @@ Changes:
 
 - Hindsight is the only memory. The old local ledger (its rows, embeddings, ranked recall, supersede pass and segment summaries), the upkeep, people and nightly reflection jobs, the Contacts block in the prompt and the forget tool and skill are removed, and a request to forget something is an ordinary turn. When memory is on and the Hindsight service does not answer, the helper says that memory is unavailable and does not guess. An install that never sets `MEMORY` (the example configuration does not) keeps memory off and sees no change. An install that set `MEMORY` to `on` without a Hindsight service binding now has no recall, and the old ledger tables stay in storage and are not read.
 - New memory features are off unless their variable is `on`, and none is in the example configuration. `HS_FOUNDATIONS` gives each bank a template (missions and mental models), cancels queued work before a delete and runs a daily bank health check. `HS_WRITERS` retains every kind of channel content into its bank and can rebuild a bank from stored source. `HS_USE` puts a profile and automatic recall into a turn. `HS_WALLS` lets the person choose whether General reads other channels without asking. `HS_ENVELOPE` adds time, place, people and source to each retained item and reads photo and video capture metadata. All of them need the Hindsight binding, and the later ones need the earlier ones.
-- Notebook pages are written from a channel's own Hindsight mental models, with a profile photo, section editing and a facts box. The web app shows them only when the boot answer sets `flags.notebook_pages`, which the Worker does only when `ENV_NAME` is `dev`.
+- Notebook pages are written from a channel's own Hindsight mental models, with a profile photo, section editing and a facts box. The web app shows them unless the boot answer sets `flags.notebook_pages` to `false`, which the Worker does when no Hindsight service is configured (an earlier version set the flag only when `ENV_NAME` was `dev`).
 - Audio inside files (mp3, Opus, AAC, FLAC, Vorbis and ALAC) can be converted to 16 kHz mono WAV in the Worker when `AUDIO_CONVERT` is `on`. The decoders are Symphonia (MPL-2.0) compiled to WebAssembly from `tools/symphonia-wasm` and opus-decoder (MIT). Licenses and credits are in `THIRD-PARTY-NOTICES.md` and `src/vendor/audio/README.md`.
 - Scanned pages in the prep container job are read by Indra OCR, with pinned wheels and model files that are checked by hash. The hosted OCR Worker and the container image layer that adds screenshot text recognition are not part of the public source, so a screenshot read reports no text unless you install the OCR packages.
 - A file edited by the helper now updates the same Library file, keeps the uploaded original and never creates a second copy with a number in its name. The helper's writing rules follow a plain writing style prompt.
