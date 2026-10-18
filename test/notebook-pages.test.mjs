@@ -1,7 +1,7 @@
 // node --import ./test/stubs/register.mjs test/notebook-pages.test.mjs
 // The Notebook as pages (Memory Overhaul phase 6, src/notebook-pages.js and notebook-pages-do.js), on the REAL Worker routes and REAL Durable
 // Object classes over node:sqlite, with a fake Hindsight that keeps mental models, retained documents, operations and consolidation state.
-//  1. Template: the page to model map, no duplicated model, triggers (refresh after consolidation, interval of at least 1,800), version after p9-1,
+//  1. Template: the page to model map, no duplicated model, triggers (a cron twice a day), version after p9-1,
 //     and what a bank import does with the new template (only the new models are created and refreshed).
 //  2. Routes: the tree, the person and facts (General only), a page not built yet, a built page with sources, the notes page, bad ids.
 //  3. The edit round trip: the edit is a Notebook note retained as note:<id> with a correction context, the page refresh waits for the retain and
@@ -39,7 +39,9 @@ const HINDSIGHT = { fetch: async (u, init = {}) => {
       b.ops.push({ kind: "refresh_mental_model", model: mm.id }); }
     return J({ mental_models_created: created, mental_models_updated: updated, operation_ids: [...created, ...updated].map((i) => `op-${i}`) }); }
   if (rest === "/memories" && m === "POST") { for (const it of body.items) b.docs.set(it.document_id, { content: it.content, context: it.context || "", tags: it.tags || [], metadata: it.metadata || {} }); b.pendingConsolidation++; b.ops.push({ kind: "retain", pending: true }); return J({ operation_id: body.operation_id }); }
-  if (rest === "/mental-models" && m === "GET") return J({ items: [...b.models.values()].map(({ id, name, last_refreshed_at }) => ({ id, name, last_refreshed_at, last_refresh_failed_at: null, is_stale: false })) });
+  if (rest === "/mental-models" && m === "GET") return J({ items: [...b.models.values()].map(({ id, name, last_refreshed_at, trigger }) => ({ id, name, last_refreshed_at, last_refresh_failed_at: null, is_stale: false, ...(url.searchParams.get("detail") ? { trigger } : {}) })) });
+  // PATCH changes the trigger only (no refresh operation), merging what is sent over the stored trigger; unset defaults (false, null) are dropped like Hindsight's defaults
+  if ((x = rest.match(/^\/mental-models\/([^/]+)$/)) && m === "PATCH") { const cur = b.models.get(x[1]); if (!cur) return J({ detail: "no model" }, 404); LOG.push(`patch ${name} ${x[1]}`); cur.trigger = Object.fromEntries(Object.entries({ ...cur.trigger, ...body.trigger }).filter(([, v]) => v !== false && v !== null)); return J({ id: cur.id }); }
   if ((x = rest.match(/^\/mental-models\/([^/]+)$/)) && m === "GET") { const mm = b.models.get(x[1]); if (!mm) return J({ detail: "no model" }, 404); return J({ ...mm, reflect_response: mm.based_on ? { text: mm.content, based_on: mm.based_on, mental_models: [] } : null }); }
   if ((x = rest.match(/^\/mental-models\/([^/]+)\/refresh$/)) && m === "POST") { if (!b.models.has(x[1])) return J({ detail: "no model" }, 404); refresh(b, x[1], name); return J({ operation_id: "r" }); }
   if (rest.startsWith("/operations") && m === "GET") return J({ operations: b.ops.filter((o) => o.pending && url.searchParams.get("status") === "pending").map((o, i) => ({ id: `o${i}`, task_type: o.kind, status: "pending" })) });
@@ -112,8 +114,8 @@ const BANK = (slug) => R1().hsBankId.call({ env, get: (k) => ({ tenant: "t1", ch
     const t = fillTemplate(kind, { first: "Sam", helper: "Skipper", channel: "trip", purpose: "x" }), ids = t.mental_models.map((m) => m.id);
     assert.equal(new Set(ids).size, ids.length, "no model twice");
     for (const p of PAGES[kind]) assert.ok(ids.includes(p.model), `${kind} page ${p.id} maps to model ${p.model}, which the template holds`);
-    for (const m of t.mental_models) { assert.equal(m.trigger.refresh_after_consolidation, true); assert.ok(m.trigger.min_refresh_interval_seconds >= 1800 || t.bank.mental_model_min_refresh_interval_seconds >= 1800, `${m.id} refreshes at most every 1,800 seconds`); }
-    assert.equal(t.bank.mental_model_min_refresh_interval_seconds, 1800, `${kind}: the bank setting is 1,800 seconds`); for (const m of t.mental_models) if (m.trigger.min_refresh_interval_seconds != null) assert.equal(m.trigger.min_refresh_interval_seconds, 1800, `${m.id}: 1,800 seconds`);
+    for (const m of t.mental_models) { assert.equal(m.trigger.refresh_cron, "0 10,22 * * *", `${m.id} refreshes twice a day`); assert.ok(!("refresh_after_consolidation" in m.trigger) && !("min_refresh_interval_seconds" in m.trigger), `${m.id}: no refresh after consolidation, no minimum interval`); }
+    assert.ok(!("mental_model_min_refresh_interval_seconds" in t.bank), `${kind}: no bank minimum refresh interval`);
     assert.ok(t.directives.some((d) => /correction/i.test(d.content)), "a directive makes the person's corrections win");
     assert.equal(templateModelCount(kind), ids.length);
   }

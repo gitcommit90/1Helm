@@ -1,7 +1,7 @@
 // The "<helper> is using the browser" card (and the "Your turn in the browser" hand-off card) is drawn live from a
 // browser event. Nothing in the saved task says it, so a reload never shows it. Once nothing is running for the task,
 // the card must go away the same way, even when the end event never reached this tab.
-type Cardish = { t?: string; text?: string };
+type Cardish = { t?: string; text?: string; stored?: boolean };
 type Msgish = { cards?: Cardish[] };
 type Taskish = { streaming?: boolean; state?: string; srv?: { waiting?: string; state?: string } | null; messages: Msgish[] };
 
@@ -18,7 +18,7 @@ export function settleBrowserCards(s: Taskish): boolean {
   let changed = false;
   for (const m of s.messages) {
     if (!m.cards?.some(c => c.t === "browser")) continue;
-    const kept = m.cards.filter(c => c.t !== "browser" || (keepHandoff && !!c.text));
+    const kept = m.cards.filter(c => c.t !== "browser" || (!!c.text && (keepHandoff || !!c.stored)));   // a handoff the server still holds stays, even when an approval is what the task reports first
     if (kept.length !== m.cards.length) { m.cards = kept; changed = true; }
   }
   return changed;

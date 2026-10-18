@@ -200,6 +200,7 @@ export function saveSessionCategory(R, session, category) { try { if (session &&
 export function setTurnRoute(R, tc, route) { R._route = route; if (tc) tc.route = route; }
 
 // Resident hook (resident.js runTurnInner, two mode): decide, bill the decider call like any model call, set the route.
+const BROWSER_BACK_RE = /^I'm done in the browser\b/i;
 // Returns the decision for turn stats; never throws (any failure → the task's category, else general).
 export async function routeTwoTurn(R, tc, { kind, text, hist, stats, audioContext = tc }) {
   let d;
@@ -211,6 +212,13 @@ export async function routeTwoTurn(R, tc, { kind, text, hist, stats, audioContex
   catch (e) { d = { route: policyRoute(env.MODEL_SETTINGS, dynamicRoutingOn(env) ? DEFAULT_CATEGORY : prevCategory || DEFAULT_CATEGORY, level, "decider:unsure", { dynamic: dynamicRoutingOn(env) }), jev: { error: String(e?.message || e).slice(0, 160), verdict: "unsure" } }; }
   const nano = Math.ceil((d.jev?.cost || 0) * 1e9 * JEV_MARKUP);
   if (nano > 0) { try { const rid = `rtr:${crypto.randomUUID()}`; if ((await R.ledger().reserve(rid, nano)).ok) { await R.ledger().settle(rid, nano); if (stats) stats.charge += nano; } } catch (e) { console.log("decider charge", e.message); } }
+  // The hand back button in the live browser sends a fixed message. When a worker is paused on the browser, that message is for that worker.
+  try {
+    if (dynamicRoutingOn(env) && d.route && !d.route.steer && BROWSER_BACK_RE.test(String(text || "").trim())) {
+      const w = R.sql.exec("SELECT id FROM helpers WHERE session=? AND dynamic_routing=1 AND status='waiting_input' AND input_kind IN ('browser','purchase_wait') ORDER BY id DESC LIMIT 1", tc?.session || "").toArray()[0];
+      if (w) d.route.steer = w.id;
+    }
+  } catch {}
   setTurnRoute(R, tc, d.route);
   saveSessionCategory(R, tc?.session, d.route.category);
   if (stats) stats.route = { label: d.route.label, category: d.route.category, level, p: d.jev?.p ?? null, unmet: d.jev?.unmet ?? null, ms: d.jev?.ms ?? null, error: d.jev?.error || null, ...(dynamicRoutingOn(env) ? { answers: d.jev?.answers || null, steer: d.route.steer || null, categoryTitle: d.route.categoryTitle, settingsRevision: env.MODEL_SETTINGS_REVISION || 0, primaryChain: d.route.chain, workerChain: d.route.workerChain } : {}) };

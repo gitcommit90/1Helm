@@ -1311,7 +1311,7 @@ function turnProgress(s: Session, ch: Channel) {
   let primary = "";
   if (primaryWorking(s)) primary = /writ|compos|respond/i.test(line) || m?.body.trim() ? "Writing the answer" : "Working";
   else if (s.state === "working" && Number(s.srv?.helpers) > 0) primary = "Subagent working";
-  return tkProgress(ch.slug, s.id, who(ch), primary);
+  return tkProgress(ch.slug, s.id, who(ch), primary, (s.srv?.pending_inputs || []).length > 0);
 }
 const MA_PARTS = new WeakMap<Msg, Map<string, string>>();
 function partHtml(text: string, ch: Channel, s: Session | undefined, owner: object, live: boolean, reply: string | undefined, pre = false, message?: Msg, part = "body") {
@@ -2882,6 +2882,7 @@ if (LIVE) planInit({ api, helper: slug => { const c = channels.find(x => x.slug 
   addSessions: addStartedSessions });
 // A turn that a restart cut off and that couldn't be picked up again (the server's turns row error "interrupted"): the honest version.
 const INTERRUPTED_MSG = "1Helm restarted while I was working on this, so I stopped before replying. Send it again and I'll pick it back up.";
+const HANDOFF_OPENED = new Set<string>();   // a worker handoff opens the viewer once per handoff, not on every reload
 async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
   s.loading = true;
   try {
@@ -2902,7 +2903,13 @@ async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
         note: t.kind === "livenote" ? "Live notes" : from ? (from.type === "followup" ? "Follow-up it scheduled" : from.type === "connect" ? from.title || "App connected" : from.type === "permission" ? from.title || "You allowed it" : from.type === "confirm" ? from.title || "You confirmed it" : `Done in the background${from.title ? `: ${from.title}` : ""}`) : t.kind === "followup" ? "Follow-up it scheduled" : t.kind === "workflow" ? "From a scheduled check" : undefined,
         cards: [...(lnr ? [{ t: "lnrefine", r: lnr, slug: ch.slug, sid: s.id }] : []), ...(t.images || []).map((x: any) => ({ t: "image", id: x.id, url: x.url, caption: x.caption })), ...(t.shared || []).map((f: any) => ({ t: "file", f })), ...(t.interviews || []).map((v: any) => ({ t: "interview", v })), ...shCards(t.offers)], ...(t.card ? { card: t.card } : {}), rid: t.id, ...(t.input_request ? { input_request: t.input_request } : {}) } as TkMsg);
     }
-    if (d.live && !s.streaming) {
+    // A routed worker's browser work, with no Primary turn running: the live view, or the Take control card when it handed the browser over.
+    // The server keeps both, so a reload or a reopened app shows them. The reply they sit under is the one that dispatched the worker.
+    const wb = d.worker_browser, lastAgent = msgs.findLast(m => m.role === "agent");
+    if (wb && lastAgent) { (lastAgent.cards ??= []).push({ t: "browser", url: wb.url, text: wb.text || undefined, stored: true } as any); const key = `${s.id}|${wb.url}|${wb.text}`; if (wb.text && !HANDOFF_OPENED.has(key)) { HANDOFF_OPENED.add(key); if (route().s === s) openPC(ch.slug, wb.url, wb.text); } }
+    // Primary's review of a paused worker says nothing unless it asks the person something: no reply, no live stream of it.
+    if (d.live?.silent && !s.streaming) { s.messages = msgs; s.state = "working"; s.rawLine = ""; }
+    else if (d.live && !s.streaming) {
       const lm = (d.live.card?.events || []).filter((e: any) => e.type === "msg");
       if (lm.length) lm.forEach((x: any, i: number) => msgs.push(userOf(x, { at: d.live.started }, i)));
       else if (d.live.user_text && !nativeResumeInput(d.live.card) && !internalHandoffInput(d.live.card)) msgs.push({ id: nextId++, role: "user", body: d.live.user_text, at: d.live.started, steps: [], turn: d.live.turn, reaction: d.live.reaction || undefined } as RxMsg);
@@ -3640,7 +3647,14 @@ if (LIVE) {
     if (t.closest("#pcback")) { pcKbSet(false); await api(`/ch/${PC.slug}/browser/release`, {}).catch(() => {}); document.querySelector(".pcnote")?.remove(); pcConnect("view");
       // Like Grok's "I'm done, continue": if the helper handed the browser over and is waiting, tell it to carry on.
       const ch = channels.find(c => c.slug === PC.slug), s = route().s;
-      if (PC.handoff && ch && s && s.status === "waiting" && !s.streaming) liveReply(ch, s, "I'm done in the browser. Please continue.");
+      // A worker's browser pause counts whether the card came from a live event or from the saved task (a reload, another device): the server holds
+      // the task on the browser, or the open task still shows the worker's Take control card. The message goes once; the card goes with it.
+      const paused = !!s && (s.srv?.waiting === "browser" || s.messages.some(m => (m.cards || []).some(c => c.t === "browser" && c.text)));
+      if (ch && s && !s.streaming && ((PC.handoff && s.status === "waiting") || paused)) {
+        for (const m of s.messages) if (m.cards?.some(c => c.t === "browser")) m.cards = m.cards.filter(c => c.t !== "browser");
+        if (s.srv?.waiting === "browser") s.srv = { ...s.srv, waiting: null };
+        liveReply(ch, s, "I'm done in the browser. Please continue.");
+      }
       PC.handoff = false; return; }
   });
   window.addEventListener("keydown", e => { if (e.key === "Escape" && document.getElementById("lb")) { e.stopImmediatePropagation(); document.getElementById("lb")!.remove(); } }, true);

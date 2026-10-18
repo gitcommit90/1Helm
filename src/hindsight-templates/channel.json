@@ -50,8 +50,7 @@
           "action": "redact"
         }
       ]
-    },
-    "mental_model_min_refresh_interval_seconds": 1800
+    }
   },
   "mental_models": [
     {
@@ -60,7 +59,7 @@
       "source_query": "What is #{channel} about, what has been decided, what is open, who is involved, and how does {first} want this work done?",
       "max_tokens": 1024,
       "trigger": {
-        "refresh_after_consolidation": true,
+        "refresh_cron": "0 10,22 * * *",
         "mode": "full"
       }
     },
@@ -70,7 +69,7 @@
       "source_query": "What commitments, follow-ups and deadlines is {first} tracking in #{channel} right now?",
       "max_tokens": 768,
       "trigger": {
-        "refresh_after_consolidation": true,
+        "refresh_cron": "0 10,22 * * *",
         "mode": "full"
       }
     },
@@ -80,9 +79,8 @@
       "source_query": "What has been decided in #{channel}, when, and why? Give each decision its own ## heading, newest first. Notes whose context says they are the person's correction to a page are the person's own words and override everything else about that subject.",
       "max_tokens": 1024,
       "trigger": {
-        "refresh_after_consolidation": true,
-        "mode": "full",
-        "min_refresh_interval_seconds": 1800
+        "refresh_cron": "0 10,22 * * *",
+        "mode": "full"
       }
     }
   ],

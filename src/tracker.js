@@ -363,7 +363,7 @@ export function eventView(sql, e) {
 export function helpersOfCard(sql, cardId) {
   try {
     return rows(sql, "SELECT * FROM helpers WHERE parent_card=? ORDER BY id", cardId).map((h) => ({ id: h.id, name: h.name, task: h.task, status: h.status, started: h.started, ended: h.ended ?? null,
-      steps: h.steps, charge_nano: h.charge_nano, parent_card: h.parent_card ?? null, card: h.card ?? null, result_card: h.result_card ?? null, stopped_by: h.stopped_by ?? null }));
+      steps: h.steps, charge_nano: h.charge_nano, parent_card: h.parent_card ?? null, card: h.card ?? null, result_card: h.result_card ?? null, stopped_by: h.stopped_by ?? null, input_kind: h.input_kind ?? null }));
   } catch { return []; }
 }
 export function cardView(sql, c) {

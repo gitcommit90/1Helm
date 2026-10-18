@@ -50,14 +50,14 @@ export const journalWasUpdated = (row, env) => !!(row?.code_v && row.code_v !== 
 const isMaybe = (t) => t === MAYBE_DONE || t === MAYBE_RAN || t === maybeDone(false) || t === maybeRan(false);
 export const WAITING_CONFIRM = (title, updated = true) => `WAITING FOR CONFIRM: ${whatHappened(updated)} while this waited for the person's tap on its confirm card (${title}). Nothing was done yet, and the card is still there for them. End your turn now with one short line, e.g. "It's ready: tap Confirm to send it." Don't ask again in your own words.`;
 // Helper-review calls 1Helm can check itself: the helper's saved row says whether the call took effect.
-export const HELPER_REVIEW = new Set(["approve_subagent", "message_subagent"]);
+export const HELPER_REVIEW = new Set(["approve_subagent", "message_subagent", "decide_worker_request"]);
 
 // ---- what kind of call (§3.3.2) ----
 const READ = new Set(["web_search", "search_web_vertical", "fetch_url", "read_file", "search_files", "calendar_events", "gmail_search", "gmail_read", "work_log", "bring_back", "recall_history",
   "read_skill", "read_doc", "load_tools", "read_context", "recall_memory", "ambient_query", "location_query", "list_channels", "list_tasks", "read_task", "browser_snapshot", "browser_screenshot", "browser_navigate", "list_workflows", "app_actions", "app_events", "find_app", "memory_explain", "check_purchase", "ping"]);
 const EXEC = new Set(["run_command", "write_file", "edit_file"]);
 const ONCE = new Set(["start_helper", "schedule_followup", "schedule_workflow"]);
-const LOCAL = new Set(["update_todos", "react", "set_workflow_gate", "save_run_notes", "ask_user", "request_input", "interview", "send_poll"]);   // own rows, or send_poll with its durable provider idempotency key
+const LOCAL = new Set(["update_todos", "react", "set_workflow_gate", "save_run_notes", "ask_user", "request_input", "request_saved_login", "request_purchase", "interview", "send_poll"]);   // own rows, or send_poll with its durable provider idempotency key
 export function toolClass(name, a = {}) {
   const n = String(name || "");
   if (n === "update_todos" && (a?.channel || a?.task)) return "write";   // a targeted replacement may already have reached another task
@@ -128,7 +128,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     if (saved?.turn === tc.turn && saved.session === tc.session && saved.call_id && saved.state) {
       const effect = this.sql.exec("SELECT tool,status FROM turn_effects WHERE card=? AND call_id=?", tc.turn, saved.call_id).toArray()[0];
       const h = saved.helper_id ? this.sql.exec("SELECT session,round FROM helpers WHERE id=?", saved.helper_id).toArray()[0] : null;
-      const action = ["start_helper", "message_subagent", "approve_subagent", "ask_user", "interview", "send_poll"].includes(saved.action) && effect?.tool === saved.action && effect.status === "done";
+      const action = ["start_helper", "message_subagent", "approve_subagent", "decide_worker_request", "ask_user", "interview", "send_poll"].includes(saved.action) && effect?.tool === saved.action && effect.status === "done";
       // A recorded send remains sent when its worker later advances rounds.
       const worker = !saved.helper_id || h?.session === tc.session && Number.isInteger(saved.round) && saved.round > 0 && Number(h.round) >= saved.round;
       const q = saved.question_id ? this.sql.exec("SELECT session,source_turn,helper_id,round FROM user_questions WHERE id=?", saved.question_id).toArray()[0] : null;
@@ -140,7 +140,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     // Old builds have no typed outcome. An exact spawn identity can safely
     // restore a start. Other possibly completed control writes must not run
     // again or be described as successful without an authoritative outcome.
-    const effects = this.sql.exec("SELECT call_id,tool FROM turn_effects WHERE card=? AND tool IN ('start_helper','message_subagent','approve_subagent')", tc.turn).toArray();
+    const effects = this.sql.exec("SELECT call_id,tool FROM turn_effects WHERE card=? AND tool IN ('start_helper','message_subagent','approve_subagent','decide_worker_request')", tc.turn).toArray();
     tc.delegationUncertain = false;
     for (const effect of effects) {
       if (tc.delegationChecked?.has(String(effect.call_id))) continue;   // resumeClose already checked this call (and ran it again if needed)
@@ -158,6 +158,12 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     if (name === "approve_subagent") {
       if (h.status !== "approved") return null;
       return { text: `Worker #${id} approved. The session is closed.`, state: { approved: id } };
+    }
+    if (name === "decide_worker_request") {
+      // A login decision is recorded in the request row; a purchase one only counts once its Link request exists.
+      const req = this.sql.exec("SELECT kind,status,purchase_id FROM helper_requests WHERE helper_id=? AND decided>=? ORDER BY id DESC LIMIT 1", id, eff.at).toArray()[0];
+      if (!req || req.status === "pending" || (req.kind === "purchase" && req.status === "approved" && !req.purchase_id)) return null;
+      return { text: `Your decision on worker #${id}'s ${req.kind} request is recorded as ${req.status}.`, state: { sent: true } };
     }
     const msg = this.sql.exec("SELECT id FROM helper_messages WHERE helper_id=? AND session=? AND queued_at>=? LIMIT 1", id, tc.session, eff.at).toArray()[0];
     if (!msg) return null;

@@ -50,8 +50,7 @@
           "action": "redact"
         }
       ]
-    },
-    "mental_model_min_refresh_interval_seconds": 1800
+    }
   },
   "mental_models": [
     {
@@ -60,7 +59,7 @@
       "source_query": "Who is {first}: their family and the important people in their life, where they live and work, their health and diet needs, their strong preferences and how they like {helper} to help.",
       "max_tokens": 1024,
       "trigger": {
-        "refresh_after_consolidation": true,
+        "refresh_cron": "0 10,22 * * *",
         "mode": "full"
       }
     },
@@ -70,7 +69,7 @@
       "source_query": "What are {first}'s daily and weekly routines, recurring events and schedule limits?",
       "max_tokens": 768,
       "trigger": {
-        "refresh_after_consolidation": true,
+        "refresh_cron": "0 10,22 * * *",
         "mode": "full"
       }
     },
@@ -80,7 +79,7 @@
       "source_query": "What commitments, follow-ups and deadlines is {first} tracking right now?",
       "max_tokens": 768,
       "trigger": {
-        "refresh_after_consolidation": true,
+        "refresh_cron": "0 10,22 * * *",
         "mode": "full"
       }
     },
@@ -90,9 +89,8 @@
       "source_query": "Who are the people in {first}'s life, and how does each one relate to {first}? Give each person their own ## heading, with what is known about them and when it last changed. Notes whose context says they are the person's correction to a page are the person's own words and override everything else about that subject.",
       "max_tokens": 1024,
       "trigger": {
-        "refresh_after_consolidation": true,
-        "mode": "full",
-        "min_refresh_interval_seconds": 1800
+        "refresh_cron": "0 10,22 * * *",
+        "mode": "full"
       }
     },
     {
@@ -101,9 +99,8 @@
       "source_query": "Which places matter to {first}, such as home, work, regular spots and trips, and what is known about each? Give each place its own ## heading. Notes whose context says they are the person's correction to a page are the person's own words and override everything else about that subject.",
       "max_tokens": 768,
       "trigger": {
-        "refresh_after_consolidation": true,
-        "mode": "full",
-        "min_refresh_interval_seconds": 1800
+        "refresh_cron": "0 10,22 * * *",
+        "mode": "full"
       }
     }
   ],

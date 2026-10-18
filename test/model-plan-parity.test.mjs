@@ -45,7 +45,7 @@ test("a model's transport follows its ID: an @cf/ ID is a Cloudflare step and ev
 test("a saved limit appears in the plan exactly as saved, an empty one stays empty, and results belong to web search only", () => {
   const s = seedSettings(); s.jobs.notes.max_output = 1234; s.jobs.web_search.results = 7;
   assert.equal(plan(s, "notes", { level: "zdr" }).steps[0].maxOutput, 1234);
-  for (const id of JOB_IDS) if (id !== "notes") for (const st of plan(s, id, { level: "zdr" }).steps) assert.equal(st.maxOutput, null, `${id}: empty stays empty`);
+  for (const id of JOB_IDS) if (id !== "notes" && !id.startsWith("hs_")) for (const st of plan(s, id, { level: "zdr" }).steps) assert.equal(st.maxOutput, null, `${id}: empty stays empty`);
   assert.equal(plan(s, "web_search", { level: "zdr" }).steps[0].results, 7);
   for (const id of JOB_IDS) if (id !== "web_search") for (const st of plan(s, id, { level: "zdr" }).steps) assert.equal("results" in st, false, id);
 });

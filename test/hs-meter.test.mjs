@@ -7,7 +7,7 @@ import { METER, hsRetainNano, hsRetainBatchNano, hsRecallNano, hsRawNano, HS_REC
 const COLD = 327_000, WARM = 126_000, CHAR = 65, WCHAR = 58, CONS = 292_000, REFRESH = 1_001_000;
 assert.equal(METER.hs_retain_char, CHAR); assert.equal(METER.hs_retain_call, COLD); assert.equal(METER.hs_retain_char_warm, WCHAR); assert.equal(METER.hs_retain_call_warm, WARM);
 assert.equal(METER.hs_consolidate_call, CONS); assert.equal(METER.hs_refresh_run, REFRESH); assert.equal(METER.hs_recall, 480_000);
-assert.equal(HS_CHUNK_CHARS, 3000); assert.equal(HS_REFRESH_WINDOW_MS, 1800e3);   // = the templates' minimum refresh interval (test/hs-refresh-window.test.mjs)
+assert.equal(HS_CHUNK_CHARS, 3000); assert.equal(HS_REFRESH_WINDOW_MS, 43200e3);   // = the 12 hours between the templates' two daily cron refreshes (test/hs-refresh-window.test.mjs)
 
 // nothing extracted, nothing charged (not even a refresh)
 for (const n of [0, -5, NaN, undefined, null, "x"]) assert.equal(hsRetainNano(n, 3), 0, `chars=${n}`);

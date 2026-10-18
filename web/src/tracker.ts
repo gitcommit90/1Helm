@@ -10,7 +10,7 @@ import { orb } from "./activity-orb";
 import { pauseOf } from "./spendguard";   // the working card's Stop
 import { nativeHandoffText } from "./native-approval-progress";
 export type HelperView = { id: number; name: string; task?: string; status: string; started: number; ended?: number | null; steps?: number; charge_nano?: number;
-  parent_card?: string | null; card?: string | null; result_card?: string | null; stopped_by?: string | null };
+  parent_card?: string | null; card?: string | null; result_card?: string | null; stopped_by?: string | null; input_kind?: string | null };
 export type CardView = { id: string; session?: string; kind: string; status: string; title: string; title_src?: string; result?: string | null; opened: number;
   started?: number | null; closed?: number | null; steps?: number; msgs?: number; from?: any[]; helpers?: HelperView[]; legacy?: boolean };
 export type EventView = { seq: number; type: "msg" | "step" | "handoff"; at: number; id?: string; cid?: string | null; text?: string; files?: any[]; via?: string;
@@ -298,17 +298,18 @@ const turnCardId = (k: string) => { const s = ss(k); return s.on ? (s.cards.find
 // never shows in a later turn's row; it stays reachable in the task's job list. With no turn card known, only a helper with no parent card counts.
 export const turnHelpers = (k: string) => { const id = turnCardId(k);
   return openHelpers(k).filter(h => id ? h.parent_card === id || h.card === id || h.result_card === id : !h.parent_card); };
-const progressStatus = (h: HelperView) => h.status === "waiting_input" ? "Needs your answer" : h.status === "awaiting_review" ? "Ready for review" : "Subagent working";
-export function tkProgress(slug: string, sid: any, name: string, primary: string) {
+// A paused worker says what the person can do on screen: the browser card, the Link approval, or a visible question. Otherwise Primary is deciding.
+export const progressStatus = (h: HelperView, question = false) => h.status === "waiting_input" ? (h.input_kind === "browser" ? "Waiting on you in the browser" : h.input_kind === "purchase_wait" ? "Waiting on you to approve in Link" : question ? "Needs your answer" : "Subagent working") : h.status === "awaiting_review" ? "Ready for review" : "Subagent working";
+export function tkProgress(slug: string, sid: any, name: string, primary: string, question = false) {
   const h = turnHelpers(key(slug, sid))[0];
   if (!h && !primary) return `<div class="turn-progress" role="status"></div>`;
-  const open = h ? ` data-tkhelper="${esc(String(h.id))}" tabindex="0" aria-label="${esc(h.name || "Subagent")}. ${progressStatus(h)}. Open task"` : "";
+  const open = h ? ` data-tkhelper="${esc(String(h.id))}" tabindex="0" aria-label="${esc(h.name || "Subagent")}. ${progressStatus(h, question)}. Open task"` : "";
   return `<div class="turn-progress" role="status"${open}><span class="tp-orb">${h ? helperMark(h, !!primary) : orb("working")}</span><span class="tp-text"><b>${esc((h ? h.name : "") || name)}</b><span>${esc(h ? progressStatus(h) : primary)}</span></span></div>`;
 }
 // A helper change repaints the chat once, so the row's text follows it. The repaint calls tkSync again with the same signature.
 const progressSig = new Map<string, string>();
 function paintProgress(k: string) {
-  const sig = turnHelpers(k).map(h => `${h.id}:${h.status}:${h.name}`).join("|");
+  const sig = turnHelpers(k).map(h => `${h.id}:${h.status}:${h.input_kind || ""}:${h.name}`).join("|");
   if ((progressSig.get(k) ?? "") === sig) return; progressSig.set(k, sig);
   const [slug, sid] = k.split("|"); if (D?.current() === k) D.repaint(slug, sid);
 }

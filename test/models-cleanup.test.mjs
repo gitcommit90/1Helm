@@ -9,7 +9,7 @@ import { seedFresh, SEED_FACTS } from "../src/ee/model-seed.js";
 import { JOBS, JOB_IDS, GROUPS, jobDef, entriesOf, effortBody } from "../src/ee/model-jobs.js";
 import { modelDashboard } from "../src/ee/model-dashboard.js";
 import { outsideModels } from "../src/ee/outside-models.js";
-import { HINDSIGHT_MODELS, HINDSIGHT_ENV_NAMES, compareHindsightEnv } from "../src/ee/hindsight-models.js";
+import { HINDSIGHT_LOCAL, HINDSIGHT_ENV_NAMES, compareHindsightEnv } from "../src/ee/hindsight-models.js";
 import { consoleState, consoleHtml } from "../src/ee/models-console.js";
 import { pageHtml } from "../app-assets/app-static/models-console-core.js";
 import { WAI_NANO_PER_MIN } from "../src/transcribe.js";
@@ -26,9 +26,9 @@ function database() {
     all: async () => ({ results: s.all(...a) }), run: async () => ({ meta: { changes: Number(s.run(...a).changes) } }) }; return o; } };
   return { sql, DB };
 }
-await test("the nine retired jobs are not in the registry, and the registry has no memory wording left", () => {
-  for (const id of RETIRED) assert.ok(!JOB_IDS.includes(id), id); assert.equal(JOBS.length, 19);
-  assert.ok(!JOBS.some((j) => /memory/i.test(`${j.label} ${j.description}`)), "no job describes memory work that no longer runs");
+await test("the nine retired jobs are not in the registry, and only the memory server's jobs mention memory", () => {
+  for (const id of RETIRED) assert.ok(!JOB_IDS.includes(id), id); assert.equal(JOBS.length, 24);
+  assert.deepEqual(JOBS.filter((j) => /memory/i.test(`${j.label} ${j.description}`)).map((j) => j.id), ["hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank"], "only the Hindsight jobs describe memory work");
   const seed = seedFresh({}); for (const id of RETIRED) assert.ok(!(id in seed.jobs), `${id} is not seeded`);
 });
 
@@ -93,25 +93,29 @@ await test("a save that leaves a model unused drops it from the catalog, and the
   assert.deepEqual(v2.config.catalog[ID.STT_FALLBACK], { id: ID.STT_FALLBACK, ...SEED_FACTS[ID.STT_FALLBACK] }, "added again with its known facts");
 });
 
-await test("models chosen elsewhere are listed read only on the page: OCR, web search, Hindsight (the browser look is a saved job)", async () => {
+await test("calls chosen elsewhere are listed read only on the page: OCR, web search, page reading, the memory server's local embeddings (the memory models are saved jobs)", async () => {
   const out = outsideModels({ ENV_NAME: "dev" }), by = Object.fromEntries(out.map((g) => [g.id, g]));
-  assert.deepEqual(out.map((g) => g.id), ["ocr", "web_search", "hindsight"]);
-  assert.equal(by.ocr.items[0].model, "no hosted model");
-  assert.deepEqual(by.hindsight.items.map((i) => i.model), HINDSIGHT_MODELS.map((m) => m.model)); assert.match(by.hindsight.note, /compose file/);
+  assert.deepEqual(out.map((g) => g.id), ["ocr", "web_search", "browser_run", "hindsight"]);
+  assert.equal(by.ocr.items[0].model, "no hosted model"); assert.match(by.browser_run.items[0].detail, /Browser Run/);
+  assert.deepEqual(by.hindsight.items.map((i) => i.model), HINDSIGHT_LOCAL.map((m) => m.model)); assert.deepEqual(by.hindsight.items.map((i) => i.model), ["BAAI/bge-small-en-v1.5"]); assert.match(by.hindsight.note, /Memory jobs/);
   const { DB } = database(), view = await modelSettingsView({ ONEHELM_EE: "1hc", DB, ENV_NAME: "dev" });
   const state = await consoleState(view, { ONEHELM_EE: "1hc", DB, ENV_NAME: "dev" }), ui = { view: "readonly", q: "", sel: null, level: "unrestricted", env: "dev", live: null };
   const html = pageHtml(state, ui, Date.now()).toString(), json = consoleHtml(state);
-  assert.match(html, /Read only/); assert.match(json, /moondream3\.1/); assert.match(html, /~openai\/gpt-luna-latest/); assert.match(html, /~perplexity\/pplx-decider-latest/);
+  assert.match(html, /Read only/); assert.match(json, /moondream3\.1/); assert.match(html, /bge-small-en-v1\.5/); assert.match(html, /Cloudflare Browser Run/);
+  // the memory models are ordinary saved jobs in their own group, so they are on the page with pickers
+  assert.ok(GROUPS.some((g) => g.id === "memory")); for (const id of ["hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank"]) assert.ok(state.jobs.some((j) => j.id === id && j.group === "memory"), id);
+  assert.match(json, /~openai\/gpt-luna-latest/); assert.match(json, /~perplexity\/pplx-decider-latest/);
   assert.ok(!/<select|<input/.test(html.split('class="ro"')[1]), "the section has no picker and no save");
 });
 
-await test("the Hindsight list is checked against the host's variables", () => {
-  const host = HINDSIGHT_MODELS.flatMap((m) => Object.entries(m.env).map(([f, name]) => `${name}=${m[f]}`)).join("\n");
-  assert.deepEqual(compareHindsightEnv(host), []);
-  assert.equal(HINDSIGHT_ENV_NAMES.some((n) => /KEY|TOKEN|SECRET|PASSWORD|URL/.test(n)), false, "the check reads no secret");
-  const changed = host.replace("HINDSIGHT_API_REFLECT_LLM_MODEL=~deepseek/deepseek-flash-latest", "HINDSIGHT_API_REFLECT_LLM_MODEL=openai/gpt-oss-20b");
-  assert.deepEqual(compareHindsightEnv(changed), [{ job: "reflect", variable: "HINDSIGHT_API_REFLECT_LLM_MODEL", expected: "~deepseek/deepseek-flash-latest", actual: "openai/gpt-oss-20b" }]);
-  assert.equal(compareHindsightEnv(host.split("\n").slice(1).join("\n")).length, 1, "a missing variable is a difference");
+await test("the Hindsight environment check covers the embeddings and the two bank id switches, and reads no secret", () => {
+  const good = (over = {}) => ["HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL=BAAI/bge-small-en-v1.5", "HINDSIGHT_API_LLM_SEND_BANK_AS_USER=true", "HINDSIGHT_API_RERANKER_SEND_BANK_AS_HEADER=true"]
+    .filter((l) => !(l.split("=")[0] in over)).concat(Object.entries(over).map(([k, v]) => `${k}=${v}`)).join("\n");
+  assert.deepEqual(compareHindsightEnv(good()), []);
+  assert.equal(HINDSIGHT_ENV_NAMES.some((n) => /KEY|TOKEN|SECRET|PASSWORD|URL/.test(n)), false, "the check names no secret and no URL");
+  assert.deepEqual(compareHindsightEnv(good({ HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL: "other" })), [{ job: "embeddings", variable: "HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL", expected: "BAAI/bge-small-en-v1.5", actual: "other" }]);
+  assert.deepEqual(compareHindsightEnv(good({ HINDSIGHT_API_LLM_SEND_BANK_AS_USER: "false" })).map((d) => d.variable), ["HINDSIGHT_API_LLM_SEND_BANK_AS_USER"], "the bank id switch");
+  assert.equal(compareHindsightEnv(good().split("\n").slice(1).join("\n")).length, 1, "a missing variable is a difference");
 });
 
 console.log(`PASS models cleanup: ${checks} checks`);

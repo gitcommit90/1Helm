@@ -51,8 +51,12 @@ export function installAutoReload(o: { api: string; loaded: string; busy: () => 
     safe: () => pageSafe(document, o.busy) && (document.hidden || Date.now() - last >= IDLE_MS) });
   const tick = () => { if (R.tick()) return; if (R.due() && !timer) timer = setInterval(() => { if (R.tick() || !R.due()) { clearInterval(timer); timer = 0; } }, POLL_MS); };
   for (const ev of ["keydown", "pointerdown", "input", "wheel"]) addEventListener(ev, () => { last = Date.now(); }, { capture: true, passive: true });
-  document.addEventListener("visibilitychange", tick); addEventListener("focus", tick);
   const f = window.fetch.bind(window);
+  // An installed app that comes back from the background (or from the back/forward cache, or after the network returns) has not made an
+  // API call yet, so it cannot know a new build exists. Ask once, right away, through the patched fetch below, then act on the answer.
+  let asked = 0;
+  const resume = () => { tick(); if (document.hidden || Date.now() - asked < 2000) return; asked = Date.now(); window.fetch(o.api + "/permissions", { credentials: "same-origin", cache: "no-store" }).catch(() => {}); };
+  document.addEventListener("visibilitychange", resume); addEventListener("focus", resume); addEventListener("pageshow", resume); addEventListener("online", resume);
   window.fetch = (async (input: any, init?: any) => {
     const r = await f(input, init);
     try { const u = typeof input === "string" ? input : input?.url || String(input); if (u.startsWith(o.api) && R.seen(r.headers.get("x-app-v"))) tick(); } catch {}

@@ -18,7 +18,7 @@ import { conversationMessages } from "./message-origin.js";
 // anything written after the snapshot arrives through the outbox. A delete that arrives mid rebuild also removes the queued writes of that
 // document and goes through hs_forget (deletion.js), which deletes what was already sent. Pause stops after the current batch and resume
 // goes on from the cursor. A rerun from scratch is safe, because every document id is stable and the bank is deleted first.
-import { retainV2, contentHash, cancelOperation, hs, bankPath, listDocuments, freshStats, pendingWork, retryOperation, reprocessDocument, cancelPending, listOperations, listMentalModels, refreshMentalModel, setupBank, deleteBank, recoverConsolidation, hsOn, bankId } from "./hindsight.js";
+import { retainV2, contentHash, cancelOperation, hs, bankPath, listDocuments, freshStats, pendingWork, retryOperation, reprocessDocument, cancelPending, listOperations, listMentalModels, refreshMentalModel, setupBank, testBankManifest, deleteBank, recoverConsolidation, hsOn, bankId } from "./hindsight.js";
 import { templateKind, templateKey, fillTemplate, speakerLabels } from "./hindsight-template.js";
 import { hsEnvelope } from "./hs-flag.js";
 import { withEnvelope, makeEnvelope } from "./memory-envelope.js";   // HS_ENVELOPE: a rebuilt conversation keeps the places its turns had
@@ -150,7 +150,7 @@ export const rebuildMethods = {
       }
       if (s.step === "create") {
         const n = (await this.hsNames()) || {}, kind = templateKind(this.get("channel"));
-        await setupBank(env, bank, fillTemplate(kind, n)); this.put("hs_bank", bank); this.put("hs_tpl", templateKey(kind, n));
+        const manual = await this.hsTestOwner(); await setupBank(env, bank, manual ? testBankManifest(fillTemplate(kind, n)) : fillTemplate(kind, n), { manual }); this.put("hs_bank", bank); this.put("hs_tpl", templateKey(kind, n) + (manual ? "|manual" : ""));
         const kinds = kindsFor(this.get("channel")); s.step = null; s.phase = "send"; s.kind = kinds[0]; s.after = ""; this.hsRbSave(s);
       }
       return "go";

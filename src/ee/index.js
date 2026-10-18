@@ -22,7 +22,7 @@ const EE_TOOL_NAMES = new Set([
 ]);
 export const toolEnabled = (env, name) => enabled(env) || !EE_TOOL_NAMES.has(name);
 
-const GLOBAL = [/^\/models(?:\/|$)/,/^\/applogo\//, /^\/c\//, /^\/composio\//, /^\/hooks\/photon\//, /^\/stripe\/webhook$/];
+const GLOBAL = [/^\/models(?:\/|$)/, /^\/_hs\//, /^\/applogo\//, /^\/c\//, /^\/composio\//, /^\/hooks\/photon\//, /^\/stripe\/webhook$/];
 const WORKSPACE = [
   /^\/api\/ambient(?:\/|$)/, /^\/api\/custom-mcp(?:\/|$)/, /^\/custom-mcp(?:\/|$)/, /^\/apps\/paypal\/setup$/,
   /^\/texting$/, /^\/api\/texting(?:\/|$)/, /^\/api\/google(?:\/|$)/,
@@ -88,6 +88,7 @@ export { ambientSettingsRoute } from "./ambient-settings.js";
 export { paypalSetupRoute } from "./composio-paypal.js";
 
 export { modelsRoute } from "./models-console.js";
+export { hindsightRoute } from "./hindsight-llm.js";
 
 export { customMcpRoute, isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED, withCustomRows, CUSTOM_WORDS } from "./custom-mcp.js";
 
@@ -107,7 +108,7 @@ export { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedT
 export { authorizeTaskProfile, TaskAffinityBlocked, ensureTaskRuntime, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./task-profile.js";
 export { backgroundRole, backgroundPolicy, backgroundReserve } from "./background-policy.js";
 export { deliverNativeFallback, dropNativePolls, nativePollDelivered, nativePollInit, nativeVoteNext, receiveNativeVote, recoverNativeSends, recoverNativeVotes, sendNativePoll } from "./native-polls.js";
-export { DONE_TOOL, ORCHESTRATOR_TOOLS, REQUEST_INPUT_TOOL, lineRange, orchestrationPolicy, routingToolsAllowed, stepLog, storedMessages } from "./orchestrator.js";
+export { DONE_TOOL, ORCHESTRATOR_TOOLS, REQUEST_INPUT_TOOL, WORKER_REQUEST_TOOLS, lineRange, orchestrationPolicy, routingToolsAllowed, stepLog, storedMessages } from "./orchestrator.js";
 export { deliverPhoneFiles, dropPhoneFiles, phoneFilesInit, phoneFilesNext, queuePhoneFiles } from "./phone-files.js";
 export { dropPhotonReplies, photonAnswerOptions, photonMessage, photonReplyInit, photonReplyOptions, photonReplySource, photonSourceInput, recordPhotonReplySource } from "./photon-replies.js";
 export { AGENT_MEMORY_TOOLS, agentMemoryNextWake, agentSessionDocuments, cancelAgentOperations, forgetAgentBank, forgetAgentTenant, agentSessionInventory, flushAgentMemory, purgeAgentSession, readAgentDocument, retainAgentMessage, retainAgentRound, searchAgentBank } from "./routing-agent-memory.js";

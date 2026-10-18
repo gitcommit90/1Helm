@@ -43,7 +43,7 @@ bad((c) => { c.jobs.handoff = { model: "not a model id", effort: "low", fallback
 bad((c) => { c.jobs.handoff.fallbacks[0].hosts = ["together"]; }, /provider lists/); bad((c) => { c.jobs.handoff.fallbacks[0].pin = false; }, /provider lists/);
 bad((c) => { c.catalog["evil/x"] = { id: "evil/x", name: "x", kinds: ["chat"], efforts: ["low"], hosts: ["a"] }; }, /metadata/);
 assert.deepEqual(Object.keys(SEED.jobs).sort(), [...JOB_IDS].sort(), "every job has a saved setting, and only the known jobs");
-assert.ok(JOBS.length === 19 && new Set(JOB_IDS).size === JOBS.length);
+assert.ok(JOBS.length === 24 && new Set(JOB_IDS).size === JOBS.length);
 for (const j of Object.values(SEED.jobs)) for (const e of [j, ...j.fallbacks]) assert.ok(SEED.catalog[e.model], `${e.model} is described in the saved settings`);
 
 // ---- 2) the first saved version: nothing saved yet → the first-run data, once, with the variable that used to choose a model carried in ----
@@ -66,7 +66,7 @@ const save = async (config, e = env) => { const v = await saveModelSettings(e, {
 { const cfg = clone(SEED); setGeneral(cfg, [{ model: ID.LUNA, effort: "low" }, { model: ID.HAIKU, effort: "medium" }], ["zdr"]);
   const v = await save(cfg); assert.equal(v.revision, 2); assert.deepEqual(v.config.routing.categories[0].chains.zdr, cfg.routing.categories[0].chains.zdr);
   assert.equal(v.history[0].action, "save"); assert.equal(v.history[0].by, "unit@example.com");
-  assert.equal(v.options.groups.length, 6); assert.ok(v.options.choices.chat.some((m) => m.id === ID.LUNA));
+  assert.equal(v.options.groups.length, 8); assert.ok(v.options.choices.chat.some((m) => m.id === ID.LUNA));
   await assert.rejects(saveModelSettings(env, { revision: 1, config: cfg }, "other"), (e) => e.status === 409);
   const writes = await Promise.allSettled([saveModelSettings(env, { revision, config: cfg }, "a"), saveModelSettings(env, { revision, config: cfg }, "b")]);
   assert.equal(writes.filter((r) => r.status === "fulfilled").length, 1); assert.equal(writes.find((r) => r.status === "rejected").reason.status, 409); revision++;

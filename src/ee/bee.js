@@ -777,7 +777,7 @@ export async function beeSyncNow(env, tid, deps = DEFAULT_DEPS) {
 export const CRON_STALE_MS = 2 * 3600e3;
 export async function beeCron(env, deps = DEFAULT_DEPS) {
   if (!env.BEE_SYNC) return { checked: 0, started: 0 };
-  const rows = (await env.DB.prepare("SELECT tenant_id, bee_user_id FROM bee_accounts WHERE status='connected' AND COALESCE(synced_at,0) < ? LIMIT 100").bind(now() - CRON_STALE_MS).all()).results || [];
+  const rows = (await env.DB.prepare("SELECT tenant_id, bee_user_id FROM bee_accounts WHERE status='connected' AND COALESCE(synced_at,0) < ? AND tenant_id NOT IN (SELECT t.id FROM tenants t JOIN users u ON u.id=t.owner_user_id WHERE LOWER(u.email) LIKE '%@example.com') LIMIT 100").bind(now() - CRON_STALE_MS).all()).results || [];
   let started = 0;
   for (const r of rows) { try { await deps.sync(env, r.tenant_id).start(r.tenant_id, { beeUser: r.bee_user_id }); started++; } catch (e) { console.log("bee cron", String(e?.message || e).slice(0, 120)); } }
   return { checked: rows.length, started };

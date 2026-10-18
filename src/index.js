@@ -35,7 +35,7 @@ import { transcribe } from "./transcribe.js";
 import { lnAudio } from "./ee/index.js";   // Live notes from the device's microphone: one chunk → speech to text (transcribe.js) → the LiveNotes DO
 import { transcribeLive, ledgerDictation } from "./transcribe-live.js";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { deletionRoute, deletionCron, deleteNote } from "./deletion.js";
+import { deletionRoute, deletionCron, deleteNote, deleteChannel } from "./deletion.js";
 import { archiveDeletionMix, wipeMix } from "./deletion-do.js";
 import { pomoGlobalMethods } from "./pomodoro.js";
 export { PrepContainer } from "./prep-container.js";
@@ -62,6 +62,7 @@ import { releasesPage, pushRelease, undoRelease, isReleaseAdmin } from "./intern
 import { kanbanProxy } from "./internal-shim.js";
 import { AGE_VERSION, AGE_ERROR, ageOf, ageCookie, agePage, ageNext, recordAge } from "./age-gate.js";
 import { modelsRoute } from "./ee/index.js";
+import { hindsightRoute } from "./ee/index.js";   // the memory server model endpoint (Cloud only, 404 without the Cloud switch)
 import { healthCron } from "./hindsight-health.js";
 import { hindsightSelfTest, hsOn, sweepBanks, recall as hsRecall, bankId as hsBankId } from "./hindsight.js";
 import { privacyBoot, privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // AI data privacy (onboarding step, boot)
@@ -179,7 +180,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "276";
+const APP_V = "279";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -625,6 +626,8 @@ export default {
           (p === "/kanban" || p.startsWith("/kanban/") || p === "/parity" || p.startsWith("/parity/") || p === "/releases" || p.startsWith("/releases/")) &&
           req.headers.get("origin") !== origin) return json({ error: "forbidden" }, 403);
       if (p === "/health") return json({ ok: true });
+      // The memory server model calls (src/ee/hindsight-llm.js): bearer secret only, served from the saved Models settings. The Cloud route gate above answers 404 on a public install.
+      if (p.startsWith("/_hs/")) return hindsightRoute(req, env, ctx, url);
       if (p === "/api/mobile/compatibility" && req.method === "GET") {
         const users = await env.DB.prepare("SELECT 1 FROM users LIMIT 1").first();
         const ready = await env.DB.prepare("SELECT 1 FROM tenants WHERE status='active' AND onboarding_completed=1 AND (COALESCE(onboard_step,'')='' OR (onboard_step='done' AND slug_chosen=1)) LIMIT 1").first();
@@ -753,7 +756,7 @@ export default {
         try { return Response.json(await hsSweep(env, { dry: url.searchParams.get("dry") === "1", graceMs: url.searchParams.has("grace") ? Number(url.searchParams.get("grace")) : undefined })); } catch (e) { return Response.json({ error: e.message }, { status: 502 }); }
       }
       // Dev debugging (src/ops-read.js): read-only JSON on any dev account, and a look-only "view as". Dev + x-ops-key only; else 404.
-      if (p.startsWith("/_ops/")) return opsRoute(req, env, url, { archive, ledger, storageOf, storageView, textingStatus, listConnections, holdOf, hsOn, hsRecall, bankId: hsBankId, beeOps });
+      if (p.startsWith("/_ops/")) return opsRoute(req, env, url, { deleteChannel, archive, ledger, storageOf, storageView, textingStatus, listConnections, holdOf, hsOn, hsRecall, bankId: hsBankId, beeOps });
       // Kanban board (dev only, release admins): Kan behind Workers VPC.
       if (env.ENV_NAME === "dev" && (p === "/kanban" || p.startsWith("/kanban/"))) {
         // Kan's public app shell files (no board data) load without our cookie: browsers fetch the manifest without credentials.

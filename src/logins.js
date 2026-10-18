@@ -108,6 +108,13 @@ export async function importLogins(env, tenantId, rows) {
 export async function loginSites(env, tenantId) {
   try { return ((await env.DB.prepare("SELECT site, COUNT(*) AS n FROM logins WHERE tenant_id=? GROUP BY site ORDER BY site").bind(tenantId).all()).results || []).map((r) => r.n > 1 ? `${r.site} (${r.n} accounts)` : r.site); } catch { return []; }
 }
+// Which saved accounts cover this host, by name only: { site, usernames } or null. No password is opened. Used to check a worker's request.
+export async function loginAccountsForHost(env, tenantId, host) {
+  const rows = ((await env.DB.prepare("SELECT site, username FROM logins WHERE tenant_id=?").bind(tenantId).all()).results || [])
+    .filter((x) => hostMatchesSite(host, x.site)).sort((a, b) => b.site.length - a.site.length || a.username.localeCompare(b.username));
+  if (!rows.length) return null;
+  return { site: rows[0].site, usernames: rows.filter((x) => x.site === rows[0].site).map((x) => x.username) };
+}
 // The saved login for this host: the most specific site that covers it (accounts.google.com beats google.com). With a
 // username, that account on any covering site. Several accounts and no username: { site, choices } (usernames only,
 // no password opened). Opened only here, for browser_fill_login. Never logged.

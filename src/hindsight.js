@@ -25,14 +25,41 @@ const B = (bank) => `/v1/default/banks/${encodeURIComponent(bank)}`;
 export const bankPath = B;
 
 // Create (idempotent PUT). Banks are also auto-created by the first retain.
-export const ensureBank = (env, bank) => hs(env, B(bank), { method: "PUT", body: {} });
-export const deleteBank = (env, bank) => hs(env, B(bank), { method: "DELETE" });
+export async function ensureBank(env, bank) { await assertBankCap(env, bank); return hs(env, B(bank), { method: "PUT", body: {} }); }
+export const deleteBank = (env, bank) => { KNOWN_BANKS.delete(bank); return hs(env, B(bank), { method: "DELETE" }); };
+
+// Environment cap on the number of banks (Captain, 2026-10-18: dev holds at most 60 Hindsight banks even while testing). HS_BANK_CAP is set only in
+// wrangler.dev.jsonc (an environment cap, like a container max_instances), so Live has no cap. Every dev bank counts: `dev-...` channel banks and
+// `a2a-dev-...` agent record banks. A bank that already exists never trips the cap. Called before a bank is created (ensureBank, the agent bank PUT
+// and the first retain into a bank this Worker has not seen), and it costs one bank listing per new bank id per Worker instance.
+const KNOWN_BANKS = new Set();
+export const bankCap = (env) => { const n = Number(env?.HS_BANK_CAP); return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0; };
+export const isEnvBank = (env, id) => { const e = env?.ENV_NAME || "dev"; return String(id).startsWith(`${e}-`) || String(id).startsWith(`a2a-${e}-`); };
+export async function assertBankCap(env, bank) {
+  const cap = bankCap(env); if (!cap || KNOWN_BANKS.has(bank)) return;
+  const ids = (await listBanks(env, `${env.ENV_NAME || "dev"}-`)).map((b) => b.bank_id).filter((id) => isEnvBank(env, id));
+  if (!ids.includes(bank) && ids.length >= cap) throw Object.assign(new Error(`bank limit reached: ${env.ENV_NAME || "dev"} already has ${ids.length} Hindsight banks and the limit is ${cap}. Delete banks that are not needed first.`), { status: 429, code: "bank_cap" });
+  KNOWN_BANKS.add(bank);
+}
 
 // ---- Phase 2 client additions (DESIGN.md 3.1): each one is a thin wrapper over one endpoint. Existing exports above and below are unchanged. ----
 // Apply a bank template (config, mental models, directives). Creates the bank when it is missing. dryRun validates only.
 export const applyTemplate = (env, bank, manifest, { dryRun = false } = {}) => hs(env, `${B(bank)}/import${dryRun ? "?dry_run=true" : ""}`, { method: "POST", body: manifest, timeoutMs: 30000 });
 // Create the bank, then import its template (a bank is never left to be created by its first retain).
-export async function setupBank(env, bank, manifest) { await ensureBank(env, bank); return applyTemplate(env, bank, manifest); }
+// manual: the bank belongs to a test account, so its mental models have no automatic trigger (testBankManifest) and any refresh the import queues is cancelled.
+export async function setupBank(env, bank, manifest, { manual = false } = {}) { await ensureBank(env, bank); await syncMentalModelTriggers(env, bank, manifest, { manual }); return importTemplate(env, bank, manifest, { manual }); }
+// Import a template. For a test account's bank (manual) the refresh operations the import queued for new models are cancelled at once,
+// so a bank that nobody is testing with costs no model call (Captain, 2026-10-18).
+export async function importTemplate(env, bank, manifest, { manual = false } = {}) {
+  const r = await applyTemplate(env, bank, manifest);
+  if (manual) for (const id of r?.operation_ids || []) await cancelOperation(env, bank, id).catch((e) => console.log("hindsight cancel refresh", e.message));
+  return r;
+}
+// The template for a test account's bank: every mental model keeps its text and loses its automatic trigger (no refresh_cron, no
+// refresh_after_consolidation), so it refreshes only when someone asks for it. Live has no such accounts, so Live never calls this.
+export function testBankManifest(manifest) {
+  return { ...manifest, mental_models: (manifest?.mental_models || []).map((m) => ({ ...m, trigger: { mode: m.trigger?.mode || "full" } })) };
+}
 export const getConfig = (env, bank) => hs(env, `${B(bank)}/config`);
 export const listOperations = (env, bank, { status, type, limit = 100, offset = 0 } = {}) =>
   hs(env, `${B(bank)}/operations?limit=${limit}&offset=${offset}${status ? `&status=${encodeURIComponent(status)}` : ""}${type ? `&type=${encodeURIComponent(type)}` : ""}`);
@@ -68,6 +95,33 @@ export async function recoverConsolidation(env, bank) {
   return { retried };
 }
 export const listMentalModels = (env, bank) => hs(env, `${B(bank)}/mental-models`);
+// Change only the trigger of one mental model (PATCH, no refresh, no model call). Hindsight merges the fields sent over the stored trigger.
+export const patchMentalModelTrigger = (env, bank, id, trigger) => hs(env, `${B(bank)}/mental-models/${encodeURIComponent(id)}`, { method: "PATCH", body: { trigger } });
+// Bring the triggers of a bank's existing mental models to the template's (the cron schedule instead of refresh after consolidation).
+// A bank import also changes a differing trigger, but then queues a full refresh of that model (an LLM run each), so this runs first with PATCH:
+// afterwards the stored trigger equals the template's and the import leaves the model alone. Models the bank does not have yet are skipped
+// (the import creates them). dryRun reads and counts only. Throws when a PATCH fails, so the caller does not run the import and its refreshes.
+// -> { checked, patched, before: { cron, after_consolidation, other }, after: { ... }, ids: [patched ids] }
+// manual: a test account's bank. The wanted trigger is "none": no refresh_cron, no refresh_after_consolidation, no minimum interval.
+export async function syncMentalModelTriggers(env, bank, manifest, { dryRun = false, manual = false } = {}) {
+  const want = new Map((manifest?.mental_models || []).filter((m) => manual || m.trigger?.refresh_cron).map((m) => [m.id, manual ? {} : m.trigger]));
+  const kindOf = (t) => (t?.refresh_cron ? "cron" : t?.refresh_after_consolidation ? "after_consolidation" : "other");
+  const out = { checked: 0, patched: 0, before: { cron: 0, after_consolidation: 0, other: 0 }, after: { cron: 0, after_consolidation: 0, other: 0 }, ids: [] };
+  if (!want.size) return out;
+  // detail=content: the list's default (metadata) leaves the trigger out, and the config-only level is not offered over HTTP.
+  let items; try { items = (await hs(env, `${B(bank)}/mental-models?detail=content&limit=100`, { timeoutMs: 30000 }))?.items || []; } catch (e) { if (e.status === 404) return out; throw e; }
+  for (const m of items) {
+    const t = want.get(m.id); if (!t) continue;
+    const cur = m.trigger || {}; out.checked++; out.before[kindOf(cur)]++;
+    const same = (cur.refresh_cron || null) === (t.refresh_cron || null) && !cur.refresh_after_consolidation && cur.min_refresh_interval_seconds == null;
+    if (!same) {
+      if (!dryRun) await patchMentalModelTrigger(env, bank, m.id, { refresh_cron: t.refresh_cron || null, refresh_after_consolidation: false, min_refresh_interval_seconds: null });
+      out.patched++; out.ids.push(m.id);
+    }
+    out.after[dryRun && !same ? kindOf(cur) : manual ? "other" : "cron"]++;
+  }
+  return out;
+}
 export const refreshMentalModel = (env, bank, id) => hs(env, `${B(bank)}/mental-models/${encodeURIComponent(id)}/refresh`, { method: "POST", body: {} });
 
 // A bank delete that first cancels queued work and afterwards lists what is still queued (logged, and returned for the caller).
@@ -180,6 +234,7 @@ export async function retainV2(env, bank, items, opts = {}) {
       ...(i.resolve_entities === false ? { resolve_entities: false } : {}), ...(Array.isArray(i.entities) && i.entities.length ? { entities: i.entities.map((x) => ({ text: scrubSecrets(String(x.text)), ...(x.type ? { type: String(x.type) } : {}) })).filter((x) => x.text.trim()) } : {}) } });
   }
   if (!list.length) return null;
+  await assertBankCap(env, bank);   // a retain creates a missing bank, so the cap applies here too
   const ids = list.map((x) => x.item.document_id);
   if (new Set(ids).size !== ids.length) throw Object.assign(new Error(`retainV2: a document id appears twice in one request (${ids.find((d, n) => ids.indexOf(d) !== n)}); send them in separate requests`), { status: 400 });
   const groups = new Map(); for (const x of list) { const k = x.strategy || ""; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(x); }

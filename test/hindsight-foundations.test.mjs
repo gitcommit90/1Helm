@@ -68,9 +68,9 @@ const MODES = ["concise", "verbose", "custom", "verbatim", "chunks"], STRATEGIES
     // the ambient strategy replaces the mission, so it must hold the whole base mission plus its extra lines
     const amb = t.bank.retain_strategies.ambient.retain_mission; assert.ok(amb.startsWith(m) && amb.length > m.length && /speech recognition from a wearable/.test(amb) && /unknown speaker/.test(amb));
     assert.deepEqual(t.bank.memory_defense, { enabled: true, rules: [{ on: "sensitive_data", action: "redact" }] });
-    assert.equal(t.bank.mental_model_min_refresh_interval_seconds, 1800); assert.equal(t.bank.enable_observations, true);
+    assert.ok(!("mental_model_min_refresh_interval_seconds" in t.bank), "no bank minimum refresh interval: the models refresh on a cron"); assert.equal(t.bank.enable_observations, true);
     assert.deepEqual([t.bank.disposition_empathy, t.bank.disposition_literalism, t.bank.disposition_skepticism], [4, 3, 2]);
-    for (const mm of t.mental_models) { assert.match(mm.id, /^[a-z0-9][a-z0-9-]*$/); assert.ok(mm.name && mm.source_query && mm.max_tokens >= 256 && mm.max_tokens <= 8192); const { min_refresh_interval_seconds: mi, ...tr } = mm.trigger; assert.deepEqual(tr, { refresh_after_consolidation: true, mode: "full" }); assert.ok(mi === undefined || mi >= 1800); }
+    for (const mm of t.mental_models) { assert.match(mm.id, /^[a-z0-9][a-z0-9-]*$/); assert.ok(mm.name && mm.source_query && mm.max_tokens >= 256 && mm.max_tokens <= 8192); assert.deepEqual(mm.trigger, { refresh_cron: "0 10,22 * * *", mode: "full" }, `${mm.id}: twice a day, never after each consolidation, no minimum interval`); }
     assert.equal(new Set(t.mental_models.map((x) => x.id)).size, t.mental_models.length); assert.equal(new Set(t.directives.map((x) => x.name)).size, t.directives.length);
   }
   const g = fillTemplate("general", V), c = fillTemplate("channel", V);
@@ -181,8 +181,8 @@ const MODES = ["concise", "verbose", "custom", "verbatim", "chunks"], STRATEGIES
   const imports = (f) => f.calls.filter((c) => c.endsWith("/import")).length;
   const on = mk(true);
   assert.equal(await on.R.hsBank(), "dev-t1-main");
-  assert.deepEqual(on.f.calls, ["PUT /dev-t1-main", "POST /dev-t1-main/import"], "created, then the template imported");
-  const body = on.f.bodies[1]; assert.match(body.bank.retain_mission, /Sam's personal assistant, Ollie, in General/); assert.deepEqual(body.mental_models.map((m) => m.id), ["profile", "routines", "active-tasks", "people", "places"]);
+  assert.deepEqual(on.f.calls, ["PUT /dev-t1-main", "GET /dev-t1-main/mental-models?detail=content&limit=100", "POST /dev-t1-main/import"], "created, its triggers checked (a new bank has no models), then the template imported");
+  const body = on.f.bodies[2]; assert.match(body.bank.retain_mission, /Sam's personal assistant, Ollie, in General/); assert.deepEqual(body.mental_models.map((m) => m.id), ["profile", "routines", "active-tasks", "people", "places"]);
   assert.ok(on.R.get("hs_tpl").startsWith(`${TEMPLATE_VERSION}|general|Sam|Ollie|main|`), "the template key is recorded next to hs_bank");
   await on.R.hsBank(); await on.R.hsBank(); assert.equal(imports(on.f), 1, "nothing changed, so no second import");
   d1.exec("UPDATE tenants SET helper_name='Marlo'"); on.R._hsNames = null; await on.R.hsBank();
@@ -270,6 +270,6 @@ const MODES = ["concise", "verbose", "custom", "verbatim", "chunks"], STRATEGIES
   const page = await hsAdmin(env5, "templates", { archive, limit: 2 }); assert.equal(page.processed, 2); assert.equal(page.next_offset, 2); assert.equal((await hsAdmin(env5, "templates", { archive, limit: 2, offset: 4 })).next_offset, null);
   f5.calls.length = 0; const rd5 = await hsAdmin(env5, "recover", { archive }); assert.equal(rd5.counts["would recover"], 1); assert.ok(!f5.calls.some((c) => c.includes("recover")), "recover dry run changes nothing");
   const rr = await hsAdmin(env5, "recover", { archive, dry: false }); assert.equal(rr.counts.recovered, 1); assert.ok(f5.calls.includes(`POST /dev-${t2}-main/consolidation/recover`) && f5.calls.includes(`POST /dev-${t2}-main/consolidate`));
-  assert.deepEqual(await hsAdmin(env5, "nope", { archive }), { error: "action must be templates or recover" });
+  assert.deepEqual(await hsAdmin(env5, "nope", { archive }), { error: "action must be templates, recover or triggers" });
   ok("admin path: dry run is the default and imports nothing; real run imports the right template per bank, skips empty banks and gone accounts, pages, recovers failed consolidation");
 }

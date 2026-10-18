@@ -114,6 +114,10 @@ function withOptionalJobs(config) {
     const d = optionalJobDefault(id, config.jobs);
     config.jobs[id] = d.job;
     if (d.facts && config.catalog && typeof config.catalog === "object" && !own(config.catalog, d.facts.id)) config.catalog[d.facts.id] = d.facts;
+    // A model the saved catalog already describes may not list the starting reasoning level (the memory jobs start on the server's own level). The job then starts on the
+    // nearest level the saved facts list, so adding a job never makes the stored settings invalid.
+    const levels = config.catalog?.[d.job.model]?.efforts;
+    if (d.job.effort != null && Array.isArray(levels) && levels.length && !levels.includes(d.job.effort)) d.job.effort = ["low", "default"].find((e) => levels.includes(e)) ?? levels[0];
   }
   return config;
 }
@@ -345,15 +349,16 @@ export async function jobModels(env, id) { return entriesOf(jobSetting(await job
 // Per kind of job, the models the picker offers: exactly the ones the save check accepts (kindOk) that also meet the job's
 // zero-data-retention rule, so a normal pick is never refused.
 function choicesOf(config) {
+  // Kinds that share a pick (the request sorter and the memory ranking both pick "decider") offer a model when any of them accepts it; the page then greys out what the job's own kind refuses.
   const out = {}, kinds = new Map();
-  for (const k of Object.values(JOB_KINDS)) { out[k.pick] = []; kinds.set(k.pick, k); }
+  for (const k of Object.values(JOB_KINDS)) { out[k.pick] = []; kinds.set(k.pick, [...(kinds.get(k.pick) || []), k]); }
   const known = Object.fromEntries(Object.entries(SEED_FACTS).map(([id, f]) => [id, { id, ...clone(f) }]));
   // The models the file search index's main model lists as equivalent (saved facts, else the first-run facts): the only ones a fallback may be.
   const mainEmbed = config.jobs?.embed_files?.model, equivalents = new Set([...(config.catalog?.[mainEmbed]?.embedding_equivalents || []), ...(SEED_FACTS[mainEmbed]?.embedding_equivalents || [])]);
   for (const [id, m] of Object.entries({ ...known, ...config.catalog })) {
-    for (const [pick, kind] of kinds) {
-      if (!kindOk(m, kind) || (zdrApplies(kind, m) && zdrBlocked(config, id))) continue;
-      out[pick].push({ id, name: m.name || id, efforts: m.efforts || [], validated: m.eligible === true, chat: canChat(m), kinds: m.kinds || [], eligible: m.eligible === true, source: m.source || (id.startsWith("@cf/") ? "CF" : id.startsWith("@1hc/") ? "SELF" : "OR"), levels: m.levels || PRIVACY_LEVELS.filter((level) => configuredHosts(config, id, level).length), ...(kind.equivalentOnly ? { main_equivalent: equivalents.has(id) } : {}) });
+    for (const [pick, same] of kinds) {
+      if (!same.some((kind) => kindOk(m, kind) && !(zdrApplies(kind, m) && zdrBlocked(config, id)))) continue;
+      out[pick].push({ id, name: m.name || id, efforts: m.efforts || [], validated: m.eligible === true, chat: canChat(m), kinds: m.kinds || [], eligible: m.eligible === true, source: m.source || (id.startsWith("@cf/") ? "CF" : id.startsWith("@1hc/") ? "SELF" : "OR"), levels: m.levels || PRIVACY_LEVELS.filter((level) => configuredHosts(config, id, level).length), ...(same.some((kind) => kind.equivalentOnly) ? { main_equivalent: equivalents.has(id) } : {}) });
     }
   }
   return out;
@@ -403,7 +408,7 @@ async function validatedSelection(env, config, current) {
   }
   for (const [id, def] of need) {
     const kind = JOB_KINDS[def.kind], pick = kind.pick;
-    if (takesChat(kind) || dynamicRoutingOn(env)) {
+    if (takesChat(kind) || kind.latest || dynamicRoutingOn(env)) {
       if (!validModelId(id)) fail("Invalid model ID.");
       // The search is the model's own ID, so its endpoints are read even when it isn't on OpenRouter's zero-data-retention list.
       const m = (await modelCatalog(env, { q: id })).models.find((x) => x.id === id); if (m?.unverified) fail(`${id}: its providers could not be verified right now, so nothing was saved. Try again shortly.`);

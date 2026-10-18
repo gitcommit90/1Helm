@@ -5,7 +5,8 @@
 // consolidation operation is marked completed when some of its batches fail. So the check reads failed_consolidation from the bank stats
 // (facts that failed for good), failed operations, every mental model's last_refresh_failed_at, and documents that produced no facts.
 // The model errors in Hindsight's request trace are server wide, so they are read once per run (llmTrace), not per bank.
-import { hs, bankPath, listBanks, listOperations, listMentalModels, refreshMentalModel, recoverConsolidation, applyTemplate } from "./hindsight.js";
+import { hs, bankPath, listBanks, listOperations, listMentalModels, refreshMentalModel, recoverConsolidation, applyTemplate, importTemplate, testBankManifest, syncMentalModelTriggers } from "./hindsight.js";
+import { isTestTenant } from "./test-tenant.js";
 import { hsFoundations, templateKind, fillTemplate, TEMPLATE_VERSION } from "./hindsight-template.js";
 import { helperName } from "./helper-name.js";
 
@@ -63,8 +64,10 @@ export async function healthCron(env, { max = 30, now = Date.now(), fix = true }
   const seen = new Map(((await env.DB.prepare("SELECT bank, checked_at FROM hs_health").all()).results || []).map((x) => [x.bank, x.checked_at]));
   const due = banks.filter((b) => !(seen.get(b) > now - 23 * 3600e3)).sort((a, b) => (seen.get(a) || 0) - (seen.get(b) || 0)).slice(0, max);
   const out = { banks: banks.length, checked: 0, problems: 0, recovered: 0, errors: 0, trace: due.length ? await llmTrace(env, due[0]) : null };
+  const testOf = new Map();   // a test account's bank is only read, never repaired: a repair is a model call nobody asked for (Captain, 2026-10-18)
   for (const b of due) {
-    try { const r = await bankHealth(env, b, { fix, now }); await saveHealth(env, r); out.checked++; if (r.problems.length) out.problems++; if (r.actions.length) out.recovered++; }
+    try { const tid = b.match(BANK_RE)?.[2]; if (tid && !testOf.has(tid)) testOf.set(tid, await isTestTenant(env, tid));
+      const r = await bankHealth(env, b, { fix: fix && !testOf.get(tid), now }); await saveHealth(env, r); out.checked++; if (r.problems.length) out.problems++; if (r.actions.length) out.recovered++; }
     catch (e) { out.errors++; if (e.status === 404) await env.DB.prepare("DELETE FROM hs_health WHERE bank=?").bind(b).run().catch(() => {}); else console.log("hindsight health", tag(b), e.message); }
   }
   return out;
@@ -84,21 +87,25 @@ export async function readHealth(env, { onlyProblems = false, limit = 50 } = {})
 // ---- dev admin path (POST /_ops/hs-admin) ----
 // action=templates : import the filled template into existing banks (dry=1, the default, only validates and reports what would change).
 // action=recover   : recoverConsolidation on banks whose stats show failed_consolidation (dry=1 only lists them).
-// Both take limit (default 25, at most 50, one call stays inside the subrequest limit), offset, slug (one account) and skip_empty (default 1,
-// banks with no memory are left alone, because a new mental model starts a model refresh). The answer has next_offset until the list is done.
-export async function hsAdmin(env, action, { dry = true, limit = 25, offset = 0, slug = "", skipEmpty = true, archive } = {}) {
+// action=triggers : PATCH only the mental model triggers of existing banks to the template's (no import, no refresh, no model call), one bank at a
+//                   time with a short pause (dry=1 only counts). The answer has before and after counts of cron, after_consolidation and other triggers.
+// templates also runs that trigger step first, so its import does not queue a refresh of every model whose trigger changed.
+// Each takes limit (default 25, at most 50, one call stays inside the subrequest limit), offset, slug (one account) and skip_empty (default 1,
+// banks with no memory are left alone by templates, because a new mental model starts a model refresh (triggers does not skip them: a PATCH starts none).. The answer has next_offset until the list is done.
+export async function hsAdmin(env, action, { dry = true, limit = 25, offset = 0, slug = "", skipEmpty = true, archive, pauseMs = 300 } = {}) {
   if (!hsFoundations(env)) return { error: "HS_FOUNDATIONS is off" };
-  if (action !== "templates" && action !== "recover") return { error: "action must be templates or recover" };
+  if (action !== "templates" && action !== "recover" && action !== "triggers") return { error: "action must be templates, recover or triggers" };
   limit = Math.min(50, Math.max(1, limit | 0 || 25)); offset = Math.max(0, offset | 0);
   const envName = env.ENV_NAME || "dev"; let tenantFilter = null;
   if (slug) { tenantFilter = (await env.DB.prepare("SELECT id FROM tenants WHERE slug=?").bind(slug).first())?.id; if (!tenantFilter) return { error: "no such workspace" }; }
   const all = (await listBanks(env, `${envName}-`)).map((b) => b.bank_id).filter((id) => { const m = id.match(BANK_RE); return m && m[1] === envName && (!tenantFilter || m[2] === tenantFilter); }).sort();
   const part = all.slice(offset, offset + limit), tenants = new Map(), results = [];
+  const totals = { checked: 0, patched: 0, before: { cron: 0, after_consolidation: 0, other: 0 }, after: { cron: 0, after_consolidation: 0, other: 0 } };
   const tenantInfo = async (tid) => {
     if (tenants.has(tid)) return tenants.get(tid);
     const row = await env.DB.prepare("SELECT first_name, helper_name FROM tenants WHERE id=?").bind(tid).first().catch(() => null);
     let chans = null; try { chans = await archive(env, tid).channels(); } catch {}
-    const v = { row, chans }; tenants.set(tid, v); return v;
+    const v = { row, chans, test: await isTestTenant(env, tid) }; tenants.set(tid, v); return v;
   };
   for (const bank of part) {
     const m = bank.match(BANK_RE), res = { bank: tag(bank), channel: m[3] };
@@ -106,24 +113,33 @@ export async function hsAdmin(env, action, { dry = true, limit = 25, offset = 0,
       const st = await hs(env, `${bankPath(bank)}/stats?refresh=true`), empty = !st.total_nodes && !st.total_documents;
       if (action === "recover") {
         res.failed_consolidation = st.failed_consolidation || 0;
-        if (!res.failed_consolidation) res.status = "ok";
+        if (!dry && res.failed_consolidation && (await tenantInfo(m[2])).test) res.status = "skipped: test account (no background model calls)";
+        else if (!res.failed_consolidation) res.status = "ok";
         else if (dry) res.status = "would recover";
         else { res.retried = (await recoverConsolidation(env, bank)).retried; res.status = "recovered"; }
       } else {
-        if (skipEmpty && empty) { res.status = "skipped empty"; results.push(res); continue; }
-        const { row, chans } = await tenantInfo(m[2]);
+        if (skipEmpty && empty && action !== "triggers") { res.status = "skipped empty"; results.push(res); continue; }
+        const { row, chans, test } = await tenantInfo(m[2]);
         if (!row) { res.status = "skipped: no account"; results.push(res); continue; }
         const c = (chans || []).find((x) => (x.slug || x.name) === m[3]);
         if (!c && chans) { res.status = "skipped: channel gone"; results.push(res); continue; }
         const kind = templateKind(m[3]), vars = { first: row.first_name, helper: helperName(row), channel: m[3], purpose: c?.purpose || c?.topic || "" };
         res.kind = kind; res.template_version = TEMPLATE_VERSION;
-        const manifest = fillTemplate(kind, vars);
-        if (dry) { const r = await applyTemplate(env, bank, manifest, { dryRun: true }); res.status = "would import"; res.mental_models = r.mental_models_created; }
-        else { /* the bank was listed, so it exists */ const r = await applyTemplate(env, bank, manifest); res.status = "imported"; res.mental_models_created = r.mental_models_created; res.mental_models_updated = r.mental_models_updated; res.refresh_operations = (r.operation_ids || []).length; }
+        const manifest = test ? testBankManifest(fillTemplate(kind, vars)) : fillTemplate(kind, vars);   // a test account's models have no automatic trigger
+        if (test) res.test_account = true;
+        if (action === "triggers" || !dry) {
+          const sy = await syncMentalModelTriggers(env, bank, manifest, { dryRun: dry, manual: !!test });
+          res.triggers = { checked: sy.checked, patched: sy.patched, before: sy.before, after: sy.after };
+          for (const k of ["checked", "patched"]) totals[k] += sy[k];
+          for (const k of Object.keys(totals.before)) { totals.before[k] += sy.before[k]; totals.after[k] += sy.after[k]; }
+        }
+        if (action === "triggers") { res.status = dry ? "would patch" : "patched"; await new Promise((r) => setTimeout(r, pauseMs)); }
+        else if (dry) { const r = await applyTemplate(env, bank, manifest, { dryRun: true }); res.status = "would import"; res.mental_models = r.mental_models_created; }
+        else { /* the bank was listed, so it exists */ const r = await importTemplate(env, bank, manifest, { manual: !!test }); res.status = "imported"; res.mental_models_created = r.mental_models_created; res.mental_models_updated = r.mental_models_updated; res.refresh_operations = (r.operation_ids || []).length; }
       }
     } catch (e) { res.status = "error"; res.error = String(e.message || e).slice(0, 160); }
     results.push(res);
   }
   const count = {}; for (const r of results) count[r.status] = (count[r.status] || 0) + 1;
-  return { action, dry, total: all.length, offset, processed: part.length, counts: count, next_offset: offset + limit < all.length ? offset + limit : null, results };
+  return { action, dry, total: all.length, offset, processed: part.length, counts: count, ...(action === "triggers" || !dry ? { trigger_totals: totals } : {}), next_offset: offset + limit < all.length ? offset + limit : null, results };
 }

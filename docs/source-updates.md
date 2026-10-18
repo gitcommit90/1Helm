@@ -1,3 +1,23 @@
+# Source update: 2026-10-18 (memory server model endpoint, twice daily memory refresh, routed browser requests)
+
+## Memory model jobs, routed worker browser requests and web source
+
+The Worker source is reconciled from `701499c00179ec0feb84cd0ff3fa4021a374919c` to
+`c2cff2694b50baf2545e988437e942eec13907e1`. The web source is reconciled from
+`b3461c749b2e59f0f39b094c22ae495bb137dbfd` to `bc6ba298211dfc5d5962cd0fa74f5b25cf8abf35`.
+
+A Cloud deployment can now send the Hindsight memory server's model calls through the Worker (`src/ee/hindsight-llm.js`). Each of the server's language model clients and its recall reranker uses a base URL under `/_hs/`, sends the Worker secret `HINDSIGHT_LLM_KEY` as its API key, and is mapped to a saved Models page job (`hs_retain`, `hs_consolidation`, `hs_reflect`, `hs_refresh`, `hs_rerank`). The Worker rebuilds each request from a short list of fields, so the saved model, reasoning level, fallbacks, provider sort, price limit, output limit, timeout and zero data retention routing apply, and the bank id is removed before any provider sees it. The route is Cloud code: without `ONEHELM_EE` it answers 404, and without the secret it answers 503. A self-hosted install keeps using its own Hindsight server with the model settings of that server, and nothing in the public Worker changes them. The public edition has one environment, so it has no forward to another Worker.
+
+A routed worker can now ask the person's primary agent for a saved login or a purchase, and it pauses on a browser handoff until the person hands the browser back (`src/helpers.js`, `src/resident.js`, `src/ee/orchestrator.js`, `src/ee/route2.js`, `src/resume.js`, `src/logins.js`, `src/tracker.js`). The `helpers` table gains the column `input_kind`. The web source shows the Take control card for a paused worker, resumes the auto reload check when the app returns to the foreground, and keeps the progress row for the current turn (`web/src/`). `app-assets/app-static/app.js` and `style.css` are rebuilt from the web source.
+
+The mental models of a Hindsight memory bank now refresh on a schedule of twice a day (`refresh_cron` `0 10,22 * * *`, template version `p10-4`) instead of after every consolidation. A bank that already exists gets the new trigger by a PATCH of each mental model before the template import, so the import queues no refresh (`syncMentalModelTriggers` in `src/hindsight.js`, called from `setupBank`, from the helper's bank setup and from the `triggers` action of `src/hindsight-health.js`). The BYOK meter charges one refresh window of 12 hours (`HS_REFRESH_WINDOW_MS` in `src/byok-meter.js`).
+
+A Hindsight bank limit can be set with the optional variable `HS_BANK_CAP` (unset or 0 means no limit): a new bank is refused when the environment already holds that many banks (`assertBankCap` in `src/hindsight.js`). The banks of a test account (owner email at example.com) get mental models with no automatic trigger, and the refreshes an import queues for them are cancelled (`src/test-tenant.js`). The Resident writes its alarm registry row to D1 only when something changed, backs off a stuck user input recovery to once a minute per receipt, and throttles alarms armed for the present time (`src/resident.js`). A race when the interview task is created twice at the same time is fixed (`src/interview.js`).
+
+The Models page lists the five memory jobs in a Memory group and lists the server's own embedding model read only. The public Models page keeps no Live comparison or dev to Live push.
+
+Local checks are `npm run test:core`, `npm run test:sync`, `npm run test:runtime`, `npm run test:web`, `npm run check:migrations`, and `npm run build`. Synthetic local checks do not establish live provider or Hindsight server behavior in another operator's environment.
+
 # Source update: 2026-10-18 (Add credits confirmation, self-hosted embedding model, review resume)
 
 ## Credits, file search embedding, helper reviews and the Models page

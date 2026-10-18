@@ -33,5 +33,11 @@ r = row(''); assert.match(r, /Draft the summary/); assert.match(r, /data-tkhelpe
 // A helper whose result card is this turn's card also counts.
 T.tkEvent('s', '1', {t: 'helper', helper: {id: 3, name: 'Review pass', status: 'waiting_input', started: 1, parent_card: 'turn1', result_card: 'turn2'}});
 assert.equal(T.turnHelpers('s|1').map(h => h.id).sort().join(), '2,3');
+// A paused worker's row names only what the person can do on screen: never "Needs your answer" with nothing to answer.
+const waiting = (kind, q) => T.progressStatus({id: 9, name: 'w', status: 'waiting_input', started: 1, input_kind: kind}, q);
+assert.equal(waiting('browser', false), 'Waiting on you in the browser');
+assert.equal(waiting('purchase_wait', false), 'Waiting on you to approve in Link');
+assert.equal(waiting('login', false), 'Subagent working'); assert.equal(waiting('purchase', true) === 'Needs your answer', true);
+assert.equal(waiting(null, false), 'Subagent working'); assert.equal(waiting(null, true), 'Needs your answer');
 console.log('PASS progress turn: the row shows only the current turn\'s helper; an older open helper stays out of it');
 process.exit(0);

@@ -17,6 +17,9 @@ const MUSE_C = "meta/muse-spark-1.3-contributor", MUSE_S = "meta/muse-spark-1.3"
 const LUNA = "openai/gpt-6-luna", HAIKU = "anthropic/claude-haiku-5.5";
 const OSS120 = "openai/gpt-oss-120b", GLM = "z-ai/glm-5.3-flash";
 const PPLX_DECIDER = "perplexity/pplx-decider-v1.1-27b";
+// The memory server's models (the jobs hs_retain, hs_consolidation, hs_reflect, hs_refresh and hs_rerank). Their starting values are what the Hindsight host's
+// compose file held before its calls moved behind the Worker: OpenRouter latest aliases.
+const HS_RETAIN = "~openai/gpt-luna-latest", HS_FLASH = "~deepseek/deepseek-flash-latest", HS_RERANK = "~perplexity/pplx-decider-latest";
 // Speech to text, in order (the Captain, 2026-10-15, "it is an accuracy choice"): AssemblyAI Universal-3.6 Pro first, then the earlier order.
 const STT_BEST = "assemblyai/universal-3-6-pro", STT = "qwen/qwen3-asr-0.6b", STT_FALLBACK = "openai/whisper-large-v3-turbo", STT_WAI = "@cf/openai/whisper-large-v3-turbo", LIVE_STT = "@cf/deepgram/nova-3";
 const CLEF = "@cf/cloudflare/clef", CLEF_FLASH = "@cf/cloudflare/clef-flash";
@@ -32,14 +35,19 @@ export const SEARCH_LINKUP = "cloudflare/linkup";
 //   max_price: { prompt, completion } in dollars per million tokens (null: the ceiling in model.js). results: how many results a web search asks for
 //   (only the web_search job has it; it is not a token limit).
 const SORTS = { vision_files: "throughput" };
-export const jobFieldDefaults = (id) => ({ max_output: null, sort: SORTS[id] ?? null, max_price: null, results: id === "web_search" ? 5 : null, timeout_ms: jobTimeoutDefault(id) });
+// The memory jobs start with the output limits the Hindsight server itself asked for (retain 64000 by its own default, consolidation, reflect and refresh 16000 by its
+// settings), because the Worker now sends the call and ignores the server's own limit. A saved empty value sends no limit.
+const MAX_OUTPUT = { hs_retain: 64000, hs_consolidation: 16000, hs_reflect: 16000, hs_refresh: 16000 };
+export const jobFieldDefaults = (id) => ({ max_output: MAX_OUTPUT[id] ?? null, sort: SORTS[id] ?? null, max_price: null, results: id === "web_search" ? 5 : null, timeout_ms: jobTimeoutDefault(id) });
 export const JOB_FIELDS = ["max_output", "sort", "max_price", "results", "timeout_ms"];
 // Jobs a later release added that an older saved version doesn't carry. They are filled in with this value
 // when read or checked, and nothing is written for it.
-export const OPTIONAL_JOB_IDS = ["look", "web_search", "browser_decider"];
-const OPTIONAL_MODEL = { look: MOONDREAM, web_search: SEARCH_LINKUP };
+export const OPTIONAL_JOB_IDS = ["look", "web_search", "browser_decider", "hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank"];
+const OPTIONAL_MODEL = { look: MOONDREAM, web_search: SEARCH_LINKUP, hs_retain: HS_RETAIN, hs_consolidation: HS_FLASH, hs_reflect: HS_FLASH, hs_refresh: HS_FLASH, hs_rerank: HS_RERANK };
+// The reasoning level each memory job started with (the server's own setting).
+const OPTIONAL_EFFORT = { hs_retain: "low", hs_consolidation: "none", hs_reflect: "low", hs_refresh: "low" };
 // browser_decider starts as a copy of the request sorter job (model, reasoning level and fallbacks), so `jobs` (the settings' jobs) says which; it adds no model facts.
-export const optionalJobDefault = (id, jobs = null) => id === "browser_decider" ? { job: (({ model, effort, strict, fallbacks }) => clone({ model, effort: effort ?? null, ...(strict ? { strict } : {}), fallbacks: fallbacks || [] }))(jobs?.decider || { model: PPLX_DECIDER, fallbacks: [] }), facts: null } : OPTIONAL_MODEL[id] ? { job: { model: OPTIONAL_MODEL[id], effort: null, fallbacks: [] }, facts: { id: OPTIONAL_MODEL[id], ...clone(SEED_FACTS[OPTIONAL_MODEL[id]]) } } : null;
+export const optionalJobDefault = (id, jobs = null) => id === "browser_decider" ? { job: (({ model, effort, strict, fallbacks }) => clone({ model, effort: effort ?? null, ...(strict ? { strict } : {}), fallbacks: fallbacks || [] }))(jobs?.decider || { model: PPLX_DECIDER, fallbacks: [] }), facts: null } : OPTIONAL_MODEL[id] ? { job: { model: OPTIONAL_MODEL[id], effort: OPTIONAL_EFFORT[id] ?? null, fallbacks: [] }, facts: { id: OPTIONAL_MODEL[id], ...clone(SEED_FACTS[OPTIONAL_MODEL[id]]) } } : null;
 
 // The third zero-data-retention model of a General list, used only when an older saved version (without categories) is converted to routing categories.
 export const ROUTING_ZDR_THIRD_MODEL = DEEPSEEK;
@@ -60,6 +68,11 @@ export const SEED_FACTS = {
   // low, high and max and can't turn it off (mandatory), so "none" is sent as "low" there.
   [GLM]: { name: "GLM 5.3 Flash", kinds: ["chore", "classic"], efforts: ["low", "high", "max"], quirks: { reasoning_mandatory: true } },
   [PPLX_DECIDER]: { name: "Perplexity Decider", kinds: ["decider"], efforts: [] },
+  // The memory server's latest aliases (OpenRouter resolves each to a current model when the call is made). Luna takes no temperature (the server's retain setting
+  // omitted it for the same reason), and the others take what the server sends.
+  [HS_RETAIN]: { name: "Luna (latest)", kinds: ["chat", "chore"], efforts: ["default", "none", "low", "medium", "high", "xhigh", "max"], quirks: { no_temperature: true, rate_limit_waits: true } },
+  [HS_FLASH]: { name: "DeepSeek Flash (latest)", kinds: ["chat", "chore", "classic"], efforts: ["default", "none", "low", "high", "max"] },
+  [HS_RERANK]: { name: "Perplexity Decider (latest)", kinds: ["decider"], efforts: [] },
   // formats: the input_audio formats it accepts (checked 2026-10-15: webm, m4a, mp4, mp3, ogg and flac answer 400 "only wav is supported";
   // 16-bit PCM WAV at any rate or channel count works, 8-bit and mu-law WAV don't; no length limit found up to 20 min / 38 MB).
   // sec_nano: price in nano-dollars per audio second, rounded up ($0.0000833333/s on OpenRouter), used for reservations.
@@ -164,6 +177,7 @@ function otherJobs() {
     workers_ai_chat: { model: WAI_CHAT, effort: null, fallbacks: [] },
     look: optionalJobDefault("look").job,
     web_search: optionalJobDefault("web_search").job,
+    ...Object.fromEntries(["hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank"].map((id) => [id, optionalJobDefault(id).job])),
   };
 }
 

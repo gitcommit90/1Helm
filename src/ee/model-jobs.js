@@ -37,6 +37,11 @@ export const JOB_KINDS = {
   // Web search through the Cloudflare Web Search API: the saved "model" is the search provider, written "cloudflare/<provider>". It writes no text, so
   // it has no token limit; its `results` field is the number of results (1 to 10), never empty. resultCount marks that meaning.
   search: { fallbacks: 0, effort: false, pick: "search", resultCount: true, needs: "Needs a web search provider." },
+  // The memory server (Hindsight). Its language model calls come through the Worker (ee/hindsight-llm.js), always on zero-data-retention endpoints and always with
+  // require_parameters, because Hindsight's structured answers and tool calls need an endpoint that honours every parameter.
+  memory: { fallbacks: 3, effort: true, zdr: true, pick: "chore" },
+  // Its reranker: a ranking model answers Hindsight's own /systemone request (a choice among the candidates) and writes no text.
+  rerank: { fallbacks: 2, effort: false, zdr: true, pick: "decider", latest: true, noOutput: true, needs: "Needs a ranking model (Perplexity or Jev style)." },
 };
 // Kinds whose job writes no text, so max_output can only be null.
 for (const k of ["speech", "speech_cloudflare", "speech_live", "embedding_files"]) JOB_KINDS[k].noOutput = true;
@@ -61,7 +66,7 @@ export const JOBS = [
   { id: "decider", kind: "decider", group: "routing", label: "Request sorter", description: "Reads each message and decides which kind of work it is, which picks the chat list." },
   { id: "handoff", kind: "chore", group: "background", label: "Task handoffs", description: "Short messages that pass context from one task to the next." },
   { id: "label", kind: "chore", group: "background", label: "Task titles", description: "Gives each task card its title." },
-  { id: "browser", kind: "chore", group: "background", label: "Browser summaries", description: "Plans what to type in the browser and summarizes what it did." },
+  { id: "browser", kind: "chore", group: "browser", label: "Browser typing and summaries", description: "Plans what to type into forms in the browser and writes the summary of what the browser did." },
   { id: "notes", kind: "chore", group: "background", label: "Live notes", description: "Takes notes while a task runs." },
   { id: "notes_refine", kind: "chore", group: "background", label: "Live notes cleanup", description: "Tidies the draft notes." },
   { id: "notes_final", kind: "chore", group: "background", label: "Final notes", description: "Writes the finished notes when a task ends." },
@@ -74,9 +79,14 @@ export const JOBS = [
   { id: "embed_files", kind: "embedding_files", group: "search", label: "File search index", description: "Makes the search index for your files. A fallback must be a model that the main model lists as equivalent. Changing the main model to a different one means each channel rebuilds its file indexes." },
   { id: "vision_files", kind: "vision", group: "search", label: "Picture descriptions", description: "Describes pictures and reads text in them when a file is a picture." },
   { id: "workers_ai_chat", kind: "workers_ai", group: "other", label: "Backup chat", description: "Answers when OpenRouter can't be reached, or on a self-hosted install with no OpenRouter key." },
+  { id: "hs_retain", kind: "memory", group: "memory", label: "Memory: retain", description: "Reads each saved conversation, note and file and writes down the facts in it. The memory server asks for this model every time something is retained." },
+  { id: "hs_consolidation", kind: "memory", group: "memory", label: "Memory: consolidation", description: "Merges new facts into the beliefs the memory keeps about a channel. It runs after retains." },
+  { id: "hs_reflect", kind: "memory", group: "memory", label: "Memory: reflect", description: "Answers a question by searching the memory for facts, in several steps." },
+  { id: "hs_refresh", kind: "memory", group: "memory", label: "Memory: page refresh", description: "Rewrites the Notebook pages (profile, people, places and the others) from the memory." },
+  { id: "hs_rerank", kind: "rerank", group: "memory", label: "Memory: recall ranking", description: "Puts the facts found by a memory search in order of how well they answer the question. If it fails, the order the search found them in is used." },
   { id: "web_search", kind: "search", group: "search", label: "Web search", description: "Finds web pages for a question when DuckDuckGo has no answer. The model is the search provider, and max output is the number of results it asks for." },
-  { id: "browser_decider", kind: "decider", group: "routing", label: "Browser decisions", description: "Decides the browser's next step on each page." },
-  { id: "look", kind: "look", group: "other", label: "Browser look", description: "Looks at a page in the browser and answers questions about it, or points at something on it." },
+  { id: "browser_decider", kind: "decider", group: "browser", label: "Browser next step", description: "Reads each page and decides the browser's next action, such as clicking, typing, scrolling or stopping." },
+  { id: "look", kind: "look", group: "browser", label: "Browser screen reading", description: "Looks at a picture of a page in the browser and answers questions about it, or points at something on it." },
 ];
 // Calls that use no hosted model. The Models page shows them as read-only lines so every outside call is listed in one place.
 export const NO_MODEL_LINES = [
@@ -87,7 +97,9 @@ export const jobDef = (id) => JOBS.find((j) => j.id === id) || null;
 export const GROUPS = [
   { id: "chat", title: "Chat categories", note: "The routing categories choose the models that answer you, and each category sets its own max output, provider sort, max price and timeout. The first model that your privacy setting allows answers, and the next one takes over if it fails." },
   { id: "routing", title: "Routing", note: "Picks the kind of request." },
+  { id: "browser", title: "Browser", note: "The models the browser uses: one decides each next step, one writes what to type and summarizes the result, and one reads the screen as a picture." },
   { id: "background", title: "Background jobs", note: "Work that runs behind the scenes. These always use zero-data-retention providers." },
+  { id: "memory", title: "Memory (Hindsight)", note: "On the Cloud service the memory server asks the Worker for each of these calls, so they are set and shown here like every other job. They use zero-data-retention providers. The memory server's own embeddings run on that server and are listed read only." },
   { id: "speech", title: "Speech", note: "" },
   { id: "search", title: "Search and pictures", note: "" },
   { id: "other", title: "Other", note: "Jobs outside the groups above. They are saved like every other job." },

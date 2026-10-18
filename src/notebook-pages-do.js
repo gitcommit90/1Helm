@@ -11,7 +11,7 @@ import { METER } from "./byok-meter.js";
 import { stDelete } from "./storage.js";
 
 const PHOTO = "nb_photo", KEY = "hs_pr", ASKED = "hs_pr_asked", POLL_MS = 20e3, GIVE_UP_MS = 30 * 60e3, TRIES_MAX = 4;
-// A page that has never been built is refreshed on request at most once per this many ms, the same as the template's min_refresh_interval_seconds (1,800).
+// A page that has never been built is refreshed on request at most once per this many ms (the app's own limit on the explicit refresh the Notebook asks for, not a Hindsight setting).
 export const ASK_EVERY_MS = 1800e3;
 const jp = (s) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
 

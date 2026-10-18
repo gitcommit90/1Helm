@@ -1,32 +1,27 @@
-// The models the Hindsight memory server uses. They are set in the server's own compose file (on the
-// Hindsight host, documented with the server), not in the saved model settings, and Hindsight 1.0.0 has no call that returns
-// them (GET /version lists features only, and a bank's GET /config has no model fields). The Models page therefore shows this constant, read only,
-// and scripts/check-hindsight-models.mjs compares it with the real container environment so a change on the host cannot go unnoticed.
-// The "~" ids are OpenRouter latest aliases that resolve to a current model when called (changed 2026-10-16).
-// Provider routing (changed 2026-10-17): no job names a provider. Every language model job sends OpenRouter's own provider settings,
-// zero data retention (zdr true, data_collection deny) and require_parameters, and OpenRouter picks the provider. The earlier
-// provider "only" lists (relace for consolidation, reflect and refresh, azure for retain, with no fallback) were removed.
-// When the host changes, change this file in the same release.
-export const HINDSIGHT_PROVIDER_ROUTING = '{"provider":{"zdr":true,"data_collection":"deny","require_parameters":true}}';
+// What the Hindsight memory server does that is NOT a model job on the Models page.
+//
+// On the Cloud service the server's language model calls (retain, consolidation, reflect, mental model refresh) and its recall reranker come through the Worker
+// (src/ee/hindsight-llm.js), so they are the saved jobs hs_retain, hs_consolidation, hs_reflect, hs_refresh and hs_rerank, set like every other job. The server's embeddings
+// run inside the server on its own CPU (no model call), so the Models page lists them read only. A self-hosted install that does not turn on the Cloud switch keeps the
+// models in its own Hindsight server settings, and nothing in this Worker changes them.
 export const HINDSIGHT_SET_IN = "the Hindsight host's compose file";
-// env: the variable that holds the value on the host, checked by the script.
-export const HINDSIGHT_MODELS = [
-  { id: "retain", label: "Retain (fact extraction)", model: "~openai/gpt-luna-latest", effort: "low", note: "OpenRouter latest alias", provider: HINDSIGHT_PROVIDER_ROUTING, env: { model: "HINDSIGHT_API_RETAIN_LLM_MODEL", effort: "HINDSIGHT_API_RETAIN_LLM_REASONING_EFFORT", provider: "HINDSIGHT_API_RETAIN_LLM_EXTRA_BODY" } },
-  { id: "consolidation", label: "Consolidation (observations)", model: "~deepseek/deepseek-flash-latest", effort: "none", provider: HINDSIGHT_PROVIDER_ROUTING, env: { model: "HINDSIGHT_API_CONSOLIDATION_LLM_MODEL", effort: "HINDSIGHT_API_CONSOLIDATION_LLM_REASONING_EFFORT", provider: "HINDSIGHT_API_CONSOLIDATION_LLM_EXTRA_BODY" } },
-  { id: "reflect", label: "Reflect", model: "~deepseek/deepseek-flash-latest", effort: "low", provider: HINDSIGHT_PROVIDER_ROUTING, env: { model: "HINDSIGHT_API_REFLECT_LLM_MODEL", effort: "HINDSIGHT_API_REFLECT_LLM_REASONING_EFFORT", provider: "HINDSIGHT_API_REFLECT_LLM_EXTRA_BODY" } },
-  { id: "refresh", label: "Mental model and knowledge page refresh", model: "~deepseek/deepseek-flash-latest", effort: "low", provider: HINDSIGHT_PROVIDER_ROUTING, env: { model: "HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_MODEL", effort: "HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_REASONING_EFFORT", provider: "HINDSIGHT_API_MENTAL_MODEL_REFRESH_LLM_EXTRA_BODY" } },
-  { id: "reranker", label: "Reranker", model: "~perplexity/pplx-decider-latest", effort: null, note: "Runs through OpenRouter, with rrf order as the fallback", env: { model: "HINDSIGHT_API_RERANKER_TYPESAFE_MODEL" } },
-  { id: "embeddings", label: "Embeddings", model: "BAAI/bge-small-en-v1.5", effort: null, note: "runs inside the server (384 dimensions)", env: { model: "HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL" } },
+// env: the variable that holds the value on the host.
+export const HINDSIGHT_LOCAL = [
+  { id: "embeddings", label: "Embeddings", model: "BAAI/bge-small-en-v1.5", effort: null, note: "runs inside the server (384 dimensions), no model call", env: { model: "HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL" } },
 ];
-// The variables the script reads: names only from the list above, never a key, token, secret, password or URL.
-export const HINDSIGHT_ENV_NAMES = HINDSIGHT_MODELS.flatMap((m) => Object.values(m.env));
-// text: lines of NAME=value from the container (only the names above). Returns the differences, empty when the constant is right.
+// The bank id goes to the Worker as the OpenAI `user` field and the reranker header, and the Worker removes it before any provider sees it.
+export const HINDSIGHT_SWITCHES = { HINDSIGHT_API_LLM_SEND_BANK_AS_USER: "true", HINDSIGHT_API_RERANKER_SEND_BANK_AS_HEADER: "true" };
+
+// The variables that may be read as plain values: only the embeddings model and the two switches, never a key, token, secret, password or URL.
+export const HINDSIGHT_ENV_NAMES = [...HINDSIGHT_LOCAL.flatMap((m) => Object.values(m.env)), ...Object.keys(HINDSIGHT_SWITCHES)];
+// text: lines of NAME=value from the container (only the names above). Returns the differences, empty when the host is right.
 export function compareHindsightEnv(text) {
   const got = new Map(String(text || "").split("\n").map((l) => l.trim()).filter(Boolean).map((l) => { const i = l.indexOf("="); return i < 0 ? [l, ""] : [l.slice(0, i), l.slice(i + 1)]; }));
   const out = [];
-  for (const m of HINDSIGHT_MODELS) for (const [field, name] of Object.entries(m.env)) {
+  for (const m of HINDSIGHT_LOCAL) for (const [field, name] of Object.entries(m.env)) {
     const want = m[field], have = got.get(name);
     if (have !== want) out.push({ job: m.id, variable: name, expected: want, actual: have ?? null });
   }
+  for (const [name, want] of Object.entries(HINDSIGHT_SWITCHES)) { const have = got.get(name); if (have !== want) out.push({ job: "wiring", variable: name, expected: want, actual: have ?? null }); }
   return out;
 }

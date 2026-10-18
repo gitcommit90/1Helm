@@ -42,7 +42,8 @@ for (const job of ["decider"]) for (const m of [CLEF, ID.PPLX, ID.JEV]) assert.d
 // ---- picker lists: only models the save check accepts ----
 { const opts = modelSettingsOptions(SEED), ids = (k) => opts.choices[k].map((m) => m.id);
   for (const def of JOBS) { const kind = JOB_KINDS[def.kind];
-    for (const id of ids(kind.pick)) assert.ok(kindOk(factsOf(id), kind), `${id} is offered for ${def.id} and is accepted`);
+    const sharing = Object.values(JOB_KINDS).filter((k) => k.pick === kind.pick);   // kinds that share a pick offer a model when any of them accepts it
+    for (const id of ids(kind.pick)) assert.ok(sharing.some((k) => kindOk(factsOf(id), k)), `${id} is offered for ${def.id} and is accepted`);
     for (const [id, m] of Object.entries(SEED.catalog)) if (kindOk(m, kind) && !ids(kind.pick).includes(id)) assert.ok(JOB_KINDS[def.kind].zdr, `${id} left out of ${def.id} only for the zero-data-retention rule`); }
   assert.ok(ids("workers_decider").includes(CLEF) && ids("workers_decider").includes(ID.DEEPSEEK) && !ids("workers_decider").includes(ID.STT) && !ids("workers_decider").includes(ID.MUSE_C), "the picker for the decision models lists Clef and chat models and no speech model");
   assert.ok(ids("workers_decider").includes(ID.PPLX) && ids("workers_decider").includes(ID.JEV)); assert.ok(ids("decider").includes(ID.PPLX) && ids("decider").includes(ID.DEEPSEEK) && ids("decider").includes(CLEF));

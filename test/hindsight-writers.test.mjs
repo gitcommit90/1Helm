@@ -256,13 +256,13 @@ const bankOf = (m) => m.f.bank("dev-t1-" + (m.R.get("channel")));
   const holds = []; R.env.BYOK = "1"; R.byokHold = async (kind, nano) => { holds.push([kind, nano]); return { done: async (n) => n }; };
   await R.hsTurnWrite({ turn: "t1", session: "s1", at: T1, userText: "x".repeat(250), reply: "y".repeat(250) });
   const turnHold = holds.find((h) => h[0] === "hs-retain"); assert.ok(turnHold && turnHold[1] > 0, "a normal write keeps its hold before the retain"); const sentLen = f.calls.filter((c) => c.p.endsWith("/memories")).flatMap((c) => c.body.items).filter((i) => i.document_id.startsWith("conv:")).at(-1).content.length; assert.equal(turnHold[1], hsRetainNano(sentLen, 5), "priced by the meter in src/byok.js, on the characters sent");
-  // the refresh runs are charged by window (src/byok.js hs_refresh_run): not again within an hour, again after it, given back when a send fails
+  // the refresh runs are charged by window (src/byok.js hs_refresh_run): not again within 12 hours, again after it, given back when a send fails
   { const sent = () => f.calls.filter((c) => c.p.endsWith("/memories")).flatMap((c) => c.body.items).filter((i) => i.document_id.startsWith("conv:")).at(-1).content.length; holds.length = 0;
     await R.hsTurnWrite({ turn: "t1b", session: "s1", at: T1 + 2, userText: "x".repeat(300), reply: "y".repeat(300) });
     assert.equal(holds.find((h) => h[0] === "hs-retain")[1], hsRetainNano(sent(), 0), "inside the hour: extraction and consolidation only");
-    R.put("hs_refresh_at", Date.now() - 3601e3); holds.length = 0;
+    R.put("hs_refresh_at", Date.now() - 43201e3); holds.length = 0;
     await R.hsTurnWrite({ turn: "t1c", session: "s1", at: T1 + 3, userText: "x".repeat(300), reply: "y".repeat(300) });
-    assert.equal(holds.find((h) => h[0] === "hs-retain")[1], hsRetainNano(sent(), 5), "after the hour: the 5 General models again");
+    assert.equal(holds.find((h) => h[0] === "hs-retain")[1], hsRetainNano(sent(), 5), "after the 12 hour window: the 5 General models again");
     R.byokHold = async (kind, nano) => ({ done: async (n) => n }); R.put("hs_refresh_at", "0"); const hh = await R.hsRetainHold([100]); assert.ok(Number(R.get("hs_refresh_at")) > 0); await hh.done(0); assert.equal(R.get("hs_refresh_at"), "0", "a failed send gives the window back");
     R.byokHold = async (kind, nano) => { holds.push([kind, nano]); return { done: async (n) => n }; }; }
   // no credits: skipped, nothing sent

@@ -192,14 +192,16 @@ async function mainChannel(env, tid) { return (await archiveOf(env, tid).channel
 
 // Create the task once per person. A row in interviews means it was offered (open, finished, ticked or removed): never again.
 // The claim (INSERT OR IGNORE) makes two boots at once create one task, not two.
+// Another boot is creating the task right now (its row says "creating"): wait for it (a couple of seconds at most).
+async function waitWhileCreating(env, tenant, r) {
+  for (let i = 0; i < 15 && r?.status === "creating"; i++) { await new Promise((z) => setTimeout(z, 150)); r = await rowOf(env, tenant); }
+  return r;
+}
 export async function interviewEnsure(env, t, tz = "") {
-  const have = await rowOf(env, t.id); if (have) return have;
+  const have = await rowOf(env, t.id); if (have) return have.status === "creating" ? waitWhileCreating(env, t.id, have) : have;
   const at = Date.now();
   const claim = await env.DB.prepare("INSERT OR IGNORE INTO interviews (tenant_id,status,step,answers,known,created_at,updated_at) VALUES (?,'creating',0,'{}','{}',?,?)").bind(t.id, at, at).run();
-  if (!claim?.meta?.changes) {   // another boot is creating it right now: wait for its task (a couple of seconds at most)
-    let r = await rowOf(env, t.id); for (let i = 0; i < 15 && r?.status === "creating"; i++) { await new Promise((z) => setTimeout(z, 150)); r = await rowOf(env, t.id); }
-    return r;
-  }
+  if (!claim?.meta?.changes) return waitWhileCreating(env, t.id, await rowOf(env, t.id));
   try {
     const ch = await mainChannel(env, t.id); if (!ch) throw new Error("no General channel yet");
     const R = residentOf(env, t.id); await R.bind(t.id, "main", String(ch.id), tz || undefined);

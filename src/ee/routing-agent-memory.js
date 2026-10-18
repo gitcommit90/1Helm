@@ -1,6 +1,6 @@
 // Raw agent records belong to one separate Hindsight bank per channel.
 // Raw agent records are the one exception to the main conversation memory bank, and they keep their own banks.
-import { hs, hsOn, bankPath, contentHash, retainV2, scrubContent, cancelOperation, deleteBank, listBanks, opUuid } from "../hindsight.js";
+import { hs, hsOn, bankPath, contentHash, retainV2, scrubContent, cancelOperation, deleteBank, listBanks, opUuid, assertBankCap } from "../hindsight.js";
 import { scrubSecrets } from "../secrets-scrub.js";
 const VERSION = "agent-raw-v1";
 export const AGENT_BANK_CONFIG = Object.freeze({ retain_extraction_mode: "chunks", enable_observations: false, enable_auto_consolidation: false, enable_reranking: false, store_document_text: true, audit_log_enabled: false });
@@ -16,6 +16,7 @@ const boundBank = async R => { const { tenant, channel } = scope(R); return agen
 export const agentDocumentId = (kind, h, round = h.round || 1) => `${kind}:${String(h.session)}:${Number(h.id)}:${Number(round)}`;
 const validDocument = id => /^(sublog|subconv):[^:\/\\]{1,160}:\d+:\d+(?::m[a-zA-Z0-9_-]{1,100})?$/.test(String(id));
 async function ensureBare(env, bank, { create = false } = {}) {
+  if (create) await assertBankCap(env, bank);
   if (create) await hs(env, bankPath(bank), { method: "PUT", body: { retain_extraction_mode: "chunks", enable_observations: false } });
   let current; try { current = await hs(env, `${bankPath(bank)}/config`); } catch (e) { if (!create && e.status === 404) return false; throw e; }
   if (Object.entries(AGENT_BANK_CONFIG).some(([k,v]) => current?.config?.[k] !== v)) {

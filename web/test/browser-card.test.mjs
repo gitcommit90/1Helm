@@ -14,6 +14,8 @@ s.streaming = false; s.state = 'idle'; s.srv = { state:'idle' }; assert.equal(se
 s = task({ srv:{ state:'working' } }); assert.equal(settleBrowserCards(s), false);
 // waiting on the person in the browser: the hand-off card stays, the "using" card goes
 s = task({ srv:{ state:'waiting', waiting:'browser' } }); settleBrowserCards(s); assert.deepEqual(left(s), ['plan','browser:h']);
+// the server's saved handoff stays while an approval is what the task reports first; a live handoff card does not
+s = task({ srv:{ state:'waiting', waiting:'approval' }, messages:[{ cards:[{ ...handoff(), stored:true }] }, { cards:[handoff()] }] }); settleBrowserCards(s); assert.deepEqual(left(s), ['browser:h']);
 // nothing to remove
 s = task({ messages:[{ cards:[other] }, {}] }); assert.equal(settleBrowserCards(s), false);
 console.log('PASS browser card settles on every end path');

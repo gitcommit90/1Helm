@@ -27,13 +27,13 @@ export function orchestrationInit(sql) {
   for (const column of ["dynamic_routing INTEGER NOT NULL DEFAULT 0", "required_delegation INTEGER NOT NULL DEFAULT 0", "profile_json TEXT", "primary_profile_json TEXT", "category TEXT", "round INTEGER NOT NULL DEFAULT 1", "history_json TEXT", "round_started INTEGER", "round_request TEXT", "handoff_json TEXT"]) {
     try { sql.exec(`ALTER TABLE helpers ADD COLUMN ${column}`); } catch {}
   }
-  for (const column of ["input_question TEXT", "input_card TEXT"]) { try { sql.exec(`ALTER TABLE helpers ADD COLUMN ${column}`); } catch {} }
+  for (const column of ["input_question TEXT", "input_card TEXT", "input_kind TEXT"]) { try { sql.exec(`ALTER TABLE helpers ADD COLUMN ${column}`); } catch {} }
   sql.exec("CREATE TABLE IF NOT EXISTS helper_rounds (helper_id INTEGER NOT NULL, round INTEGER NOT NULL, card TEXT, response TEXT, log TEXT, files_json TEXT, ended INTEGER NOT NULL, PRIMARY KEY(helper_id,round))");
   for (const column of ["request TEXT", "started INTEGER"]) { try { sql.exec(`ALTER TABLE helper_rounds ADD COLUMN ${column}`); } catch {} }
 }
 export function helpersInit(sql) {
   for (const q of HELPERS_DDL) sql.exec(q);
-  orchestrationInit(sql); userInputInit(sql);
+  orchestrationInit(sql); userInputInit(sql); helperRequestsInit(sql);
   try { sql.exec("ALTER TABLE helpers ADD COLUMN why TEXT"); } catch {}
   try { sql.exec("ALTER TABLE helpers ADD COLUMN context TEXT"); } catch {}
   try { sql.exec("ALTER TABLE helpers ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'"); } catch {}
@@ -100,7 +100,8 @@ export const HELPER_DENIED = [
   "gmail_send", "gmail_draft", "calendar_add", "app_run", "app_proxy",                                                  // sending/posting
   "offer_connect", "apps_i_use",                                                                                        // cards in the person's chat (connect-offer.js); their apps list (apps-used.js)
 ];
-const ROUTED_ACTIONS = new Set(["app_run", "app_proxy", "browser_navigate", "browser_snapshot", "browser_act", "browser_screenshot", "browser_handoff", "browser_task"]);
+const ROUTED_ACTIONS = new Set(["app_run", "app_proxy", "browser_navigate", "browser_snapshot", "browser_act", "browser_screenshot", "browser_handoff", "browser_task",
+  "browser_fill_login", "browser_fill_card", "check_purchase", "request_saved_login", "request_purchase"]);   // the last five are gated in resident.js: a login or card is typed only after Primary approved the worker's request
 export const helperAllowed = (name, helper = null, phase = null) => HELPER_ALLOWED.has(String(name)) ||
   (helper?.dynamic_routing && (["done", "request_input"].includes(name) || helper.required_delegation && ROUTED_ACTIONS.has(String(name)))) ||
   (helper?.role === "coordinator" && phase === "dispatch" && COORDINATOR_CONTROLS.has(String(name)));
@@ -233,7 +234,7 @@ export function helperView(h) {
   const live = h.status === "running";   // a running helper shows what it has used so far, not the totals written when it ends
   return { id: h.id, name: h.name, task: h.task, status: h.status, started: h.started, ended: h.ended ?? null, steps: live ? Math.max(h.steps || 0, h.live_tool_calls || 0) : h.steps, charge_nano: live ? Math.max(h.charge_nano || 0, h.live_charge_nano || 0) : h.charge_nano,
     parent_card: h.parent_card ?? null, card: h.card ?? null, result_card: h.result_card ?? null, stopped_by: h.stopped_by ?? null,
-    role: h.role || "worker", coordinator_id: h.coordinator_id ?? null, ...(h.phase ? { phase: h.phase } : {}), ...(h.why ? { why: h.why } : {}) };
+    input_kind: h.input_kind ?? null, role: h.role || "worker", coordinator_id: h.coordinator_id ?? null, ...(h.phase ? { phase: h.phase } : {}), ...(h.why ? { why: h.why } : {}) };
 }
 export const helperRow = (sql, id) => sql.exec("SELECT * FROM helpers WHERE id=?", Number(id)).toArray()[0];
 export const runningHelpers = (sql, session) => sql.exec("SELECT * FROM helpers WHERE session=? AND status='running' ORDER BY id", String(session)).toArray();
@@ -269,12 +270,12 @@ export const pendingHandoffs = (sql) => sql.exec("SELECT * FROM helpers WHERE ha
 // Pure SQL over the helper and card rows. -> { failed: [ids], reoffered: [ids] }
 export function reconcileHelperReviews(sql, now = Date.now()) {
   const out = { failed: [], reoffered: [] };
-  const rows = sql.exec("SELECT h.id, h.session, h.handed, h.review_tries, h.result_card, h.card, (SELECT status FROM cards WHERE id=h.card) own, (SELECT status FROM cards WHERE id=h.result_card) rev FROM helpers h WHERE h.dynamic_routing=1 AND h.coordinator_id IS NULL AND h.status IN ('awaiting_review','waiting_input')").toArray();
+  const rows = sql.exec("SELECT h.id, h.session, h.input_kind, h.handed, h.review_tries, h.result_card, h.card, (SELECT status FROM cards WHERE id=h.card) own, (SELECT status FROM cards WHERE id=h.result_card) rev FROM helpers h WHERE h.dynamic_routing=1 AND h.coordinator_id IS NULL AND h.status IN ('awaiting_review','waiting_input')").toArray();
   const dead = (st) => st === "failed" || st === "interrupted" || st === "stopped";
   for (const x of rows) {
     let why = null, error = null;
     if (x.own === "failed") { why = "its own run failed"; error = "The worker's run failed before its result could be reviewed."; }
-    else if (x.handed && x.result_card && dead(x.rev)) {
+    else if (x.handed && x.result_card && dead(x.rev) && x.input_kind !== "browser") {   // a browser pause has no review to redo: the person hands back
       if (!x.review_tries) { sql.exec("UPDATE helpers SET handed=0, result_card=NULL, review_tries=1 WHERE id=? AND status IN ('awaiting_review','waiting_input')", x.id); out.reoffered.push(x.id); continue; }
       why = "review did not finish"; error = "The review of this worker's result did not finish, so the result was not approved. Its response and log are kept.";
     }
@@ -304,3 +305,35 @@ export function liveTurnOf(res, session) {
 export const helperTcOf = (res, id) => [...res.active.values()].find((t) => !t.finished && (t.helperId === Number(id) || t.helper?.id === Number(id))) || null;
 // {t:"helper"} to whoever watches the task.
 export function emitHelper(res, h) { const v = helperView(h); try { liveTurnOf(res, h.session)?.emit?.({ t: "helper", helper: v }); } catch {} return v; }
+
+// ---- A routed worker's requests to Primary (browser handoff, saved login, purchase) ----
+// One row per pause. kind "browser": the person has the browser (status "open"). kind "login" / "purchase": Primary decides ("pending", then
+// "approved" or "denied"). A login grant lets the system type the saved login for that site into the worker's browser, a few times, for a short time.
+export const LOGIN_GRANT_MS = 10 * 60e3;
+export const LOGIN_GRANT_USES = 4;
+export function helperRequestsInit(sql) {
+  sql.exec("CREATE TABLE IF NOT EXISTS helper_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, helper_id INTEGER NOT NULL, round INTEGER NOT NULL, kind TEXT NOT NULL, site TEXT, url TEXT, job TEXT, detail TEXT, username TEXT, params_json TEXT, status TEXT NOT NULL, created INTEGER NOT NULL, decided INTEGER, note TEXT, uses INTEGER NOT NULL DEFAULT 0, expires INTEGER, purchase_id TEXT)");
+}
+// A pause for this round: the same request again (a replayed call) returns the first row.
+export function helperRequestOpen(sql, h, kind, fields = {}, now = Date.now()) {
+  const old = sql.exec("SELECT * FROM helper_requests WHERE helper_id=? AND round=? AND kind=? AND status IN ('open','pending') ORDER BY id DESC LIMIT 1", h.id, h.round, kind).toArray()[0];
+  if (old) return old;
+  sql.exec("INSERT INTO helper_requests (helper_id,round,kind,site,url,job,detail,username,params_json,status,created) VALUES (?,?,?,?,?,?,?,?,?,?,?)", h.id, h.round, kind, fields.site || null, fields.url || null,
+    String(fields.job || "").slice(0, 600) || null, String(fields.detail || "").slice(0, 600) || null, fields.username || null, fields.params ? JSON.stringify(fields.params) : null, kind === "browser" ? "open" : "pending", now);
+  return sql.exec("SELECT * FROM helper_requests WHERE id=last_insert_rowid()").toArray()[0];
+}
+export const helperRequestPending = (sql, helperId) => sql.exec("SELECT * FROM helper_requests WHERE helper_id=? AND status IN ('open','pending') ORDER BY id DESC LIMIT 1", Number(helperId)).toArray()[0] || null;
+// The approved, unexpired login grant covering this site for this worker, or null.
+export function workerLoginGrant(sql, helperId, hostMatches, now = Date.now()) {
+  return sql.exec("SELECT * FROM helper_requests WHERE helper_id=? AND kind='login' AND status='approved' AND expires>? AND uses<? ORDER BY id DESC", Number(helperId), now, LOGIN_GRANT_USES).toArray().find((r) => hostMatches(r.site)) || null;
+}
+export const workerPurchaseGrant = (sql, helperId, purchaseId) => sql.exec("SELECT * FROM helper_requests WHERE helper_id=? AND kind='purchase' AND status='approved' AND purchase_id=? ORDER BY id DESC LIMIT 1", Number(helperId), String(purchaseId || "")).toArray()[0] || null;
+// What Primary reads when the worker pauses on one of these. Worker-supplied words are labeled as the worker's, never as the person's.
+export function workerPauseNote(h, req, round) {
+  const job = String(h.task || "").slice(0, 400), said = (x) => JSON.stringify(String(x || "").slice(0, 400));
+  const head = `(Context note, not from the person: worker #${h.id} paused.`;
+  if (req?.kind === "browser") return `${head} It handed its live browser to the person. The person was shown the Take control card with the worker's instructions ${said(req.job)}${req.url ? ` on ${req.url}` : ""}. It has not finished and cannot be approved. The person's next message or the hand back button comes to you, and you then send it to this same worker with message_subagent.)`;
+  if (req?.kind === "login") return `${head} It asks to sign in with the person's saved login. Site: ${req.site}. Page address recorded by the system: ${req.url || "unknown"}. Account: ${req.username || "the saved account"}. The worker's job: ${said(job)}. The worker's own reason (the worker's words, not verified): ${said(req.detail)}. Decide with decide_worker_request (id ${h.id}), or ask the person with ask_user if you are unsure. The password is never shown to you or to the worker.)`;
+  if (req?.kind === "purchase") { const p = JSON.parse(req.params_json || "{}"); return `${head} It asks to start a purchase with the person's Link wallet. Store: ${said(p.merchant_name)}. Checkout page recorded by the system: ${req.url || "unknown"}. Total: ${Number.isFinite(Number(p.amount_cents)) ? `${(Number(p.amount_cents) / 100).toFixed(2)} ${String(p.currency || "usd").toUpperCase()}` : "unknown"}. What the worker says it is buying: ${said(p.context)}. The worker's job: ${said(job)}. Decide with decide_worker_request (id ${h.id}), or ask the person with ask_user if you are unsure. Approving only asks the person to approve in Link; nothing is charged without that approval.)`; }
+  return null;
+}

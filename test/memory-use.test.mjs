@@ -107,11 +107,11 @@ const store = () => { const m = new Map(); return { get: (k) => m.get(k), put: (
     assert.ok(!("use_models" in t), "the topic models are gone from the template");
     const ids = t.mental_models.map((m) => m.id); assert.ok(!ids.some((id) => /^topic-/.test(id)), "no topic models");
     assert.ok(!JSON.stringify(t).match(/\{(first|helper|channel|purpose)\}/), "no placeholder left");
-    for (const m of t.mental_models) assert.ok(m.source_query && m.max_tokens && m.trigger?.mode === "full" && m.trigger.refresh_after_consolidation === true, m.id);
+    for (const m of t.mental_models) assert.ok(m.source_query && m.max_tokens && m.trigger?.mode === "full" && m.trigger.refresh_cron === "0 10,22 * * *" && !("refresh_after_consolidation" in m.trigger), m.id);
   }
   assert.deepEqual(fillTemplate("general", V).mental_models.map((m) => m.id), ["profile", "routines", "active-tasks", "people", "places"]); assert.deepEqual(fillTemplate("channel", V).mental_models.map((m) => m.id), ["brief", "active-tasks", "decisions"]);
-  assert.equal(TEMPLATE_VERSION, "p10-3", "a template change bumps the key of every bank, so each imports the new settings once");
-  assert.ok(templateKey("general", V).startsWith("p10-3|"));
+  assert.equal(TEMPLATE_VERSION, "p10-4", "a template change bumps the key of every bank, so each imports the new settings once");
+  assert.ok(templateKey("general", V).startsWith("p10-4|"));
   ok("A4. templates: no topic models, one version key");
 }
 {
