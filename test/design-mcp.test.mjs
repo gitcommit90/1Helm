@@ -11,7 +11,7 @@ import { clearRegistryCache } from "../design-mcp/src/registry.js";
 import { readSkill } from "../src/skills/index.js";
 import { FILES } from "../src/skills/bundle.js";
 import { staticCore, render, SECTIONS } from "../src/prompt/index.js";
-import { DESIGNED_WORK, HELPER_PROMPT } from "../src/helpers.js";
+import { DESIGNED_WORK, DESIGNED_WORK_NO_BD, HELPER_PROMPT } from "../src/helpers.js";
 
 const ok = (name) => console.log("  ok", name);
 const ORIGIN = "https://mcp.test";
@@ -207,16 +207,16 @@ const BD_ON = { better_design: true };   // an account where Better Design is on
   assert.ok(FILES["artifacts/scripts/design_mcp.py"], "the script is bundled");
   for (const [name, t] of [["web-page", readSkill({ slug: "artifacts", ref: "web-page" }, BD_ON)], ["presentation", readSkill({ slug: "artifacts", ref: "presentation" }, BD_ON)], ["pdf-design", readSkill({ slug: "artifacts", ref: "pdf-design" }, BD_ON)]]) {
     assert.match(t, /artifacts skill/, `${name} points at the list in the artifacts skill`);
-    assert.match(t, /Better Design/); assert.match(t, /find-design-system/); assert.match(t, /get-review-rules/);
+    assert.match(t, /Better Design/); assert.match(t, /better_design_find_design_system/); assert.match(t, /better_design_get_review_rules/);
   }
   const list = readSkill({ slug: "artifacts" }, { apps: true, better_design: true });
-  assert.ok(list.includes(script), "the artifacts skill shows the script");
-  assert.match(list, /better-design/); assert.match(list, /without mentioning them to the person/); assert.match(list, /go on without it/);
+  assert.ok(!list.includes(script), "the artifacts skill no longer names the script");
+  assert.match(list, /better_design_/); assert.match(list, /without mentioning them to the person/); assert.match(list, /go on without it/);
   for (const w of ["Inspo", "Better Design", "Magic UI", "React Bits", "Canvas UI", "Use for:"]) assert.ok(list.includes(w), `the list has ${w}`);
   assert.equal((list.match(/Use for:/g) || []).length, 5, "each of the five sources says what to use it for");
   const web = readSkill({ slug: "artifacts", ref: "web-page" }, BD_ON);
-  for (const w of ["get-motion-guide", "get-ux-principle", "find-icons"]) assert.ok(web.includes(w), `web-page names ${w}`);
-  for (const w of ["magicui", "reactbits", "canvasui", "searchRegistryItems", "getRegistryItem", "get-design-system-kit", "extract-from-url", "-JS-CSS", "-vanilla"]) assert.ok(list.includes(w), `the list names ${w}`);
+  for (const w of ["better_design_get_motion_guide", "better_design_get_ux_principle", "better_design_find_icons"]) assert.ok(web.includes(w), `web-page names ${w}`);
+  for (const w of ["magicui", "reactbits", "canvasui", "searchRegistryItems", "getRegistryItem", "get_design_system_kit", "extract_from_url", "-JS-CSS", "-vanilla"]) assert.ok(list.includes(w), `the list names ${w}`);
   const BD = ["find-design-system", "get-design-system-kit", "get-ux-principle", "get-ui-principle", "get-motion-guide", "find-icons", "get-review-rules"];
   for (const n of BD) assert.ok(/^[a-z]+(-[a-z]+)+$/.test(n));
     assert.match(readFileSync(new URL("../src/skills/business-setup/SKILL.md", import.meta.url), "utf8"), /artifacts skill's list/);
@@ -233,15 +233,17 @@ const BD_ON = { better_design: true };   // an account where Better Design is on
     assert.ok(core.includes(DESIGNED_WORK), `the ${name} prompt contains the designed-work line`);
     assert.equal(core.split(DESIGNED_WORK).length, 2, `the ${name} prompt has it once`);
   }
-  for (const w of ["Inspo", "Better Design", "Magic UI", "React Bits", "Canvas UI", "read_skill", "artifacts skill", "design_mcp.py brief", ":root", "first .html file written in a task"]) assert.ok(DESIGNED_WORK.includes(w), `the line names ${w}`);
+  for (const w of ["Inspo", "Better Design", "Magic UI", "React Bits", "Canvas UI", "read_skill", "artifacts skill", "inspo_search_screens", "better_design_find_design_system", "better_design_get_design_system_kit", "magicui_", "reactbits_", "canvasui_", "searchRegistryItems", "getRegistryItem", ":root", "first .html file written in a task"]) assert.ok(DESIGNED_WORK.includes(w), `the line names ${w}`);
   assert.ok(DESIGNED_WORK.length < 900, "the line stays short");
+  assert.ok(!/design_mcp/.test(DESIGNED_WORK) && !/design_mcp/.test(DESIGNED_WORK_NO_BD), "the designed-work lines never tell the model to run design_mcp.py");
+  assert.ok(/inspo_/.test(DESIGNED_WORK_NO_BD) && /magicui_/.test(DESIGNED_WORK_NO_BD) && !/better_design|Better Design/.test(DESIGNED_WORK_NO_BD), "without Better Design the line names the other design tools and no better_design_ tool");
   const resident = readFileSync(new URL("../src/resident.js", import.meta.url), "utf8");
   assert.match(resident, /A plain response does not end the job\. " \+ \(this\._betterDesign \? DESIGNED_WORK : DESIGNED_WORK_NO_BD\)/, "the native worker's own prompt ends with the designed-work line");
   const helpers = render(SECTIONS.find(([n]) => n === "08-background-helpers")[1], base);
   for (const t of [HELPER_PROMPT, helpers]) {
     assert.match(t, /web page, site, deck or designed PDF, the brief tells the helper to read the artifacts skill first and follow its design-sources step/);
     assert.match(t, /1Helm adds the design brief to the first \.html file a helper writes/);
-    assert.ok(t.includes("design_mcp.py brief"), "Primary's helper rule names the brief command");
+    assert.ok(!t.includes("design_mcp") && t.includes("inspo_search_screens"), "Primary's helper rule names design tools, not the script");
   }
   ok("the designed-work line is in the full, lean and layered prompts and the native worker prompt; start_helper guidance says to put the rule in the brief");
 }

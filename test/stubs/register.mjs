@@ -10,7 +10,7 @@ export async function load(url, c, next) { if (url.startsWith("file:") && url.en
 
 // Unit tests must not call the network. Any fetch to these hosts throws unless the test installed its own globalThis.fetch stub
 // (a stub replaces this guard, so tests that stub fetch are unaffected). Set ALLOW_TEST_NETWORK=1 to turn the guard off by hand.
-const BLOCKED_HOSTS = /(^|\.)(openrouter\.ai|api\.cloudflare\.com|gateway\.ai\.cloudflare\.com)$/i;
+const BLOCKED_HOSTS = /(^|\.)(openrouter\.ai|api\.cloudflare\.com|gateway\.ai\.cloudflare\.com|mcp\.1helm\.com)$/i;   // mcp.1helm.com: the design tools (src/design-tools.js) read it at every turn start
 if (!process.env.ALLOW_TEST_NETWORK && typeof globalThis.fetch === "function" && !globalThis.fetch.__noNetworkGuard) {
   const realFetch = globalThis.fetch;
   const guarded = function (input, init) {

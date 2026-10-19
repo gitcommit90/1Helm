@@ -89,6 +89,8 @@ export function readSkill(a = {}, flags = {}, { extra = [] } = {}) {
     if (!r) return `The ${s.slug} skill has no reference called "${String(a.ref).trim().slice(0, 80)}". ${refsLine(s) || "It has no references."}`;
     return `[1Helm skill: ${s.slug}, reference: ${r.name}]\n${docText(r.md, flags)}`;
   }
-  const tail = [refsLine(s), s.scripts.length ? `Scripts on your computer: ${s.scripts.join(", ")}` : ""].filter(Boolean).join("\n");
+  // design_mcp.py stays installed but is not listed: the design tools in the tool list are the way to reach the design sources.
+  const listed = s.scripts.filter((p) => !p.endsWith("/design_mcp.py"));
+  const tail = [refsLine(s), listed.length ? `Scripts on your computer: ${listed.join(", ")}` : ""].filter(Boolean).join("\n");
   return `[1Helm skill: ${s.slug}]\n${docText(s.body, flags)}${tail ? `\n\n${tail}` : ""}`;
 }

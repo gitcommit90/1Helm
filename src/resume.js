@@ -20,6 +20,7 @@
 // one is a crash loop, not a deploy: either way the card ends "interrupted" (the app's plain "send it again").
 // Both engines: classic (resident.js runTurnInner) and pi (pi-engine.js runTurnPi) journal the same way and resume from the same rebuild.
 // Model-agnostic: nothing here depends on which model runs the turn.
+import { isDesignToolName } from "./design-tools.js";
 import { READ_ACT } from "./worklog.js";
 import { CONFIRM, CONFIRM_TOOLS } from "./confirm.js";
 import { codeV } from "./do-stub.js";
@@ -63,7 +64,7 @@ export function toolClass(name, a = {}) {
   if (n === "update_todos" && (a?.channel || a?.task)) return "write";   // a targeted replacement may already have reached another task
   if (n === "app_run") return READ_ACT.test(String(a?.action || "").toUpperCase()) ? "read" : "write";
   if (n === "app_proxy") return String(a?.method || "GET").toUpperCase() === "GET" ? "read" : "write";
-  return READ.has(n) ? "read" : EXEC.has(n) ? "exec" : ONCE.has(n) ? "once" : LOCAL.has(n) ? "local" : "write";   // anything else: never repeated blindly
+  return READ.has(n) || isDesignToolName(n) ? "read" : EXEC.has(n) ? "exec" : ONCE.has(n) ? "once" : LOCAL.has(n) ? "local" : "write";   // anything else: never repeated blindly
 }
 
 export function resumeInit(sql) {

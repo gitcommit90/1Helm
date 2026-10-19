@@ -95,6 +95,7 @@ import { savedWorkflowHardReport } from './workflow-hard-report.js';
 import { safeName, mimeOf, humanBytes, MAX_UPLOAD, storeUpload, storeView, viewJpeg, fileTags } from "./files.js";
 import { APP_FILE_MAX } from "./ee/index.js";
 import { stPut, stDelete } from "./storage.js";
+import { designToolDefs, designToolCall, prepareDesignTools, isDesignToolName } from "./design-tools.js";   // the five design MCP servers as tools
 import { betterDesignState } from "./better-design.js";   // Better Design as a design source follows the account (Settings → Advanced, AI privacy level)
 import { briefForWrite } from "./design-brief.js";   // the design brief 1Helm appends to a task's first .html write (no model choice involved)
 import { fileVersionsMix } from "./file-versions.js";   // one rule for every file an agent adds: an edit of a Library file updates it in place
@@ -323,7 +324,10 @@ export function titleFrom(text) {
 }
 const previewOf = (s) => String(s || "").replace(/[*_#`>|]/g, "").replace(/\s+/g, " ").trim().slice(0, 160);
 // What the helper is doing right now, in plain words (the app shows "<helper> is <line>…").
+// design-tools.js tools as stubs while load_tools exists (context v2); a plain function so callers that borrow modelTools onto a plain object work.
+export const lazyDesign = (list, tc = null) => tc?.context?.version === 2 ? list.map((t) => isDesignToolName(t.function.name) ? stubTool(t) : t) : list;
 export function lineFor(name, a = {}) {
+  if (isDesignToolName(name)) return "looking up design references";
   let host = ""; try { host = new URL(String(a.url)).hostname.replace(/^www\./, ""); } catch {}
   const file = String(a.path || "").split("/").pop();
   return ({ run_command: "working on its computer", read_file: "looking through its files", search_files: "looking through its files",
@@ -636,7 +640,7 @@ export class Resident extends DurableObject {
   genuiOn() { const v = this.get("genui"); return v ? v === "on" : genuiEnvOn(this.env); }
   async setGenui(v) { if (!["on", "off", ""].includes(v)) return { error: "genui must be on, off or empty (= env default)" }; this.put("genui", v); return { genui: v || null, on: this.genuiOn() }; }
   browserAgentOn() { if (!eeEnabled(this.env)) return false; const v = this.get("browser_agent"); return v ? v === "jev" : this.env.BROWSER_AGENT === "jev"; }
-  tools() { ensureFreshTools(); const base0 = [...(eeEnabled(this.env) && this.env.COMPOSIO_KEY ? [...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, ...(eventsReady(this.env) ? [APP_EVENTS_TOOL] : []), ...CONNECT_TOOLS, APPS_USED_TOOL, VERTICAL_SEARCH_TOOL] : TOOLS()), WEB_SEARCH_TOOL], base = this.workmemOn() ? [...base0, BRING_BACK_TOOL] : base0; return [...(this.browserAgentOn() ? [...base, BROWSER_TASK_TOOL] : base), LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, ...HELPER_TOOLS, PROPOSE_PLAN_TOOL, POMODORO_TOOL, ...SHARE_TOOLS, ...NATIVE_TOOLS, ...(this.get("channel") === SKIPPER_SLUG ? [MARK_DONE_TOOL, LIST_CHANNELS_TOOL, CREATE_CHANNEL_TOOL, START_TASK_TOOL, ...(eeEnabled(this.env) ? [AMBIENT_QUERY_TOOL] : []), LOCATION_QUERY_TOOL] : [])].filter((t) => (t !== FILE_TEXT_TOOL || this.scOn?.() !== false) && eeToolEnabled(this.env, t.function.name)); }   // sidecar.js: file_text only while sidecars are on
+  tools() { ensureFreshTools(); const base0 = [...(eeEnabled(this.env) && this.env.COMPOSIO_KEY ? [...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, ...(eventsReady(this.env) ? [APP_EVENTS_TOOL] : []), ...CONNECT_TOOLS, APPS_USED_TOOL, VERTICAL_SEARCH_TOOL] : TOOLS()), WEB_SEARCH_TOOL], base = this.workmemOn() ? [...base0, BRING_BACK_TOOL] : base0; return [...(this.browserAgentOn() ? [...base, BROWSER_TASK_TOOL] : base), LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, ...HELPER_TOOLS, PROPOSE_PLAN_TOOL, POMODORO_TOOL, ...SHARE_TOOLS, ...NATIVE_TOOLS, ...designToolDefs({ betterDesign: !!this._betterDesign }), ...(this.get("channel") === SKIPPER_SLUG ? [MARK_DONE_TOOL, LIST_CHANNELS_TOOL, CREATE_CHANNEL_TOOL, START_TASK_TOOL, ...(eeEnabled(this.env) ? [AMBIENT_QUERY_TOOL] : []), LOCATION_QUERY_TOOL] : [])].filter((t) => (t !== FILE_TEXT_TOOL || this.scOn?.() !== false) && eeToolEnabled(this.env, t.function.name)); }   // sidecar.js: file_text only while sidecars are on
   async setBrowserWait(ms) { const n = ms === "" || ms == null ? "" : String(Math.min(Math.max(Math.floor(Number(ms)) || 0, 0), 90000)); this.put("browser_wait_ms", n); return { browser_wait_ms: n === "" ? null : Number(n) }; }   // TEST_MODE only (index.js); empty = the default
   async setBrowserAgent(v) { if (!["jev", "off", ""].includes(v)) return { error: "browser_agent must be jev, off or empty (= env default)" }; this.put("browser_agent", v); return { browser_agent: v || null, on: this.browserAgentOn() }; }
   archive() { return this.env.ARCHIVE.get(this.env.ARCHIVE.idFromName(`archive:${this.get("tenant")}`)); }
@@ -978,7 +982,7 @@ export class Resident extends DurableObject {
     if (tc?.appendTools && !tc?.taskProfile?.dynamicRouting) return tc.appendTools;
     if (tc && !tc.appendRuntime && tc.classicTools && !tc.helper?.dynamic_routing) return tc.classicTools;
     const compact = cutTitle(this.env) || !!tc?.appendLazy, all = this.availableTools(tc);
-    const list = withStepTitles(tc?.appendLazy ? all.map((t) => EAGER_TOOLS.has(t.function.name) || [...ORCHESTRATOR_TOOLS,REQUEST_INPUT_TOOL,...WORKER_REQUEST_TOOLS,...ROUTING_FILE_TOOLS,...AGENT_MEMORY_TOOLS].some(x=>x.function.name===t.function.name) || t.function.name === TASK_ARCHIVE_TOOL.function.name ? t : stubTool(t)) : all, { required: true, compact });
+    const list = withStepTitles(tc?.appendLazy ? all.map((t) => EAGER_TOOLS.has(t.function.name) || [...ORCHESTRATOR_TOOLS,REQUEST_INPUT_TOOL,...WORKER_REQUEST_TOOLS,...ROUTING_FILE_TOOLS,...AGENT_MEMORY_TOOLS].some(x=>x.function.name===t.function.name) || t.function.name === TASK_ARCHIVE_TOOL.function.name ? t : stubTool(t)) : lazyDesign(all, tc), { required: true, compact });
     if (tc && !tc.appendRuntime) tc.classicTools = list;
     return list;
   }
@@ -1878,7 +1882,9 @@ export class Resident extends DurableObject {
       case "list_workflows": return JSON.stringify(await this.listWorkflows());
       case "app_events": return await appEventsTool(this.env, this.get("tenant"), a, await this.conns(true));   // composio-triggers.js: an app's events, for on_event
       case "set_workflow_status": return JSON.stringify(await this.setWorkflowStatus(Number(a.id), String(a.status)));
-      default: return `error: unknown tool ${name}`;
+      default:
+        if (isDesignToolName(name)) return await designToolCall(this.env, name, a, { betterDesign: await this.betterDesignOn().catch(() => false), wrap: untrusted });   // design-tools.js: Inspo, Better Design, Magic UI, React Bits, Canvas UI
+        return `error: unknown tool ${name}`;
     }
   }
 
@@ -3588,6 +3594,7 @@ export class Resident extends DurableObject {
     await this.byokRefresh(0, tc);   // own AI key: this turn's model calls go to their endpoint (byok.js; a backup key once credits are used up)
     this._privacy = await privacyOf(this.env, tenant);   // AI data privacy for this turn's docs (read_doc); every model dispatch re-reads it
     await this.betterDesignOn().catch(() => {});   // the Better Design switch for this turn's prompt text and docs (better-design.js)
+    await prepareDesignTools(this.env).catch((e) => console.log("design tools", e.message));   // design-tools.js: the design servers' tool list (cached), read before the tool list is built
     // resume.js: a turn a reset cut off carries on here (same card, same start time, same budget and charge so far).
     const RS = opts.resume || null;
     const turn = tc.turn, t0 = RS ? RS.started : Date.now();   // the turn id is its card's id (runTurn opened it)
@@ -3797,7 +3804,7 @@ export class Resident extends DurableObject {
       if (!RS && !tc.appendRuntime) this.save(turn, { role: "user", content: asked + attNote }); reply = DAY_PAUSE_REPLY; said.push(reply);
       this.save(turn, { role: "assistant", content: reply }); stats.hit_limit = 1; send?.({ t: "text", s: reply });
     } else if (engine === "pi") {
-      const r = await runTurnPi(this, { tc, sys: sys.content, hist, userText, kind, maxSteps, turn, opts, send, stats, trace, stepIn, TOOLS: this.availableTools(tc), COMPUTER_TOOLS, consts: { CHECKPOINT_TOKENS }, resume: rs });
+      const r = await runTurnPi(this, { tc, sys: sys.content, hist, userText, kind, maxSteps, turn, opts, send, stats, trace, stepIn, TOOLS: lazyDesign(this.availableTools(tc), tc), COMPUTER_TOOLS, consts: { CHECKPOINT_TOKENS }, resume: rs });
       if (tc.audioFailure) throw Object.assign(new Error(tc.audioFailure.audioReason), tc.audioFailure);
       reply = stripNotesEcho(r.reply); error = r.error; checkpoints = r.checkpoints; messages = r.messagesForNotes;
       said.splice(0, said.length, ...r.said); saidMeta.splice(0, saidMeta.length, ...r.saidMeta);   // Pi uses the same terminal/history classifier; unknown resumed steps stay visible

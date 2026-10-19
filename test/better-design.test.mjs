@@ -188,11 +188,11 @@ const clearChoice = () => d1.exec("DELETE FROM tenant_flags WHERE tenant_id='t1'
   const refs = ["web-page", "presentation", "pdf-design"];
   for (const flags of [{}, { better_design: false, apps: true }]) {
     const texts = [readSkill({ slug: "artifacts" }, flags), ...refs.map((ref) => readSkill({ slug: "artifacts", ref }, flags))].join("\n");
-    assert.ok(!/Better Design|better-design|find-design-system|get-review-rules/i.test(texts), "off: the artifacts skill and references never send the model to Better Design");
-    assert.match(texts, /design_mcp\.py brief/); assert.match(texts, /Inspo/); assert.match(texts, /Magic UI/); assert.match(texts, /four sources/);
+    assert.ok(!/Better Design|better-design|better_design|find-design-system|get-review-rules/i.test(texts), "off: the artifacts skill and references never send the model to Better Design");
+    assert.ok(!/design_mcp/.test(texts)); assert.match(texts, /inspo_recommend/); assert.match(texts, /Inspo/); assert.match(texts, /Magic UI/); assert.match(texts, /four sources/);
   }
   const onTexts = [readSkill({ slug: "artifacts" }, { better_design: true }), ...refs.map((ref) => readSkill({ slug: "artifacts", ref }, { better_design: true }))].join("\n");
-  for (const w of ["Better Design", "better-design", "find-design-system", "get-review-rules", "five sources"]) assert.ok(onTexts.includes(w), `on: ${w}`);
+  for (const w of ["Better Design", "better_design_", "find_design_system", "get_review_rules", "five sources"]) assert.ok(onTexts.includes(w), `on: ${w}`);
   ok("prompt: static core, the helper line, the artifacts skill and references name Better Design only when it is on");
 }
 console.log("better-design.test.mjs: all ok");
