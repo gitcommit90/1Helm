@@ -95,6 +95,7 @@ import { savedWorkflowHardReport } from './workflow-hard-report.js';
 import { safeName, mimeOf, humanBytes, MAX_UPLOAD, storeUpload, storeView, viewJpeg, fileTags } from "./files.js";
 import { APP_FILE_MAX } from "./ee/index.js";
 import { stPut, stDelete } from "./storage.js";
+import { briefForWrite } from "./design-brief.js";   // the design brief 1Helm appends to a task's first .html write (no model choice involved)
 import { fileVersionsMix } from "./file-versions.js";   // one rule for every file an agent adds: an edit of a Library file updates it in place
 import { SHARE_TOOLS, runShareTool, shareFileDeleted, republishFrom } from "./share.js";   // share links + published pages: prepare only, the person taps
 import { Memory, PACK_HEADER } from "./memory.js";
@@ -1328,7 +1329,7 @@ export class Resident extends DurableObject {
     const no = await permGate(this, tc, name, a); if (no) return { code: 1, out: no };   // perms.js: their level asks first
     const nf = name === "browser_task" ? await fillTaskGate(this, tc, a) : await fillGate(this, tc, name, a); if (nf) return { code: 1, out: nf };   // personal-fill.js: their details need their OK; cards/passwords/IDs never
     if (tc) { tc.inTool++; tc.line = lineFor(name, a); tc.emit?.({ t: "status", line: tc.line }); }
-    try { let r = await untilStopped(tc, this.execComputerToolInner(name, a, tc), { code: 130, out: STOPPED_TOOL_TEXT }); if (r?.code === 0) repeatNote(tc, name, a, r.out); else r = this.browserBusyNote(r, tc?.session); return r; } finally { if (tc) tc.inTool--; }
+    try { let r = await untilStopped(tc, this.execComputerToolInner(name, a, tc), { code: 130, out: STOPPED_TOOL_TEXT }); if (r?.code === 0) { repeatNote(tc, name, a, r.out); const brief = await briefForWrite(this, name, a, r, tc); if (brief) r = { ...r, out: String(r.out ?? "").replace(/\n*$/, "") + brief }; } else r = this.browserBusyNote(r, tc?.session); return r; } finally { if (tc) tc.inTool--; }   // design-brief.js: a task's first .html write (both engines, helpers and native workers too) carries the design brief
   }
   // Before a browser call (both engines): the same page as last time with nothing done since, or the sign-in page / web app of a
   // service the account has a connected app for (appfirst.js). → the refusal text, or null. Handoff and fill_login also check the

@@ -6,7 +6,7 @@ barely bigger than the body, emoji as icons. Make each choice because it fits th
 
 ## Settle the system first
 
-{{#apps}}When the person gave no complete look and the file is a designed one (a flyer, a one-pager, a report cover, an invoice with a brand), get design references first from the design sources in the artifacts skill (Inspo first, app id inspo_mcp: `find_app`, then `app_run` with `INSPO_MCP_RECOMMEND` and a `brief` that says what it is, who it is for and the mood). Pull a few references that match the kind of thing and the audience, choose one direction (layout, palette, type pairing), and build from it. When the page images are rendered, compare them with those references. If Inspo returns an error or nothing, build without it and don't mention it to the person.{{/apps}}
+When the person gave no complete look and the file is a designed one (a flyer, a one-pager, a report cover, an invoice with a brand), run `python3 /opt/1hc/skills/artifacts/scripts/design_mcp.py brief "<what it is, who it is for, the mood>"` first for design references, tokens and rules. Pull from it a few references that match the kind of thing and the audience, choose one direction (layout, palette, type pairing), and build from it. When the page images are rendered, compare them with those references. If the brief is empty or errors, build without it and don't mention it to the person. (1Helm also appends the same brief to the result of your first `.html` write.)
 
 Better Design gives a palette and type pairing (`find-design-system`), hierarchy, spacing and type rules (`get-ui-principle`), and a check before you finish (`get-review-rules`), as the artifacts skill's list describes.
 
