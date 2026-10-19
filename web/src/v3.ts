@@ -2110,6 +2110,7 @@ function apPage() {
   return `<h2>${AP_TITLE}</h2><p class="slead">Choose how AI providers may use your data. All plans include these choices.</p>
     <div class="sc" role="radiogroup" aria-label="How AI providers may use your data">${AP_OPTS.map(([k, t, d]) => { const on = AP.level === k;
       return `<button type="button" class="sr sradio${on ? " on" : ""}" role="radio" aria-checked="${on}" data-apset="${k}"><span class="srt"><b>${t}</b><span>${d}</span></span><span class="rck">${ic.check}</span></button>`; }).join("")}</div>
+    ${bdRow()}
     <p class="sfine apst${AP.st ? ` ${AP.st}` : ""}" id="apst" role="status" aria-live="polite">${apSt()}</p>
     <p class="sfine">Requests can include messages, attachments, memory, and connected-app information used to answer you. This setting concerns AI providers; 1Helm's saved chats and connected services have separate storage policies. A change applies to requests from then on, including scheduled and background work; it can't recall requests already sent.</p>
     ${bk === "openrouter" ? `<p class="sfine">Your own AI key (Sign in with OpenRouter) follows this setting too. If no provider of your chosen model fits it, ${esc(who(main))} tells you instead of switching models.</p>`
@@ -2119,6 +2120,7 @@ function apPage() {
 function apPaint() {
   document.querySelectorAll<HTMLElement>("[data-apset]").forEach(b => { const on = b.dataset.apset === AP.level;
     b.classList.toggle("on", on); b.setAttribute("aria-checked", String(on)); });
+  const bt = document.querySelector<HTMLElement>("[data-bdesign]"); if (bt) { const on = bdOn(); bt.classList.toggle("on", on); bt.setAttribute("aria-checked", String(on)); }
   const st = document.getElementById("apst"); if (st) { st.className = `sfine apst${AP.st ? ` ${AP.st}` : ""}`; st.innerHTML = apSt(); }
 }
 function apSend(lv: string) {
@@ -2141,6 +2143,24 @@ document.addEventListener("keydown", e => {   // arrow keys move the choice, lik
   const b = (e.target as HTMLElement).closest?.<HTMLElement>("[data-apset]"); if (!b || !["ArrowDown", "ArrowUp"].includes(e.key)) return;
   e.preventDefault(); const ks = AP_OPTS.map(o => o[0]), i = ks.indexOf(b.dataset.apset || ""), n = ks[(i + (e.key === "ArrowDown" ? 1 : ks.length - 1)) % ks.length];
   document.querySelector<HTMLElement>(`[data-apset="${n}"]`)?.focus();
+});
+// Settings → AI data privacy → "Better Design for page design" (the private build shows it on Advanced, which the public edition hides without the Cloud connected apps feature; proto src/better-design.js, POST /api/account/prefs { better_design }): Better Design keeps what it is
+// sent and may train on it, so it follows the AI data privacy level. Effective value = the person's own choice if they ever made one, else on only for
+// Unrestricted. BOOT.account.better_design = { choice: "on" | "off" | null, on }; the level comes from AP, so changing it here updates the row.
+const BDS: { choice: "on" | "off" | null; busy: boolean; err: string } = { choice: LIVE ? (BOOT?.account?.better_design?.choice ?? null) : null, busy: false, err: "" };
+const bdOn = () => BDS.choice ? BDS.choice === "on" : AP.level === "unrestricted";
+const bdRow = () => `<div class="sc">${srow("", "Better Design for page design", "Sends the description of a page you ask for to Better Design, which keeps it and may train on it.",
+  `<button type="button" class="tg${bdOn() ? " on" : ""}" role="switch" aria-checked="${bdOn()}" aria-label="Better Design for page design" data-bdesign${BDS.busy ? " disabled" : ""}><i></i></button>`, " data-bdrow")}</div>${BDS.err ? `<p role="alert" class="meta">${esc(BDS.err)}</p>` : ""}`;
+document.addEventListener("click", e => {
+  const b = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-bdesign]"); if (!b) return;
+  e.preventDefault(); if (BDS.busy) return;
+  const was = BDS.choice, next = !bdOn() ? "on" : "off";
+  BDS.choice = next; BDS.err = "";
+  if (!LIVE) { sRender(); return; }
+  BDS.busy = true; sRender();
+  kyApi("account/prefs", { better_design: next === "on" }).then(d => { if (BOOT?.account) BOOT.account.better_design = d?.better_design || { choice: next, on: next === "on" }; })
+    .catch(err => { BDS.choice = was; BDS.err = err.message || "Couldn't save that. Try again in a minute."; })
+    .finally(() => { BDS.busy = false; sRender(); document.querySelector<HTMLButtonElement>("[data-bdesign]")?.focus(); });
 });
 // Settings → General → Usage → "Show estimated costs" (proto tenants.show_costs, POST /api/account/prefs): per account, OFF by default.
 // Off hides the estimate under a task ("This task: about $0.04"). Never hidden: the spend-guard pause cards (safety), the balance and

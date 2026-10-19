@@ -200,20 +200,21 @@ ok("registry servers: initialize, initialized notification, tools/list (same thr
   ok("design_mcp.py: tools listing, calls on every registry server, errors exit 1 on stderr, initialize first and session id carried");
 }
 
+const BD_ON = { better_design: true };   // an account where Better Design is on (src/better-design.js)
 // 6. Guidance text names the sources, the script and the real tool names, and says to use them quietly.
 {
   const script = "/opt/1hc/skills/artifacts/scripts/design_mcp.py";
   assert.ok(FILES["artifacts/scripts/design_mcp.py"], "the script is bundled");
-  for (const [name, t] of [["web-page", readSkill({ slug: "artifacts", ref: "web-page" }, {})], ["presentation", readSkill({ slug: "artifacts", ref: "presentation" }, {})], ["pdf-design", readSkill({ slug: "artifacts", ref: "pdf-design" }, {})]]) {
+  for (const [name, t] of [["web-page", readSkill({ slug: "artifacts", ref: "web-page" }, BD_ON)], ["presentation", readSkill({ slug: "artifacts", ref: "presentation" }, BD_ON)], ["pdf-design", readSkill({ slug: "artifacts", ref: "pdf-design" }, BD_ON)]]) {
     assert.match(t, /artifacts skill/, `${name} points at the list in the artifacts skill`);
     assert.match(t, /Better Design/); assert.match(t, /find-design-system/); assert.match(t, /get-review-rules/);
   }
-  const list = readSkill({ slug: "artifacts" }, { apps: true });
+  const list = readSkill({ slug: "artifacts" }, { apps: true, better_design: true });
   assert.ok(list.includes(script), "the artifacts skill shows the script");
   assert.match(list, /better-design/); assert.match(list, /without mentioning them to the person/); assert.match(list, /go on without it/);
   for (const w of ["Inspo", "Better Design", "Magic UI", "React Bits", "Canvas UI", "Use for:"]) assert.ok(list.includes(w), `the list has ${w}`);
   assert.equal((list.match(/Use for:/g) || []).length, 5, "each of the five sources says what to use it for");
-  const web = readSkill({ slug: "artifacts", ref: "web-page" }, {});
+  const web = readSkill({ slug: "artifacts", ref: "web-page" }, BD_ON);
   for (const w of ["get-motion-guide", "get-ux-principle", "find-icons"]) assert.ok(web.includes(w), `web-page names ${w}`);
   for (const w of ["magicui", "reactbits", "canvasui", "searchRegistryItems", "getRegistryItem", "get-design-system-kit", "extract-from-url", "-JS-CSS", "-vanilla"]) assert.ok(list.includes(w), `the list names ${w}`);
   const BD = ["find-design-system", "get-design-system-kit", "get-ux-principle", "get-ui-principle", "get-motion-guide", "find-icons", "get-review-rules"];
@@ -225,8 +226,8 @@ ok("registry servers: initialize, initialized notification, tools/list (same thr
 
 // 7. The designed-work line reaches every prompt: full, lean, layered, the native worker's own prompt, and the start_helper guidance.
 {
-  const base = { apps: true, compact: true, recall: true, cards: true };
-  const sets = { full: base, lean: { ...base, append: true, lean_families: true }, layered: { ...base, context_v2: true }, "layered lean": { ...base, context_v2: true, append: true, lean_families: true }, "no apps": { compact: true } };
+  const base = { apps: true, compact: true, recall: true, cards: true, better_design: true };
+  const sets = { full: base, lean: { ...base, append: true, lean_families: true }, layered: { ...base, context_v2: true }, "layered lean": { ...base, context_v2: true, append: true, lean_families: true }, "no apps": { compact: true, better_design: true } };
   for (const [name, f] of Object.entries(sets)) {
     const core = staticCore(f);
     assert.ok(core.includes(DESIGNED_WORK), `the ${name} prompt contains the designed-work line`);
@@ -235,7 +236,7 @@ ok("registry servers: initialize, initialized notification, tools/list (same thr
   for (const w of ["Inspo", "Better Design", "Magic UI", "React Bits", "Canvas UI", "read_skill", "artifacts skill", "design_mcp.py brief", ":root", "first .html file written in a task"]) assert.ok(DESIGNED_WORK.includes(w), `the line names ${w}`);
   assert.ok(DESIGNED_WORK.length < 900, "the line stays short");
   const resident = readFileSync(new URL("../src/resident.js", import.meta.url), "utf8");
-  assert.match(resident, /A plain response does not end the job\. " \+ DESIGNED_WORK/, "the native worker's own prompt ends with the designed-work line");
+  assert.match(resident, /A plain response does not end the job\. " \+ \(this\._betterDesign \? DESIGNED_WORK : DESIGNED_WORK_NO_BD\)/, "the native worker's own prompt ends with the designed-work line");
   const helpers = render(SECTIONS.find(([n]) => n === "08-background-helpers")[1], base);
   for (const t of [HELPER_PROMPT, helpers]) {
     assert.match(t, /web page, site, deck or designed PDF, the brief tells the helper to read the artifacts skill first and follow its design-sources step/);

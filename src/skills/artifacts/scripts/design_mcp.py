@@ -7,6 +7,9 @@ Usage:
   design_mcp.py <server> tools                 list the server's tools with their inputs
   design_mcp.py <server> <tool> '<json args>'  call one tool and print its text result (args default to {})
 
+Better Design follows the account's setting (Settings). When it is off, 1Helm sets DESIGN_MCP_BETTER_DESIGN=off for this script: `better-design`
+calls then print one plain line and exit 0 without contacting Better Design, and `brief` leaves Better Design out.
+
 Servers: magicui, reactbits, canvasui, better-design, inspo (Inspo's real-site references; its tools are recommend, search_screens, get_screen and more). The base URL comes from DESIGN_MCP_URL (for example https://mcp.1helm.com or your own deploy of design-mcp/). When it is not set the script prints one line saying so, makes no network call and exits 0.
 Each run sends initialize first and carries Mcp-Session-Id when the server returns one. JSON and SSE responses both work.
 Exit code 0 on success, 1 when the server or the tool reports an error (the message goes to stderr). Python 3 standard library only.
@@ -22,6 +25,10 @@ BASE = os.environ.get("DESIGN_MCP_URL", "").strip().rstrip("/")
 NOT_CONFIGURED = "The design sources are not configured (DESIGN_MCP_URL is not set), so there is nothing to fetch. Go on without them."
 PROTOCOL = "2025-06-18"
 TIMEOUT = 60
+
+
+def better_design_off():
+    return os.environ.get("DESIGN_MCP_BETTER_DESIGN", "").strip().lower() in ("off", "0", "false", "no")
 
 
 def fail(msg):
@@ -135,7 +142,7 @@ def main(argv):
             fail('usage: design_mcp.py brief "<what it is, who it is for, the mood>"')
         client = Client("brief")
         client.start()
-        result = client.request("tools/call", {"name": "design_brief", "arguments": dict({"description": " ".join(argv[2:]).strip()}, **({"debug": True} if os.environ.get("DESIGN_BRIEF_DEBUG") else {}))})
+        result = client.request("tools/call", {"name": "design_brief", "arguments": dict({"description": " ".join(argv[2:]).strip()}, **({"debug": True} if os.environ.get("DESIGN_BRIEF_DEBUG") else {}), **({"skip": ["better-design"]} if better_design_off() else {}))})
         text = "\n".join(c.get("text", "") for c in result.get("content", []) if c.get("type") == "text")
         if result.get("isError"):
             fail(text or "the design brief failed")
@@ -144,6 +151,9 @@ def main(argv):
     if len(argv) < 3 or argv[1] not in SERVERS:
         fail("usage: design_mcp.py <%s> tools | <tool> ['<json args>']" % "|".join(SERVERS))
     server, what = argv[1], argv[2]
+    if server == "better-design" and better_design_off():
+        print("Better Design is turned off for this account, so it was not used. Continue with the other design sources.")
+        return
     client = Client(server)
     client.start()
     if what == "tools":

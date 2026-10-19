@@ -8,7 +8,7 @@ barely bigger than the body, emoji as icons. Make each choice because it fits th
 
 When the person gave no complete look and the file is a designed one (a flyer, a one-pager, a report cover, an invoice with a brand), run `python3 /opt/1hc/skills/artifacts/scripts/design_mcp.py brief "<what it is, who it is for, the mood>"` first for design references, tokens and rules. Pull from it a few references that match the kind of thing and the audience, choose one direction (layout, palette, type pairing), and build from it. When the page images are rendered, compare them with those references. If the brief is empty or errors, build without it and don't mention it to the person. (1Helm also appends the same brief to the result of your first `.html` write.)
 
-Better Design gives a palette and type pairing (`find-design-system`), hierarchy, spacing and type rules (`get-ui-principle`), and a check before you finish (`get-review-rules`), as the artifacts skill's list describes.
+{{#better_design}}Better Design gives a palette and type pairing (`find-design-system`), hierarchy, spacing and type rules (`get-ui-principle`), and a check before you finish (`get-review-rules`), as the artifacts skill's list describes.{{/better_design}}
 
 - If they gave a complete look (brand colours, fonts, a reference document), use it. If they gave a direction ("warm",
   "minimal", "like a magazine"), turn it into a small system that matches. If they said nothing, choose a system that suits the

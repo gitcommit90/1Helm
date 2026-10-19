@@ -25,7 +25,7 @@ import files from "./12-computer-files.md";
 import security from "./13-security.md";
 import safety from "./14-safety.md";
 import { STEP_TITLE_PROMPT } from "../steer.js";
-import { HELPER_PROMPT, DESIGNED_WORK } from "../helpers.js";
+import { HELPER_PROMPT, DESIGNED_WORK, DESIGNED_WORK_NO_BD } from "../helpers.js";
 import { DOCS_INDEX } from "../docs/index.js";
 import { SKILLS_INDEX, coreSkillsIndex } from "../skills/index.js";
 import { splitFamilies } from "../payload-cut.js";
@@ -41,11 +41,12 @@ export const SECTIONS = [
 ];
 // browser_task: the browser agent tool is offered · apps: Composio (Gmail/Calendar/app tools) · recall: memory recall arrives per
 // message (memory mode "on") · compact: earlier turns are what was said + hand-off notes · cards: the app draws card replies ·
+// better_design: Better Design may be used for this account (better-design.js: Settings → Advanced, else AI privacy Unrestricted); off, the prompt names no Better Design ·
 // use: HS_USE (Memory Overhaul phase 4A, hs-flag.js): the silent memory rule and the correction tool in the personalization section ·
 // app_events: apps AND this server has its Composio webhook (COMPOSIO_WEBHOOK_SECRET; composio-triggers.js eventsReady) · append: the main
 // chat turn uses the append task runtime (the task's own transcript is replayed, not the compact what-was-said history) ·
-export const FLAGS = ["browser_task", "apps", "recall", "compact", "cards", "app_events", "context_v2", "append", "lean_families", "use"];   // lean_families: payload-cut.js moves per-family guidance out of the core (append tasks only)
-const CONSTS = { step_title: STEP_TITLE_PROMPT, helper_prompt: HELPER_PROMPT, designed_work: DESIGNED_WORK };
+export const FLAGS = ["browser_task", "apps", "recall", "compact", "cards", "app_events", "context_v2", "append", "lean_families", "use", "better_design"];   // lean_families: payload-cut.js moves per-family guidance out of the core (append tasks only)
+const CONSTS = { step_title: STEP_TITLE_PROMPT, helper_prompt: HELPER_PROMPT, designed_work: DESIGNED_WORK, designed_work_no_bd: DESIGNED_WORK_NO_BD };
 
 export function render(md, flags = {}) {
   // Blocks may nest (a different flag inside another's block): repeat until none is left.

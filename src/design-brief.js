@@ -4,6 +4,7 @@
 //   Trigger: the file type only (a .html or .htm file written or edited). No keyword matching and no classifier on the request.
 //   Once per task: design_briefs holds the task's row, so a restart or a second helper doesn't repeat it. A failed call leaves the write
 //   result unchanged and says nothing; it is tried again on a later write, at most twice in a task.
+import { SKIP_SOURCE } from "./better-design.js";
 // Public edition: the brief runs only when the admin sets DESIGN_MCP_URL (the variable design_mcp.py reads) to a design MCP Worker, for
 // example https://mcp.1helm.com or their own deploy of design-mcp/. Unset or empty means no brief and no network call, so a self-hosted
 // install never sends its users' text to a service the admin did not choose.
@@ -30,12 +31,14 @@ export function briefDescription(tc) {
   return String(t || "").replace(/\s+/g, " ").trim().slice(0, 600);
 }
 
-export async function fetchBrief(description, { fetchFn = fetch, url = "", ms = BRIEF_TIMEOUT_MS } = {}) {
+// betterDesign: false adds skip: ["better-design"] to the tool call, so the Worker never sends the description to Better Design (better-design.js).
+// true leaves the call exactly as it was before the switch existed.
+export async function fetchBrief(description, { fetchFn = fetch, url = "", ms = BRIEF_TIMEOUT_MS, betterDesign = true } = {}) {
   if (!url) return "";
   const ac = new AbortController(), timer = setTimeout(() => ac.abort(), ms);
   try {
     const res = await fetchFn(url, { method: "POST", signal: ac.signal, headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "design_brief", arguments: { description } } }) });
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "design_brief", arguments: betterDesign ? { description } : { description, skip: [SKIP_SOURCE] } } }) });
     if (!res.ok) return "";
     const msg = await res.json();
     if (msg?.error || msg?.result?.isError) return "";
@@ -58,7 +61,10 @@ export async function briefForWrite(res, name, a, r, tc, opts = {}) {
     res._briefBusy.add(String(session));
     try {
       res.sql.exec("INSERT INTO design_briefs (session,tries,done,at) VALUES (?,1,0,?) ON CONFLICT(session) DO UPDATE SET tries=tries+1, at=excluded.at", String(session), Date.now());
-      const brief = await fetchBrief(description, { ...opts, url });
+      // The account's Better Design switch (better-design.js). If it can't be read, Better Design is off.
+      let betterDesign = false;
+      try { betterDesign = opts.betterDesign ?? (typeof res.betterDesignOn === "function" ? await res.betterDesignOn() : false); } catch { betterDesign = false; }
+      const brief = await fetchBrief(description, { ...opts, url, betterDesign });
       if (!brief) return "";
       res.sql.exec("UPDATE design_briefs SET done=1, at=? WHERE session=?", Date.now(), String(session));
       try { tc.designBrief = { step: tc.callNo || 0, tool: name, path: a?.path || null, chars: brief.length }; } catch {}

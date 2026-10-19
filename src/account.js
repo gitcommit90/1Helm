@@ -8,6 +8,7 @@
 //   POST /api/account/email  { email } → { ok, sent_to, expires[, test_link] }   a one-time link goes to the NEW address
 //   POST /api/account/email/cancel     → { ok }
 //   POST /api/account/signout { id } | { others: true } → { ok, signed_out }
+//   POST /api/account/prefs { better_design: boolean } → { ok, better_design: { choice, on } }   (better-design.js; tenant_flags k='better_design')
 //   POST /api/account/privacy { level } → { ok, ai_privacy: { level, chosen, version, at } }   (AI data privacy, privacy.js; validated
 //        server-side: unrestricted | no_training | zdr; any other value is refused, never stored. The /w/<slug> block already checked
 //        that the signed-in user owns this tenant; the next model dispatch, background jobs included, reads the new level.)
@@ -23,6 +24,7 @@
 import { emailChangePage } from "./onboarding.js";
 import { boundedForm, boundedJson, BodyTooLargeError } from "./bounded-body.js";
 import { privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // Settings → General → AI data privacy
+import { betterDesignView, betterDesignChoice, setBetterDesign } from "./better-design.js";   // Settings: Better Design as a design source
 import { hsWalls, frontDoorSet } from "./walls.js";   // HS_WALLS: General's front door setting
 
 const enc = new TextEncoder();
@@ -102,7 +104,7 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
     catch { return json({ error: 'Spending settings are temporarily unavailable.' }, 503); }
   }
   if (req.method === "GET" && sub === "/api/account")
-    return json({ name: t.first_name || "", email: user.email, pending: await pendingChange(env, user.id), sessions: await listSessions(env, req, user.id), passwordless: true, show_costs: Number(t.show_costs) === 1, shortcuts: shortcutsView(t), ai_privacy: privacyView(t),
+    return json({ name: t.first_name || "", email: user.email, pending: await pendingChange(env, user.id), sessions: await listSessions(env, req, user.id), passwordless: true, show_costs: Number(t.show_costs) === 1, shortcuts: shortcutsView(t), ai_privacy: privacyView(t), better_design: betterDesignView(t, await betterDesignChoice(env, t.id)),
       ...(hsWalls(env) ? { front_door_available: true, front_door: Number(t.front_door) === 1 } : {}) });   // HS_WALLS: General's front door (walls.js)
   if (req.method !== "POST") return json({ error: "method" }, 405);
   // CSRF: the session cookie is SameSite=Lax already; on top of that only same-origin JSON is accepted (a cross-site form can't send JSON).
@@ -142,6 +144,12 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
       if (typeof b.front_door !== "boolean") return json({ error: "front_door must be true or false." }, 400);
       await frontDoorSet(env, t.id, b.front_door);
       return json({ ok: true, front_door: b.front_door });
+    }
+    // Better Design as a design source (better-design.js): an explicit on or off. Unrestricted accounts read on until they turn it off; No Training and ZDR read off until they turn it on.
+    if (b.better_design !== undefined) {
+      if (typeof b.better_design !== "boolean") return json({ error: "better_design must be true or false." }, 400);
+      const choice = await setBetterDesign(env, t.id, b.better_design, at);
+      return json({ ok: true, better_design: betterDesignView(t, choice) });
     }
     if (typeof b.show_costs !== "boolean") return json({ error: "Nothing to change." }, 400);
     await env.DB.prepare("UPDATE tenants SET show_costs=?,updated_at=? WHERE id=?").bind(b.show_costs ? 1 : 0, at, t.id).run();

@@ -379,10 +379,13 @@ export async function designBrief(args, env) {
  const description = clip(args && args.description, 600);
  if (!description) throw new Error("description is required");
  const trace = args && args.debug ? [] : null;
+ // skip: sources the caller does not want used, by name ("better-design"). Optional; without it every source runs, as before. 1Helm passes it for an
+ // account that has not allowed Better Design (it keeps tool inputs and may train on them), so the description is never sent there.
+ const skip = new Set((Array.isArray(args && args.skip) ? args.skip : []).map((x) => String(x).toLowerCase()));
  const run = (fn) => withTimeout(() => fn(), SOURCE_MS + 1000).catch(() => null);
  const [inspo, better, components] = await Promise.all([
   run(() => inspoPart(description)),
-  run(() => betterDesignPart(description, env, trace)),
+  skip.has("better-design") ? Promise.resolve(null) : run(() => betterDesignPart(description, env, trace)),
   run(() => componentsPart(description)),
  ]);
  if (!inspo && !better && !components) throw new Error("no design source answered");
@@ -395,6 +398,6 @@ export const briefTools = [{
  failure: "Could not build the design brief",
  text: true,
  description: "One call that returns a compact design brief for a page, site, deck or designed PDF: real-site references (Inspo), one design system as a ready-to-paste :root block (Better Design), a few UI rules, and component suggestions (Magic UI, React Bits, Canvas UI) with the command that fetches each one's source. Sources that fail are skipped.",
- inputSchema: { type: "object", properties: { description: { type: "string", description: "What it is, who it is for, and the mood." }, debug: { type: "boolean", description: "Append what each Better Design call returned." } }, required: ["description"] },
+ inputSchema: { type: "object", properties: { description: { type: "string", description: "What it is, who it is for, and the mood." }, debug: { type: "boolean", description: "Append what each Better Design call returned." }, skip: { type: "array", items: { type: "string" }, description: "Sources not to use, by name. The only name is \"better-design\"; the description is then never sent to Better Design." } }, required: ["description"] },
  call: (a, env) => designBrief(a, env),
 }];
