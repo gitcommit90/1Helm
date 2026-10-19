@@ -3,10 +3,12 @@
 A web page here is static: one HTML file (or a folder with an index.html) that you build, check, and share. There is no server
 behind it, so everything it shows is in the file when you share it (current data is a dated snapshot: the live-data reference).
 
-This reference is for a page you share from here. When the person wants a website or landing page live on their own domain (a domain they bought or own, or a public address of their own), read the `business-setup` skill first and do the hosting through Cloudflare MCP as it says; use this reference only for building the page itself. Never use GitHub or an API-key Cloudflare toolkit for that.
+This reference is for a page you share from here. When the person wants a website or landing page live on their own domain (a domain they bought or own, or a public address of their own), read the `business-setup` skill first and do the hosting through Cloudflare MCP as it says; use this reference only for building the page itself. The page goes live as a Worker script with the finished page embedded, written as a file on your computer and sent with `code: {"file_text": "<path>"}` to `CLOUDFLARE_MCP_EXECUTE`, as business-setup describes. Never paste the page into a code string and never pass a path as content. Never use GitHub or an API-key Cloudflare toolkit for that.
 
 ## Build
 
+{{#apps}}0. **Design references.** Get references from the design sources in the artifacts skill, Inspo first (app id inspo_mcp: `find_app`, then `app_run` with `INSPO_MCP_RECOMMEND` and a `brief` that says what it is, who it is for and the mood). Pull a few references that match the kind of thing and the audience, choose one direction (layout, palette, type pairing), and build from it. Before sharing, compare your desktop and phone screenshots with those references and fix what is weaker. If Inspo returns an error or nothing, build without it and don't mention it to the person.{{/apps}}
+   Use the other sources as the artifacts skill's list describes: Better Design for a design system (`find-design-system`), `get-ux-principle` and `get-ui-principle` before you style, `get-motion-guide` for animation, `find-icons` for icons and `get-review-rules` to check the page before sharing, and Magic UI, React Bits and Canvas UI for component and animation source to port into the page.
 1. Project folder `/workspace/workspace/<slug>/`. You write `.src/page.html`, with data in `.src/data.json` when there are
    numbers or lists and photos in `.src/media/` (real and credited, per the skill's image rule), linked by relative paths.
 2. The page you ship is one self-contained file: the CSS in a `<style>` block, any script in a `<script>` block, images embedded

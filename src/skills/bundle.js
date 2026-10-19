@@ -25,66 +25,67 @@ import f22 from "../skills/artifacts/scripts/build_pptx.py";
 import f23 from "../skills/artifacts/scripts/deck_asset_scope.mjs";
 import f24 from "../skills/artifacts/scripts/deck_layouts.html";
 import f25 from "../skills/artifacts/scripts/deck_template.css";
-import f26 from "../skills/artifacts/scripts/embed_assets.py";
-import f27 from "../skills/artifacts/scripts/embed_deck_fonts.mjs";
-import f28 from "../skills/artifacts/scripts/inline_media.py";
-import f29 from "../skills/artifacts/scripts/lo_impress_ui.sh";
-import f30 from "../skills/artifacts/scripts/make_deck.sh";
-import f31 from "../skills/artifacts/scripts/make_docx.sh";
-import f32 from "../skills/artifacts/scripts/make_pdf.sh";
-import f33 from "../skills/artifacts/scripts/new_deck.mjs";
-import f34 from "../skills/artifacts/scripts/page_check.py";
-import f35 from "../skills/artifacts/scripts/pdf_geometry_gate.mjs";
-import f36 from "../skills/artifacts/scripts/pdf_geometry_probe.mjs";
-import f37 from "../skills/artifacts/scripts/pdf_image_resolution.mjs";
-import f38 from "../skills/artifacts/scripts/pdf_text_floor.mjs";
-import f39 from "../skills/artifacts/scripts/readback.py";
-import f40 from "../skills/artifacts/scripts/recalc_xlsx.py";
-import f41 from "../skills/artifacts/scripts/render_audit.mjs";
-import f42 from "../skills/artifacts/scripts/render_docx.sh";
-import f43 from "../skills/artifacts/scripts/slide_style.mjs";
-import f44 from "../skills/artifacts/scripts/validate_pdf.sh";
-import f45 from "../skills/artifacts/scripts/validate_xlsx.py";
-import f46 from "../skills/artifacts/scripts/xlsx_formula_cache.py";
-import f47 from "../skills/booking/SKILL.md";
-import f48 from "../skills/booking/references/checkout.md";
-import f49 from "../skills/booking/references/flights.md";
-import f50 from "../skills/booking/references/hotels.md";
-import f51 from "../skills/booking/references/presentation.md";
-import f52 from "../skills/booking/references/restaurants.md";
-import f53 from "../skills/booking/references/tickets.md";
-import f54 from "../skills/business-setup/SKILL.md";
-import f55 from "../skills/events/SKILL.md";
-import f56 from "../skills/finance/SKILL.md";
-import f57 from "../skills/flight-status/SKILL.md";
-import f58 from "../skills/ee/gmail/SKILL.md";
-import f59 from "../skills/ee/google-calendar/SKILL.md";
-import f60 from "../skills/ee/google-drive/SKILL.md";
-import f61 from "../skills/image-search/SKILL.md";
-import f62 from "../skills/image-search/scripts/images.py";
-import f63 from "../skills/native-network/SKILL.md";
-import f64 from "../skills/native-network/references/ssh.md";
-import f65 from "../skills/native-network/references/tailscale.md";
-import f66 from "../skills/photo-library/SKILL.md";
-import f67 from "../skills/photo-library/scripts/photos.py";
-import f68 from "../skills/places-search/SKILL.md";
-import f69 from "../skills/self-awareness/SKILL.md";
-import f70 from "../skills/self-awareness/references/question-types.md";
-import f71 from "../skills/self-awareness/references/when-asked.md";
-import f72 from "../skills/self-awareness/scripts/inventory.sh";
-import f73 from "../skills/shopping/SKILL.md";
-import f74 from "../skills/shopping/references/purchase.md";
-import f75 from "../skills/skill-creator/SKILL.md";
-import f76 from "../skills/skill-creator/references/template.md";
-import f77 from "../skills/travel-planning/SKILL.md";
-import f78 from "../skills/travel-planning/references/fact-checks.md";
-import f79 from "../skills/travel-planning/references/flights.md";
-import f80 from "../skills/travel-planning/references/handoff.md";
-import f81 from "../skills/travel-planning/references/itinerary.md";
-import f82 from "../skills/travel-planning/references/planning-kickoff.md";
-import f83 from "../skills/wide-research/SKILL.md";
-import f84 from "../skills/wide-research/references/helper-brief.md";
-import f85 from "../skills/wide-research/scripts/fetch_many.py";
+import f26 from "../skills/artifacts/scripts/design_mcp.py";
+import f27 from "../skills/artifacts/scripts/embed_assets.py";
+import f28 from "../skills/artifacts/scripts/embed_deck_fonts.mjs";
+import f29 from "../skills/artifacts/scripts/inline_media.py";
+import f30 from "../skills/artifacts/scripts/lo_impress_ui.sh";
+import f31 from "../skills/artifacts/scripts/make_deck.sh";
+import f32 from "../skills/artifacts/scripts/make_docx.sh";
+import f33 from "../skills/artifacts/scripts/make_pdf.sh";
+import f34 from "../skills/artifacts/scripts/new_deck.mjs";
+import f35 from "../skills/artifacts/scripts/page_check.py";
+import f36 from "../skills/artifacts/scripts/pdf_geometry_gate.mjs";
+import f37 from "../skills/artifacts/scripts/pdf_geometry_probe.mjs";
+import f38 from "../skills/artifacts/scripts/pdf_image_resolution.mjs";
+import f39 from "../skills/artifacts/scripts/pdf_text_floor.mjs";
+import f40 from "../skills/artifacts/scripts/readback.py";
+import f41 from "../skills/artifacts/scripts/recalc_xlsx.py";
+import f42 from "../skills/artifacts/scripts/render_audit.mjs";
+import f43 from "../skills/artifacts/scripts/render_docx.sh";
+import f44 from "../skills/artifacts/scripts/slide_style.mjs";
+import f45 from "../skills/artifacts/scripts/validate_pdf.sh";
+import f46 from "../skills/artifacts/scripts/validate_xlsx.py";
+import f47 from "../skills/artifacts/scripts/xlsx_formula_cache.py";
+import f48 from "../skills/booking/SKILL.md";
+import f49 from "../skills/booking/references/checkout.md";
+import f50 from "../skills/booking/references/flights.md";
+import f51 from "../skills/booking/references/hotels.md";
+import f52 from "../skills/booking/references/presentation.md";
+import f53 from "../skills/booking/references/restaurants.md";
+import f54 from "../skills/booking/references/tickets.md";
+import f55 from "../skills/business-setup/SKILL.md";
+import f56 from "../skills/events/SKILL.md";
+import f57 from "../skills/finance/SKILL.md";
+import f58 from "../skills/flight-status/SKILL.md";
+import f59 from "../skills/ee/gmail/SKILL.md";
+import f60 from "../skills/ee/google-calendar/SKILL.md";
+import f61 from "../skills/ee/google-drive/SKILL.md";
+import f62 from "../skills/image-search/SKILL.md";
+import f63 from "../skills/image-search/scripts/images.py";
+import f64 from "../skills/native-network/SKILL.md";
+import f65 from "../skills/native-network/references/ssh.md";
+import f66 from "../skills/native-network/references/tailscale.md";
+import f67 from "../skills/photo-library/SKILL.md";
+import f68 from "../skills/photo-library/scripts/photos.py";
+import f69 from "../skills/places-search/SKILL.md";
+import f70 from "../skills/self-awareness/SKILL.md";
+import f71 from "../skills/self-awareness/references/question-types.md";
+import f72 from "../skills/self-awareness/references/when-asked.md";
+import f73 from "../skills/self-awareness/scripts/inventory.sh";
+import f74 from "../skills/shopping/SKILL.md";
+import f75 from "../skills/shopping/references/purchase.md";
+import f76 from "../skills/skill-creator/SKILL.md";
+import f77 from "../skills/skill-creator/references/template.md";
+import f78 from "../skills/travel-planning/SKILL.md";
+import f79 from "../skills/travel-planning/references/fact-checks.md";
+import f80 from "../skills/travel-planning/references/flights.md";
+import f81 from "../skills/travel-planning/references/handoff.md";
+import f82 from "../skills/travel-planning/references/itinerary.md";
+import f83 from "../skills/travel-planning/references/planning-kickoff.md";
+import f84 from "../skills/wide-research/SKILL.md";
+import f85 from "../skills/wide-research/references/helper-brief.md";
+import f86 from "../skills/wide-research/scripts/fetch_many.py";
 export const FILES = {
   "artifacts/SKILL.md": f0,
   "artifacts/references/charts.md": f1,
@@ -112,64 +113,65 @@ export const FILES = {
   "artifacts/scripts/deck_asset_scope.mjs": f23,
   "artifacts/scripts/deck_layouts.html": f24,
   "artifacts/scripts/deck_template.css": f25,
-  "artifacts/scripts/embed_assets.py": f26,
-  "artifacts/scripts/embed_deck_fonts.mjs": f27,
-  "artifacts/scripts/inline_media.py": f28,
-  "artifacts/scripts/lo_impress_ui.sh": f29,
-  "artifacts/scripts/make_deck.sh": f30,
-  "artifacts/scripts/make_docx.sh": f31,
-  "artifacts/scripts/make_pdf.sh": f32,
-  "artifacts/scripts/new_deck.mjs": f33,
-  "artifacts/scripts/page_check.py": f34,
-  "artifacts/scripts/pdf_geometry_gate.mjs": f35,
-  "artifacts/scripts/pdf_geometry_probe.mjs": f36,
-  "artifacts/scripts/pdf_image_resolution.mjs": f37,
-  "artifacts/scripts/pdf_text_floor.mjs": f38,
-  "artifacts/scripts/readback.py": f39,
-  "artifacts/scripts/recalc_xlsx.py": f40,
-  "artifacts/scripts/render_audit.mjs": f41,
-  "artifacts/scripts/render_docx.sh": f42,
-  "artifacts/scripts/slide_style.mjs": f43,
-  "artifacts/scripts/validate_pdf.sh": f44,
-  "artifacts/scripts/validate_xlsx.py": f45,
-  "artifacts/scripts/xlsx_formula_cache.py": f46,
-  "booking/SKILL.md": f47,
-  "booking/references/checkout.md": f48,
-  "booking/references/flights.md": f49,
-  "booking/references/hotels.md": f50,
-  "booking/references/presentation.md": f51,
-  "booking/references/restaurants.md": f52,
-  "booking/references/tickets.md": f53,
-  "business-setup/SKILL.md": f54,
-  "events/SKILL.md": f55,
-  "finance/SKILL.md": f56,
-  "flight-status/SKILL.md": f57,
-  "gmail/SKILL.md": f58,
-  "google-calendar/SKILL.md": f59,
-  "google-drive/SKILL.md": f60,
-  "image-search/SKILL.md": f61,
-  "image-search/scripts/images.py": f62,
-  "native-network/SKILL.md": f63,
-  "native-network/references/ssh.md": f64,
-  "native-network/references/tailscale.md": f65,
-  "photo-library/SKILL.md": f66,
-  "photo-library/scripts/photos.py": f67,
-  "places-search/SKILL.md": f68,
-  "self-awareness/SKILL.md": f69,
-  "self-awareness/references/question-types.md": f70,
-  "self-awareness/references/when-asked.md": f71,
-  "self-awareness/scripts/inventory.sh": f72,
-  "shopping/SKILL.md": f73,
-  "shopping/references/purchase.md": f74,
-  "skill-creator/SKILL.md": f75,
-  "skill-creator/references/template.md": f76,
-  "travel-planning/SKILL.md": f77,
-  "travel-planning/references/fact-checks.md": f78,
-  "travel-planning/references/flights.md": f79,
-  "travel-planning/references/handoff.md": f80,
-  "travel-planning/references/itinerary.md": f81,
-  "travel-planning/references/planning-kickoff.md": f82,
-  "wide-research/SKILL.md": f83,
-  "wide-research/references/helper-brief.md": f84,
-  "wide-research/scripts/fetch_many.py": f85,
+  "artifacts/scripts/design_mcp.py": f26,
+  "artifacts/scripts/embed_assets.py": f27,
+  "artifacts/scripts/embed_deck_fonts.mjs": f28,
+  "artifacts/scripts/inline_media.py": f29,
+  "artifacts/scripts/lo_impress_ui.sh": f30,
+  "artifacts/scripts/make_deck.sh": f31,
+  "artifacts/scripts/make_docx.sh": f32,
+  "artifacts/scripts/make_pdf.sh": f33,
+  "artifacts/scripts/new_deck.mjs": f34,
+  "artifacts/scripts/page_check.py": f35,
+  "artifacts/scripts/pdf_geometry_gate.mjs": f36,
+  "artifacts/scripts/pdf_geometry_probe.mjs": f37,
+  "artifacts/scripts/pdf_image_resolution.mjs": f38,
+  "artifacts/scripts/pdf_text_floor.mjs": f39,
+  "artifacts/scripts/readback.py": f40,
+  "artifacts/scripts/recalc_xlsx.py": f41,
+  "artifacts/scripts/render_audit.mjs": f42,
+  "artifacts/scripts/render_docx.sh": f43,
+  "artifacts/scripts/slide_style.mjs": f44,
+  "artifacts/scripts/validate_pdf.sh": f45,
+  "artifacts/scripts/validate_xlsx.py": f46,
+  "artifacts/scripts/xlsx_formula_cache.py": f47,
+  "booking/SKILL.md": f48,
+  "booking/references/checkout.md": f49,
+  "booking/references/flights.md": f50,
+  "booking/references/hotels.md": f51,
+  "booking/references/presentation.md": f52,
+  "booking/references/restaurants.md": f53,
+  "booking/references/tickets.md": f54,
+  "business-setup/SKILL.md": f55,
+  "events/SKILL.md": f56,
+  "finance/SKILL.md": f57,
+  "flight-status/SKILL.md": f58,
+  "gmail/SKILL.md": f59,
+  "google-calendar/SKILL.md": f60,
+  "google-drive/SKILL.md": f61,
+  "image-search/SKILL.md": f62,
+  "image-search/scripts/images.py": f63,
+  "native-network/SKILL.md": f64,
+  "native-network/references/ssh.md": f65,
+  "native-network/references/tailscale.md": f66,
+  "photo-library/SKILL.md": f67,
+  "photo-library/scripts/photos.py": f68,
+  "places-search/SKILL.md": f69,
+  "self-awareness/SKILL.md": f70,
+  "self-awareness/references/question-types.md": f71,
+  "self-awareness/references/when-asked.md": f72,
+  "self-awareness/scripts/inventory.sh": f73,
+  "shopping/SKILL.md": f74,
+  "shopping/references/purchase.md": f75,
+  "skill-creator/SKILL.md": f76,
+  "skill-creator/references/template.md": f77,
+  "travel-planning/SKILL.md": f78,
+  "travel-planning/references/fact-checks.md": f79,
+  "travel-planning/references/flights.md": f80,
+  "travel-planning/references/handoff.md": f81,
+  "travel-planning/references/itinerary.md": f82,
+  "travel-planning/references/planning-kickoff.md": f83,
+  "wide-research/SKILL.md": f84,
+  "wide-research/references/helper-brief.md": f85,
+  "wide-research/scripts/fetch_many.py": f86,
 };

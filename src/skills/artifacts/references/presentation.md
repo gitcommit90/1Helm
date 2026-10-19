@@ -20,6 +20,10 @@ what the content needs, usually 6 to 10. The cover and the closing count as slid
 
 ### 1. Plan, then set up (one command)
 
+{{#apps}}Before the plan, get design references from the design sources in the artifacts skill (Inspo first, app id inspo_mcp: `find_app`, then `app_run` with `INSPO_MCP_RECOMMEND` and a `brief` that says what it is, who it is for and the mood). Pull a few references that match the kind of thing and the audience, choose one direction (layout, palette, type pairing), and build from it. Put the direction you chose (its mood, palette and type) in the `--brief` below, and when the slides are built, compare the rendered slide images with those references. If Inspo returns an error or nothing, build without it and don't mention it to the person.{{/apps}}
+
+Use Better Design for a palette and type pairing (`find-design-system`), `get-ux-principle` for how to lay out a slide's message, `get-motion-guide` for any animation and `get-review-rules` before you finish, and React Bits or Canvas UI for a background or text effect to port into the slides' own HTML and CSS, all as the artifacts skill's list describes.
+
 Decide the arc first: one line per slide, its id and the claim it makes, the cover first and the closing last. Every fact
 comes from the person or a source you actually read; nothing is invented to fill a slide. Then:
 

@@ -1,15 +1,17 @@
 // One rule for every path where an agent adds a file to the Library (share_file, browser downloads, files an app action returns):
 // if the new file is an edit of a file that is already in the Library, it becomes a new version of that Library file (same id, same
-// name, same share links and published pages) and the person never sees a second copy. the design notes
+// name, same share links and published pages) and the person never sees a second copy.
 //
 // Which Library file is it an edit of? Evidence first, name last. Every Library file is a candidate (uploads too), in this channel only
 // (each channel has its own Resident and Library, so a match can never cross channels or accounts).
 //  1. "library copy": the path is files/<name>, the Library copy on the computer.
 //  2. "same path": a Library file that was saved from this same computer path (the earlier rule about names and tasks still applies).
 //  3. "used in this task": the agent read, copied or opened that Library file in this task (file_text, read_file, a command naming
-//     files/<name>, the person attached it, or the agent already updated it in this task) and the names are alike ("Kyoto plan v2.pdf",
+//     files/<name> or its loose copy by name, the person attached it, or the agent already updated it in this task) and the names are alike ("Kyoto plan v2.pdf",
 //     "Kyoto trip plan.pdf" from "Kyoto plan.pdf"; same extension). The uses are in file_uses.
 //  4. "same name": the same name ignoring a " (N)" suffix (a file the Library shows as "plan (2).html" counts as plan.html).
+//     A Library file that was made or updated in this same task (files.session is the task) counts as used: "horse-tinder-v2.html" after
+//     "horse-tinder.html" in one task is an edit of it, whatever folder or helper made it.
 // A file the agent used in this task whose new name is nothing like it is NOT matched (it could be a new file made from a template);
 // the agent names it with replace: when it is an edit.
 // copy: true and an explicit replace: are handled by the caller. The person's uploaded original is never lost (see putVersion).
@@ -36,7 +38,8 @@ export const fileVersionsMethods = {
   },
   // A command or path the agent runs: every Library file it names (files/<name> or the bare full name next to "files") was used.
   noteFilesIn(session, text) {
-    const t = String(text || ""); if (!session || !t.includes("files")) return;
+    const t = String(text || ""); if (!session || t.length < 4) return;
+    // Any command naming the file counts, also its loose copy outside files/ (cat /workspace/horse-tinder.html): evidence only, never a match alone.
     const hit = []; for (const f of this.sql.exec("SELECT id,name FROM files WHERE deleted=0 AND pending=0").toArray()) {
       if (f.name.length < 4) continue;
       if (t.includes(f.name) || t.includes(f.name.replace(/ /g, "\\ ")) || t.includes(f.name.replace(/'/g, "'\\''"))) hit.push(f.id);
@@ -46,14 +49,17 @@ export const fileVersionsMethods = {
   // → { file, why } | null (a new file). opts: { path, name, named, session }.
   resolveFile({ path = null, name, named = false, session = null }) {
     const rows = this.sql.exec("SELECT * FROM files WHERE deleted=0 AND pending=0 ORDER BY at DESC LIMIT 1000").toArray();
-    const lc = name.toLowerCase(), ext = extOf(name), usedAt = new Map();
-    if (session) for (const u of this.sql.exec("SELECT file_id, at FROM file_uses WHERE session=?", String(session)).toArray()) usedAt.set(u.file_id, u.at);
+    const lc = name.toLowerCase(), ext = extOf(name), usedAt = new Map(), read = new Set();   // read: real use evidence (read, copied, opened, attached), not just made or updated in this task
+    if (session) for (const u of this.sql.exec("SELECT file_id, at, how FROM file_uses WHERE session=?", String(session)).toArray()) { usedAt.set(u.file_id, u.at); if (u.how !== "updated") read.add(u.file_id); }
     const same = (f) => !!session && f.session === session, exact = (f) => f.name.toLowerCase() === lc, asked = (f) => exact(f) || unsuffixed(f.name) === lc;
     let f;
     if (path && (f = rows.find((r) => path === `files/${r.name}`))) return { file: f, why: "it is the Library copy on your computer" };
     if (path && (f = rows.find((r) => r.src_path === path && (!named || asked(r) || same(r))))) return { file: f, why: "it was saved from the same path" };
-    const used = rows.filter((r) => usedAt.has(r.id) && extOf(r.name) === ext).sort((a, b) => usedAt.get(b.id) - usedAt.get(a.id));
-    const likely = used.filter((r) => alike(r.name, name));
+    const stamp = (r) => Math.max(usedAt.get(r.id) || 0, same(r) ? r.at || 0 : 0);   // made or updated in this task counts as used
+    const used = rows.filter((r) => (usedAt.has(r.id) || same(r)) && extOf(r.name) === ext).sort((a, b) => stamp(b) - stamp(a));
+    // Real use evidence keeps the alike() rule. A file that counts only because this task made or updated it matches the same stem only
+    // ("report.html" then "report-appendix.html" are two files; "report.html" then "report-v2.html" is one).
+    const likely = used.filter((r) => read.has(r.id) ? alike(r.name, name) : exactStem(r.name, name));
     if (likely.length) return { file: likely.find((r) => exactStem(r.name, name)) || likely[0], why: "you used it in this task and the new file has a similar name" };
     const byName = rows.filter((r) => unsuffixed(r.name) === unsuffixed(name));
     if (byName.length) return { file: byName.find(exact) || byName.find(same) || byName[0], why: "it has the same name" };

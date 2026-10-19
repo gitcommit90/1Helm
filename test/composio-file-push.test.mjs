@@ -86,6 +86,23 @@ const noFiles = {};
   ok("a lone /workspace path as content is refused with the file_text form; other strings and inputs are untouched");
 }
 
+// ---------- 3a. a top-level `code` input (an app that runs code, e.g. an Execute action) ----
+{
+  const program = "async () => cloudflare.request({ method: \"PUT\", path: `/accounts/${accountId}/workers/scripts/x`, rawBody: true, body: \"<html>\\u00e9</html>\" })";
+  const files = { read: async (ref) => ref === "/workspace/workspace/s/deploy.js" ? { name: "deploy.js", mime: "application/javascript", bytes: enc(program) } : { error: `no "${ref}"` } };
+  let r = await resolveFileRefs({ code: { file_text: "/workspace/workspace/s/deploy.js" }, account_id: "a1" }, files.read);
+  assert.deepEqual(r.args, { code: program, account_id: "a1" }); assert.equal(r.used[0].name, "deploy.js");
+  ok("{file_text: path} as a top-level `code` value is replaced by the file's text");
+  const huge = async () => ({ name: "deploy.js", bytes: new Uint8Array(3 * 1024 * 1024 + 1) });
+  r = await resolveFileRefs({ code: { file_text: "deploy.js" } }, huge); assert.match(r.error, /at most 3(\.0)? MB.*Nothing was run/s);
+  r = await resolveFileRefs({ code: { file_text: "deploy.js" } }, async () => ({ name: "deploy.js", bytes: new Uint8Array(3 * 1024 * 1024) })); assert.ok(!r.error);
+  ok("a `code` file over the 3 MB limit runs nothing, and exactly 3 MB is accepted");
+  r = await resolveFileRefs({ code: "/workspace/workspace/s/deploy.js" }, files.read);
+  assert.match(r.error, /computer path.*"file_text".*value of code.*Nothing was run/s);
+  assert.equal(pathAsContent({ code: "/workspace/a.js" }), "code"); assert.equal(pathAsContent({ code: "async () => 1" }), null);
+  ok("a lone /workspace path passed as `code` is refused with the file_text form; real code is untouched");
+}
+
 // ---------- 3b. a required input left out ----
 {
   reqs = []; failWith = null;

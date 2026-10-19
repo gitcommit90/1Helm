@@ -1,0 +1,10 @@
+{
+ // Hosted MCP servers for design sources. Public data only, so these endpoints need no sign-in.
+ // Deploy: cd design-mcp; wrangler deploy -c wrangler.example.jsonc
+ // Secret: BETTER_DESIGN_KEY (a free Better Design key, forwarded by /better-design/mcp): wrangler secret put BETTER_DESIGN_KEY -c wrangler.example.jsonc
+ // Add a routes entry for your own domain if you want one, then set DESIGN_MCP_URL to it for the design_mcp.py client.
+ "name": "design-mcp",
+ "main": "src/index.js",
+ "compatibility_date": "2026-09-01",
+ "workers_dev": true
+}

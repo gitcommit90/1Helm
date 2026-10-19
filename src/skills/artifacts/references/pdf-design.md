@@ -6,6 +6,10 @@ barely bigger than the body, emoji as icons. Make each choice because it fits th
 
 ## Settle the system first
 
+{{#apps}}When the person gave no complete look and the file is a designed one (a flyer, a one-pager, a report cover, an invoice with a brand), get design references first from the design sources in the artifacts skill (Inspo first, app id inspo_mcp: `find_app`, then `app_run` with `INSPO_MCP_RECOMMEND` and a `brief` that says what it is, who it is for and the mood). Pull a few references that match the kind of thing and the audience, choose one direction (layout, palette, type pairing), and build from it. When the page images are rendered, compare them with those references. If Inspo returns an error or nothing, build without it and don't mention it to the person.{{/apps}}
+
+Better Design gives a palette and type pairing (`find-design-system`), hierarchy, spacing and type rules (`get-ui-principle`), and a check before you finish (`get-review-rules`), as the artifacts skill's list describes.
+
 - If they gave a complete look (brand colours, fonts, a reference document), use it. If they gave a direction ("warm",
   "minimal", "like a magazine"), turn it into a small system that matches. If they said nothing, choose a system that suits the
   document. Write the choices at the top of the `<style>` block as CSS variables (colours, the two families, the spacing

@@ -132,8 +132,8 @@ const refKind = (v) => { if (!isPlain(v)) return null; const k = Object.keys(v);
 const hasRef = (v, d = 0) => d > 4 ? false : refKind(v) ? true : Array.isArray(v) ? v.some((x) => hasRef(x, d + 1)) : isPlain(v) ? Object.values(v).some((x) => hasRef(x, d + 1)) : false;
 export const toBase64 = (bytes) => { let s = ""; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); };
 // A computer path passed as the text itself (the helper meant "the file's contents") would be stored as that literal path (GitHub kept
-// "/workspace/…/index.html" as the page, twice). Only inputs named like contents are checked, and only a lone path with no spaces.
-const CONTENT_INPUTS = new Set(["content", "contents", "body", "text", "html", "data", "file_content"]);
+// "/workspace/…/index.html" as the page, twice; a path passed as `code` would run as the program). Only inputs named like contents are checked, and only a lone path with no spaces.
+const CONTENT_INPUTS = new Set(["content", "contents", "body", "text", "html", "data", "file_content", "code", "script", "source"]);
 export const pathAsContent = (args) => Object.entries(args || {}).find(([k, v]) => CONTENT_INPUTS.has(k) && typeof v === "string" && v.length < 300 && /^\/workspace\/\S+$/.test(v.trim()))?.[0] || null;
 export async function resolveFileRefs(args, read) {
   const used = [], pc = pathAsContent(args);
