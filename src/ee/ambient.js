@@ -19,6 +19,13 @@ import { AMBIENT_REVIEW_VERSION, AMBIENT_REVIEW_SYSTEM, ambientReviewInput, appl
 import { PLAIN_STYLE } from "../plain-style.js";
 
 export const AMBIENT_VERSION = 2, CHUNK_CHARS = 10000, BATCH_CHUNKS = 6;
+// Cost rules. Storing and keyword search of speech are immediate and model-free; only the model passes (extract + review) are held back.
+// A conversation is finished when Bee gave it an end_time. A conversation that never closes counts as finished once it has had no new
+// revision for QUIET_MS. The model passes of one account start at most once per RUN_GAP_MS, then drain every finished chunk waiting.
+// A chunk with 0 or 1 words of speech (fewer than MIN_SPEECH_WORDS, filler words not counted) is marked done with no items and no model call. Two words such as "Call mom" are a real voice note and go to the model.
+export const QUIET_MS = 30 * 60e3, RUN_GAP_MS = 30 * 60e3, MIN_SPEECH_WORDS = 2;
+const FILLER = new Set(["um", "umm", "uh", "uhh", "uhm", "er", "erm", "ah", "oh", "hm", "hmm", "mm", "mmm", "mhm", "huh", "yeah", "yep", "yes", "no", "nope", "ok", "okay", "right", "well", "so", "like", "you", "know", "i", "mean"]);
+const speechWords = (lines) => lines.reduce((n, l) => n + String(l?.text || "").toLowerCase().split(/[^\p{L}\p{N}']+/u).filter((w) => w && !FILLER.has(w)).length, 0);
 // Stage-isolated defaults; saved role selections are resolved at dispatch.
 export function ambientModelRoute(env, kind) {
   return jobRoute(kind === "ambient-review" ? "ambient_review" : "ambient_extract");
@@ -292,6 +299,8 @@ export class AmbientStore {
     this.transaction(() => {
       const oldChunks = this.rows("SELECT hash,ordinal,lines,state FROM ambient_chunks WHERE source=? AND source_id=? AND active=1", source, id);
       const firstChanged = old ? chunks.find((c) => !oldChunks.some((p) => p.hash === c.hash && p.ordinal === c.ordinal))?.ordinal : null;
+      // Kept: a finished conversation that Bee revises can change the speech next to the end of an already extracted chunk, and a capture cue
+      // there is read with the previous chunk. An open conversation has no extracted chunks (the model waits for it to finish), so this is rare.
       const cuePredecessors = [];
       if (cueSettings?.enabled) for (const previous of chunks) {
         const c = chunks[previous.ordinal + 1], prior = oldChunks.find((p) => p.hash === previous.hash && p.ordinal === previous.ordinal);
@@ -342,11 +351,22 @@ export class AmbientStore {
   }
   clear() { for (const table of ["ambient_links", "ambient_items", "ambient_chunks", "ambient_sources"]) this.sql.exec(`DELETE FROM ${table}`); this.changed(); }
   liveIds() { return this.rows("SELECT source_id FROM ambient_sources WHERE source='bee' AND live=1 ORDER BY ingested_at LIMIT 25").map((r) => Number(r.source_id)); }
+  // Model passes: a session starts when RUN_GAP_MS has passed since the last one started, and stays open while finished work is waiting.
+  // Both values live in the host's saved state, so a restart or a deploy keeps the spacing and resumes an open session.
+  sessionOpen() { return this.host.get("ambient_model_open") === "1"; }
+  sessionAt() { return Number(this.host.get("ambient_model_at") || 0) + RUN_GAP_MS; }
+  // Chunks the model may work on now: not done, past their retry time, and in a finished conversation (or one quiet for QUIET_MS).
+  eligible(fixture, limit) {
+    return this.rows("SELECT c.* FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1 AND c.state<>'done' AND c.retry_at<=? AND (?=1 OR s.live=0 OR s.ingested_at<=?) AND NOT EXISTS(SELECT 1 FROM ambient_chunks p WHERE p.source=c.source AND p.source_id=c.source_id AND p.active=1 AND p.ordinal<c.ordinal AND p.state IN ('failed','processing')) ORDER BY s.source_at,c.ordinal LIMIT ?", now(), fixture ? 1 : 0, now() - QUIET_MS, limit);
+  }
   dueAt() {
     // No configured managed provider: do not spin a rapid alarm (BYOK indexing can be explicitly enabled).
     if (!this.host.env.OPENROUTER_API_KEY && !this.host.env.BYOK && !this.host.get("ambient_indexing")) return Infinity;
     if (this.backlog()) return now() + 1000;
-    const r = this.rows("SELECT MIN(c.retry_at) at FROM ambient_chunks c WHERE c.active=1 AND c.state<>'done' AND NOT EXISTS(SELECT 1 FROM ambient_chunks p WHERE p.source=c.source AND p.source_id=c.source_id AND p.active=1 AND p.state<>'done' AND p.ordinal<c.ordinal)")[0]; return Math.min(Infinity, r?.at == null ? Infinity : Math.max(now() + 1000, Number(r.at)));
+    // A chunk of a still-open conversation becomes due QUIET_MS after the conversation's last revision.
+    const r = this.rows("SELECT MIN(MAX(c.retry_at,CASE WHEN s.live=1 THEN s.ingested_at+? ELSE 0 END)) at FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1 AND c.state<>'done' AND NOT EXISTS(SELECT 1 FROM ambient_chunks p WHERE p.source=c.source AND p.source_id=c.source_id AND p.active=1 AND p.state<>'done' AND p.ordinal<c.ordinal)", QUIET_MS)[0];
+    if (r?.at == null) return Infinity;
+    return Math.max(now() + 1000, Number(r.at), this.sessionOpen() ? 0 : this.sessionAt());
   }
   backlog() { return Number(this.rows("SELECT COUNT(*) n FROM convs c WHERE c.r2_key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM ambient_sources a WHERE a.source='bee' AND a.source_id=CAST(c.id AS TEXT) AND a.location_version=1 AND a.projection_version=?)", AMBIENT_VERSION)[0]?.n || 0); }
   running(fixture = false) { return !this.host.get("account_deleted") && (fixture || this.host.get("status") === "active" || this.host.get("ambient_indexing") === "1"); }
@@ -376,24 +396,6 @@ export class AmbientStore {
     for (const word of words) for (const item of this.query({ query: word, limit: 4 }).items) selected.set(item.id, item);
     return [...selected.values()].slice(0, 70);
   }
-  reconcileLater(items, currentChunk) {
-    const queued = new Set(), searchable = "LOWER(COALESCE(json_extract(i.data,'$.search_text'),json_extract(i.data,'$.text'),''))";
-    for (const item of items) {
-      // An unlocated item has no source support, so it never causes later work to be redone.
-      if (!item.source_at || item.grounding?.state === "unlocated") continue;
-      const topic = topicWords(item.text, ...(item.evidence || []).map((e) => e.quote)), words = [...topic.keys()].slice(0, 10); if (!words.length) continue;
-      const candidates = this.rows(`SELECT i.*,c.state FROM ambient_items i JOIN ambient_chunks c ON c.source=i.source AND c.source_id=i.source_id AND c.hash=i.chunk_hash WHERE c.active=1 AND c.state='done' AND i.source_at>? AND json_extract(i.data,'$.owner')=? AND COALESCE(json_extract(i.data,'$.grounding.state'),'located')<>'unlocated' AND (${words.map(() => `${searchable} LIKE ?`).join(" OR ")}) ORDER BY i.source_at LIMIT 70`, item.source_at, item.owner, ...words.map((w) => `%${w}%`));
-      for (const row of candidates) {
-        if (row.source === currentChunk.source && row.source_id === currentChunk.source_id && row.chunk_hash === currentChunk.hash) continue;
-        const later = parse(row.data, {}), laterWords = topicWords(later.text, ...(later.evidence || []).map((e) => e.quote)), shared = words.filter((w) => laterWords.has(w));
-        if (shared.length < 2 && !shared.some((w) => topic.get(w) >= 6 && !/unknown|^speaker\s*\d*$/i.test(item.owner))) continue;
-        const key = JSON.stringify([row.source, row.source_id, row.chunk_hash]); if (queued.has(key)) continue; queued.add(key);
-        this.sql.exec("UPDATE ambient_chunks SET state='queued',retry_at=0,error=NULL WHERE source=? AND source_id=? AND hash=?", row.source, row.source_id, row.chunk_hash);
-        this.sql.exec("DELETE FROM ambient_items WHERE source=? AND source_id=? AND chunk_hash=?", row.source, row.source_id, row.chunk_hash);
-        this.sql.exec("UPDATE ambient_sources SET processed_at=NULL WHERE source=? AND source_id=?", row.source, row.source_id);
-      }
-    }
-  }
   async releaseAttempts() {
     for (const r of this.rows("SELECT id FROM ambient_attempts")) { await this.host.ledger().settle(r.id, 0); this.sql.exec("DELETE FROM ambient_attempts WHERE id=?", r.id); }
   }
@@ -404,18 +406,39 @@ export class AmbientStore {
     for (const r of rows) { const obj = await h.env.WS.get(r.r2_key); const conv = obj ? parse(await obj.text()) : null; if (h.gen !== gen || !this.running()) return 0; await this.ingest("bee", r.id, conv || { id: r.id, end_time: 1, transcriptions: [] }); }
     return rows.length;
   }
-  async run(fixture = false) { await this.runExtraction(fixture); }
-  async runExtraction(fixture = false) {
+  // Near-empty speech: done with no items and no model call, at once and whatever the gate or the conversation state is. The counters stay
+  // complete so coverage reads the same as for a chunk that had no items.
+  skipShort() {
+    const none = JSON.stringify({ model_items: 0, located: 0, approximate: 0, unlocated: 0, malformed: 0, duplicate: 0, filtered_nonpersonal: 0, over_limit: 0, review_dropped: 0, privacy_removed: 0, skipped_short: 1 });
+    // Only chunks with under 400 characters of text can be that short, so a long chunk is never read into memory.
+    for (const c of this.rows("SELECT source,source_id,hash,lines FROM ambient_chunks c WHERE active=1 AND state='queued' AND (SELECT COALESCE(SUM(length(json_extract(j.value,'$.text'))),0) FROM json_each(c.lines) j)<400 LIMIT 200")) {
+      if (speechWords(parse(c.lines, [])) >= MIN_SPEECH_WORDS) continue;
+      this.transaction(() => {
+        this.sql.exec("UPDATE ambient_chunks SET state='done',error=NULL,retry_at=0,draft_key=NULL,draft_json=NULL,fallback_json=NULL,grounding_json=?,claim_token=NULL WHERE source=? AND source_id=? AND hash=? AND state='queued'", none, c.source, c.source_id, c.hash);
+        this.sql.exec("UPDATE ambient_sources SET processed_at=? WHERE source=? AND source_id=? AND NOT EXISTS(SELECT 1 FROM ambient_chunks WHERE source=? AND source_id=? AND active=1 AND state<>'done')", now(), c.source, c.source_id, c.source, c.source_id);
+      });
+    }
+  }
+  // gated: the alarm path. The model passes wait for the session gate (see sessionAt); stored speech and search never wait.
+  async run(fixture = false, gated = false) { await this.runExtraction(fixture, gated); }
+  async runExtraction(fixture = false, gated = false) {
     const h = this.host; if (!h.tid()) return;
     // BeeSync serializes batches. A new batch/reconstructed host revokes prior
     // callbacks durably; in-memory generation values alone are not ownership.
     this.sql.exec("UPDATE ambient_chunks SET claim_token=NULL WHERE state='processing'");
     await this.releaseAttempts();
     if (!this.running(fixture)) return;
+    this.skipShort();
+    // Gate closed and nothing to store first: no work and no database read until the gate opens.
+    if (gated && !this.sessionOpen() && now() < this.sessionAt() && !this.backlog()) return;
     const tenant = await h.env.DB.prepare("SELECT status,plan FROM tenants WHERE id=?").bind(h.tid()).first();
     if (tenant?.status !== "active") return;
     if (!fixture) await this.seed();
-    const todo = this.rows("SELECT c.* FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1 AND c.state<>'done' AND c.retry_at<=? AND NOT EXISTS(SELECT 1 FROM ambient_chunks p WHERE p.source=c.source AND p.source_id=c.source_id AND p.active=1 AND p.ordinal<c.ordinal AND p.state IN ('failed','processing')) ORDER BY s.source_at,c.ordinal LIMIT ?", now(), BATCH_CHUNKS);
+    const todo = this.eligible(fixture, BATCH_CHUNKS);
+    if (gated) {
+      if (!todo.length) { h.put("ambient_model_open", null); return true; }
+      if (!this.sessionOpen()) { if (now() < this.sessionAt()) return true; h.put("ambient_model_at", now()); h.put("ambient_model_open", "1"); }
+    }
     for (const c of todo) {
       if (!this.running(fixture)) break;
       if (this.rows("SELECT 1 FROM ambient_chunks WHERE source=? AND source_id=? AND active=1 AND ordinal<? AND state<>'done' LIMIT 1", c.source, c.source_id, c.ordinal).length) continue;
@@ -520,7 +543,6 @@ export class AmbientStore {
         c.phase = "publish";
         this.transaction(() => {
           if (!validSource()) return;
-          const oldData = new Map(this.rows("SELECT id,data FROM ambient_items WHERE source=? AND source_id=? AND chunk_hash=?", c.source, c.source_id, c.hash).map((r) => [r.id, r.data]));
           this.sql.exec("DELETE FROM ambient_items WHERE source=? AND source_id=? AND chunk_hash=?", c.source, c.source_id, c.hash);
           for (const item of ready) {
             this.sql.exec("INSERT OR REPLACE INTO ambient_items VALUES(?,?,?,?,?,?)", item.id, c.source, c.source_id, c.hash, item.source_at, JSON.stringify(item));
@@ -531,7 +553,6 @@ export class AmbientStore {
           this.changed();
           this.sql.exec("UPDATE ambient_chunks SET state='done',error=NULL,retry_at=0,draft_key=NULL,draft_json=NULL,fallback_json=NULL,grounding_json=?,claim_token=NULL WHERE source=? AND source_id=? AND hash=?", JSON.stringify(published), c.source, c.source_id, c.hash);
           this.sql.exec("UPDATE ambient_sources SET processed_at=? WHERE source=? AND source_id=? AND NOT EXISTS(SELECT 1 FROM ambient_chunks WHERE source=? AND source_id=? AND active=1 AND state<>'done')", now(), c.source, c.source_id, c.source, c.source_id);
-          if (!c.recovery_mode) this.reconcileLater(ready.filter((x) => oldData.get(x.id) !== JSON.stringify(x)), c);
           this.cleanLinks();
         });
         h.put("ambient_note", null);
@@ -553,6 +574,8 @@ export class AmbientStore {
         if (e?.ambientPause) break;
       }
     }
+    // The session ends when no finished work is left to do now (a failed chunk retries in the next session).
+    if (gated && !this.eligible(fixture, 1).length) h.put("ambient_model_open", null);
     return true;
   }
   async extract(lines, previous, tenant, chunk = null) {

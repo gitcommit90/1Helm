@@ -253,7 +253,7 @@ export class BeeSync extends DurableObject {
       await this.runOnce(poked ? this.get("poke_why") || "poked" : "scheduled");
     }
     if (this.bf()?.status === "running") await this.bfStep().catch(async (e) => { await this.ev(`backfill step failed: ${String(e?.message || e).slice(0, 160)}`); });
-    if (this.ambient.running()) await this.ambientRun();
+    if (this.ambient.running()) await this.ambientRun(false, true);   // stored speech stays immediate; the model passes run at most every 30 minutes (ambient.js sessionAt)
     await this.hsInboxSync().catch((e) => console.log("bee inbox memory", String(e?.message || e).slice(0, 120)));   // HS_WRITERS: confirmed inbox items → General's bank
     const bfNext = this.bf()?.status === "running" ? now() + BF_GAP_MS : Infinity, liveNext = this.get("status") === "active" ? Math.max(now() + 1000, this.dueAt()) : Infinity;
     const at = Math.min(bfNext, liveNext, this.writesDueAt(), this.ambient.running() ? this.ambient.dueAt() : Infinity); if (at < Infinity) await this.ctx.storage.setAlarm(Math.max(at, now() + 500));
@@ -275,8 +275,8 @@ export class BeeSync extends DurableObject {
     if (result.found) { this.put("ambient_indexing", "1"); await this.arm(now() + 1000); }
     return result;
   }
-  ambientRun(fixture = false) {
-    if (!this._ambientRun) this._ambientRun = this.ambient.run(fixture).finally(() => { this._ambientRun = null; });
+  ambientRun(fixture = false, gated = false) {
+    if (!this._ambientRun) this._ambientRun = this.ambient.run(fixture, gated).finally(() => { this._ambientRun = null; });
     return this._ambientRun;
   }
   // Internal RPC; the dev-only HTTP caller additionally checks ops key and example.com ownership.

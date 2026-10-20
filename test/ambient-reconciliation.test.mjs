@@ -82,14 +82,17 @@ await check("revised earlier source reuses then reconciles later unchanged cance
   assert.ok(currentSeed(F)[0].earlier_evidence.some((x) => /lead/.test(x.quote)));
 });
 
-await check("late historical source reconciles existing later cancellation without disturbing unrelated work", async () => {
+await check("late historical source is not re-queued: finished chunks stay done and linking is left to the model's previous items", async () => {
   const F = fixture();
   await F.store.ingest("bee", 2, conversation(2, [line(cancellation, T + 600e3)]));
   await F.store.ingest("bee", 3, conversation(3, [line("I need to buy printer ink.", T + 900e3)]));
-  await F.drain(); const unrelated = F.store.query({ query: "printer ink" }).items[0], before = F.calls.filter((c) => c.source === "3").length;
-  await F.store.ingest("bee", 1, conversation(1, [line(original, T)])); await F.drain(); expectCancelled(F);
+  await F.drain(); const unrelated = F.store.query({ query: "printer ink" }).items[0], before = F.calls.length;
+  await F.store.ingest("bee", 1, conversation(1, [line(original, T)])); await F.drain();
+  assert.equal(F.calls.length - before, 1, "only the new source is extracted; the finished chunks of sources 2 and 3 are not re-queued");
+  assert.deepEqual(F.calls.slice(before).map((c) => c.source), ["1"]);
+  assert.equal(F.db.prepare("SELECT count(*) n FROM ambient_chunks WHERE source_id IN ('2','3') AND state='done'").get().n, 2);
   assert.equal(F.store.query({ query: "printer ink" }).items[0].id, unrelated.id);
-  assert.equal(F.calls.filter((c) => c.source === "3").length, before, "unrelated transcript need not incur another extraction");
+  assert.equal(currentSeed(F).length, 2, "the older intention and the later cancellation stay separate items without a model link");
 });
 
 await check("same-chunk line references consolidate repeat/completion and cancellation, preserving unknown owner", async () => {

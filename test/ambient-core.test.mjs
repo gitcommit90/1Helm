@@ -3,7 +3,7 @@ import { SEED } from "./helpers/seed-settings.mjs";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { retainReview } from "./ambient-review-stub.mjs";
-import { AmbientStore, ambientLines, ambientChunks, validateAmbient, ambientErrorCode } from "../src/ee/ambient.js";
+import { AmbientStore, QUIET_MS, ambientLines, ambientChunks, validateAmbient, ambientErrorCode } from "../src/ee/ambient.js";
 
 const T = Date.UTC(2026, 9, 11), db = new DatabaseSync(":memory:"), kv = new Map([["tenant", "test"], ["status", "active"]]);
 db.exec("CREATE TABLE convs(id INTEGER PRIMARY KEY,start_time INTEGER,r2_key TEXT)");
@@ -30,6 +30,8 @@ assert.equal(validateAmbient({ items: [{ kind: "task", quote: "hallucinated", li
 
 await store.ingest("bee", 1, conv(1, "I need to return the library books", T, "Unknown", true));
 let q = store.query({ mode: "transcript", from: T - 1, to: T + 1 }); assert.equal(q.transcripts.length, 1); assert.equal(q.coverage.live_sources, 1); assert.equal(q.transcripts[0].extraction_state, "queued");
+const liveCalls = calls; await store.run(); assert.equal(calls, liveCalls, "an open conversation never reaches the model"); assert.equal(store.query().items.length, 0);
+store.sql.exec("UPDATE ambient_sources SET ingested_at=? WHERE source_id='1'", Date.now() - QUIET_MS - 1000);
 await store.run(); q = store.query(); assert.equal(q.items.length, 1); assert.equal(q.items[0].needs_review, true); assert.equal(q.items[0].owner, "Unknown");
 const oldId = q.items[0].id, before = calls; await store.ingest("bee", 1, conv(1, "I need to return the library books", T, "Unknown", true)); await store.run(); assert.equal(calls, before, "same content free");
 await store.ingest("bee", 2, conv(2, "I returned the library books", T + 2000, "Unknown")); await store.run();
@@ -44,12 +46,12 @@ assert.equal(store.query().items[0].notification_status, "not_scheduled"); asser
 await store.ingest("bee", 3, conv(3, "A separate useful intention", T + 4000)); await store.run();
 q = store.query({ limit: 1 }); assert.ok(q.next_cursor); const page2 = store.query({ limit: 1, cursor: q.next_cursor }); assert.equal(page2.items.length, 1); assert.notEqual(page2.items[0].id, q.items[0].id);
 assert.ok(store.query({ query: "different", cursor: q.next_cursor }).error, "cursor bound to query");
-await store.ingest("bee", 4, conv(4, "Another separate intention", T + 5000)); assert.ok(store.query({ cursor: q.next_cursor }).error, "cursor rejects changed snapshots");
+await store.ingest("bee", 4, conv(4, "Another separate intention to remember later", T + 5000)); assert.ok(store.query({ cursor: q.next_cursor }).error, "cursor rejects changed snapshots");
 assert.equal(store.query({ from: T + 2999, to: T + 3001 }).items.length, 1, "dates select utterance, not 24h source start");
 
 memory = false; const beforeOff = calls; await store.run(); assert.equal(calls, beforeOff, "memory off prevents model calls"); assert.ok(store.query().coverage.failed);
 memory = true; store.sql.exec("UPDATE ambient_chunks SET retry_at=0"); hidden = "Another separate"; await store.run(); assert.ok(!store.query({ query: hidden }).items.some((i) => i.text.includes(hidden)), "forgotten text never extracted (a query now matches by any word, so other items may rank)"); hidden = "";
-await store.ingest("bee", 5, conv(5, "Retry me safely", T + 6000)); store.extract = async () => { throw new Error("provider down PRIVATE DETAILS"); }; await store.run(); assert.ok(store.query().coverage.failed);
+await store.ingest("bee", 5, conv(5, "Retry me safely once the provider is back", T + 6000)); store.extract = async () => { throw new Error("provider down PRIVATE DETAILS"); }; await store.run(); assert.ok(store.query().coverage.failed);
 assert.equal(JSON.parse(host.get("ambient_error")).phase, "model_dispatch"); assert.ok(!host.get("ambient_note").includes("PRIVATE DETAILS")); assert.ok(!host.get("ambient_error").includes("PRIVATE DETAILS"));
 store = new AmbientStore(host); store.extract = extract; store.review = retainReview; store.sql.exec("UPDATE ambient_chunks SET retry_at=0,reservation_id='interrupted-model' WHERE state='failed'"); await store.run(); assert.ok(settled.some(([id, n]) => id === "interrupted-model" && n === 0)); assert.equal(store.query().coverage.failed, 0, "persistent retry survives reconstruction");
 store.sql.exec("INSERT INTO ambient_attempts VALUES('revision-interrupted-model',?)", T);
