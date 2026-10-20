@@ -14,9 +14,16 @@
 //     time the Notebook loads. A failed Contacts lookup is not "no matches": the card stays pending (speakerMatches returns null then).
 //   - A speaker that is not confirmed is never linked to a person. Inside one recording a speaker is its own entity (adapters/bee.js
 //     scopedSpeaker), never linked across recordings by its label.
+//   - A generic or empty label with no distinct Bee speaker id (Bee's "Unknown", "Speaker 2" with no id, Others, Guest, an id as the label) names
+//     nobody and separates nobody: one such row can hold several people's words, so linking it to one Contacts person would attach other
+//     people's words to that person. It gets no review card. The row is stored as "reviewed" at once (and an older pending one is settled on
+//     the next load), by the same path as the end of a review: nothing deleted, nothing linked, logged as an event. A generic label WITH a
+//     distinct Bee speaker id keeps its card, which shows the speaker's own words and the recording's time and place, has no Accept (accepting
+//     "Speaker 2" as a name adds nothing) and is named with Edit. The label itself is never rewritten.
 // The rows live in the BeeSync Durable Object, next to the facts waiting for review ("New from Bee"), and go with it.
 import { hsEnvelope } from "../hs-flag.js";
 import { e164 } from "../memory-envelope.js";
+import { ambientLocation } from "./ambient.js";
 
 export const SPEAKERS = `CREATE TABLE IF NOT EXISTS speakers (rec TEXT NOT NULL, spk TEXT NOT NULL, label TEXT NOT NULL, name TEXT, state TEXT NOT NULL DEFAULT 'new',
   person TEXT, person_name TEXT, email TEXT, phone TEXT, excerpt TEXT, rec_at INTEGER, at INTEGER NOT NULL, PRIMARY KEY (rec, spk))`;
@@ -34,23 +41,42 @@ function contactsOf(conv) {
   }
   return out;
 }
+// A label that names nobody: empty, Bee's own placeholders, a bare number or id, or the speaker's own id. Matches "Unknown", "Unknown speaker",
+// "Speaker 2", "Speaker B", "Person 3", "Guest", "Others", "Someone", "s2", a UUID and the like, in any case. id: Bee's speaker id for that speaker when it gave one.
+const GENERIC_LABEL = /^(?:unknown|unidentified|unnamed|anonymous|speaker|spk|person|voice|participant|guest|guests|user|talker|caller|someone|somebody|other|others|stranger|man|woman|male|female|n\/a|none|null|undefined)(?:[\s_#:.-]*(?:\d+|[a-z]))?(?:[\s_-]*(?:speaker|person|voice))?(?:[\s_#:.-]*\d+)?$/i;
+export function genericLabel(label, id = null) {
+  const s = String(label ?? "").normalize("NFKC").replace(/[()\[\]{}"'`]/g, "").trim();
+  if (!s || !/[\p{L}\p{N}]/u.test(s)) return true;
+  if (id != null && id !== "" && s.toLowerCase() === String(id).trim().toLowerCase()) return true;
+  if (/^(?:s|spk|speaker)?[_-]?\d+$/i.test(s) || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(s) || /^[0-9a-f]{16,}$/i.test(s)) return true;
+  return GENERIC_LABEL.test(s);
+}
+// The row's key says whether Bee gave a distinct speaker id (spkKey: "id:<id>") or only a label ("label:<label>").
+export const spkId = (spk) => (String(spk).startsWith("id:") ? String(spk).slice(3) : null);
+// A speaker Bee did not name and did not separate: no card, never linked.
+export const unseparated = (row) => !!row && spkId(row.spk) == null && genericLabel(row.label, null);
 const GENERIC = new Set(["speaker", "unknown", "person", "guest", "voice", "other", "others"]);
 const words = (s) => String(s || "").toLowerCase().split(/[^\p{L}\p{N}']+/u).filter((w) => w.length >= 2 && !GENERIC.has(w) && !/^\d+$/.test(w));
 
 export const speakerMethods = {
-  // not_them: the Contacts ids the person said this speaker is not (a JSON list on the row). Added to older tables with one ALTER, no data changes.
-  spkInit() { this.sql.exec(SPEAKERS); if (!this._spkCols) { try { if (!this.sql.exec("PRAGMA table_info(speakers)").toArray().some((c) => c.name === "not_them")) this.sql.exec("ALTER TABLE speakers ADD COLUMN not_them TEXT"); this._spkCols = true; } catch (e) { console.log("speakers not_them column", String(e?.message || e).slice(0, 80)); } } },
+  // not_them: the Contacts ids the person said this speaker is not (a JSON list on the row). place: the recording's address when Bee gave one (for the card). Both are added to older tables with one ALTER each, no data changes.
+  spkInit() { this.sql.exec(SPEAKERS); if (!this._spkCols) { try { const have = new Set(this.sql.exec("PRAGMA table_info(speakers)").toArray().map((c) => c.name)); for (const c of ["not_them", "place"]) if (!have.has(c)) this.sql.exec(`ALTER TABLE speakers ADD COLUMN ${c} TEXT`); this._spkCols = true; } catch (e) { console.log("speakers columns", String(e?.message || e).slice(0, 80)); } } },
   notThem(row) { try { return JSON.parse(row?.not_them || "[]"); } catch { return []; } },
   // A recording arrived: one "new" row per speaker not seen in it before. lines: ambientLines(conv). → how many rows were added.
   speakersSeen(conv, lines) {
     if (!hsEnvelope(this.env) || conv?.id == null) return 0; this.spkInit();
     const rec = String(conv.id), at = Date.parse(conv.start_time ?? "") || Number(conv.start_time) || now(), extra = contactsOf(conv), by = new Map();
+    let place = null; try { place = ambientLocation(conv)?.address || null; } catch {}
     for (const u of lines || []) { if (u.is_user || u.speaker == null) continue; const k = spkKey(u); if (!by.has(k)) by.set(k, { label: String(u.speaker), texts: [] }); by.get(k).texts.push(String(u.text || "")); }
     let n = 0;
     for (const [spk, v] of by) {
       const ex = v.texts.slice(0, EXCERPT_LINES).join(" … ").slice(0, EXCERPT_CHARS), c = extra.get(spk) || {};
       const before = this.sql.exec("SELECT 1 FROM speakers WHERE rec=? AND spk=?", rec, spk).toArray().length;
-      if (!before) { this.sql.exec("INSERT INTO speakers (rec, spk, label, state, email, phone, excerpt, rec_at, at) VALUES (?,?,?, 'new', ?,?,?,?,?)", rec, spk, v.label, c.email || null, c.phone || null, ex, at, now()); n++; }
+      if (before) continue;
+      // Bee gave no name and no separate speaker: stored as already reviewed, so it never becomes a card (see the header).
+      const none = unseparated({ spk, label: v.label });
+      this.sql.exec("INSERT INTO speakers (rec, spk, label, state, email, phone, excerpt, place, rec_at, at) VALUES (?,?,?,?, ?,?,?,?,?,?)", rec, spk, v.label, none ? "reviewed" : "new", c.email || null, c.phone || null, ex, place, at, now());
+      if (none) this.ev(`speakers: ${rec}/${spk} has no name and no separate Bee speaker id, so no review card (nothing linked, nothing deleted)`); else n++;
     }
     return n;
   },
@@ -59,17 +85,23 @@ export const speakerMethods = {
   speakerLinks(rec) {
     try { this.spkInit(); return this.sql.exec("SELECT spk, label, name, person, person_name FROM speakers WHERE rec=? AND state='linked' AND person IS NOT NULL ORDER BY spk", String(rec)).toArray().map((r) => ({ ...r })); } catch { return []; }
   },
+  // Rows that Bee neither named nor separated leave the queue here too (an older pending row, or one stored before this rule): same path as the end of a review.
+  speakersSettleUnseparated() {
+    for (const r of this.sql.exec("SELECT rec, spk, label, state FROM speakers WHERE state IN ('new','accepted') AND spk NOT LIKE 'id:%' LIMIT 500").toArray()) {
+      if (unseparated(r)) this.speakerSettle(r, null, "no name and no separate Bee speaker id", true);
+    }
+  },
   pendingSpeakers() {
-    this.spkInit();
-    return this.sql.exec("SELECT rec, spk, label, name, state, excerpt, rec_at FROM speakers WHERE state IN ('new','accepted') ORDER BY rec_at DESC, rec, spk LIMIT 200").toArray()
-      .map((r) => ({ rec: r.rec, spk: r.spk, label: r.label, name: r.name || null, state: r.state, excerpt: r.excerpt || "", at: Number(r.rec_at) || null }));
+    this.spkInit(); this.speakersSettleUnseparated();
+    return this.sql.exec("SELECT rec, spk, label, name, state, excerpt, place, rec_at FROM speakers WHERE state IN ('new','accepted') ORDER BY rec_at DESC, rec, spk LIMIT 200").toArray()
+      .map((r) => ({ rec: r.rec, spk: r.spk, label: r.label, name: r.name || null, state: r.state, excerpt: r.excerpt || "", at: Number(r.rec_at) || null, ...(r.place ? { place: r.place } : {}), generic: genericLabel(r.label, spkId(r.spk)) }));
   },
   // Possible matches: a short Contacts lookup. Email or E.164 phone first, then the full name or an alias, then a shared word of the name.
   // Returns null when the Contacts lookup failed (not the same as no matches, which is []).
   async speakerMatches(row, preloaded = null) {
     let people = preloaded || []; if (!preloaded) { try { people = (await this.archive().peopleList()) || []; } catch { return null; } }
     const no = new Set(this.notThem(row));
-    const q = String(row.name || row.label || "").trim().toLowerCase(), qw = words(q), em = String(row.email || "").toLowerCase(), ph = e164(row.phone);
+    const q = String(row.name || (genericLabel(row.label, spkId(row.spk)) ? "" : row.label) || "").trim().toLowerCase(), qw = words(q), em = String(row.email || "").toLowerCase(), ph = e164(row.phone);
     const out = [];
     for (const p of people) {
       if (!p?.id || !p.name || no.has(String(p.id))) continue;   // a match the person answered "not them" is not offered again
@@ -83,11 +115,19 @@ export const speakerMethods = {
     return out.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, 5).map(({ score, ...x }) => x);
   },
   // A reviewed speaker (state "accepted") with no possible match left ends the review: state "reviewed", the row and its names kept, never linked.
-  // matches null (the lookup failed) or a row that was not reviewed yet changes nothing. → true when the row left the queue.
-  speakerSettle(row, matches, why) {
-    if (!row || row.state !== "accepted" || !Array.isArray(matches) || matches.length) return false;
-    this.sql.exec("UPDATE speakers SET state='reviewed', at=? WHERE rec=? AND spk=? AND state='accepted'", now(), row.rec, row.spk);
+  // matches null (the lookup failed) or a row that was not reviewed yet changes nothing. any: the speaker has no name and no separate Bee speaker id, so
+  // it ends from "new" or "accepted" whatever the matches are. → true when the row left the queue.
+  speakerSettle(row, matches, why, any = false) {
+    if (!row) return false;
+    if (any ? !["new", "accepted"].includes(row.state) : row.state !== "accepted" || !Array.isArray(matches) || matches.length) return false;
+    this.sql.exec(`UPDATE speakers SET state='reviewed', at=? WHERE rec=? AND spk=? AND state ${any ? "IN ('new','accepted')" : "='accepted'"}`, now(), row.rec, row.spk);
     this.ev(`speakers: ${row.rec}/${row.spk} review ended, ${why} (nothing linked, nothing deleted)`); return true;
+  },
+  // /_ops/bee?speakers=1 (dev, read only): every row of the table in every state, with the row counts. No transcript text beyond the card's short excerpt.
+  opsSpeakers() {
+    this.spkInit();
+    const rows = this.sql.exec("SELECT rec, spk, label, name, state, person IS NOT NULL AS linked, substr(excerpt,1,120) AS excerpt, place, rec_at FROM speakers ORDER BY rec_at DESC, rec, spk LIMIT 500").toArray();
+    return { counts: Object.fromEntries(this.sql.exec("SELECT state k, COUNT(*) n FROM speakers GROUP BY state").toArray().map((r) => [r.k, r.n])), generic_without_id: rows.filter((r) => unseparated(r)).length, rows: rows.map((r) => ({ ...r, linked: !!r.linked, generic: genericLabel(r.label, spkId(r.spk)) })) };
   },
   // The speakers waiting for review, each with its possible matches (the ones answered "not them" left out), for GET /api/notebook/main.
   async pendingSpeakersWithMatches() {
@@ -104,8 +144,10 @@ export const speakerMethods = {
     if (!this.tid() && tenant) this.put("tenant", tenant);
     if (op === "list") return { speakers: this.pendingSpeakers() };
     const row = this.speakerRow(rec, spk); if (!row) return { error: "That speaker isn't waiting for review.", speakers: this.pendingSpeakers() };
+    if (unseparated(row)) { this.speakerSettle(row, null, "no name and no separate Bee speaker id", true); if (op === "matches") return { matches: [] }; return { error: "Bee didn't separate this voice from the others, so it can't be linked to a person.", reviewed: true, speakers: this.pendingSpeakers() }; }
     if (op === "matches") return { matches: (await this.speakerMatches(row)) || [] };
     if (row.state === "linked") return { error: "That speaker is already linked.", speakers: this.pendingSpeakers() };
+    if (op === "accept" && !row.name && genericLabel(row.label, spkId(row.spk))) return { error: "Bee's label doesn't name anyone. Give this speaker a name first.", speakers: this.pendingSpeakers() };
     if (op === "edit") {
       const name = String(o.name || "").trim(); if (!name) return { error: "A name is required." };
       this.sql.exec("UPDATE speakers SET name=?, state='accepted', at=? WHERE rec=? AND spk=?", name, now(), row.rec, row.spk);

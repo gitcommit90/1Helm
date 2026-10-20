@@ -24,6 +24,7 @@ import { hsEnvelope } from "../src/hs-flag.js";
 import { Resident } from "../src/resident.js";
 import { saveLocation, locationOf } from "../src/location.js";
 import { beeEnvelope, beeEnveloped } from "../src/adapters/bee.js";
+import { genericLabel, unseparated } from "../src/ee/bee-speakers.js";
 import { beeItem, beeEntries } from "../src/hindsight-writers.js";
 import { ambientLines, ambientLocation } from "../src/ee/ambient.js";
 import general from "../src/hindsight-templates/general.json" with { type: "json" };
@@ -426,7 +427,10 @@ const T1 = Date.UTC(2026, 9, 14, 16, 2);   // Oct 14 09:02 in Los Angeles
   const ed = await route({ op: "edit", rec: "77", spk: "id:s2", name: "Priya" });
   assert.equal(ed.ok, true); assert.deepEqual(ed.matches.map((x) => [x.id, x.why]), [["p1", "part of the name"]], "a short Contacts lookup by the edited name");
   const row = bs.speakerRow("77", "id:s2"); assert.deepEqual([row.label, row.name, row.state], ["Speaker 2", "Priya", "accepted"], "Bee's label kept, the person's name beside it");
-  const ac = await route({ op: "accept", rec: "78", spk: "id:s2" }); assert.deepEqual([ac.ok, ac.matches, ac.reviewed], [true, [], true], "a generic label matches nobody");
+  assert.match((await route({ op: "accept", rec: "78", spk: "id:s2" })).error, /name first/); assert.equal(bs.speakerRow("78", "id:s2").state, "new", "a generic label can't be accepted as it stands");
+  bsql.prepare("UPDATE speakers SET label='Dana' WHERE rec='78'").run();   // a named label for the Accept path
+  const ac = await route({ op: "accept", rec: "78", spk: "id:s2" }); assert.deepEqual([ac.ok, ac.matches, ac.reviewed], [true, [], true], "a label no Contacts person has matches nobody");
+  bsql.prepare("UPDATE speakers SET label='Speaker 2' WHERE rec='78'").run();
   assert.equal(bs.speakerRow("78", "id:s2").name, null);
   // case 1: accepted with no possible match ends the review: state reviewed, row and label kept, off the list, nothing linked
   assert.deepEqual([bs.speakerRow("78", "id:s2").state, bs.speakerRow("78", "id:s2").label, bs.speakerRow("78", "id:s2").person], ["reviewed", "Speaker 2", null]);
@@ -437,14 +441,14 @@ const T1 = Date.UTC(2026, 9, 14, 16, 2);   // Oct 14 09:02 in Los Angeles
   assert.deepEqual([ed2.ok, ed2.reviewed, bs.speakerRow("78", "id:s2").state, bs.speakerRow("78", "id:s2").name], [true, true, "reviewed", "Zed Nobody"], "the person's name stays as stored");
   // case 4: a failed Contacts lookup is not "no matches": the card stays pending
   const realArchive = bs.archive; bs.archive = () => ({ ...realArchive.call(bs), peopleList: async () => { throw new Error("archive down"); } });
-  bsql.prepare("UPDATE speakers SET state='new', name=NULL WHERE rec='78'").run(); const accFail = await route({ op: "accept", rec: "78", spk: "id:s2" });
+  bsql.prepare("UPDATE speakers SET state='new', name=NULL, label='Dana' WHERE rec='78'").run(); const accFail = await route({ op: "accept", rec: "78", spk: "id:s2" });
   assert.deepEqual([accFail.ok, accFail.reviewed, bs.speakerRow("78", "id:s2").state], [true, undefined, "accepted"], "lookup failed: still pending");
   assert.equal(await bs.speakerMatches(bs.speakerRow("78", "id:s2")), null, "an error is null, an empty result is []");
   assert.ok((await bs.pendingSpeakersWithMatches()).some((x) => x.rec === "78"), "the Notebook load keeps it while the lookup fails"); assert.ok(bs.pendingSpeakers().some((x) => x.rec === "78"));
   bs.archive = realArchive;
   // case 3: a row already stuck (accepted, no match) clears itself on the next Notebook load
   assert.deepEqual((await bs.pendingSpeakersWithMatches()).filter((x) => x.rec === "78"), [], "stuck row cleared on load"); assert.equal(bs.speakerRow("78", "id:s2").state, "reviewed");
-  bsql.prepare("UPDATE speakers SET state='accepted' WHERE rec='78'").run();
+  bsql.prepare("UPDATE speakers SET state='accepted', label='Speaker 2' WHERE rec='78'").run();
   assert.deepEqual((await route({ op: "matches", rec: "77", spk: "label:Priya" })).matches.map((x) => x.id), ["p1"]);
   bsql.prepare("UPDATE speakers SET phone='+351912345678' WHERE rec='78'").run(); assert.deepEqual((await route({ op: "matches", rec: "78", spk: "id:s2" })).matches.map((x) => [x.id, x.why]), [["p3", "phone"]], "a phone Bee gives matches exactly");
   // c2) not_them (Notebook phase 6): the person's answer is recorded on that speaker row, the match is not offered again, nothing is deleted
@@ -639,4 +643,96 @@ const T1 = Date.UTC(2026, 9, 14, 16, 2);   // Oct 14 09:02 in Los Angeles
 }
 async function seed_k(m) {
   m.bank().docs.set("file:kf", { document_id: "file:kf", text: "A file" }); m.bank().docs.set("imp:mail:kk:1", { document_id: "imp:mail:kk:1", text: "An imported email" });
+}
+
+// ================= L. generic and empty Bee labels (Captain 2026-10-20): no card without a distinct speaker id, a useful card with one =================
+{
+  // a) which labels name nobody
+  for (const g of ["Unknown", "unknown", "UNKNOWN", "Unknown speaker", "Unknown Speaker 3", "Speaker 2", "speaker B", "Speaker_4", "Others", "Other", "Guest", "Someone", "Person 3", "Participant 1", "User 2", "", "   ", "?", "12345", "s2", "N/A", "null", "(Unknown)", "3f2b8c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f"]) assert.equal(genericLabel(g), true, `generic: ${JSON.stringify(g)}`);
+  assert.equal(genericLabel(null), true); assert.equal(genericLabel(undefined), true); assert.equal(genericLabel("abc9", "abc9"), true, "the speaker's own id is not a name");
+  for (const n of ["Priya", "Dana Smith", "Sam", "Man Ray", "Guest Lee", "Unknown Ben", "Speaker Al", "Mom", "Dr. Okafor"]) assert.equal(genericLabel(n), false, `a name: ${n}`);
+  assert.deepEqual([unseparated({ spk: "label:Unknown", label: "Unknown" }), unseparated({ spk: "id:s2", label: "Speaker 2" }), unseparated({ spk: "label:Priya", label: "Priya" })], [true, false, false]);
+
+  const m = mkRes(), { R } = m; await R.hsNames();
+  const seen = [], PP = [{ id: "p1", name: "Priya Shah", email: "priya@example.com" }, { id: "p3", name: "Marco Rossi", aka: ["Marco"] }];
+  const ARCH = { channels: async () => [{ id: 1, slug: "main", name: "General" }], peopleList: async () => PP, personGet: async (id) => PP.find((p) => p.id === id) || null, personSeenAdd: async (id, ch) => { seen.push([id, ch]); return { ok: true }; } };
+  const benv = { ...m.env, ARCHIVE: { idFromName: (x) => x, get: () => ARCH }, RESIDENT: { idFromName: (x) => x, get: () => R }, LEDGER: {} };
+  const bsql = new DatabaseSync(":memory:"), sql = { exec: (q, ...a) => { if (!a.length && q.split(";").filter((x) => x.trim()).length > 1) { bsql.exec(q); return { toArray: () => [], one: () => undefined }; } const st = bsql.prepare(q); const r = /^\s*(SELECT|WITH|PRAGMA)/i.test(q) ? st.all(...a) : (st.run(...a), []); return { toArray: () => r, one: () => r[0] }; } };
+  const bs = new BeeSync({ storage: { sql, getAlarm: async () => null, setAlarm: async () => {}, deleteAlarm: async () => {} } }, benv); bs.put("tenant", "t1");
+  const events = []; bs.ev = (w) => { events.push(w); return Promise.resolve(); };
+  const route = (body) => beeRoute(new Request("https://x/api/bee/speaker", { method: "POST", body: JSON.stringify(body) }), benv, { id: "t1" }, "/api/bee/speaker", { sync: () => bs }).then((r) => r.json());
+  const utt = (id, at, speaker, text) => ({ id, spoken_at: at, speaker, text });
+  const CT = "2026-10-15T17:30:00.000Z", conv = (id, us, loc = null) => ({ id, start_time: CT, end_time: "2026-10-15T18:00:00.000Z", timezone: "America/Los_Angeles", primary_location: loc, transcriptions: [{ realtime: false, utterances: us }] });
+  const put = async (c) => { m.R2.set(`bee/${c.id}.json`, JSON.stringify(c)); bsql.prepare("INSERT INTO convs (id, start_time, r2_key, at) VALUES (?,?,?,?)").run(c.id, Date.parse(c.start_time), `bee/${c.id}.json`, Date.now()); await bs.hsBeePut(c); };
+  const doc = (id) => m.bank().docs.get(`bee:conv:${id}`), ents = (id) => doc(id).entities.map((x) => x.text);
+  const memPuts = () => m.f.calls.filter((c) => c.m === "POST" && /\/memories$/.test(c.p)).length;
+
+  // b) what Bee really sends for one real account: the bare string "Unknown" on every line (wearer included), no id. Two recordings.
+  await put(conv(601, [utt(1, "2026-10-15T17:30:05Z", "Unknown", "Should we get oysters?"), utt(2, "2026-10-15T17:30:09Z", "Unknown", "Yes, and the bread.")]));
+  await put(conv(602, [utt(1, "2026-10-15T17:40:05Z", "Unknown", "The meeting moved to Friday.")]));
+  assert.deepEqual(bs.pendingSpeakers(), [], "Bee named nobody and separated nobody: no review card");
+  const r601 = bs.speakerRow("601", "label:Unknown"); assert.deepEqual([r601.state, r601.label, r601.person, r601.name], ["reviewed", "Unknown", null, null], "stored as reviewed, Bee's label unchanged, nothing linked");
+  assert.equal(events.filter((e) => /601\/label:Unknown has no name and no separate Bee speaker id/.test(e)).length, 1, "logged as an event");
+  // memory: still one label entity per recording, never a shared "Unknown"; the entity text carries the recording id and Bee's label
+  assert.ok(ents(601).includes("bee_speaker:601/- Unknown") && ents(602).includes("bee_speaker:602/- Unknown"), "recording scoped label entity");
+  assert.ok(!ents(601).includes("bee_speaker:602/- Unknown") && !ents(602).includes("bee_speaker:601/- Unknown"));
+  for (const id of [601, 602]) assert.ok(!doc(id).entities.some((x) => /^(unknown|unknown speaker|speaker \d+)$/i.test(x.text)), "no shared Unknown entity"); 
+  assert.equal(doc(601).resolve_entities, undefined); assert.match(doc(601).content, /Unknown speaker \(not the user\): Yes, and the bread\./, "the transcript keeps the label as the writer renders it");
+  // a recording synced again changes nothing and logs nothing more
+  const ev0 = events.length; await bs.hsBeePut(conv(601, [utt(1, "2026-10-15T17:30:05Z", "Unknown", "Should we get oysters?")])); assert.equal(events.length, ev0, "no second event for the same row");
+
+  // c) the other generic labels with no id, and an empty label: all end reviewed with no card
+  await put(conv(603, [utt(1, "2026-10-15T18:00:05Z", "Others", "Cheers."), utt(2, "2026-10-15T18:00:09Z", "Guest", "Thanks."), utt(3, "2026-10-15T18:00:12Z", "Unknown speaker", "Hi."), utt(4, "2026-10-15T18:00:15Z", "", "Hmm."), utt(5, "2026-10-15T18:00:19Z", { name: "Speaker 3" }, "Right."), utt(6, "2026-10-15T18:00:22Z", { }, "No label at all.")]));
+  assert.deepEqual(bs.pendingSpeakers(), []); assert.deepEqual(bsql.prepare("SELECT label, state FROM speakers WHERE rec='603' ORDER BY label").all().map((r) => `${r.label}|${r.state}`), ["|reviewed", "Guest|reviewed", "Others|reviewed", "Speaker 3|reviewed", "Unknown speaker|reviewed"], "a null label makes no row, every other one ends reviewed");
+
+  // d) a generic label WITH a distinct Bee speaker id keeps its card: the speaker's words, the time and the place; no Accept
+  const loc = { address: "1 Ferry Building, San Francisco, CA", latitude: 37.7955, longitude: -122.3937 };
+  await put(conv(604, [utt(1, "2026-10-15T17:30:05Z", { is_user: true }, "Should we get oysters?"), utt(2, "2026-10-15T17:30:09Z", { id: "s2", name: "Speaker 2" }, "Yes, and the bread."), utt(3, "2026-10-15T17:30:20Z", { id: "s2", name: "Speaker 2" }, "And a bottle of vinho verde."), utt(4, "2026-10-15T17:31:00Z", { id: "s3", name: "Unknown" }, "Count me in.")], loc));
+  const p604 = bs.pendingSpeakers().filter((x) => x.rec === "604").sort((a, b) => a.spk.localeCompare(b.spk));
+  assert.deepEqual(p604.map((x) => [x.spk, x.label, x.state, x.generic]), [["id:s2", "Speaker 2", "new", true], ["id:s3", "Unknown", "new", true]], "both keep a card because Bee gave each its own id");
+  assert.deepEqual([p604[0].excerpt, p604[0].place, p604[0].at], ["Yes, and the bread. … And a bottle of vinho verde.", "1 Ferry Building, San Francisco, CA", Date.parse(CT)], "their own words, the address and the recording's time");
+  assert.match((await route({ op: "accept", rec: "604", spk: "id:s2" })).error, /name first/); assert.equal(bs.speakerRow("604", "id:s2").state, "new", "Accept adds nothing for a generic label");
+  assert.deepEqual((await route({ op: "matches", rec: "604", spk: "id:s2" })).matches, [], "a generic label is never a Contacts query");
+  const ed = await route({ op: "edit", rec: "604", spk: "id:s2", name: "Priya" }); assert.deepEqual([ed.ok, ed.matches.map((x) => x.id)], [true, ["p1"]], "Edit names it, then Possible matches as before");
+  assert.deepEqual([bs.speakerRow("604", "id:s2").label, bs.speakerRow("604", "id:s2").name, bs.speakerRow("604", "id:s2").state], ["Speaker 2", "Priya", "accepted"]);
+  // the rows of a database made before this change get the place column with one ALTER, and no data changes
+  const old = new DatabaseSync(":memory:"); old.exec("CREATE TABLE speakers (rec TEXT NOT NULL, spk TEXT NOT NULL, label TEXT NOT NULL, name TEXT, state TEXT NOT NULL DEFAULT 'new', person TEXT, person_name TEXT, email TEXT, phone TEXT, excerpt TEXT, rec_at INTEGER, at INTEGER NOT NULL, PRIMARY KEY (rec, spk))");
+  old.prepare("INSERT INTO speakers (rec, spk, label, state, excerpt, rec_at, at) VALUES ('9','id:s2','Speaker 2','new','Hello',1,1)").run();
+  const osql = { exec: (q, ...a) => { if (!a.length && q.split(";").filter((x) => x.trim()).length > 1) { old.exec(q); return { toArray: () => [], one: () => undefined }; } const st = old.prepare(q); const r = /^\s*(SELECT|WITH|PRAGMA)/i.test(q) ? st.all(...a) : (st.run(...a), []); return { toArray: () => r, one: () => r[0] }; } };
+  const ob = new BeeSync({ storage: { sql: osql, getAlarm: async () => null, setAlarm: async () => {}, deleteAlarm: async () => {} } }, benv); ob.put("tenant", "t1"); ob.ev = () => Promise.resolve();
+  assert.deepEqual(ob.pendingSpeakers().map((x) => [x.rec, x.label, x.excerpt, x.place, x.generic]), [["9", "Speaker 2", "Hello", undefined, true]], "an older table is upgraded and its row kept");
+
+  // e) named labels are unchanged: a card, Accept, and the same flow
+  await put(conv(605, [utt(1, "2026-10-15T17:30:05Z", "Priya", "Hello."), utt(2, "2026-10-15T17:30:09Z", { id: "s9", name: "Marco" }, "Hi.")]));
+  const p605 = bs.pendingSpeakers().filter((x) => x.rec === "605"); assert.deepEqual(p605.map((x) => [x.label, x.state, x.generic]).sort(), [["Marco", "new", false], ["Priya", "new", false]]);
+  const acc = await route({ op: "accept", rec: "605", spk: "label:Priya" }); assert.deepEqual([acc.ok, acc.matches.map((x) => x.id)], [true, ["p1"]], "Accept still works for a name Bee gave");
+  // a recording with a named speaker and an unseparated one: only the named one is a card
+  await put(conv(606, [utt(1, "2026-10-15T17:30:05Z", "Unknown", "Hello."), utt(2, "2026-10-15T17:30:09Z", "Priya", "Hi.")]));
+  assert.deepEqual(bs.pendingSpeakers().filter((x) => x.rec === "606").map((x) => x.label), ["Priya"]); assert.equal(bs.speakerRow("606", "label:Unknown").state, "reviewed");
+
+  // f) rows already pending from before this rule settle on the next load (same path as the end of a review), nothing deleted
+  bsql.prepare("INSERT INTO speakers (rec, spk, label, state, excerpt, rec_at, at) VALUES ('700','label:Unknown','Unknown','new','x',1,1), ('701','label:Others','Others','accepted','y',1,1), ('702','id:s2','Speaker 2','new','z',1,1)").run();
+  bsql.prepare("UPDATE speakers SET name='Somebody' WHERE rec='701'").run();
+  const list = await bs.pendingSpeakersWithMatches();
+  assert.ok(!list.some((x) => x.rec === "700" || x.rec === "701"), "the Notebook load no longer lists them"); assert.ok(list.some((x) => x.rec === "702"), "a generic label with an id stays");
+  assert.deepEqual(["700", "701"].map((r) => bsql.prepare("SELECT state, name, label, person FROM speakers WHERE rec=?").get(r)).map((r) => ({ ...r })), [{ state: "reviewed", name: null, label: "Unknown", person: null }, { state: "reviewed", name: "Somebody", label: "Others", person: null }], "rows and names kept, nothing linked");
+  assert.ok(events.some((e) => /700\/label:Unknown review ended, no name and no separate Bee speaker id \(nothing linked, nothing deleted\)/.test(e)), "logged");
+  // and the routes refuse to link one, with no retain and no people_seen
+  const p0 = memPuts(); for (const body of [{ op: "edit", rec: "601", spk: "label:Unknown", name: "Priya" }, { op: "accept", rec: "601", spk: "label:Unknown" }, { op: "confirm", rec: "601", spk: "label:Unknown", person: "p1" }]) {
+    const r = await route(body); assert.deepEqual([!!r.error, r.reviewed], [true, true], JSON.stringify(body)); }
+  assert.deepEqual([memPuts() - p0, seen, bs.speakerLinks(601), bs.speakerRow("601", "label:Unknown").state], [0, [], [], "reviewed"], "nothing retained, nobody seen, nothing linked");
+  assert.deepEqual((await route({ op: "matches", rec: "601", spk: "label:Unknown" })).matches, []);
+
+  // g) Confirm links only that speaker in that recording: s2 of recording 604 becomes Priya Shah; s3 of 604 and s2 of 607 do not
+  await put(conv(607, [utt(1, "2026-10-15T19:00:05Z", { id: "s2", name: "Speaker 2" }, "Another lunch.")]));
+  const cf = await route({ op: "confirm", rec: "604", spk: "id:s2", person: "p1" }); assert.deepEqual([cf.ok, cf.retained, cf.linked.person_name], [true, true, "Priya Shah"]);
+  assert.deepEqual(bs.speakerLinks(604).map((x) => [x.spk, x.person]), [["id:s2", "p1"]]); assert.deepEqual(bs.speakerLinks(607), []);
+  assert.match(doc(604).content, /^\[Written by 1Helm: Speaker 2 in this recording is Priya Shah, confirmed by Sam\]\n/); assert.ok(ents(604).includes("Priya Shah"));
+  assert.ok(!ents(607).includes("Priya Shah") && !/Priya Shah/.test(doc(607).content), "the same label in another recording is not linked");
+  assert.ok(bs.pendingSpeakers().some((x) => x.rec === "604" && x.spk === "id:s3") && bs.pendingSpeakers().some((x) => x.rec === "607" && x.spk === "id:s2"), "the other speakers still wait");
+  // the entities sent to Hindsight stay recording scoped, confirmed or not
+  assert.ok(ents(604).includes("bee_speaker:604/s2 Speaker 2") && ents(604).includes("bee_speaker:604/s3 Unknown") && ents(607).includes("bee_speaker:607/s2 Speaker 2"));
+  assert.ok(doc(604).entities.every((x) => !/^bee_speaker:/.test(x.text) || /^bee_speaker:\d+\/[^ ]+ /.test(x.text)), "every speaker entity starts with its recording id");
+  assert.deepEqual(bs.opsSpeakers().counts.reviewed > 0, true); assert.ok(bs.opsSpeakers().rows.every((r) => !("person" in r)), "the ops read shows no contact id");
+  ok("L. generic and empty Bee labels: no card without a distinct speaker id (stored reviewed, logged, older rows settled on load, routes refuse), a card with the speaker's words, time and place with an id (no Accept), named labels unchanged, Confirm links only that speaker, entities stay per recording");
 }

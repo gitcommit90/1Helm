@@ -3841,12 +3841,27 @@ function bfMerge(ch: Channel, srv: BeeFact[]) {
 // "New speaker detected" (General only, in the New from Bee area; bee-speakers.js): one card per speaker per recording, as Bee labelled
 // it. Edit or Accept, then Possible matches from Contacts, each with Confirm. Confirm links that speaker in that recording to that person;
 // nothing else is ever linked. No helper or status text: the card shows Bee's label, the name given to it, and the matches.
-type BeeSpk = { rec: string; spk: string; label: string; name: string | null; state: "new" | "accepted"; excerpt?: string; at?: number | null };
+// generic: Bee's label names nobody ("Unknown", "Speaker 2", "Others", an id). The server sends a card only for a generic label that has its own Bee speaker id
+// (spk starts with "id:"); a generic label with no id is never a card, because one such voice can hold several people's words. Such a card shows the speaker's
+// own words (excerpt, two lines), the recording's date and time and its place, has no Accept (Edit names it), and never shows the bare label as its headline.
+type BeeSpk = { rec: string; spk: string; label: string; name: string | null; state: "new" | "accepted"; excerpt?: string; at?: number | null; place?: string | null; generic?: boolean };
 const SPK = { demoNone: false, edit: "", busy: new Set<string>(), sent: new Set<string>(), matches: {} as Record<string, { id: string; name: string }[] | undefined> };
 const spkKey = (x: BeeSpk) => `${x.rec}|${x.spk}`;
-const beeSpk = (ch: Channel): BeeSpk[] => ((ch as any).beeSpeakers || []).filter((x: BeeSpk) => !SPK.sent.has(spkKey(x)));
-if (!LIVE) (window as any).__beeSpeakersDemo = (on: boolean | "matched" | "nomatch" = true) => { SPK.demoNone = on === "nomatch"; const m = channels.find(c => c.slug === "main"); if (!m) return;
-  (m as any).beeSpeakers = on ? [{ rec: "77", spk: "id:s2", label: "Speaker 2", name: on === "matched" ? "Priya" : null, state: on === "matched" ? "accepted" : "new", excerpt: "Yes, and the bread. … And a bottle of vinho verde.", at: NOW - 3 * H }] : [];
+const spkOpen = (x: BeeSpk) => !(x.generic && !String(x.spk).startsWith("id:"));   // a generic label with no Bee speaker id is never a card (older lists too)
+const beeSpk = (ch: Channel): BeeSpk[] => ((ch as any).beeSpeakers || []).filter((x: BeeSpk) => spkOpen(x) && !SPK.sent.has(spkKey(x)));
+// When the recording happened, for the card: "3:12 PM" today, "Yesterday, 3:12 PM", else "Oct 9, 3:12 PM". Where: the first part of the address.
+function spkWhen(t?: number | null) {
+  if (!t) return ""; const d = new Date(t), day0 = new Date(NOW).setHours(0, 0, 0, 0), t0 = new Date(t).setHours(0, 0, 0, 0), diff = Math.round((day0 - t0) / D);
+  return `${diff === 0 ? "" : diff === 1 ? "Yesterday, " : `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, `}${clock(t)}`;
+}
+const spkWhere = (x: BeeSpk) => String(x.place || "").split(",")[0].trim();
+// Demo variants: true (a generic label with its own Bee id: the words, time and place, no Accept), "matched" (named, with matches), "nomatch", "named" (a name Bee gave,
+// with Accept), "unknown" (Bee's bare "Unknown" with no id: no card at all, the queue stays empty).
+if (!LIVE) (window as any).__beeSpeakersDemo = (on: boolean | "matched" | "nomatch" | "named" | "unknown" = true) => { SPK.demoNone = on === "nomatch"; const m = channels.find(c => c.slug === "main"); if (!m) return;
+  const words = "Yes, and the bread. … And a bottle of vinho verde.", place = "1 Ferry Building, San Francisco, CA";
+  (m as any).beeSpeakers = !on ? [] : on === "named" ? [{ rec: "77", spk: "label:Marco", label: "Marco", name: null, state: "new", excerpt: words, at: NOW - 3 * H, place, generic: false }]
+    : on === "unknown" ? [{ rec: "78", spk: "label:Unknown", label: "Unknown", name: null, state: "new", excerpt: words, at: NOW - 3 * H, place, generic: true }]
+    : [{ rec: "77", spk: "id:s2", label: "Speaker 2", name: on === "matched" ? "Priya" : null, state: on === "matched" ? "accepted" : "new", excerpt: words, at: NOW - 3 * H, place, generic: true }];
   SPK.matches["77|id:s2"] = on === "matched" ? [{ id: "p1", name: "Priya Shah" }, { id: "p4", name: "Priya Natarajan" }] : undefined; if (isNb()) render(); };
 async function spkCall(body: any): Promise<any> {
   if (LIVE) { try { return await api("/bee/speaker", body); } catch { return { net: true }; } }
@@ -4111,11 +4126,16 @@ function wkBeeItem(ch: Channel, top: WkQ, pos: number, total: number, many: bool
   } else if (top.s) {
     const x = top.s, k = spkKey(x), busy = SPK.busy.has(k), m = SPK.matches[k]?.filter(p => !WKQ.no.has(`${k}|${p.id}`));
     if (x.state === "accepted" && SPK.matches[k] === undefined && LIVE) void spkMatches(ch, x);
-    const who = `<p class="wkbp"><b title="${esc(x.excerpt || "")}">${esc(x.label)}</b>${x.name && x.name !== x.label ? `<span class="wkbas">${esc(x.name)}</span>` : ""}</p>`;
-    if (SPK.edit === k) inner = `<div class="wkbi editing" role="group" aria-label="Name for ${esc(x.label)}">${mark}<div class="wkbbody">${meta("New speaker detected")}<input class="nedit wkbin" id="spkedit" value="${esc(x.name || x.label)}" aria-label="Name for ${esc(x.label)}"></div>
+    const gen = !!x.generic, quote = x.excerpt ? `"${esc(x.excerpt)}"` : "";
+    // A named label: Bee's label is the headline, the person's name beside it. A generic one: the speaker's own words (two lines), the person's name in front once given.
+    const who = gen ? `<p class="wkbp wkbq" title="${esc(x.label ? `Bee labelled this voice "${x.label}"` : "")}">${x.name ? `<b>${esc(x.name)}</b> ` : ""}${quote}</p>`
+      : `<p class="wkbp"><b title="${esc(x.excerpt || "")}">${esc(x.label)}</b>${x.name && x.name !== x.label ? `<span class="wkbas">${esc(x.name)}</span>` : ""}</p>`;
+    const smeta = `<span class="wkbmeta">${count && total > 1 ? `<span class="wkbn">${pos} of ${total}</span>` : ""}<span class="wkbmt" title="${esc(x.place || "")}">New speaker detected${top.at ? ` · ${gen ? spkWhen(top.at) : fileDate(top.at)}` : ""}${gen && spkWhere(x) ? ` · ${esc(spkWhere(x))}` : ""}</span></span>`;
+    const heading = gen ? (x.name || (x.excerpt || "").slice(0, 60) || "this speaker") : x.label;
+    if (SPK.edit === k) inner = `<div class="wkbi editing" role="group" aria-label="Name for ${esc(heading)}">${mark}<div class="wkbbody">${gen ? who : smeta}<input class="nedit wkbin" id="spkedit" value="${esc(x.name || (gen ? "" : x.label))}" placeholder="Name" aria-label="Name for ${esc(heading)}"></div>
       <div class="wkbacts"><button class="sa mute" data-spkcancel>Cancel</button><button class="sa wkbok" data-spksave="${esc(k)}">${ic.check}Save</button></div></div>`;
-    else inner = `<div class="wkbi" role="group" aria-label="New speaker detected: ${esc(x.label)}">${mark}<div class="wkbbody">${who}${meta("New speaker detected")}</div>
-      <div class="wkbacts">${skip}<button class="sa mute" data-spkedit="${esc(k)}"${busy ? " disabled" : ""}>${pen}Edit</button>${x.state === "new" ? `<button class="sa wkbok" data-spkok="${esc(k)}"${busy ? " disabled" : ""}>${ic.check}Accept</button>` : ""}</div></div>
+    else inner = `<div class="wkbi${gen ? " wkbg" : ""}" role="group" aria-label="New speaker detected: ${esc(heading)}">${mark}<div class="wkbbody">${who}${smeta}</div>
+      <div class="wkbacts">${skip}<button class="sa mute" data-spkedit="${esc(k)}"${busy ? " disabled" : ""}>${pen}Edit</button>${x.state === "new" && !gen ? `<button class="sa wkbok" data-spkok="${esc(k)}"${busy ? " disabled" : ""}>${ic.check}Accept</button>` : ""}</div></div>
       ${x.state === "accepted" && m?.length ? `<div class="wkbm">${m.map(p => `<div class="wkbmr"><span>Is it ${esc(p.name)}?</span><button class="sa mute" data-wkno="${esc(k)}" data-wkp="${esc(p.id)}"${busy ? " disabled" : ""}>Not them</button><button class="sa wkbok" data-spkconf="${esc(k)}" data-spkp="${esc(p.id)}"${busy ? " disabled" : ""}>${ic.check}Confirm</button></div>`).join("")}</div>` : ""}`;
   }
   return inner;

@@ -1535,6 +1535,8 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .wkbico{display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:color-mix(in srgb,#f7d64a 26%,var(--sheet))}.wkbico .beemark{border-radius:4px}
 .wkbbody{min-width:0;display:flex;flex-direction:column;gap:3px}
 .wkbp{margin:0;font-size:15px;line-height:1.4;color:var(--ink);overflow-wrap:anywhere}.wkbp b{font-weight:600}
+.wkbq{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
+.wkbmt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wkbas::before{content:"\2192";margin:0 8px;color:var(--faint)}.wkbas{color:var(--ink2)}
 .wkbmeta{display:flex;align-items:center;gap:8px;font-size:12.5px;line-height:1.3;color:var(--faint);min-width:0}
 .wkbn{flex:none;font-variant-numeric:tabular-nums;padding:1px 8px;border-radius:999px;background:color-mix(in srgb,#f7d64a 26%,var(--sheet));color:var(--ink2);font-weight:600}
@@ -1651,6 +1653,10 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .wktray .wkbi:not(.editing):has(.wkbacts>.sa:only-child){grid-template-columns:auto minmax(0,1fr) auto;padding-right:50px}
   .wktray .wkbi:not(.editing):has(.wkbacts>.sa:only-child)>.wkbacts{grid-column:auto}
   .wktray .wkbi:has(.wkbacts>.sa:only-child) .wkbbody{padding-right:0}
+  /* a card with the speaker's words has one button, Edit: it sits on its own row so the words get the full width */
+  .wktray .wkbi.wkbg:not(.editing):has(.wkbacts>.sa:only-child){grid-template-columns:auto minmax(0,1fr);padding-right:12px}
+  .wktray .wkbi.wkbg:not(.editing):has(.wkbacts>.sa:only-child)>.wkbacts{grid-column:1 / -1}
+  .wktray .wkbi.wkbg:has(.wkbacts>.sa:only-child) .wkbbody{padding-right:26px}
   /* a touch leaves :hover behind after a tap, so the tray shows hover only on devices that really hover */
   @media (hover:none){.wktray .sa.mute:hover{color:var(--mute);background:none}.wktray .wkbok:hover{background:var(--ink)}.wktray .sa:not(.mute):not(.wkbok):hover{box-shadow:0 0 0 1px var(--line)}}
   .wktray .sa:focus-visible{outline:2px solid var(--ink2);outline-offset:2px}

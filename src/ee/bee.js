@@ -871,7 +871,7 @@ export async function beeNoteRestored(env, tid, sec, text, deps = DEFAULT_DEPS) 
 }
 
 // /_ops/bee (dev): the pairing and connection rows without any secret, and the last events. ?facts=count: one read-only job that
-// lists the facts (GET only) and answers how many are confirmed / waiting for review; nothing is imported or written.
+// lists the facts (GET only) and answers how many are confirmed / waiting for review; nothing is imported or written. ?speakers=1: the new speaker rows in every state (SELECT only).
 // ?backfill=count&days=30: the Import pre-count (GET /v1/conversations pages only) with its estimate; nothing is stored or imported.
 export async function beeOps(env, tid, deps = DEFAULT_DEPS, opts = {}) {
   if (opts.liveProbe) {   // one read-only round of the Live notes job against this person's Bee: shapes, counts and lag, never the text
@@ -881,6 +881,7 @@ export async function beeOps(env, tid, deps = DEFAULT_DEPS, opts = {}) {
   }
   if (opts.backfillDays != null) { const s = deps.sync?.(env, tid); if (!s) return { error: "no BeeSync" }; return { backfill_count: await s.opsBackfillCount(tid, opts.backfillDays) }; }
   if (opts.factsCount) { const s = deps.sync?.(env, tid); if (!s) return { error: "no BeeSync" }; return { facts_count: await s.opsFactsCount(tid) }; }
+  if (opts.speakers) { const s = deps.sync?.(env, tid); if (!s) return { error: "no BeeSync" }; return { speaker_rows: await s.opsSpeakers() }; }   // every speakers row in every state (GET only, bee-speakers.js)
   const p = await pairingRow(env, tid), a = await accountRow(env, tid);
   let sync = null; try { sync = await deps.sync?.(env, tid)?.opsView() ?? null; } catch (e) { sync = { error: String(e?.message || e).slice(0, 120) }; }
   const events = (await env.DB.prepare("SELECT at, what FROM bee_events WHERE tenant_id=? ORDER BY id DESC LIMIT 50").bind(tid).all()).results || [];

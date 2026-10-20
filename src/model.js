@@ -72,8 +72,8 @@ async function taskChat(env, body, route, meta, signal, fetchImpl = globalThis.f
         const frozenSettings = { ...env.MODEL_SETTINGS, catalog: { ...env.MODEL_SETTINGS?.catalog, [profile.requestedModel]: profile.catalog } };
         const payload = taskPayload(profile, body, { level: isCloudflareModel(profile.requestedModel) ? null : auth.level, settings: frozenSettings });
         const r = isCloudflareModel(profile.requestedModel)
-          ? await cloudflareChat(env, payload, { ...meta, job: CHAT_JOB, _privacy: auth.level }, signal, profile.catalog)
-          : await orFetch(env, payload, { ...meta, job: CHAT_JOB, _privacy: auth.level }, { "x-openrouter-metadata": "enabled" }, signal, fetchImpl);
+          ? await cloudflareChat(env, payload, { ...meta, job: CHAT_JOB, session: payload.session_id, _privacy: auth.level }, signal, profile.catalog)
+          : await orFetch(env, payload, { ...meta, job: CHAT_JOB, session: payload.session_id, _privacy: auth.level }, { "x-openrouter-metadata": "enabled" }, signal, fetchImpl);
         if (!r.ok) {
           const status = r.status, detail = await boundedText(r, 64 * 1024).catch(() => "");
           if ([400,415,422].includes(status) && /image|vision|multimodal|image_url|unsupported.{0,30}(content|media)/i.test(detail)
@@ -149,7 +149,7 @@ async function twoChat(env, body, session, route, meta, signal = null, fetchImpl
     for (let k = 0; attempts < MAX_ATTEMPTS; k++) {
       attempts++;
       try {
-        const r = await orFetch(env, poolPayload(env, order[i], level, b, session, prov, picks[i].effort, route.category), { ...meta, job: CHAT_JOB, _privacy: level, _prov: prov }, { "x-openrouter-metadata": "enabled" }, signal, fetchImpl);
+        const r = await orFetch(env, poolPayload(env, order[i], level, b, session, prov, picks[i].effort, route.category), { ...meta, job: CHAT_JOB, ...(session ? { session: String(session).slice(0, 256) } : {}), _privacy: level, _prov: prov }, { "x-openrouter-metadata": "enabled" }, signal, fetchImpl);
         if (!r.ok) { const t = await boundedText(r, 64 * 1024).catch(() => ""); throw Object.assign(new Error(`openrouter ${order[i]} ${r.status}: ${t.slice(0, 200)}`), { orStatus: r.status }); }
         const out = await firstOk(r, !!b.stream); markServed(route, order[i], i > 0, env.MODEL_SETTINGS);
         route.effort = picks[i].effort;
@@ -283,8 +283,16 @@ export async function firstOk(r, stream) {
 export const aigPayload = (env) => env.ENV_NAME === "dev" && env.AIG_LOG_PAYLOADS === "1" ? "true" : "false";
 export const aigOn = (env) => !!(env.AIG_ID && env.AIG_TOKEN && env.CF_ACCOUNT_ID);
 // Keys starting with "_" (_privacy, _prov) are internal and never sent. The gateway log is tagged with the job ID (meta.job, set by the dispatcher) and no longer with the environment name (each environment has its own gateway).
-export const aigMeta = (env, meta = {}) => Object.fromEntries(Object.entries(meta)
-  .filter(([k, v]) => v != null && v !== "" && !k.startsWith("_")).slice(0, 5).map(([k, v]) => [k, typeof v === "number" || typeof v === "boolean" ? v : String(v).slice(0, 64)]));
+// The gateway keeps at most 5 keys. They are taken in this order: tenant, session (the same value as the OpenRouter session_id, set by taskChat and twoChat),
+// channel, kind, px (the main chat's cache-prefix label, which e2e/dev/cache-check.mjs reads back), job, then any other key. The main chat call carries all
+// six, so `job` is the key dropped there (its kind, "chat" or "chat-retry", already says the same thing, and the job is always "chat"). Every other caller has
+// fewer than five keys and keeps all of them, including job.
+export const AIG_META_FIRST = ["tenant", "session", "channel", "kind", "px", "job"];
+export const aigMeta = (env, meta = {}) => {
+  const ok = Object.entries(meta).filter(([k, v]) => v != null && v !== "" && !k.startsWith("_"));
+  const first = AIG_META_FIRST.flatMap((k) => ok.filter(([key]) => key === k)), rest = ok.filter(([k]) => !AIG_META_FIRST.includes(k));
+  return Object.fromEntries([...first, ...rest].slice(0, 5).map(([k, v]) => [k, typeof v === "number" || typeof v === "boolean" ? v : String(v).slice(0, 64)]));
+};
 // Options for env.AI.run (Workers AI / Clef / Jev): adds the gateway when on, keeps any extraHeaders.
 export const aiOpts = (env, meta = {}, opts = {}) => !env.AIG_ID ? opts
   : { ...opts, gateway: { id: env.AIG_ID, collectLog: true, metadata: aigMeta(env, meta) }, extraHeaders: { ...(opts.extraHeaders || {}), "cf-aig-collect-log-payload": aigPayload(env) } };

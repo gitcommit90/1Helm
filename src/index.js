@@ -182,7 +182,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "285";
+const APP_V = "286";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;

@@ -303,3 +303,25 @@ test("jsonLevelsFor: one live lookup per model, and a failure answers null", asy
   assert.deepEqual(await jsonLevelsFor("openai/x-y", {}, { lookup }), ["unrestricted"]); await jsonLevelsFor("openai/x-y", {}, { lookup }); assert.equal(n, 1);
   assert.equal(await jsonLevelsFor("openai/z-y", {}, { lookup: async () => { throw new Error("x"); } }), null);
 });
+
+test("gateway log: the routed chat sends the session (the OpenRouter session_id), and tenant, session, channel, kind and px are never pushed out, and job is the key dropped from the main chat", async () => {
+  const { policyRoute } = await import("../src/ee/route2.js");
+  const { aigMeta } = await import("../src/model.js");
+  const env = envWith(), route = policyRoute(env.MODEL_SETTINGS, "technical", "zdr", "x");
+  const n = net((c) => new Response(`data: ${JSON.stringify({ model: c.body.model, provider: "Fireworks", choices: [{ delta: { content: "hi" } }] })}\n\ndata: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } }));
+  try {
+    // The main chat's own meta: tenant, channel, kind and px (a cache-prefix label). dispatch adds job, and the session comes with the call.
+    const r = await dispatch(env, "chat", { ...msgs, stream: true }, { meta: { tenant: "t1", channel: "main", kind: "chat", px: "prefix.run" }, route, session: "res-abc" }); await r.text();
+    const c = n.calls[0];
+    assert.equal(c.meta.session, c.body.session_id, "the gateway tag is the same value as the OpenRouter session_id");
+    assert.deepEqual(Object.keys(c.meta).sort(), ["channel", "kind", "px", "session", "tenant"], "job is the key dropped when the main chat sends all six");
+  } finally { n.done(); }
+  // Direct check of the ordering rule: the first five of tenant, session, channel, kind, px, job win over extras, whatever order the caller built the object in.
+  const m = aigMeta({}, { other: "o", job: "chat", px: "p", kind: "chat", channel: "c", session: "s", tenant: "t", _prov: "x" });
+  assert.deepEqual(Object.keys(m).sort(), ["channel", "kind", "px", "session", "tenant"]);
+  // A saved job's call (fewer than five keys) keeps everything, job included, and an extra key fills a free slot.
+  assert.deepEqual(Object.keys(aigMeta({}, { tenant: "t", kind: "card-label", job: "label", session: "s" })).sort(), ["job", "kind", "session", "tenant"]);
+  assert.deepEqual(Object.keys(aigMeta({}, { tenant: "t", channel: "c", kind: "chat", other: "o", job: "chat" })).sort(), ["channel", "job", "kind", "other", "tenant"]);
+  // Values are capped at 64 characters, and numbers and booleans stay as they are.
+  assert.equal(aigMeta({}, { session: "s".repeat(100), n: 3 }).session.length, 64); assert.equal(aigMeta({}, { n: 3 }).n, 3);
+});
