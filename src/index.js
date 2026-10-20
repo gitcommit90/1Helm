@@ -1656,6 +1656,7 @@ export default {
           const b = await boundedJson(req), act = String(b.action || "");
           let v;
           if (act === "start") { if (access.mode === "read_only") return payRequired(access); v = await LN.start({ tenant: t.id, channel: slugOf(ch), channelId: String(ch.id), task: lnm[2], title: row.title, tz: await R.tz(), source: b.source === "mic" || b.source === "bee" ? b.source : null, mic: typeof b.mic === "string" ? b.mic.slice(0, 64) : null, via: typeof b.via === "string" ? b.via.slice(0, 8) : null }); }
+          else if (act === "replay") { if (env.TEST_MODE !== "1" || !/@example\.com$/i.test(user.email || "") || viewAsToken(req)) return json({ error: "not found" }, 404); if (access.mode === "read_only") return payRequired(access); v = await LN.replay({ lines: b.lines }); }   // test accounts only: livenotes-depth replay (e2e/dev/replay-live-notes.mjs)
           else if (act === "stop") v = await LN.stop("person", { flushed: !!b.flushed });
           else if (act === "mic") v = await LN.micState(String(b.mic || "").slice(0, 64), b.state === "paused" ? "paused" : "live", typeof b.via === "string" ? b.via.slice(0, 8) : null);
           else if (act === "continue") v = await LN.cont();

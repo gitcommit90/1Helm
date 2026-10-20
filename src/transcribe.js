@@ -186,7 +186,7 @@ const segsOf = (list, text) => keepSegs(spreadSegs(Array.isArray(list) && list.l
 // signal (abort every attempt), headers (extra AI Gateway headers) }.
 // A model whose saved "formats" fact doesn't list the audio's format is skipped without a request (AssemblyAI takes WAV only).
 // Throws when every step failed: err.nano = what timed-out attempts may cost, err.timeout = the last one timed out.
-export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, estSec = 0, prompt = "", models = null, model = null, job = "stt", signal = null, headers = {} } = {}) {
+export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, estSec = 0, prompt = "", models = null, model = null, job = "stt", signal = null, headers = {}, fetchImpl = null } = {}) {
   const size = src.size ?? src.bytes?.byteLength ?? 0, open = src.open || (() => new Response(src.bytes).body);
   const errs = []; let lost = 0, timeout = false;
   let facts = {}; try { facts = await modelFacts(env); } catch {}
@@ -210,7 +210,7 @@ export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, est
     for (const step of steps) {
       if (one && step.model !== one) continue;
       const why = skip(step); if (why) { errs.push(`${step.model}: ${why}`); continue; }
-      try { return { r: await dispatch(e, jobId, request, { meta, signal, model: step.model }), m: step.model }; }
+      try { return { r: await dispatch(e, jobId, request, { meta, signal, model: step.model, ...(fetchImpl ? { fetch: fetchImpl } : {}) }), m: step.model }; }
       catch (err) {
         if (signal?.aborted) throw err;
         timeout = err?.name === "TimeoutError" || err?.name === "AbortError";

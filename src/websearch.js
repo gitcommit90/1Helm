@@ -137,8 +137,9 @@ async function braveOnce(env, q, o, { fetchImpl, timeoutMs }) {
 }
 // Cloudflare Web Search API (AI Gateway): { items: [{ url, title, description }] }.
 // The provider and the largest number of results are the saved settings of the job "web_search" (Models page); the dispatcher makes the call.
+export const searchRequest = (query, count) => ({ query, limit: count });   // the body of the dispatch() call of the job "web_search"
 async function cfOnce(env, q, o, { timeoutMs }) {
-  let r; try { r = await dispatch(env, "web_search", { query: q, limit: o.count }, { meta: { kind: "web-search" }, signal: AbortSignal.timeout(timeoutMs) }); } catch (e) { return { ok: false, why: `cloudflare search ${String(e?.message || e).slice(0, 100)}` }; }
+  let r; try { r = await dispatch(env, "web_search", searchRequest(q, o.count), { meta: { kind: "web-search" }, signal: AbortSignal.timeout(timeoutMs) }); } catch (e) { return { ok: false, why: `cloudflare search ${String(e?.message || e).slice(0, 100)}` }; }
   if (!r?.ok) return { ok: false, why: `cloudflare search HTTP ${r?.status}` };
   const j = await cappedResponseJson(r, SEARCH_JSON_BYTES);
   if (!j) return { ok: false, why: "cloudflare search response too large or invalid" };

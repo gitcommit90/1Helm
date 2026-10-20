@@ -1,6 +1,7 @@
 // Public OpenRouter metadata only. Never fetch a browser-supplied URL or forward an API key.
 // Replacement endpoints remain ZDR even on permissive accounts. Price never hides or blocks a model (Captain 2026-10-16); it is only shown.
 // Privacy never drops a model from search either: each result says which levels it can serve (levels, terms), and the picker filters by level.
+import { quirkOf } from "../model-quirks.js";
 import { registered, eligibleHosts, hostOk, hostTerms, PRIVACY_LEVELS, ENDPOINTS } from "../privacy.js";
 import { cloudflareCatalog, isCloudflareModel } from "../cloudflare-models.js";
 const OR = "https://openrouter.ai/api/v1";
@@ -25,7 +26,7 @@ export const catalogUnavailable = error => ["model_catalog_unavailable", "model_
 // Apply to saved snapshots too; this does not change model, limits or history.
 // settings: the saved model settings, which say which models accept only automatic tool choice.
 export function effectiveTaskCatalog(catalog, model = catalog?.id, settings = null) {
-  return catalog && settings?.catalog?.[model]?.quirks?.auto_tool_choice_only ? { ...catalog, tool_choice: ["auto"] } : catalog;
+  return catalog && quirkOf(settings, model, "auto_tool_choice_only") ? { ...catalog, tool_choice: ["auto"] } : catalog;
 }
 // Registered models whose endpoints all keep or train on requests (so they never appear on OpenRouter's zero-data-retention list).
 export const retainedModels = () => Object.keys(ENDPOINTS.chat).filter((m) => eligibleHosts(m, "zdr").length === 0);
@@ -143,7 +144,7 @@ async function openRouterLists(q = "") {
 }
 export async function modelCatalog(env, { q = "", settings = null, known = [] } = {}) {
   if (typeof q !== "string" || q.length > 160) throw Object.assign(new Error("Search must be 160 characters or fewer."), { status: 400 });
-  const autoOnly = (id) => !!settings?.catalog?.[id]?.quirks?.auto_tool_choice_only;
+  const autoOnly = (id) => quirkOf(settings, id, "auto_tool_choice_only");
   const sources = await Promise.allSettled([openRouterLists(q), cloudflareCatalog(env, q)]);
   const all = [], warnings = []; let unlisted = [];
   if (sources[0].status === "fulfilled") {
@@ -198,7 +199,7 @@ export async function taskModelCatalog(model, settings = null, env = null) {
   // Any other model: read its own endpoints too, so one without a zero-data-retention endpoint can still run where its provider's terms allow
   // (Unrestricted, or No Training when they say so). Each is marked as proven or not against the ZDR list; if the read fails, only the proven ones remain.
   if (!known && validModelId(target) && !registered(target)) { const own = await get(`/models/${target}/endpoints`).catch(() => null); if (own?.length) selected = withProof(endpoints, target, own); }
-  const record = assessModelCatalog(models.filter((m) => m.id === model), selected, { autoOnly: (id) => !!settings?.catalog?.[id]?.quirks?.auto_tool_choice_only })[0];
+  const record = assessModelCatalog(models.filter((m) => m.id === model), selected, { autoOnly: (id) => quirkOf(settings, id, "auto_tool_choice_only") })[0];
   if (!validCatalogRecord(record, model)) throw new ModelCapabilitiesUnavailable(model, { reasons: record?.reasons?.length ? record.reasons : ["No compatible published model record"], endpointStatuses: selected.map(endpoint => endpoint.status) });
   return record;
 }

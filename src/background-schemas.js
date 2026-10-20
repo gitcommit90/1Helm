@@ -20,6 +20,8 @@ export const NOTE_PATCH_SCHEMA = obj({ ops: arr({ anyOf: [
   obj({ op: values("add"), sec, text: str, owner: str, due: str }),
   obj({ op: values("update"), sec, old: str, text: str, owner: str, due: str }),
   obj({ op: values("remove"), sec, old: str }),
-] }, 40), rolling: { type: "string", maxLength: 1500 } });
-export const FINAL_NOTES_SCHEMA = obj({ attendees: arr(str), summary: arr(str), decisions: arr(str),
+] }, 40) });
+// The final notes: a summary that grows with the meeting, topics in order (each with its points), and the lists. No item limits: the prompt carries a length
+// guide computed from the transcript (live-notes.js finalGuide), and the saved max output of the notes_final job bounds the answer.
+export const FINAL_NOTES_SCHEMA = obj({ attendees: arr(str), summary: arr(str), topics: arr(obj({ title: str, points: arr(str) })), decisions: arr(str),
   actions: arr(obj({ text: str, owner: str, due: str })), questions: arr(str), notes: arr(str) });

@@ -5,8 +5,8 @@
 // (3) the near-now alarm throttle for any other source; (4) the watchdog still sees an overdue next_run.
 // workflows and follow-ups sharing the alarm are unaffected; held files aren't swept or listed; cid idempotency; tz/DST math.
 import assert from "node:assert"; import { DatabaseSync } from "node:sqlite"; import { readFileSync } from "node:fs";
-import "../src/send-later.js";   // first on purpose: no import cycle
-import { Resident } from "../src/resident.js";
+import { Resident } from "../src/resident.js";   // first on purpose: send-later.js reaches the EE boundary through chat-titles.js, so loading it before the Resident would run laterMix too early
+import "../src/send-later.js";
 
 // ---- fake clock ----
 const realNow = Date.now.bind(Date); let NOW = Date.UTC(2026, 9, 18, 16, 0, 0);   // Mon Oct 5 2026, 9:00 AM Pacific

@@ -8,10 +8,10 @@ import { LiveNotes, finalNotesSection, keepHuman, renderSection } from "../src/e
 import { AmbientStore } from "../src/ee/ambient.js";
 
 const envelope = (data, finish = "stop") => ({ choices: [{ finish_reason: finish, message: { content: JSON.stringify(data) } }], usage: { cost: 0.0004 } });
-const emptyFinal = { attendees: [], summary: [], decisions: [], actions: [], questions: [], notes: [] };
+const emptyFinal = { attendees: [], summary: [], topics: [], decisions: [], actions: [], questions: [], notes: [] };
 const valid = [
   [AMBIENT_EXTRACT_SCHEMA, { items: [] }], [AMBIENT_REVIEW_SCHEMA, { items: [] }],
-  [NOTE_PATCH_SCHEMA, { ops: [], rolling: "" }], [FINAL_NOTES_SCHEMA, emptyFinal],
+  [NOTE_PATCH_SCHEMA, { ops: [] }], [FINAL_NOTES_SCHEMA, emptyFinal],
 ];
 for (const [schema, data] of valid) {
   assert.equal(structuredFormat("test", schema).json_schema.strict, true);
@@ -26,7 +26,7 @@ for (const [schema, data] of valid) {
   const refused = envelope(data); refused.choices[0].message.refusal = "No";
   assert.throws(() => parseStructuredResponse(refused, schema), /refused/);
 }
-assert.throws(() => parseStructuredResponse(envelope({ ops: [{ op: "delete_all", text: "x" }], rolling: "" }), NOTE_PATCH_SCHEMA));
+assert.throws(() => parseStructuredResponse(envelope({ ops: [{ op: "delete_all", text: "x" }] }), NOTE_PATCH_SCHEMA));
 assert.throws(() => parseStructuredResponse(envelope({ items: [{ id: "candidate:0", verdict: "sure", reason: "direct_personal_intent", context: ["current:0"] }] }), AMBIENT_REVIEW_SCHEMA));
 console.log("PASS all four contracts: empty results, missing/extra fields, refusal and incomplete answers");
 
@@ -64,7 +64,7 @@ console.log("PASS all four contracts: empty results, missing/extra fields, refus
   let calls = 0, edits = 0, reserves = 0, settlements = 0;
   ln.s = () => ({ ...state }); ln.setS = (_n, patch) => Object.assign(state, patch);
   ln.ledger = () => ({ reserve: async () => { reserves++; return { ok: true }; }, settle: async (_id, n) => { settlements++; assert.equal(n, 123); } });
-  ln.model = async () => { calls++; return { text: J({ ops: [], rolling: "partial" }), finish: "length", nano: 123, tokens: 7 }; };
+  ln.model = async () => { calls++; return { text: J({ ops: [] }), finish: "length", nano: 123, tokens: 7 }; };
   ln.sql = { exec: () => ({ toArray: () => [{ rid: 1, at: 1000, text: "Ship Friday", speaker: "Ana" }] }) };
   ln.readDoc = async () => ({ text: "## Session 1 · Today\n\n### Summary\nExisting valid summary.\n" });
   ln.ev = async () => {}; ln.editDoc = async () => { edits++; throw new Error("must not edit"); };

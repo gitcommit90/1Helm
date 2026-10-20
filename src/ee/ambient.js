@@ -237,6 +237,14 @@ export function validateAmbient(raw, lines, previous = []) {
   return out;
 }
 
+// The two requests of the ambient jobs, built here so the Models page Sandbox sends the same ones.
+// extract: error is the last error of the chunk (a rejected attempt adds a retry note); recovery switches on the source-only instructions.
+export function ambientExtractMessages(lines, previous, { error = null, recovery = false, recoveryContext = null } = {}) {
+  const retryGuidance = error?.includes("model_evidence_invalid") ? "\nThe previous attempt was rejected because none of its quotes could be found in the current input lines. Re-read CURRENT lines only when selecting quotes. Historical previous records are not source evidence for new output. Copy current-line words as closely as you can, with the explicit line number, or return an empty items array if none are useful. Do not repeat a historical item merely because it is unresolved." : "";
+  return [{ role: "system", content: `${AMBIENT_SYSTEM}\n${PLAIN_STYLE}\n${AMBIENT_LINE_INSTRUCTIONS}\n${AMBIENT_REFERENCE_INSTRUCTIONS}\n${AMBIENT_SPEECH_ACT_CONTEXT}${retryGuidance}${recovery ? `\n${SOURCE_ONLY_INSTRUCTIONS}` : ""}` }, { role: "user", content: JSON.stringify({ lines: lines.map((line, index) => ({ ...line, line: index })), previous: previous.map(({ text, owner, kind, status }, index) => ({ id: `previous:${index}`, text, owner, kind, ...(status && status !== "open" ? { status } : {}) })), ...(recovery ? recoveryContext : {}) }) }];
+}
+export const ambientRequest = (messages, maxTokens) => ({ messages, ...(maxTokens ? { max_tokens: maxTokens } : {}), temperature: 0 });
+export const ambientReviewMessages = (input) => [{ role: "system", content: AMBIENT_REVIEW_SYSTEM }, { role: "user", content: JSON.stringify(input) }];
 export class AmbientStore {
   constructor(host) { this.host = host; this.sql = host.sql; this.init(); }
   init() { this.sql.exec(`CREATE TABLE IF NOT EXISTS ambient_sources (source TEXT NOT NULL, source_id TEXT NOT NULL, revision TEXT NOT NULL, source_at INTEGER, live INTEGER NOT NULL, ingested_at INTEGER NOT NULL, processed_at INTEGER, chunks INTEGER NOT NULL, PRIMARY KEY(source,source_id));
@@ -548,14 +556,13 @@ export class AmbientStore {
     return true;
   }
   async extract(lines, previous, tenant, chunk = null) {
-    const retryGuidance = chunk?.error?.includes("model_evidence_invalid") ? "\nThe previous attempt was rejected because none of its quotes could be found in the current input lines. Re-read CURRENT lines only when selecting quotes. Historical previous records are not source evidence for new output. Copy current-line words as closely as you can, with the explicit line number, or return an empty items array if none are useful. Do not repeat a historical item merely because it is unresolved." : "";
     if (chunk?.recovery_mode) previous = [];
-    const messages = [{ role: "system", content: `${AMBIENT_SYSTEM}\n${PLAIN_STYLE}\n${AMBIENT_LINE_INSTRUCTIONS}\n${AMBIENT_REFERENCE_INSTRUCTIONS}\n${AMBIENT_SPEECH_ACT_CONTEXT}${retryGuidance}${chunk?.recovery_mode ? `\n${SOURCE_ONLY_INSTRUCTIONS}` : ""}` }, { role: "user", content: JSON.stringify({ lines: lines.map((line, index) => ({ ...line, line: index })), previous: previous.map(({ text, owner, kind, status }, index) => ({ id: `previous:${index}`, text, owner, kind, ...(status && status !== "open" ? { status } : {}) })), ...(chunk?.recovery_mode ? chunk.recovery_context : {}) }) }];
+    const messages = ambientExtractMessages(lines, previous, { error: chunk?.error, recovery: !!chunk?.recovery_mode, recoveryContext: chunk?.recovery_context });
     const output = await this.modelRequest(messages, chunk, "ambient-extract", [...lines.map(l => l.text), ...previous.map(p => JSON.stringify(p)), ...(chunk?.recovery_mode ? [...(chunk.recovery_context?.context_before || []), ...(chunk.recovery_context?.context_after || [])].map(l => l.text) : [])]);
     return output;
   }
   async review(input, tenant, chunk = null) {
-    const messages = [{ role: "system", content: AMBIENT_REVIEW_SYSTEM }, { role: "user", content: JSON.stringify(input) }];
+    const messages = ambientReviewMessages(input);
     return this.modelRequest(messages, chunk, "ambient-review", input.context.map(l => l.text));
   }
   async modelRequest(messages, chunk, kind, privacyTexts) {
@@ -565,7 +572,7 @@ export class AmbientStore {
       if (kind === "ambient-review") assertAmbientReview(parseStructuredResponse(response, schema), JSON.parse(messages.at(-1).content));
       return response;
     },
-      { messages, ...(maxTokens ? { max_tokens: maxTokens } : {}), temperature: 0 },
+      ambientRequest(messages, maxTokens),
       { name: kind.replaceAll("-", "_"), schema, maxAttempts: 2 });
     return data;
   }

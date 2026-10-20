@@ -47,7 +47,7 @@ try {
         { ...body, max_tokens: cap, models: ["openai/gpt-oss-120b"], reasoning: { effort: "high" } }, null,
         { model: "openai/gpt-oss-120b", fallbacks: ["openai/gpt-oss-120b"] }, { tenant: "fixture", kind });
       const p = sent.at(-1);
-      assert.equal(p.model, model); assert.deepEqual(p.reasoning, { effort: "low" }); assert.equal(p.max_tokens, undefined, "an empty saved max output sends no max_tokens");
+      assert.equal(p.model, model); assert.deepEqual(p.reasoning, { effort: "low" }); assert.equal(p.max_tokens, { "live-notes-note": 6000, "live-notes-final": 24000, "live-notes-refine": 24000 }[kind], "a job with no saved max output sends its starting default (live notes jobs have one, others none)");
       assert.equal(p.models, undefined); assert.deepEqual(p.response_format, body.response_format);
       assert.equal(p.provider.zdr, true); assert.equal(p.provider.require_parameters, true);
       assert.equal(p.provider.order, undefined); assert.equal(p.provider.only, undefined);

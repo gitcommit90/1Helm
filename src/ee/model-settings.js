@@ -8,6 +8,7 @@ import { PRIVACY_LEVELS } from "../privacy.js";
 import { modelCatalog, validCatalogRecord, validModelId, unlistedIds, listedKinds, NO_LONGER_OFFERED } from "./model-catalog.js";
 import { SORTS, CHAT_JOB, CATEGORY_FIELDS, JOBS, JOB_IDS, MODEL_PAGE_JOBS, JOB_KINDS, GROUPS, takesChat, canChat, nativeFor, zdrApplies, ModelSettingsError, jobDef, jobSetting, settingsOf, entriesOf, factsOf, zdrBlocked, privacyCoverage, configuredHosts } from "./model-jobs.js";
 import { seedFromLegacy, mergeLevels, SEED_FACTS, ROUTING_ZDR_THIRD_MODEL, JOB_FIELDS, OPTIONAL_JOB_IDS, optionalJobDefault } from "./model-seed.js";
+import { quirksFromRecord } from "../model-quirks.js";
 import { dynamicRoutingOn, withRoutingConfig, withCategoryLimits } from "./routing-config.js";
 import { limitsProblem, compactLimits, timeoutProblem } from "../limits.js";
 
@@ -414,7 +415,9 @@ async function validatedSelection(env, config, current) {
       const m = (await modelCatalog(env, { q: id })).models.find((x) => x.id === id); if (m?.unverified) fail(`${id}: its providers could not be verified right now, so nothing was saved. Try again shortly.`);
       if (!m && !id.startsWith("@cf/")) fail(`${id}: ${NO_LONGER_OFFERED}. Nothing was saved.`);
       if (!m?.eligible) fail(`${id}: ${m?.reasons?.join("; ") || "not available in the model catalogs"}.`);
-      next.catalog[id] = own(SEED_FACTS, id) && SEED_FACTS[id].quirks ? { ...m, quirks: clone(SEED_FACTS[id].quirks) } : m;   // known quirks (e.g. no temperature) are kept when a known model is added again
+      // Quirks: those of a known model (e.g. no temperature) are kept when it is added again, and the rest come from the record's own endpoint data (model-quirks.js quirksFromRecord).
+      const derived = quirksFromRecord(m), quirks = { ...derived, ...(own(SEED_FACTS, id) && SEED_FACTS[id].quirks ? clone(SEED_FACTS[id].quirks) : {}) };
+      next.catalog[id] = Object.keys(quirks).length ? { ...m, quirks } : m;
     } else {
       if (!looseId(id)) fail("Invalid model ID.");
       if (id.startsWith("~")) fail(`${id}: latest-version IDs are only for chat and decision jobs. Pick a specific model for ${def.label}.`);

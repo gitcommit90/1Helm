@@ -72,7 +72,7 @@ test("saved settings reach the wire: model, reasoning level, max output, sort, m
     for (const k of ["order", "only", "ignore"]) assert.ok(!(k in b.provider), k);
     for (const k of ["user", "models", "max_completion_tokens", "reasoning_effort", "prompt_cache_key", "extra_body", "metadata"]) assert.ok(!(k in b), `${k} is not sent`);
     assert.deepEqual(b.tools, [{ type: "function", function: { name: "search", parameters: { type: "object" } } }]); assert.equal(b.tool_choice, "required"); assert.deepEqual(b.response_format, { type: "json_object" });
-    assert.equal(b.temperature, 0.9, "a temperature the model takes is kept");
+    assert.ok(!("temperature" in b), "no temperature is sent: the memory job always sets require_parameters");
     // an empty output limit sends none
     const env2 = envFor("selfhost", (s) => { s.jobs.hs_reflect.max_output = null; }), n2 = net((c) => chatOk(c.body.model));
     try { await route(post(LLM("reflect"), chatBody({ max_tokens: 5 })), env2); assert.ok(!("max_tokens" in n2.calls[0].body)); } finally { n2.done(); }
@@ -85,7 +85,7 @@ test("the model's facts decide the temperature and the tool choice, not the name
   const luna = SEED.jobs.hs_retain.model, flash = SEED.jobs.hs_reflect.model;
   assert.equal(SEED.catalog[luna].quirks.no_temperature, true);
   assert.ok(!("temperature" in cleanChatRequest({ messages: [], temperature: 0.1 }, SEED, "hs_retain")), "no_temperature drops it");
-  assert.equal(cleanChatRequest({ messages: [], temperature: 0 }, SEED, "hs_consolidation").temperature, 0, "a model that takes one keeps it");
+  assert.ok(!("temperature" in cleanChatRequest({ messages: [], temperature: 0 }, SEED, "hs_consolidation")), "no job sends one, whatever its model facts say");
   assert.ok(!("temperature" in cleanChatRequest({ messages: [] }, SEED, "hs_consolidation")), "none is ever added");
   const s = clone(SEED); s.catalog[flash].quirks = { auto_tool_choice_only: true };
   assert.ok(!("tool_choice" in cleanChatRequest({ messages: [], tool_choice: "required" }, s, "hs_reflect")), "only automatic choice: the forced choice is dropped");

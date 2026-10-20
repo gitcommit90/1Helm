@@ -55,7 +55,7 @@ const rendered = await generateHandoff({ callModelOnce: async (messages, _tool, 
   fins++; return { content: JSON.stringify(notes), finish: fins === 1 ? "length" : "stop", calls: [], charge: 100 };
 } }, [], null, fin => { paid += fin.charge; });
 assert.equal(fins, 2); assert.equal(paid, 200); assert.equal(rendered, renderHandoff(notes));
-const labelInput = { kind: "chat", chatTitle: true, msgs: [{ at: 1, text: "Plan a garden" }], steps: [], reply: "Grow peas." };
+const labelInput = { kind: "chat", msgs: [{ at: 1, text: "Plan a garden" }], steps: [], reply: "Grow peas." };
 let managedCalls = 0, release, sawAbort = false;
 const settled = [];
 globalThis.fetch = async (_url, init) => { if (/openrouter\.ai\/api\/v1\/(models|endpoints)/.test(String(_url))) return new Response("{}", { status: 503 }); managedCalls++; init.signal.addEventListener("abort", () => { sawAbort = true; }, { once: true }); return new Promise(resolve => { release = resolve; }); };
@@ -63,7 +63,7 @@ const pendingLabels = summarizeCard({ input: labelInput, timeoutMs: 5, env: { MO
   ledger: { reserve: async () => ({ ok: true }), settle: async (_id, nano) => { settled.push(nano); } } });
 await new Promise(resolve => setTimeout(resolve, 20));
 assert.ok(sawAbort); assert.deepEqual(settled, [], "keep reservation until an abort-racing paid response is consumed");
-release(Response.json(response({ title: "Plan a garden", chat_title: "Garden plans", result: "Suggested peas", summary: "Suggested peas.", why: {} })));
+release(Response.json(response({ title: "Plan a garden", result: "Suggested peas", summary: "Suggested peas.", why: {} })));
 const labels = await pendingLabels;
 assert.equal(labels.title_src, "auto"); assert.equal(managedCalls, 1);
 assert.deepEqual(settled, [1150000], "late usage settles once; timed-out content never publishes");

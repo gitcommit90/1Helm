@@ -45,6 +45,10 @@ export const JOB_KINDS = {
 };
 // Kinds whose job writes no text, so max_output can only be null.
 for (const k of ["speech", "speech_cloudflare", "speech_live", "embedding_files"]) JOB_KINDS[k].noOutput = true;
+// What a model must be able to read for each kind of job (text, image, audio). Speech jobs send only audio, the picture and browser look jobs send a prompt and
+// an image, and web search names a provider, not a model. Every other kind reads text. The Models page shows these as small icons on each job row.
+const INPUT_MODES = { speech: ["audio"], speech_cloudflare: ["audio"], speech_live: ["audio"], vision: ["text", "image"], look: ["text", "image"], search: [] };
+for (const [k, d] of Object.entries(JOB_KINDS)) d.inputs = INPUT_MODES[k] || ["text"];
 // Picks that name a model able to chat. A kind with any: true also takes every chat model (through the JSON adapter).
 export const CHAT_PICKS = ["chat", "chore", "classic"];
 export const takesChat = (kind) => CHAT_PICKS.includes(kind.pick) || !!kind.any;
@@ -65,7 +69,8 @@ export const CHAT_JOB = "chat";
 export const JOBS = [
   { id: "decider", kind: "decider", group: "routing", label: "Request sorter", description: "Reads each message and decides which kind of work it is, which picks the chat list." },
   { id: "handoff", kind: "chore", group: "background", label: "Task handoffs", description: "Short messages that pass context from one task to the next." },
-  { id: "label", kind: "chore", group: "background", label: "Task titles", description: "Gives each task card its title." },
+  { id: "label", kind: "chore", group: "background", label: "Task summaries", description: "Writes each finished task card's title, result line, summary and the reason for each step." },
+  { id: "chat_title", kind: "chore", group: "background", label: "Chat titles", description: "Names a new chat in the left list from its first message. It runs when the message is sent, next to the reply." },
   { id: "browser", kind: "chore", group: "browser", label: "Browser typing and summaries", description: "Plans what to type into forms in the browser and writes the summary of what the browser did." },
   { id: "notes", kind: "chore", group: "background", label: "Live notes", description: "Takes notes while a task runs." },
   { id: "notes_refine", kind: "chore", group: "background", label: "Live notes cleanup", description: "Tidies the draft notes." },
@@ -134,14 +139,17 @@ export const CATEGORY_FIELDS = ["max_output", "sort", "max_price", "timeout_ms"]
 export const categoryOf = (settings, id) => { const all = settings?.routing?.categories || []; return all.find((c) => c.id === id) || all.find((c) => c.id === "general") || null; };
 export const categoryLimits = (settings, id) => { const c = categoryOf(settings, id), has = (k) => !!c && Object.prototype.hasOwnProperty.call(c, k); return Object.fromEntries(CATEGORY_FIELDS.map((k) => [k, has(k) ? c[k] : null])); };
 export const factsOf = (settings, model) => settings?.catalog?.[model] || null;
-export const quirkOf = (settings, model, name) => !!factsOf(settings, model)?.quirks?.[name];
+export { quirkOf };   // by the exact ID, else the saved model it stands for (model-quirks.js)
 // A job's models in order: its main model, then its fallbacks. Each: { model, effort, strict? }. Saved entries never carry provider lists.
 export const entriesOf = (job) => [{ model: job.model, effort: job.effort ?? null, ...(job.strict ? { strict: true } : {}) },
   ...(job.fallbacks || []).map((f) => ({ ...f, effort: f.effort ?? null }))];
 
 // The effort the model's own rules allow. Some models can't turn reasoning off, so "none" is sent as "low" there.
+import { quirkOf } from "../model-quirks.js";
 export const reasoningMandatory = (settings, model) => quirkOf(settings, model, "reasoning_mandatory");
-export const effortFor = (e, model, settings) => e === "none" && reasoningMandatory(settings, model) ? "low" : e;
+// "none" is also sent as the model's lowest level when its saved facts list levels without "none" (the list comes from OpenRouter when the model is saved).
+const lowestEffort = (settings, model) => { const f = factsOf(settings, model)?.efforts; return Array.isArray(f) && f.some((x) => x !== "default") && !f.includes("none") ? (f.includes("low") ? "low" : f.find((x) => x !== "default")) : null; };
+export const effortFor = (e, model, settings) => e !== "none" ? e : lowestEffort(settings, model) || (reasoningMandatory(settings, model) ? "low" : e);
 export const effortBody = (e, model, settings) => { e = effortFor(e, model, settings); return !e || e === "default" ? {} : e === "none" ? { reasoning: { enabled: false } } : { reasoning: { effort: e } }; };
 
 // The providers one model may use at one privacy level. Models the saved facts hold endpoint lists for use those (kept inside what

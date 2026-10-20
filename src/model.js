@@ -2,6 +2,7 @@ import { markServed, choreRouteFor, dispatchOrder } from "./ee/index.js";
 import { byokChat } from "./byok.js";
 import { privacyOf, enforceRequest, PrivacyBlocked, PRIVACY_EXHAUSTED } from "./privacy.js";   // AI data privacy: every dispatch
 import { boundedText } from "./bounded-body.js";
+import { knownModel } from "./model-quirks.js";
 import { MAX_ATTEMPTS, modelSettingsEnv, readModelSettings, categoryLimits, CHAT_JOB, quirkOf, effortBody, effortFor, reasoningMandatory, authorizeTaskProfile, TaskAffinityBlocked } from "./ee/index.js";
 import { cloudflareChat, cloudflareEmbeddings, isCloudflareModel } from "./cloudflare-models.js";
 export { effortBody, effortFor, reasoningMandatory };
@@ -30,9 +31,9 @@ export const byokFast = (route, body) => route?.two ? !!choreRouteFor(route, bod
 // signal (optional): the person's Stop aborts the call mid-flight (the fetch and its streamed body).
 // The main chat call behind dispatch(..., { route }): a task's frozen profile (authorized afresh, because settings may have changed), or the routing
 // policy's list for the category at the account's current privacy level. Called by the dispatcher only.
-export async function routedChat(env, body, session, route, meta = {}, signal = null) {
-  if (route?.taskAffinity) return taskChat(env, body, route, meta, signal);
-  return twoChat(env, body, session, route, meta, signal);
+export async function routedChat(env, body, session, route, meta = {}, signal = null, fetchImpl = globalThis.fetch) {
+  if (route?.taskAffinity) return taskChat(env, body, route, meta, signal, fetchImpl);
+  return twoChat(env, body, session, route, meta, signal, fetchImpl);
 }
 
 // The output limit of one step: the saved job value as saved, kept below the context window. Empty stays null, and no max_tokens is sent.
@@ -58,7 +59,7 @@ export function taskPayload(profile, body, { level, settings = null } = {}) {
     usage: { include: true }, session_id: cacheKey(profile.cacheSession), prompt_cache_key: cacheKey(profile.cacheSession) };
   return level ? enforceRequest(p, level) : p;
 }
-async function taskChat(env, body, route, meta, signal) {
+async function taskChat(env, body, route, meta, signal, fetchImpl = globalThis.fetch) {
   const original = route.taskProfile, chain = Array.isArray(original.poolChain) && original.poolChain.length ? original.poolChain : [original];
   let last;
   for (let index = 0; index < chain.length; index++) {
@@ -72,7 +73,7 @@ async function taskChat(env, body, route, meta, signal) {
         const payload = taskPayload(profile, body, { level: isCloudflareModel(profile.requestedModel) ? null : auth.level, settings: frozenSettings });
         const r = isCloudflareModel(profile.requestedModel)
           ? await cloudflareChat(env, payload, { ...meta, job: CHAT_JOB, _privacy: auth.level }, signal, profile.catalog)
-          : await orFetch(env, payload, { ...meta, job: CHAT_JOB, _privacy: auth.level }, { "x-openrouter-metadata": "enabled" }, signal);
+          : await orFetch(env, payload, { ...meta, job: CHAT_JOB, _privacy: auth.level }, { "x-openrouter-metadata": "enabled" }, signal, fetchImpl);
         if (!r.ok) {
           const status = r.status, detail = await boundedText(r, 64 * 1024).catch(() => "");
           if ([400,415,422].includes(status) && /image|vision|multimodal|image_url|unsupported.{0,30}(content|media)/i.test(detail)
@@ -135,7 +136,7 @@ export function poolPayload(env, model, level, body, session, prov = null, effor
     provider: { allow_fallbacks: true, require_parameters: true, max_price: mp, ...(limits.sort ? { sort: limits.sort } : {}) }, usage: { include: true },
     ...(session ? { session_id: String(session).slice(0, 256), prompt_cache_key: cacheKey(session) } : {}) };
 }
-async function twoChat(env, body, session, route, meta, signal = null) {
+async function twoChat(env, body, session, route, meta, signal = null, fetchImpl = globalThis.fetch) {
   const level = await privacyOf(env, meta?.tenant), prov = meta?._prov ?? null;
   const { attempts: picks, skipped } = dispatchOrder(route, level, { prov, body, settings: env.MODEL_SETTINGS }), order = picks.map((a) => a.model);
   if (skipped.length) console.log("router: skipped", JSON.stringify({ level, category: route.category || null, skipped }));
@@ -148,7 +149,7 @@ async function twoChat(env, body, session, route, meta, signal = null) {
     for (let k = 0; attempts < MAX_ATTEMPTS; k++) {
       attempts++;
       try {
-        const r = await orFetch(env, poolPayload(env, order[i], level, b, session, prov, picks[i].effort, route.category), { ...meta, job: CHAT_JOB, _privacy: level, _prov: prov }, { "x-openrouter-metadata": "enabled" }, signal);
+        const r = await orFetch(env, poolPayload(env, order[i], level, b, session, prov, picks[i].effort, route.category), { ...meta, job: CHAT_JOB, _privacy: level, _prov: prov }, { "x-openrouter-metadata": "enabled" }, signal, fetchImpl);
         if (!r.ok) { const t = await boundedText(r, 64 * 1024).catch(() => ""); throw Object.assign(new Error(`openrouter ${order[i]} ${r.status}: ${t.slice(0, 200)}`), { orStatus: r.status }); }
         const out = await firstOk(r, !!b.stream); markServed(route, order[i], i > 0, env.MODEL_SETTINGS);
         route.effort = picks[i].effort;
@@ -288,7 +289,24 @@ export const aigMeta = (env, meta = {}) => Object.fromEntries(Object.entries(met
 export const aiOpts = (env, meta = {}, opts = {}) => !env.AIG_ID ? opts
   : { ...opts, gateway: { id: env.AIG_ID, collectLog: true, metadata: aigMeta(env, meta) }, extraHeaders: { ...(opts.extraHeaders || {}), "cf-aig-collect-log-payload": aigPayload(env) } };
 const OR_API = "https://openrouter.ai/api/v1";
-export async function orFetch(env, payload, meta = {}, extraHeaders = {}, signal = null) {
+// require_parameters tells OpenRouter to use only endpoints that accept every parameter in the request. Most current models list no temperature setting,
+// so a temperature next to require_parameters leaves no endpoint (HTTP 404 "No endpoints found that can handle the requested parameters") and the job's
+// saved model is never reached. Nothing 1Helm sends needs a temperature (background chores sent 0, which the endpoints ignored), and the saved model facts
+// never record temperature support, so the request never carries both. This holds for every model, including an alias ("~vendor/name-latest") and any
+// model added later from the Models page, because it does not depend on the model's facts.
+export function withoutTemperatureWhenStrict(payload) {
+  if (!payload?.provider?.require_parameters || !("temperature" in payload)) return payload;
+  const { temperature, ...rest } = payload; return rest;
+}
+// tool_choice "none" means "answer without calling a tool". A model that takes only automatic choice (Meta answers 400 "only auto is supported for tool_choice"),
+// and a model with no saved facts that could say so, is sent the same request without tools and without tool_choice, which has the same meaning.
+export function withoutToolsWhenNoneUnsafe(settings, payload) {
+  if (payload?.tool_choice !== "none") return payload;
+  if (knownModel(settings, payload.model) && !quirkOf(settings, payload.model, "auto_tool_choice_only")) return payload;
+  const { tools, tool_choice, parallel_tool_calls, ...rest } = payload; return rest;
+}
+// fetchImpl: the transport for the request (the Sandbox passes one that records what is sent). Without it, globalThis.fetch is used as always.
+export async function orFetch(env, payload, meta = {}, extraHeaders = {}, signal = null, fetchImpl = globalThis.fetch) {
   // Own AI key: a chore (the browser agent's planner) on the fast model. Failures come back as an error body, like OpenRouter's.
   if (env.BYOK) { try { return await byokChat(env.BYOK, payload, { fast: true, signal, privacy: await privacyOf(env, meta?.tenant) }); } catch (e) { if (signal?.aborted) throw e; return new Response(JSON.stringify({ error: { message: e.message } }), { status: 502, headers: { "content-type": "application/json" } }); } }
   if (isCloudflareModel(payload.model)) return cloudflareChat(env, payload, payload.provider?.zdr ? { ...meta, _privacy: "zdr" } : meta, signal);
@@ -296,19 +314,12 @@ export async function orFetch(env, payload, meta = {}, extraHeaders = {}, signal
   // level (twoChat passes the level it just read; anything else reads it now). Ineligible → PrivacyBlocked, nothing is sent.
   payload = enforceRequest(payload, meta?._privacy ?? await privacyOf(env, meta?.tenant), { prov: meta?._prov ?? null });
   if (payload.messages) payload = { ...payload, messages: replayFor(payload.messages, payload.model) };   // opaque reasoning: only to the model that wrote it
-  // Background chores historically sent temperature:0, which these endpoints silently ignored. With strict parameter
-  // enforcement that now makes otherwise schema-capable endpoints ineligible. Their advertised capabilities
-  // (2026-10-11) omit temperature. Preserve other models and normal chat.
-  const strictChore = /^(?:live-notes-(?:note|final|refine)|ambient-(?:extract|review)|sidecar-card|sidecar-vision-[a-z]+|card-label|browser-(?:oss|jev))$/.test(meta?.kind || "")
-    || (meta?.kind === "chat" && payload.response_format?.json_schema?.name === "handoff_notes");
-  if (payload.response_format?.type === "json_schema" && strictChore
-      && quirkOf(env.MODEL_SETTINGS, payload.model, "no_temperature")) {
-    const { temperature, ...supported } = payload; payload = supported;
-  }
   if (payload.response_format?.type === "json_schema") payload = { ...payload, provider: { ...payload.provider, require_parameters: true } };
+  payload = withoutTemperatureWhenStrict(payload);
+  payload = withoutToolsWhenNoneUnsafe(env.MODEL_SETTINGS, payload);
   if (env.PROMPT_CACHE !== "off") payload = withCacheBreakpoints(payload);   // prompt caching, every route (withCacheBreakpoints); PROMPT_CACHE="off" = kill switch
   const body = JSON.stringify(payload);
-  return orSend(env, "chat/completions", () => body, meta, extraHeaders, signal);
+  return orSend(env, "chat/completions", () => body, meta, extraHeaders, signal, fetchImpl);
 }
 // OpenRouter's other APIs (sidecar.js: /embeddings, /audio/transcriptions), through the same gateway, key and fallback as the chat.
 // Not LLM chat, so no cache breakpoints. body: a payload object, or () → { body, length } for a streamed body

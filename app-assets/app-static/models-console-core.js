@@ -2,6 +2,8 @@
 // Pure: no document, no fetch, no clock except where a time is passed in. Every value that goes into HTML passes through h`...` or esc().
 // There are no inline style attributes anywhere, because the page's content security policy does not allow them.
 
+import { compareGolden, scoreLine } from "./sandbox-golden.js";
+
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ESC[c]);
 class Raw { constructor(s) { this.s = s; } toString() { return this.s; } }
@@ -215,6 +217,7 @@ export function pickerChoices(state, target) {
   return base.filter((m) => !taken.has(m.id) && (!onlyEquivalent || m.main_equivalent) && !(state.unlisted || []).includes(m.id));
 }
 export function takenModels(state, target) {
+  if (target.free) return [];   // the Sandbox's model menu offers every model, including the job's own fallbacks
   const row = rowByKey(state, target.key);
   const cur = row.kind === "cat" ? row.cat.chains[target.level] : [state.config.jobs[row.id], ...(state.config.jobs[row.id].fallbacks || [])];
   return cur.filter((e, i) => i !== target.idx).map((e) => e.model);
@@ -248,7 +251,7 @@ export function pickerItem(state, m, i, sel, current) {
 }
 
 // ---------------------------------------------------------------- HTML: table
-const ICON = { search: '<path d="M11 18a7 7 0 100-14 7 7 0 000 14zM21 21l-5-5"/>', x: '<path d="M6 6l12 12M18 6L6 18"/>', up: '<path d="M6 15l6-6 6 6"/>', down: '<path d="M6 9l6 6 6-6"/>', plus: '<path d="M12 5v14M5 12h14"/>', undo: '<path d="M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>' };
+const ICON = { search: '<path d="M11 18a7 7 0 100-14 7 7 0 000 14zM21 21l-5-5"/>', x: '<path d="M6 6l12 12M18 6L6 18"/>', clip: '<path d="M20 11l-8.5 8.5a5 5 0 01-7-7L13 4a3.5 3.5 0 015 5l-8.5 8.5a2 2 0 01-3-3L14 7"/>', up: '<path d="M6 15l6-6 6 6"/>', down: '<path d="M6 9l6 6 6-6"/>', plus: '<path d="M12 5v14M5 12h14"/>', undo: '<path d="M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>' };
 export const icon = (n) => raw(`<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`);
 
 export function view(state, ui) {
@@ -289,6 +292,8 @@ function effortSelect(state, x, ro, extra) {
   const opts = efs.includes(e0.effort) || !e0.effort ? efs : [e0.effort, ...efs];
   return h`<select class="cell" ${ro ? "disabled" : ""} data-f="effort" data-id="${x.row.key}" data-k="${x.row.key}.e" aria-label="Reasoning for ${x.row.label}">${opts.map((e) => h`<option value="${e}" ${e === e0.effort ? "selected" : ""}>${effortName(e)}</option>`)}</select>`;
 }
+const MODE = { text: ["T", "Needs a model that reads text"], image: ["\u{1F5BC}", "Needs a model that reads images"], audio: ["\u{1F3A4}", "Needs a model that reads audio"] };
+export const modesHtml = (row) => (row.jv?.inputs || []).map((m) => h`<span class="mod" title="${MODE[m][1]}">${MODE[m][0]}</span>`);
 function rowHtml(state, ui, V, x, now) {
   const { row, v, flags } = x, ro = !V.editable, dis = ro ? "disabled" : "", id = row.key;
   const m = v.chain[0], fb = v.chain.slice(1);
@@ -305,7 +310,7 @@ function rowHtml(state, ui, V, x, now) {
   const timeout = v.showTimeout && v.timeout_ms !== undefined ? h`<input class="cell r2" ${dis} data-f="timeout" data-id="${id}" data-k="${id}.t" inputmode="decimal" placeholder="None" value="${v.timeout_ms == null ? "" : v.timeout_ms / 1000}" aria-label="Timeout in seconds for ${row.label}">` : h`<span class="mut2">n/a</span>`;
   const modelCell = !v.hasChain ? "" : m ? h`<div class="mdl"><span class="ell">${nameOf(state, m.model)}</span>${badge(srcOf(state, m.model, m.source))}</div>` : h`<span class="mut2">None</span>`;
   const fbCell = fb.length ? h`<span class="ell" title="${fb.map((e) => nameOf(state, e.model)).join(", ")}">${fb.map((e) => nameOf(state, e.model)).join(", ")}</span>` : h`<span class="mut2">None</span>`;
-  return h`<div class="rw" role="row" tabindex="0" data-row="${id}" aria-selected="${ui.sel === id}"><div class="cf">${dot(flags)}</div><div class="nm cn"><b class="ell">${row.label}</b></div><div class="cm">${modelCell}</div><div>${v.hasChain ? effortSelect(state, x, ro) : ""}</div><div class="fb">${v.hasChain ? fbCell : ""}</div><div>${out}</div><div>${sortCell}</div><div>${priceCell}</div><div>${timeout}</div><div class="cs">${served}</div><div class="cp">${phone}</div></div>`;
+  return h`<div class="rw" role="row" tabindex="0" data-row="${id}" aria-selected="${ui.sel === id}"><div class="cf">${dot(flags)}</div><div class="nm cn"><div class="lb"><b class="ell">${row.label}</b>${modesHtml(row)}</div></div><div class="cm">${modelCell}</div><div>${v.hasChain ? effortSelect(state, x, ro) : ""}</div><div class="fb">${v.hasChain ? fbCell : ""}</div><div>${out}</div><div>${sortCell}</div><div>${priceCell}</div><div>${timeout}</div><div class="cs">${served}</div><div class="cp">${phone}</div></div>`;
 }
 const HEAD = h`<div class="gh" role="row"><div></div><div>Job</div><div>Model</div><div>Reasoning</div><div>Fallbacks</div><div class="r2">Max output</div><div>Sort</div><div>Max price in / out $</div><div class="r2">Timeout</div><div>Last served</div></div>`;
 function jobsTable(state, ui, V, now) {
@@ -360,10 +365,153 @@ export function drawerHtml(state, ui, V, now) {
   if (v.showSort) fl.push(h`<div><label>Max price per M tokens</label><div class="two"><input class="inp r" ${ro ? "disabled" : ""} data-df="pi" placeholder="in" value="${v.max_price ? v.max_price.prompt : ""}" aria-label="Max input price per million tokens"><input class="inp r" ${ro ? "disabled" : ""} data-df="po" placeholder="out" value="${v.max_price ? v.max_price.completion : ""}" aria-label="Max output price per million tokens"></div></div>`);
   const limSec = fl.length ? h`<div class="sec"><h4>Limits</h4><div class="fg">${fl}</div>${jv?.limit_note ? h`<p class="note ${jv.limit_note.level}">${jv.limit_note.text}</p>` : ""}</div>` : "";
   const sv = x.ss.sv;
-  const svSec = !sv || (!sv.served_model && !sv.requested) ? "" : h`<div class="sec"><h4>Last served</h4><dl class="kv"><dt>Model</dt><dd>${sv.served_model ? sv.served_model : h`${sv.requested} (requested name, the answer named no model)`}</dd>${sv.served_model && sv.requested && sv.requested !== sv.served_model ? h`<dt>Requested</dt><dd>${sv.requested}</dd>` : ""}${sv.served_provider ? h`<dt>Provider</dt><dd>${sv.served_provider}</dd>` : ""}<dt>When</dt><dd>${agoText(sv.last_at, now)}</dd><dt>Calls</dt><dd>${num(sv.calls)}</dd><dt>Status</dt><dd>${sv.last_status && sv.last_status !== "ok" ? h`<span class="tag bad">${sv.last_status}</span>` : "OK"}</dd></dl></div>`;
+  const svSec = !sv || (!sv.served_model && !sv.requested) ? "" : h`<div class="sec"><h4>Last served</h4><dl class="kv"><dt>Model</dt><dd>${sv.served_model ? sv.served_model : h`${sv.requested} (requested name, the answer named no model)`}</dd>${sv.served_model && sv.requested && sv.requested !== sv.served_model ? h`<dt>Requested</dt><dd>${sv.requested}</dd>` : ""}${sv.served_provider ? h`<dt>Provider</dt><dd>${sv.served_provider}</dd>` : ""}<dt>When</dt><dd>${agoText(sv.last_at, now)}</dd><dt>Calls</dt><dd>${num(sv.calls)}</dd><dt>Status</dt><dd>${sv.last_status && sv.last_status !== "ok" ? h`<span class="tag bad">${sv.last_status}</span>` : h`OK${sv.last_error ? h` <span class="tag bad">${sv.last_error}</span>` : ""}`}</dd></dl></div>`;
   const del = row.kind === "cat" && row.id !== "general" && !ro ? h`<button class="btn sm danger" data-act="catdelete">Delete</button>` : "";
   return h`<div class="dh"><div class="t">${title}<button class="btn sm ghost ico" data-act="close" aria-label="Close">${icon("x")}</button></div><div class="tg">${flags.map((f) => h`<span class="tag ${f.k}">${f.t}</span>`)}</div><p>${row.desc}</p>${seg}</div><div class="db">${modelsSec}${limSec}${svSec}</div><div class="dfoot"><button class="btn sm ico" data-act="prev" aria-label="Previous job" ${pos < 1 ? "disabled" : ""}>${icon("up")}</button><button class="btn sm ico" data-act="next" aria-label="Next job" ${pos < 0 || pos >= ids.length - 1 ? "disabled" : ""}>${icon("down")}</button><span class="grow"></span>${del}<button class="btn sm pri" data-act="close">Done</button></div>`;
 }
+
+
+// ---------------------------------------------------------------- HTML: sandbox
+// The Sandbox view: every job on the left (a select on a phone), a chat in the middle and the editable request at the bottom. The browser keeps the view's data in
+// ui.sb (models-sandbox.js) and redraws only #sb-root when it changes, so typing is never redrawn.
+const ROLE = { request: "Request", system: "System", user: "User", assistant: "Assistant", tool: "Tool", developer: "Developer" };
+const fmt = (n) => Number(n).toLocaleString("en-US");
+export const jsonText = (v) => JSON.stringify(v, null, 2);
+const rowsFor = (n) => Math.max(2, Math.min(14, String(n || "").split("\n").reduce((a, l) => a + Math.max(1, Math.ceil(l.length / 90)), 0)));
+const chip = (name, size, remove) => h`<span class="sb-chip"><span class="ell">${name}</span>${size != null ? h`<span class="mut2">${size < 1024 ? size + " B" : size < 1048576 ? Math.round(size / 1024) + " KB" : (size / 1048576).toFixed(1) + " MB"}</span>` : ""}${remove ? h`<button class="btn sm ghost ico" data-sb-remove="${remove}" aria-label="Remove ${name}">${icon("x")}</button>` : ""}</span>`;
+// A reply that is a JSON object (or a list of objects) is shown as labeled fields. Returns the parsed value, or null when the text is anything else.
+export function parseJsonReply(text) {
+  const t = String(text ?? "").trim();
+  if (t[0] !== "{" && t[0] !== "[") return null;
+  let v;
+  try { v = JSON.parse(t); } catch { return null; }
+  const isObj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+  return isObj(v) || (Array.isArray(v) && v.length && v.every(isObj)) ? v : null;
+}
+export const humanizeKey = (k) => { const s = String(k).replace(/[_\-\s]+/g, " ").trim(); return s ? s[0].toUpperCase() + s.slice(1) : String(k); };
+const scalarText = (x) => (typeof x === "string" ? x : String(x));
+const isBranch = (x) => x !== null && typeof x === "object";
+// depth 0 is the top level, depth 1 is one level inside it, and anything deeper is pretty-printed JSON.
+const fieldsOf = (obj, depth) => h`<dl class="sb-kv${depth ? " in" : ""}">${(Array.isArray(obj) ? obj.map((x, i) => [String(i + 1), x]) : Object.entries(obj)).map(([k, x]) => h`<dt>${humanizeKey(k)}</dt><dd>${!isBranch(x) ? h`<span class="sb-text">${scalarText(x)}</span>` : depth >= 1 ? h`<pre class="sb-pre mono">${jsonText(x)}</pre>` : Object.keys(x).length ? fieldsOf(x, depth + 1) : h`<span class="mut">${Array.isArray(x) ? "Empty list" : "Empty"}</span>`}</dd>`)}</dl>`;
+export const jsonFieldsHtml = (v) => (Array.isArray(v) ? h`${v.map((o) => fieldsOf(o, 0))}` : fieldsOf(v, 0));
+function viewHtml(v, i, open) {
+  if (!v) return "";
+  const parsed = v.type === "chat" ? parseJsonReply(v.text) : null;
+  if (parsed) return h`<div class="sb-fields">${jsonFieldsHtml(parsed)}</div><div class="sb-rawrow"><button class="btn sm ghost" data-sb-json="${i}">${open ? "Hide JSON" : "Show JSON"}</button></div>${open ? h`<pre class="sb-pre mono">${jsonText(parsed)}</pre>` : ""}${v.tool_calls && v.tool_calls.length ? h`<div class="sb-role">Tool calls, not run</div><pre class="sb-pre mono">${jsonText(v.tool_calls)}</pre>` : ""}`;
+  if (v.type === "chat") return h`<div class="sb-text">${v.text || ""}</div>${v.tool_calls && v.tool_calls.length ? h`<div class="sb-role">Tool calls, not run</div><pre class="sb-pre mono">${jsonText(v.tool_calls)}</pre>` : ""}`;
+  if (v.type === "transcript") return h`<div class="sb-text">${v.text}</div>`;
+  if (v.type === "embedding") return h`<div class="sb-text">Vector of ${fmt(v.size)} numbers. First 8: ${v.first.join(", ")}</div>`;
+  if (v.type === "ranking") return v.order ? h`<ol class="sb-ol">${v.order.map((r) => h`<li><span class="mono">${r.id}</span> <span class="mut">${r.score}</span></li>`)}</ol>` : h`<pre class="sb-pre mono">${jsonText(v.answers)}</pre>`;
+  if (v.type === "search") return h`<ol class="sb-ol">${v.results.map((r) => h`<li><b>${r.title}</b><div class="mono mut ell">${r.url}</div><div>${r.snippet}</div></li>`)}</ol>`;
+  if (v.type === "look") return h`<div class="sb-text">${v.answer == null ? "" : typeof v.answer === "string" ? v.answer : jsonText(v.answer)}</div>${v.points ? h`<pre class="sb-pre mono">${jsonText(v.points)}</pre>` : ""}`;
+  if (v.type === "answers") return h`<pre class="sb-pre mono">${jsonText(v.answers)}</pre>`;
+  return h`<pre class="sb-pre mono">${jsonText(v.json)}</pre>`;
+}
+// The reasoning level a send actually carried, read from the recorded outgoing request: reasoning.effort, "none" when reasoning is switched off, or null when it has no reasoning field.
+export function sentEffort(raw) {
+  const reqs = (raw && Array.isArray(raw.requests) ? raw.requests : []).filter((q) => q && ((q.body && typeof q.body === "object") || (q.input && typeof q.input === "object")));
+  const b = reqs.length ? reqs[reqs.length - 1].body || reqs[reqs.length - 1].input : null, rs = b && b.reasoning;
+  if (!rs || typeof rs !== "object") return null;
+  if (typeof rs.effort === "string" && rs.effort) return rs.effort;
+  return rs.enabled === false ? "none" : null;
+}
+// The level a Sandbox send starts on: the job's saved level when the model supports it, otherwise the model's default level.
+export const startEffort = (saved, efforts, def) => (efforts.includes(saved) ? saved : efforts.includes(def) ? def : efforts[0] ?? null);
+// What the Sandbox header shows for reasoning: { saved, efforts, value } or null when the job has no reasoning level. saved is the job's own first model and level.
+export function sandboxEffort(state, sb, id) {
+  const cat = id.startsWith("chat:"), jv = cat ? null : state.jobs.find((j) => j.id === id);
+  if (!cat && !(jv && jv.has_effort)) return null;
+  const c = cat ? state.config.routing.categories.find((x) => x.id === id.slice(5)) : null;
+  const saved = cat ? (c && (c.chains.unrestricted || Object.values(c.chains)[0] || [])[0]) : state.config.jobs[id];
+  if (!saved) return null;
+  const m = sb.model, efforts = m ? (m.efforts || effortsOf(state, m.id)) : effortsOf(state, saved.model);
+  const value = sb.effort !== undefined ? sb.effort : m ? startEffort(saved.effort, efforts, m.def) : saved.effort ?? null;
+  return { saved: { model: saved.model, effort: saved.effort ?? null }, efforts, value };
+}
+// Compare slots: slot 0 is the Sandbox state itself (model, effort, history, turns) and ui.sb.extra holds up to two more slots with the same fields.
+export const SLOTS_MAX = 3;
+export const slotsOf = (sb) => [sb, ...((sb && sb.extra) || [])];
+export const newSlot = () => ({ model: null, effort: undefined, history: [], turns: [] });
+// The model a slot sends to, as shown in its column header: the picked model, else the job's own.
+export const slotModelName = (state, cur, slot) => { const m = slot.model || (cur && cur.model ? { id: cur.model } : null); return m ? m.name || nameOf(state, m.id) : ""; };
+function turnHtml(t, i, gold) {
+  if (t.role === "reply") {
+    const r = t.reply, open = !!t.raw;
+    if (!r.ok) return h`<div class="sb-msg a"><div class="sb-err">${r.error}</div>${(r.errors || []).map((e) => h`<div class="mono mut">${e}</div>`)}${rawBtn(i, open, r)}</div>`;
+    const sent = sentEffort(r.raw_request);
+    const bits = [r.tokens_in != null ? fmt(r.tokens_in) + " in" : "", r.tokens_out != null ? fmt(r.tokens_out) + " out" + (r.tokens_reasoning > 0 ? ` (${fmt(r.tokens_reasoning)} reasoning)` : "") : "", sent ? "reasoning " + effortName(sent).toLowerCase() : "", r.cost != null ? "$" + Number(r.cost).toFixed(r.cost < 0.01 ? 5 : 4) : "", r.ms != null ? (r.ms / 1000).toFixed(1) + " s" : ""].filter(Boolean);
+    return h`<div class="sb-msg a"><div class="sb-meta"><b class="ell">${r.served || r.requested || ""}</b>${bits.map((b) => h`<span>${b}</span>`)}</div>${viewHtml(r.view, i, !!t.json)}${goldResultHtml(gold, r.view)}${rawBtn(i, open, r)}</div>`;
+  }
+  return h`<div class="sb-msg u"><div class="sb-role">${ROLE[t.role] || t.role}</div>${t.text ? h`<div class="sb-text">${t.text}</div>` : ""}${(t.files || []).map((f) => chip(f.name, f.size))}</div>`;
+}
+const rawBtn = (i, open, r) => h`<div class="sb-rawrow"><button class="btn sm ghost" data-sb-raw="${i}">${open ? "Hide raw request" : "Show raw request"}</button></div>${open ? h`<pre class="sb-pre mono">${jsonText(r.raw_request)}</pre>` : ""}`;
+
+// ---- golden answers (sandbox-golden.js): the panel of expected values and the score under each reply ----
+export const goldOf = (sb) => (sb && sb.gold && sb.gold.edit) || null;
+export const goldDirty = (g) => !!g && JSON.stringify(g.edit) !== JSON.stringify(g.data.golden);
+const diffText = (d) => (d.op === "sub" ? `changed "${d.expected}" to "${d.got}"` : d.op === "del" ? `left out "${d.expected}"` : `added "${d.got}"`);
+function goldResultHtml(gold, view) {
+  const c = gold ? compareGolden(gold, view) : null;
+  if (!c) return "";
+  const rows = c.type === "text"
+    ? (c.diffs || []).slice(0, 20).map((d) => h`<li class="miss"><span class="sb-gm">Differs</span> ${diffText(d)}</li>`)
+    : c.rows.map((x) => h`<li class="${x.ok ? "ok" : "miss"}"><span class="sb-gm">${x.ok ? "Matched" : "Missed"}</span> ${x.ok ? x.label : h`${x.label}${c.type === "items" ? "" : h`, expected <b>${x.expected}</b>, got <b>${x.got || "nothing"}</b>`}`}</li>`);
+  const extras = (c.extras || []).map((x) => h`<li class="extra"><span class="sb-gm">Extra</span> ${x}</li>`);
+  return h`<div class="sb-gres ${c.pass ? "ok" : "miss"}"><div class="sb-gline">${scoreLine(c)}</div>${rows.length || extras.length ? h`<ul class="sb-gl">${rows}${extras}</ul>` : ""}</div>`;
+}
+const inp = (attrs, v, label) => h`<input class="cell sb-gi" ${raw(attrs)} value="${v ?? ""}" aria-label="${label}" autocomplete="off">`;
+export function goldPanelHtml(sb) {
+  const g = sb && sb.gold; if (!g || !g.open || !g.edit) return "";
+  const e = g.edit, dirty = goldDirty(g);
+  let body = "";
+  if (e.type === "choices") {
+    const ids = Object.keys(e.value || {});
+    body = h`<div class="sb-gtab">${ids.map((id) => { const v = e.value[id], opts = Array.isArray(e.options) ? e.options : null;
+      return h`<label class="sb-gr"><span class="mono ell">${id}</span>${opts ? h`<select class="sel sb-gi" data-g="c" data-k="${id}" aria-label="Expected answer for ${id}"><option value="" ${v ? "" : "selected"}></option>${(opts.includes(v) || !v ? opts : [v, ...opts]).map((o) => h`<option value="${o}" ${o === v ? "selected" : ""}>${o}</option>`)}</select>` : inp(`data-g="c" data-k="${esc(id)}"`, v, "Expected answer for " + id)}</label>`; })}</div>`;
+  } else if (e.type === "items") {
+    const cols = e.match || [];
+    body = h`<div class="sb-gtab"><div class="sb-grow head">${cols.map((f) => h`<span>${humanizeKey(f)}</span>`)}<span></span></div>${(e.value || []).map((row, r) => h`<div class="sb-grow">${cols.map((f) => inp(`data-g="i" data-r="${r}" data-f="${esc(f)}"`, row[f], humanizeKey(f) + " of expected item " + (r + 1)))}<button class="btn sm ghost ico" data-sb-gact="rmrow" data-r="${r}" aria-label="Remove expected item ${r + 1}">${icon("x")}</button></div>`)}<div><button class="btn sm" data-sb-gact="addrow">${icon("plus")}Add item</button></div><label class="sb-gx"><input type="checkbox" data-g="x" ${e.extras_fail === false ? "" : "checked"}><span>Extra items fail</span></label></div>`;
+  } else if (e.type === "text") {
+    body = h`<textarea class="sb-ta" data-g="t" rows="${rowsFor(e.value)}" aria-label="Expected text">${e.value || ""}</textarea><label class="sb-gr sb-gwer"><span>Pass up to this word error rate, percent</span><input class="cell sb-gi" data-g="w" type="number" min="0" max="100" step="1" value="${Math.round((e.max_wer ?? 0.1) * 1000) / 10}" aria-label="Pass level in percent"></label>`;
+  } else {
+    body = h`<div class="sb-gtab">${(e.value || []).map((p, i) => h`<div class="sb-grow one">${inp(`data-g="p" data-i="${i}"`, p, "Expected phrase " + (i + 1))}<button class="btn sm ghost ico" data-sb-gact="rmrow" data-r="${i}" aria-label="Remove phrase ${i + 1}">${icon("x")}</button></div>`)}<div><button class="btn sm" data-sb-gact="addrow">${icon("plus")}Add phrase</button></div></div>`;
+  }
+  return h`<div class="sb-gold" data-sb-gold>${body}<div class="sb-act"><span class="sp"></span><button class="btn sm" data-sb-gact="reset" ${g.data.saved || dirty ? "" : "disabled"}>Reset</button><button class="btn sm pri" data-sb-gact="save" ${dirty && !g.busy ? "" : "disabled"}>Save</button></div></div>`;
+}
+function inputHtml(sb) {
+  const d = sb.draft, files = sb.files || {};
+  const chipOf = (n, rm) => chip(n, files[n] ? files[n].size : null, rm);
+  let blocks;
+  if (d.shape === "chat") {
+    blocks = d.blocks.map((b, bi) => h`<div class="sb-blk"><div class="sb-role">${ROLE[b.role] || b.role}</div>${b.parts.map((p, pi) => p.t === "text" ? h`<textarea class="sb-ta" data-sb-text data-b="${bi}" data-p="${pi}" rows="${rowsFor(p.text)}" aria-label="${ROLE[b.role] || b.role} message">${p.text}</textarea>` : h`<div class="sb-chips">${p.files.map((n) => chipOf(n, bi + "." + pi))}</div>`)}</div>`);
+  } else {
+    blocks = h`<div class="sb-blk"><div class="sb-role">Request</div><div class="sb-chips">${[...new Set([...String(d.json).matchAll(/"\$file"\s*:\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => JSON.parse('"' + m[1] + '"')))].map((n) => chipOf(n, n))}</div><textarea class="sb-ta mono" data-sb-json rows="${rowsFor(d.json)}" aria-label="Request JSON">${d.json}</textarea></div>`;
+  }
+  return h`${blocks}<div class="sb-act"><button class="btn sm ico" data-sb-act="attach" aria-label="Add a file" title="Add a file">${icon("clip")}</button><input type="file" data-sb-file multiple hidden><span class="sp"></span><button class="btn pri" data-sb-act="send" ${sb.busy ? "disabled" : ""}>${sb.busy ? "Sending" : "Send"}</button></div>`;
+}
+// The chat area alone (one column, or one per compared model). The browser redraws just this when a golden is edited, so the score under each reply follows the fields.
+export function sandboxChat(state, sb) {
+  sb = sb || {};
+  const cur = (sb.jobs || []).find((j) => j.id === sb.job) || null, slots = slotsOf(sb), gold = goldOf(sb);
+  return slots.length > 1 ? h`<div class="sb-chat sb-cols c${slots.length}" data-sb-chat>${slots.map((sl, k) => h`<div class="sb-col"><div class="sb-colh ell">${slotModelName(state, cur, sl)}</div>${(sl.turns || []).map((t, i) => turnHtml(t, k + "." + i, gold))}</div>`)}</div>`
+    : h`<div class="sb-chat" data-sb-chat>${(sb.turns || []).map((t, i) => turnHtml(t, "0." + i, gold))}</div>`;
+}
+export function sandboxInner(state, sb) {
+  sb = sb || {};
+  const jobs = sb.jobs || [], cur = jobs.find((j) => j.id === sb.job) || null, groups = groupsOf(state).filter((g) => jobs.some((j) => j.group === g.id));
+  const list = groups.map((g) => h`<div class="sb-g">${g.title}</div>${jobs.filter((j) => j.group === g.id).map((j) => h`<button class="sb-j" data-sb-job="${j.id}" aria-current="${j.id === sb.job}"><span class="ell">${j.label}</span></button>`)}`);
+  const select = h`<select class="sel sb-pick" data-sb-select aria-label="Job"><option value="" ${cur ? "" : "selected"}>Choose a job</option>${groups.map((g) => h`<optgroup label="${g.title}">${jobs.filter((j) => j.group === g.id).map((j) => h`<option value="${j.id}" ${j.id === sb.job ? "selected" : ""}>${j.label}</option>`)}</optgroup>`)}</select>`;
+  const slots = slotsOf(sb), multi = slots.length > 1;
+  const slotBar = (sl, k) => {
+    const m = sl.model || (cur.model ? { id: cur.model } : null), ef = sandboxEffort(state, sl, cur.id), efOpts = ef ? (ef.efforts.includes(ef.value) || !ef.value ? ef.efforts : [ef.value, ...ef.efforts]) : [], sfx = multi ? ` ${k + 1}` : "";
+    const efSel = ef && efOpts.length ? h`<select class="cell sb-eff" data-sb-effort data-slot="${k}" aria-label="${multi ? "Reasoning for model" + sfx : "Reasoning for this send"}">${efOpts.map((e) => h`<option value="${e}" ${e === ef.value ? "selected" : ""}>${effortName(e)}</option>`)}</select>` : "";
+    return h`<span class="sb-slot">${efSel}${m ? h`<button class="btn sm" data-sb-act="model" data-slot="${k}" aria-label="${multi ? "Model" + sfx : "Model for this send"}"><span class="ell">${m.name || nameOf(state, m.id)}</span>${badge(srcOf(state, m.id, m.source))}</button>` : ""}${sl.model || sl.effort !== undefined ? h`<button class="btn sm ghost ico" data-sb-act="modelreset" data-slot="${k}" aria-label="Use the saved model" title="Use the saved model">${icon("undo")}</button>` : ""}${k ? h`<button class="btn sm ghost ico" data-sb-act="rmslot" data-slot="${k}" aria-label="Remove model ${k + 1}" title="Remove model ${k + 1}">${icon("x")}</button>` : ""}</span>`;
+  };
+  const bar = cur ? h`<b class="ell">${cur.label}</b><span class="sp"></span>${slots.map(slotBar)}${slots.length < SLOTS_MAX ? h`<button class="btn sm ico" data-sb-act="addslot" aria-label="Add a model to compare" title="Add a model to compare">${icon("plus")}</button>` : ""}` : "";
+  const goldBtn = cur && sb.gold && sb.gold.edit ? h`<button class="btn sm" data-sb-gact="toggle" aria-expanded="${!!sb.gold.open}">Golden answers</button>` : "";
+  return h`<aside class="sb-list" aria-label="Jobs">${list}</aside><div class="sb-main">${select}<div class="sb-bar">${bar}${goldBtn}</div>${goldPanelHtml(sb)}${sandboxChat(state, sb)}<div class="sb-in">${cur && sb.draft ? inputHtml(sb) : ""}</div></div>`;
+}
+export const sandboxHtml = (state, ui) => h`<div class="vh"><h1>Sandbox</h1></div><div class="sb" id="sb-root">${sandboxInner(state, ui.sb)}</div>`;
 
 // ---------------------------------------------------------------- HTML: the page
 export function pageHtml(state, ui, now) {
@@ -371,12 +519,12 @@ export function pageHtml(state, ui, now) {
   const counts = {}; for (const r of V.rows) counts[r.group] = (counts[r.group] || 0) + 1;
   const att = attention(V).length;
   const navb = (v, label, count, cls) => h`<button data-view="${v}" aria-current="${ui.view === v}">${label}${count != null ? h`<span class="c ${cls || ""}">${count}</span>` : ""}</button>`;
-  const jobsMode = !["limits", "readonly"].includes(ui.view);
+  const jobsMode = !["limits", "readonly", "sandbox"].includes(ui.view);
   const titleOf = () => (ui.view === "all" ? "All jobs" : ui.view === "attention" ? "Needs attention" : groupsOf(state).find((g) => g.id === ui.view)?.title || "");
-  const body = jobsMode ? h`<div class="vh"><h1>${titleOf()}</h1><span class="mut">${visibleInfo(state, ui, V).length} jobs</span></div>${jobsTable(state, ui, V, now)}` : ui.view === "limits" ? limitsView(state, ui, V) : readonlyView(state);
+  const body = jobsMode ? h`<div class="vh"><h1>${titleOf()}</h1><span class="mut">${visibleInfo(state, ui, V).length} jobs</span></div>${jobsTable(state, ui, V, now)}` : ui.view === "sandbox" ? sandboxHtml(state, ui) : ui.view === "limits" ? limitsView(state, ui, V) : readonlyView(state);
   const stale = state.stale ? h`<div class="stale" role="alert">The saved settings could not be read just now, so this page is showing the last copy that was read.</div>` : "";
   return h`<div class="shell"><aside class="side"><a class="brand" href="/"><i></i>1Helm</a>
-<div class="nav"><h6>Models</h6>${navb("all", "All jobs", V.rows.length)}${navb("attention", "Needs attention", att, att ? "hot" : "")}</div>
+<div class="nav"><h6>Models</h6>${navb("all", "All jobs", V.rows.length)}${navb("attention", "Needs attention", att, att ? "hot" : "")}${navb("sandbox", "Sandbox")}</div>
 <div class="nav"><h6>Groups</h6>${groupsOf(state).map((g) => navb(g.id, g.title, counts[g.id] || 0))}</div>
 <div class="nav"><h6>Settings</h6>${navb("limits", "Limits")}${navb("readonly", "Read only")}</div></aside>
 <div class="main">${stale}<div class="top"><div class="sr"><span class="ico">${icon("search")}</span><input class="inp" data-k="q" data-q placeholder="Search jobs and models" value="${ui.q}" aria-label="Search" autocomplete="off"><span class="kbd">/</span></div><span class="sp"></span><button class="btn" data-act="hist">${icon("clock")}History</button></div>${body}</div></div>

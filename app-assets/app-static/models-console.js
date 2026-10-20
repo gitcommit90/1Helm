@@ -1,6 +1,7 @@
 // The /models console in the browser: state, events, saving, history and the model picker.
 // The HTML comes from models-console-core.js (the Worker renders the first page with the same code). Every save goes through POST /models/api/save.
 import * as C from "./models-console-core.js";
+import { initSandbox } from "./models-sandbox.js";
 
 const $ = (s, r) => (r || document).querySelector(s), $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 let state = JSON.parse($("#model-state").textContent);
@@ -14,6 +15,7 @@ function render() {
   const a = document.activeElement, key = keyOf(a), sel = key && a.setSelectionRange && a.type !== "number" ? [a.selectionStart, a.selectionEnd] : null;
   const tbl = $(".tbl"), db = $(".db"), sx = window.scrollX, sy = window.scrollY, tl = tbl ? tbl.scrollLeft : 0, rowFocus = a && a.dataset && a.dataset.row;
   app.innerHTML = C.pageHtml(state, ui, Date.now()).toString();
+  if (ui.view === "sandbox") SB.enter();
   if (tl && $(".tbl")) $(".tbl").scrollLeft = tl;
   if (db && $(".db")) $(".db").scrollTop = db.scrollTop;
   window.scrollTo(sx, sy);
@@ -23,6 +25,7 @@ function render() {
 let toastTimer = null;
 function toast(text) { toastEl.textContent = text; toastEl.className = text ? "on" : ""; clearTimeout(toastTimer); if (text) toastTimer = setTimeout(() => toast(""), 7000); }
 const V = () => C.view(state, ui);
+const SB = initSandbox({ app, getState: () => state, ui, api: (...a) => api(...a), toast, openPicker: (...a) => openPicker(...a) });
 
 // ------------------------------------------------------------ talking to the server
 async function api(method, path, body) {
@@ -172,11 +175,12 @@ function openPicker(tg, title) {
   };
   const pick = (m) => {
     back.close();
+    if (tg.onPick) { const prev0 = state.config.catalog[current] || null, meta0 = { ...(state.config.catalog[m.id] || {}), ...m }; tg.onPick({ meta: meta0, entry: C.newEntry(state, tg.row.jv, meta0, prev0 ? { effort: null } : null, tg.row.kind === "cat" ? tg.level : null) }); return; }
     const prev = tg.row.kind === "cat" ? tg.row.cat.chains[tg.level][tg.idx] : [state.config.jobs[tg.row.id], ...(state.config.jobs[tg.row.id].fallbacks || [])][tg.idx];
     const meta = { ...(state.config.catalog[m.id] || {}), ...m };
     commit([{ t: "entry", ...(tg.row.kind === "cat" ? { cat: tg.row.id } : { id: tg.row.id }), level: tg.level, idx: tg.idx, entry: C.newEntry(state, tg.row.jv, meta, prev, tg.row.kind === "cat" ? tg.level : null) }]);
   };
-  const pickCustom = (id) => { back.close(); const meta = { id, efforts: [], eligible: true, chat: true }; commit([{ t: "entry", ...(tg.row.kind === "cat" ? { cat: tg.row.id } : { id: tg.row.id }), level: tg.level, idx: tg.idx, entry: C.newEntry(state, tg.row.jv, meta, null, tg.row.kind === "cat" ? tg.level : null) }]); };
+  const pickCustom = (id) => { back.close(); if (tg.onPick) { const meta0 = { id, efforts: [], eligible: true, chat: true }; tg.onPick({ meta: meta0, entry: C.newEntry(state, tg.row.jv, meta0, null, tg.row.kind === "cat" ? tg.level : null) }); return; } const meta = { id, efforts: [], eligible: true, chat: true }; commit([{ t: "entry", ...(tg.row.kind === "cat" ? { cat: tg.row.id } : { id: tg.row.id }), level: tg.level, idx: tg.idx, entry: C.newEntry(state, tg.row.jv, meta, null, tg.row.kind === "cat" ? tg.level : null) }]); };
   qi.addEventListener("input", () => { q = qi.value; sel = 0; draw(); clearTimeout(timer); timer = setTimeout(load, 220); });
   $("[data-src]", back).addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; src = b.dataset.v; $$("[data-src] button", back).forEach((x) => x.setAttribute("aria-pressed", String(x === b))); sel = 0; draw(); });
   ul.addEventListener("click", (e) => { const li = e.target.closest(".pk-item"); if (!li) return; if (li.dataset.custom) pickCustom(li.dataset.custom); else { const m = list[+li.dataset.i]; if (m && m.allowed) pick(m); } });

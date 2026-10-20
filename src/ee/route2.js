@@ -18,7 +18,7 @@ import { dynamicRoutingOn, routingCategories, routingCategory, routingChain, gen
 import { dispatch } from "./model-dispatch.js";
 import { askDecider, usesSystemone } from "./text-decision.js";
 import { modelSettingsEnv } from "./model-settings.js";
-import { settingsOf, jobSetting, entriesOf, allowedEntries, configuredHosts, choreRouteOf, jobRoute, factsOf, jobTimeoutMs } from "./model-jobs.js";
+import { settingsOf, jobSetting, entriesOf, allowedEntries, configuredHosts, choreRouteOf, jobRoute, factsOf, jobTimeoutMs, quirkOf } from "./model-jobs.js";
 import { privacyOf, normalizePrivacy, eligibleHosts, ineligibleWhy } from "../privacy.js";
 import { CATEGORIES, CATEGORY_LABEL, DEFAULT_CATEGORY, MAX_MODELS, normalizeCategory, guessCategory } from "./pool.js";
 
@@ -83,7 +83,7 @@ export function markServed(route, model, fellBack = false, settings = null) {
   route.served = model; route.floor = `${k} ${route.category || DEFAULT_CATEGORY}·${route.level || "zdr"} ${why}`; route.label = `${k}/${route.category || DEFAULT_CATEGORY} ${why}`;
   if (quirkOfModel(settings, model, "reasoning_replay")) route.replayReasoning = true; else delete route.replayReasoning;
 }
-const quirkOfModel = (settings, model, name) => !!factsOf(settings, model)?.quirks?.[name];
+const quirkOfModel = (settings, model, name) => quirkOf(settings, model, name);
 
 export function verdict(p) {
   if (typeof p !== "number" || !Number.isFinite(p) || p < 0 || p > 1) return "unsure";
@@ -261,7 +261,7 @@ export function dispatchOrder(route, level, { prov = null, body = null, settings
     const m = e.model;
     if (attempts.some((a) => a.model === m) || skipped.some((s) => s.model === m)) continue;
     const meta = settings?.catalog?.[m];
-    if (forced && meta?.quirks?.auto_tool_choice_only) { skipped.push({ model: m, why: "forced tool choice (this model accepts only auto)" }); continue; }
+    if (forced && quirkOf(settings, m, "auto_tool_choice_only")) { skipped.push({ model: m, why: "forced tool choice (this model accepts only auto)" }); continue; }
     const choice = typeof body?.tool_choice === "object" ? "function" : body?.tool_choice;
     if (meta?.tool_choice && choice && !meta.tool_choice.includes(choice)) { skipped.push({ model: m, why: "unsupported tool choice" }); continue; }
     const images = body?.messages?.some((msg) => Array.isArray(msg.content) && msg.content.some((part) => part.type === "image_url"));

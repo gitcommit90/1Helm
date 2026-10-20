@@ -81,7 +81,7 @@ const chat = async (env, route, kind, body = { messages: [{ role: "user", conten
 // A probe returns the model the real code used for that job, given the saved settings.
 const probes = {};
 probes.decider = async (S) => { const env = envFor(S); wire = []; await jevAsk(env, { latest_message: "hi" }, {}); return [deciderModel(env), lastWire("/systemone").model]; };
-for (const id of ["handoff", "label", "browser", "notes", "notes_refine", "notes_final", "sidecar_card", "ambient_extract", "ambient_review"])
+for (const id of ["handoff", "label", "chat_title", "browser", "notes", "notes_refine", "notes_final", "sidecar_card", "ambient_extract", "ambient_review"])
   probes[id] = async (S) => {
     const route = choreRouteOf(S, id), out = [route.model];
     if (id === "browser") out.push((await browserPlan(envFor(S)))[0].model);

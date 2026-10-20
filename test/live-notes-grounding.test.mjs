@@ -38,7 +38,7 @@ for (const f of cases) {
     model: async (kind, messages, cap) => {
       calls.push({ kind, messages, cap });
       // Deliberately supplied correct fixture output: tests transport/render/state, not intelligence.
-      return { finish: "stop", nano: 123, tokens: 77, text: JSON.stringify({ attendees: [f.speaker, f.other], summary: [`${f.speaker}'s ${f.relation} ${f.relative} lives in ${f.place}.`, f.goodStatus], decisions: [], actions: [{ text: "Prepare the checklist", owner: f.other, due: "" }], questions: [], notes: ["No deadline agreed for the checklist."] }) };
+      return { finish: "stop", nano: 123, tokens: 77, text: JSON.stringify({ attendees: [f.speaker, f.other], topics: [], summary: [`${f.speaker}'s ${f.relation} ${f.relative} lives in ${f.place}.`, f.goodStatus], decisions: [], actions: [{ text: "Prepare the checklist", owner: f.other, due: "" }], questions: [], notes: ["No deadline agreed for the checklist."] }) };
     },
   });
   await ln.refineStep();

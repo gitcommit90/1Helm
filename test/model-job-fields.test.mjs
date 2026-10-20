@@ -15,7 +15,7 @@ const rejects = (cfg, re) => assert.throws(() => validateModelSettings(cfg), re)
 const withJob = (id, patch) => { const s = clone(SEED); Object.assign(s.jobs[id], patch); return s; };
 
 // The memory jobs start with the output limits the Hindsight server itself asked for (retain 64000, the others 16000), because the Worker now sends those calls and ignores the server's own limit.
-const MEMORY_MAX = { hs_retain: 64000, hs_consolidation: 16000, hs_reflect: 16000, hs_refresh: 16000 };
+const MEMORY_MAX = { hs_retain: 64000, hs_consolidation: 16000, hs_reflect: 16000, hs_refresh: 16000, notes: 6000, notes_final: 24000, notes_refine: 24000 };
 await test("every job starts with an empty max output, so no limit is sent (Captain 2026-10-17), except the memory jobs that start with the memory server's own limits", () => {
   for (const id of JOB_IDS) assert.equal(jobMaxOutput(SEED, id), MEMORY_MAX[id] ?? null, id);
   for (const id of JOB_IDS) { assert.equal(jobSort(SEED, id), id === "vision_files" ? "throughput" : null, id); assert.equal(jobMaxPrice(SEED, id), null, id); }

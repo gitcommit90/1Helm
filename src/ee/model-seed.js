@@ -37,17 +37,18 @@ export const SEARCH_LINKUP = "cloudflare/linkup";
 const SORTS = { vision_files: "throughput" };
 // The memory jobs start with the output limits the Hindsight server itself asked for (retain 64000 by its own default, consolidation, reflect and refresh 16000 by its
 // settings), because the Worker now sends the call and ignores the server's own limit. A saved empty value sends no limit.
-const MAX_OUTPUT = { hs_retain: 64000, hs_consolidation: 16000, hs_reflect: 16000, hs_refresh: 16000 };
+const MAX_OUTPUT = { hs_retain: 64000, hs_consolidation: 16000, hs_reflect: 16000, hs_refresh: 16000, notes: 6000, notes_final: 24000, notes_refine: 24000 };
 export const jobFieldDefaults = (id) => ({ max_output: MAX_OUTPUT[id] ?? null, sort: SORTS[id] ?? null, max_price: null, results: id === "web_search" ? 5 : null, timeout_ms: jobTimeoutDefault(id) });
 export const JOB_FIELDS = ["max_output", "sort", "max_price", "results", "timeout_ms"];
 // Jobs a later release added that an older saved version doesn't carry. They are filled in with this value
 // when read or checked, and nothing is written for it.
-export const OPTIONAL_JOB_IDS = ["look", "web_search", "browser_decider", "hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank"];
+export const OPTIONAL_JOB_IDS = ["look", "web_search", "browser_decider", "chat_title", "hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank"];
 const OPTIONAL_MODEL = { look: MOONDREAM, web_search: SEARCH_LINKUP, hs_retain: HS_RETAIN, hs_consolidation: HS_FLASH, hs_reflect: HS_FLASH, hs_refresh: HS_FLASH, hs_rerank: HS_RERANK };
 // The reasoning level each memory job started with (the server's own setting).
 const OPTIONAL_EFFORT = { hs_retain: "low", hs_consolidation: "none", hs_reflect: "low", hs_refresh: "low" };
 // browser_decider starts as a copy of the request sorter job (model, reasoning level and fallbacks), so `jobs` (the settings' jobs) says which; it adds no model facts.
-export const optionalJobDefault = (id, jobs = null) => id === "browser_decider" ? { job: (({ model, effort, strict, fallbacks }) => clone({ model, effort: effort ?? null, ...(strict ? { strict } : {}), fallbacks: fallbacks || [] }))(jobs?.decider || { model: PPLX_DECIDER, fallbacks: [] }), facts: null } : OPTIONAL_MODEL[id] ? { job: { model: OPTIONAL_MODEL[id], effort: OPTIONAL_EFFORT[id] ?? null, fallbacks: [] }, facts: { id: OPTIONAL_MODEL[id], ...clone(SEED_FACTS[OPTIONAL_MODEL[id]]) } } : null;
+// chat_title starts as a copy of the task summaries job (label): model, reasoning level and fallbacks.
+export const optionalJobDefault = (id, jobs = null) => id === "chat_title" ? { job: (({ model, effort, strict, fallbacks }) => clone({ model, effort: effort ?? null, ...(strict ? { strict } : {}), fallbacks: fallbacks || [] }))(jobs?.label || inEffectChore("label")), facts: null } : id === "browser_decider" ? { job: (({ model, effort, strict, fallbacks }) => clone({ model, effort: effort ?? null, ...(strict ? { strict } : {}), fallbacks: fallbacks || [] }))(jobs?.decider || { model: PPLX_DECIDER, fallbacks: [] }), facts: null } : OPTIONAL_MODEL[id] ? { job: { model: OPTIONAL_MODEL[id], effort: OPTIONAL_EFFORT[id] ?? null, fallbacks: [] }, facts: { id: OPTIONAL_MODEL[id], ...clone(SEED_FACTS[OPTIONAL_MODEL[id]]) } } : null;
 
 // The third zero-data-retention model of a General list, used only when an older saved version (without categories) is converted to routing categories.
 export const ROUTING_ZDR_THIRD_MODEL = DEEPSEEK;
@@ -211,6 +212,7 @@ export function seedFromLegacy(env = {}, legacy = null) {
   for (const role of LEGACY_CHORES) jobs[role] = savedChore(legacy, role) || inEffectChore(role);
   Object.assign(jobs, otherJobs());
   jobs.browser_decider = optionalJobDefault("browser_decider", jobs).job;
+  jobs.chat_title = optionalJobDefault("chat_title", jobs).job;
   // The chat list becomes the General category (its models are in the catalog because the list is a job while the catalog is made), then the job goes.
   return withRoutingConfig(finish(jobs, legacy?.catalog || {}), { zdrThirdModel: ROUTING_ZDR_THIRD_MODEL });
 }

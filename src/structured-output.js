@@ -83,9 +83,11 @@ export function workersStructuredResponse(r) {
   const content = r?.response ?? r?.result?.response;
   return { ...r, choices: [{ finish_reason: r?.truncated || r?.error ? "length" : r?.finish_reason || "stop", message: { content: typeof content === "string" ? content : JSON.stringify(content), refusal: r?.refusal } }] };
 }
+// The body structuredChat sends for a request: stream off and the strict JSON format of the schema.
+export const structuredBody = (request, name, schema) => ({ ...request, stream: false, response_format: structuredFormat(name, schema) });
 export async function structuredChat(call, request, { name, schema, maxAttempts = 2, onUsage } = {}) {
   const usage = {}; let attempts = 0;
-  const body = { ...request, stream: false, response_format: structuredFormat(name, schema) };
+  const body = structuredBody(request, name, schema);
   while (attempts < Math.max(1, Math.min(3, maxAttempts))) {
     attempts++;
     try {

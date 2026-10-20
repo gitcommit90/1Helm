@@ -412,11 +412,15 @@ export async function moondreamRun(env, meta, body) {
 export const pointsToPixels = (points, { width, height }) => (Array.isArray(points) ? points : []).map((p) => [Number(p?.x), Number(p?.y)]).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y)).slice(0, 10).map(([x, y]) => [Math.round(x * width), Math.round(y * height)]);
 // The browser's look: caption always; query when there is a question; point when there is a find. Parts run side by side and fail alone.
 // → { description, answer, points, failed: [part names], nano }
+// The Moondream bodies of one look at a picture (image is its data URL): the caption always, the query when there is a question, the point when there is a find.
+export function lookBodies(image, { question, find } = {}) {
+  return { description: { task: "caption", image, caption_length: "normal" },
+    ...(question ? { answer: { task: "query", image, question, reasoning: false, temperature: 0 } } : {}),
+    ...(find ? { points: { task: "point", image, target: find } } : {}) };
+}
 export async function lookMoondream(env, meta, image, { question, find, width, height }) {
   const url = `data:${image.mime};base64,${b64(image.data)}`, m = { ...meta, kind: "browser-look" };
-  const calls = { description: () => moondreamRun(env, m, { task: "caption", image: url, caption_length: "normal" }) };
-  if (question) calls.answer = () => moondreamRun(env, m, { task: "query", image: url, question, reasoning: false, temperature: 0 });
-  if (find) calls.points = () => moondreamRun(env, m, { task: "point", image: url, target: find });
+  const bodies = lookBodies(url, { question, find }), calls = Object.fromEntries(Object.entries(bodies).map(([k, body]) => [k, () => moondreamRun(env, m, body)]));
   const names = Object.keys(calls), rs = await Promise.allSettled(names.map((k) => calls[k]()));
   const res = { description: "", answer: "", points: null, failed: [], nano: 0 };
   rs.forEach((r, i) => {
@@ -430,14 +434,16 @@ export async function lookMoondream(env, meta, image, { question, find, width, h
   return res;
 }
 // image: { data: Uint8Array, mime } → { value: {description, text} | {text}, nano }
+// The request of the picture description (url is the picture's data URL) and the structured format its answer must follow. structuredBody(visionRequest(url), VISION_FORMAT.name, VISION_FORMAT.schema)
+// is the body dispatch() gets.
+export const visionRequest = (url) => ({ messages: [{ role: "user", content: [{ type: "text", text: `Describe this picture in 2-3 sentences, then copy every piece of text in it exactly, line by line. Answer with JSON only: {"description": "...", "text": "..."} (text empty when there is none).` }, { type: "image_url", image_url: { url } }] }], temperature: 0 });
+export const VISION_FORMAT = { name: "image_description", schema: VISION_SCHEMA };
 export async function vision(env, meta, image, mode) {
-  const url = `data:${image.mime};base64,${b64(image.data)}`;
-  let prompt = `Describe this picture in 2-3 sentences, then copy every piece of text in it exactly, line by line. Answer with JSON only: {"description": "...", "text": "..."} (text empty when there is none).`;
-  const content = [{ type: "text", text: prompt }, { type: "image_url", image_url: { url } }]; let value;
+  const url = `data:${image.mime};base64,${b64(image.data)}`; let value;
   let nano = 0;
   try {
-    const r = await structuredChat((body) => dispatch(env, "vision_files", body, { meta: { ...meta, kind: `sidecar-vision-${mode}` } }), { messages: [{ role: "user", content }], temperature: 0 },
-      { name: "image_description", schema: VISION_SCHEMA, onUsage: u => { nano += visionNano(u, Number(u.prompt_tokens) || 1500, Number(u.completion_tokens) || 800); } });
+    const r = await structuredChat((body) => dispatch(env, "vision_files", body, { meta: { ...meta, kind: `sidecar-vision-${mode}` } }), visionRequest(url),
+      { ...VISION_FORMAT, onUsage: u => { nano += visionNano(u, Number(u.prompt_tokens) || 1500, Number(u.completion_tokens) || 800); } });
     value = r.data;
   } catch (e) { e.nano = nano; throw e; }
   return { value, nano };
@@ -617,9 +623,10 @@ export function sameIndexModel(settings, a, b) {
   const eq = (x, y) => Array.isArray(settings?.catalog?.[x]?.embedding_equivalents) && settings.catalog[x].embedding_equivalents.includes(y);
   return eq(a, b) || eq(b, a);
 }
+export const embedRequest = (texts) => ({ input: texts });   // the body of the dispatch() call of the job "embed_files"
 export async function embedTexts(env, texts, meta, model = null) {
   const first = await firstStep(env, "embed_files", await privacyOf(env, meta?.tenant));
-  if (!first) await dispatch(env, "embed_files", { input: texts }, { meta });   // no model is allowed at this account's privacy level: dispatch throws the privacy error
+  if (!first) await dispatch(env, "embed_files", embedRequest(texts), { meta });   // no model is allowed at this account's privacy level: dispatch throws the privacy error
   const m = first.model, { env: e, steps } = await stepsOf(env, "embed_files");
   // Only steps that make vectors for this index may answer. The saved model first, then the fallbacks, each only when equivalent.
   const allowed = model ? steps.filter((st) => sameIndexModel(e.MODEL_SETTINGS, model, st.model)) : steps;
@@ -627,10 +634,10 @@ export async function embedTexts(env, texts, meta, model = null) {
   // A deploy that reset this object during a step must not be hidden by the answer of a later step: the job runs again on the new code.
   const resetFirst = (err) => { const hit = (err?.errors || []).find((x) => /Durable Object reset/i.test(x)); return hit ? Object.assign(new Error(String(hit).replace(/^[^:]*:\s*/, "")), { objectReset: true }) : err; };
   let r;
-  if (allowed.length === steps.length) { try { r = await dispatch(env, "embed_files", { input: texts }, { meta }); } catch (err) { throw resetFirst(err); } }
+  if (allowed.length === steps.length) { try { r = await dispatch(env, "embed_files", embedRequest(texts), { meta }); } catch (err) { throw resetFirst(err); } }
   else {
     let last; const errors = [];
-    for (const st of allowed) { try { r = await dispatch(env, "embed_files", { input: texts }, { meta, model: st.model }); break; } catch (err) { last = err; errors.push(`${st.model}: ${err?.message || err}`); } }
+    for (const st of allowed) { try { r = await dispatch(env, "embed_files", embedRequest(texts), { meta, model: st.model }); break; } catch (err) { last = err; errors.push(`${st.model}: ${err?.message || err}`); } }
     if (!r) throw resetFirst(Object.assign(last, { errors }));
   }
   const j = await cappedResponseJson(r, 8 << 20).catch(() => null);
@@ -646,10 +653,12 @@ export async function embedReserve(env, texts) {
   const self = steps.some((st) => st.source === "SELF") ? selfCallReserveNano(texts) : 0;
   return Math.ceil((Math.ceil(tok * 1.5 * await embedNano(env)) + self) * MARKUP) + 1000;
 }
+// The text each chunk of a document sends to the embedding model: its slice of the markdown, at most 6000 characters.
+export const chunkTexts = (md, chunks) => chunks.map(([s, e]) => md.slice(s, e).slice(0, 6000));
 async function indexChunks(P, job, md, chunks, meta, { charge = true } = {}) {
   const vecs = [];
   for (let i = 0; i < chunks.length; i += EMBED_BATCH) {
-    const texts = chunks.slice(i, i + EMBED_BATCH).map(([s, e]) => md.slice(s, e).slice(0, 6000));
+    const texts = chunkTexts(md, chunks.slice(i, i + EMBED_BATCH));
     const run = async () => {
       const x = await embedTexts(P.env, texts, { ...meta, kind: charge ? "sidecar-embed" : "sidecar-reindex" }, job.emb_model);
       const q = quantize(x.vectors); let bin = ""; for (let k = 0; k < q.length; k += 0x8000) bin += String.fromCharCode.apply(null, new Uint8Array(q.buffer, q.byteOffset + k, Math.min(0x8000, q.length - k)));

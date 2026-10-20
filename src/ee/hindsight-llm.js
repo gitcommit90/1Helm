@@ -14,7 +14,7 @@
 // own saved settings (the public edition has one environment, so there is no forward to another Worker).
 import { boundedText, BodyTooLargeError } from "../bounded-body.js";
 import { dispatch } from "./model-dispatch.js";
-import { factsOf, entriesOf, jobSetting } from "./model-jobs.js";
+import { quirkOf, entriesOf, jobSetting } from "./model-jobs.js";
 import { modelSettingsEnv } from "./model-settings.js";
 
 export const HS_PROXY_HEADER = "x-hs-proxy";
@@ -25,7 +25,7 @@ const RERANK_JOB = "hs_rerank";
 const ROUTE = /^\/_hs\/(?:llm\/(retain|consolidation|reflect|refresh|default)\/v1\/chat\/completions|rerank\/v1\/systemone)$/;
 // The only fields of a chat request that are sent on. Everything else (user, model, provider, extra_body fields, reasoning_effort, max_tokens, max_completion_tokens, cache keys)
 // is dropped: the saved job decides the model, provider, reasoning level and output limit.
-const KEEP = ["messages", "tools", "tool_choice", "parallel_tool_calls", "response_format", "temperature", "top_p", "stop", "seed", "stream", "stream_options", "presence_penalty", "frequency_penalty"];
+const KEEP = ["messages", "tools", "tool_choice", "parallel_tool_calls", "response_format", "top_p", "stop", "seed", "stream", "stream_options", "presence_penalty", "frequency_penalty"];
 const RERANK_BANK_HEADER = "x-hindsight-bank-id";
 
 const reply = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json;charset=utf-8", "cache-control": "no-store", [HS_PROXY_HEADER]: "1" } });
@@ -49,15 +49,12 @@ async function keyMatches(given, secret) {
 const bearer = (req) => /^Bearer (.+)$/.exec(req.headers.get("authorization") || "")?.[1] || "";
 
 // ---- cleaning the request ----
-// The saved settings and the models' facts decide what is sent, not the memory server's guesses from a model name. A temperature is kept only when no model of the job refuses
-// one (a model's facts say no_temperature), and the server never has one added. A tool_choice other than auto is dropped when a model of the job takes only automatic choice
+// The saved settings and the models' facts decide what is sent, not the memory server's guesses from a model name. No temperature is sent: the memory job always asks for require_parameters, and a temperature next to it leaves no endpoint for most models. A tool_choice other than auto is dropped when a model of the job takes only automatic choice
 // (the memory server already narrows a forced call to a single tool).
 export function cleanChatRequest(body, settings, jobId) {
-  const facts = entriesOf(jobSetting(settings, jobId)).map((e) => factsOf(settings, e.model));
-  const noTemperature = facts.some((f) => f?.quirks?.no_temperature), autoOnly = facts.some((f) => f?.quirks?.auto_tool_choice_only);
+  const autoOnly = entriesOf(jobSetting(settings, jobId)).some((e) => quirkOf(settings, e.model, "auto_tool_choice_only"));
   const out = {};
   for (const k of KEEP) if (body[k] !== undefined) out[k] = body[k];
-  if (noTemperature) delete out.temperature;
   if (autoOnly && out.tool_choice != null && out.tool_choice !== "auto") delete out.tool_choice;
   if (Array.isArray(out.messages)) out.messages = out.messages.map((m) => (m && typeof m === "object" && m.reasoning_content === "" ? Object.fromEntries(Object.entries(m).filter(([k]) => k !== "reasoning_content")) : m));
   return out;

@@ -33,7 +33,7 @@
 import { plan } from "./model-plan.js";
 import { jsonLevelsFor } from "./model-catalog.js";
 import { noteServed, servedJobOf } from "./model-served.js";
-import { modelSettingsEnv, readModelSettings } from "./model-settings.js";
+import { modelSettingsEnv } from "./model-settings.js";
 import { effortBody, quirkOf, jobTimeoutMs } from "./model-jobs.js";
 import { privacyOf } from "../privacy.js";
 import { boundedText } from "../bounded-body.js";
@@ -94,14 +94,14 @@ const ADAPTERS = {
     }
     const payload = { ...b, messages: replayFor(b.messages, s.model), model: s.model, ...(Number.isFinite(s.maxOutput) ? { max_tokens: s.maxOutput } : {}), ...effortBody(s.effort, s.model, c.settings),
       ...(s.source === "OR" ? { provider: s.provider, usage: { include: true }, ...(c.session ? { session_id: String(c.session).slice(0, 256), prompt_cache_key: cacheKey(c.session) } : {}) } : {}) };
-    const r = s.source === "CF" ? await cloudflareChat(c.env, payload, c.meta, c.signal, facts) : await orFetch(c.env, payload, c.meta, OR_HEADERS, c.signal);
+    const r = s.source === "CF" ? await cloudflareChat(c.env, payload, c.meta, c.signal, facts) : await orFetch(c.env, payload, c.meta, OR_HEADERS, c.signal, c.fetchImpl || globalThis.fetch);
     await okOrThrow(r, `openrouter ${s.model}`);
     return firstOk(r, !!b.stream);
   },
   async embeddings(c, s) {
     if (s.source === "CF") return Response.json(await cloudflareEmbeddings(c.env, s.model, c.request.input, c.meta));
     if (s.source === "SELF") return Response.json(await selfHostedEmbeddings(c.env, s.model, c.request.input, c.meta));
-    return okOrThrow(await orFetchPath(c.env, "embeddings", { model: s.model, input: c.request.input, provider: s.provider }, c.meta, {}, c.signal), `embeddings ${s.model}`);
+    return okOrThrow(await orFetchPath(c.env, "embeddings", { model: s.model, input: c.request.input, provider: s.provider }, c.meta, {}, c.signal, c.fetchImpl || undefined), `embeddings ${s.model}`);
   },
   async transcribe(c, s) {
     const q = c.request || {}, why = q.skip?.(s);
@@ -115,7 +115,7 @@ const ADAPTERS = {
       return Response.json(out);
     }
     if (!q.openrouter) throw new Error("no OpenRouter body for this recording");
-    const r = await orFetchPath(c.env, "audio/transcriptions", q.openrouter({ model: s.model, provider: s.provider }), c.meta, c.request?.headers || {}, signal);
+    const r = await orFetchPath(c.env, "audio/transcriptions", q.openrouter({ model: s.model, provider: s.provider }), c.meta, c.request?.headers || {}, signal, c.fetchImpl || undefined);
     const { json: j, response } = await hold(r, 8 << 20);   // bounded: a remote answer is never read whole
     if (!r.ok || !j || j.error) throw fail(s.model, r.status, JSON.stringify(j?.error || j || {}));
     return response;
@@ -177,8 +177,7 @@ export async function dispatch(env, jobId, request = {}, { meta = {}, signal = n
   // Own AI key: the person's own endpoint answers every chat call, whatever the saved settings say. It needs no plan (and its env carries no copy of the settings).
   // A task's route is checked by routedChat first (a task that began on managed models stops when the mode changed to an own key).
   if (env.BYOK && Array.isArray(request?.messages) && !route?.taskAffinity) {
-    const saved = request?.response_format?.type === "json_schema" ? await readModelSettings(env).then((r) => r.config, () => null) : null;
-    return byokChat(env.BYOK, request, { fast: route ? byokFast(route, request) : true, signal, privacy: level ?? await privacyOf(env, meta?.tenant), noTemperature: (m) => quirkOf(saved, m, "no_temperature") });
+    return byokChat(env.BYOK, request, { fast: route ? byokFast(route, request) : true, signal, privacy: level ?? await privacyOf(env, meta?.tenant) });
   }
   // The main chat: a route (a running task's profile, or the routing policy) says which models to try, in which order; each attempt reads its limits from its saved job.
   if (route) {
@@ -186,7 +185,7 @@ export async function dispatch(env, jobId, request = {}, { meta = {}, signal = n
     // Each routing category keeps its own last-served row: "chat:<category id>" (the category the turn was routed to, General when it names none).
     const servedJob = servedJobOf(jobId, route);
     try {
-      const r = await routedChat(env, request, session, route, { ...meta, job: jobId }, signal);
+      const r = await routedChat(env, request, session, route, { ...meta, job: jobId }, signal, fetchImpl || globalThis.fetch);
       noteServed(env, { job: servedJob, requested: asked(), served: cloudflareServed(route.served || route.taskProfile?.requestedModel) || r?.served || null, ok: true });
       return r;
     } catch (e) { if (!signal?.aborted) noteServed(env, { job: servedJob, requested: asked(), ok: false, error: e?.message }); throw e; }
@@ -197,7 +196,7 @@ export async function dispatch(env, jobId, request = {}, { meta = {}, signal = n
   if (!steps.length) throw Object.assign(new Error(model ? `"${model}" is not an allowed model of "${jobId}" at privacy level ${p.level}. Nothing was sent.` : `No model of "${jobId}" can run at privacy level ${p.level}. Nothing was sent.`), { privacyBlocked: true });
   // Metadata keys that start with "_" are internal: they never leave the Worker.
   const ctx = { env, settings, jobId, request, session, signal, level: p.level, fetchImpl, jsonLevels, meta: { ...meta, job: jobId, _privacy: p.level } };
-  const errors = []; let last;
+  const errors = [], failures = []; let last;
   // The job's saved timeout (limits.js, `timeout_ms`; null means none) is for one attempt: each step starts a fresh timer. The live dictation socket
   // only times its connect, so it keeps its own timer.
   const timeoutMs = jobTimeoutMs(settings, jobId);
@@ -207,11 +206,13 @@ export async function dispatch(env, jobId, request = {}, { meta = {}, signal = n
       let served = r?.served || null;
       if (!served) ({ response: r, served } = await servedOf(r, step));
       if (r && typeof r === "object") { try { r.requested = step.model; r.effort = step.effort; } catch {} }   // for callers that record which step answered
-      noteServed(env, { job: jobId, requested: step.model, served: step.source === "CF" ? cloudflareServed(step.model) || { model: step.model, provider: "cloudflare" } : served, ok: true });
+      noteServed(env, { job: jobId, requested: step.model, served: step.source === "CF" ? cloudflareServed(step.model) || { model: step.model, provider: "cloudflare" } : served, ok: true, failed: failures[0] || null });
       return r;
     } catch (e) {
       if (signal?.aborted) throw e;
-      noteServed(env, { job: jobId, requested: step.model, ok: false, error: e?.message });
+      // A failed step is written only when it was the last one tried; when a later step answers, that write carries the failure (noteServed's `failed`).
+      if (step === steps[steps.length - 1]) noteServed(env, { job: jobId, requested: step.model, ok: false, error: e?.message });
+      failures.push({ model: step.model, error: String(e?.message || e) });
       last = e; errors.push(`${step.model}: ${String(e?.message || e).slice(0, 160)}`);
       console.log("dispatch: step failed", jobId, step.model, String(e?.message || e).slice(0, 160));
     }

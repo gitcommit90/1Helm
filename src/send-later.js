@@ -12,7 +12,7 @@
 // laterFireDue() in alarm(). index.js: the /api/res/<ch>/later routes, and boot lists each channel's pending ones.
 import { validTz } from "./schedule.js";
 import { replyOut, replyIn } from "./reply-to.js";
-import { newAutoChat } from "./chat-titles.js";
+import { newAutoChat, startChatTitle } from "./chat-titles.js";
 
 export const LATER_MAX_PENDING = 500, LATER_MAX_AHEAD = 366 * 86400e3, LATER_STALE_MS = 120e3, LATER_TIMER_MS = 20 * 60e3;
 export const LATER_PAST = "That time has already passed. Pick a later time.";
@@ -143,13 +143,14 @@ export const laterMethods = {
     const files = jp(r.files, []);
     // Its task, else (deleted) a new one. A new task's id is saved before the send, so a crash retry reuses it.
     let sid = [r.sent_session, r.session].find((x) => x && this.session(x)) || null;
-    if (!sid) { sid = newAutoChat(this, r.text || this.fileTitle(files)); this.sql.exec("UPDATE later SET sent_session=? WHERE id=?", sid, r.id); }
+    if (!sid) { sid = newAutoChat(this, r.text || this.fileTitle(files), r.text); this.sql.exec("UPDATE later SET sent_session=? WHERE id=?", sid, r.id); }
     const reply = sid === r.session ? replyIn(r.reply) : null;   // its own task only: a quote means nothing in a new one
     const input = { type: "msg", text: r.text, files, cid: `later:${r.id}`, via: "app", reply };
     const so = this.steerOrOpen(sid, input, { overflow: "open" });
     if (files.length) this.sql.exec(`UPDATE files SET pending=0 WHERE id IN (${files.map(() => "?").join(",")})`, ...files);   // sent: now it's a Library file
     this.sql.exec("UPDATE later SET status='sent', error=NULL, sent_at=?, sent_session=?, sent_card=?, updated=? WHERE id=?", Date.now(), sid, so.card?.id || null, Date.now(), r.id);
     if (so.mode === "open") {
+      startChatTitle(this, sid);   // a new chat's name comes from a small model call that runs next to the turn
       const run = this.runTurn(this.get("tenant"), this.get("channel"), this.get("channel_id"), r.text, null, { session: sid, files, card: so.card.id, ...(reply ? { reply } : {}) })
         .catch((e) => console.log("send later turn", r.id, e.message));
       this.ctx.waitUntil?.(run); this._lastLater = run;

@@ -1,14 +1,16 @@
 // The actual Resident and ledger with a deliberately blocked optional labeller.
 // Controlled model fixtures test app timing and persistence, never model quality.
 import {world,tick,assert} from './deploy-harness.mjs';
-const labelJSON=JSON.stringify({title:'Completed fixture task',result:'Fixture complete',summary:'Fixture result',why:{},chat_title:'Completed fixture chat'});
+const labelJSON=JSON.stringify({title:'Completed fixture task',result:'Fixture complete',summary:'Fixture result',why:{}});
 const defer=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 let checks=0;
+// Waits are for the event, not a speed check: a full run has 16 test files going at once, so the limit only has to catch a real hang.
+const WAIT=15000;
 function fixture(engine){
  const W=world({engine,openrouter:true,env:{RESUME_DELAY_MS:0,RESUME_WRITE_DELAY_MS:0}}),original=W.env.AI.run,gate=defer();
  W.labelCalls=0;
  W.env.AI.run=async(model,body)=>{
-  if(String(body.messages[0]?.content).startsWith('You label one finished task')){
+  if(JSON.stringify(body.messages[0]?.content).includes('You label one finished task')){   // the label job only; the chat title call is a different request
    W.labelCalls++;return {response:await gate.promise,usage:{prompt_tokens:500,completion_tokens:50}};
   }
   return original(model,body);
@@ -20,7 +22,7 @@ function fixture(engine){
 }
 async function doneWhileHeld(F){
  const {W,R,events}=F;
- try{await W.until(()=>W.labelCalls===1,1000);await W.until(()=>events.some(e=>e.t==='done'),1000);}catch(e){F.gate.resolve(labelJSON);await F.run;throw e;}
+ try{await W.until(()=>W.labelCalls>=1,WAIT);await W.until(()=>events.some(e=>e.t==='done'),WAIT);}catch(e){F.gate.resolve(labelJSON);await F.run;throw e;}
  assert.equal(W.labelCalls,1,'the labeller was started and is still held');
  const r=await F.run,done=events.find(e=>e.t==='done');
  assert.equal(r.error,null);assert.equal(W.card(r.turn).status,'complete');
@@ -29,7 +31,7 @@ async function doneWhileHeld(F){
  assert.equal(R.active.size,0,'active turn released');assert.equal(R.sessQ.size,0,'task queue released');
  assert.equal(R.sql.exec('SELECT 1 FROM turn_runs WHERE card=?',r.turn).toArray().length,0,'completion journal retired');
  assert.equal(events.filter(e=>e.t==='done').length,1);
- assert.ok(done.observedAt-events.filter(e=>e.t==='text').at(-1).observedAt<1000,'done follows the confirmed model end without labeller delay');
+ assert.ok(done.observedAt-events.filter(e=>e.t==='text').at(-1).observedAt<WAIT,'done follows the confirmed model end without labeller delay');
  return r;
 }
 for(const engine of ['classic','pi']){
@@ -37,16 +39,16 @@ for(const engine of ['classic','pi']){
   const F=fixture(engine),{W,R,gate,session,events}=F,r=await doneWhileHeld(F);
   const next=await R.runTurn('t1','main','1','A new message after completion',null,{session});
   assert.notEqual(next.turn,r.turn);assert.equal(next.error,null,'new turn can finish while old labels are held');
-  assert.equal(W.labelCalls,1,'first title was claimed only once');
+  await W.until(()=>W.labelCalls>=2,WAIT);assert.equal(W.labelCalls,2,'every finished chat task is labelled, even a tiny one');
   const before=W.turns().find(t=>t.id===next.turn).charge_nano;
   gate.resolve(labelJSON);await W.settle();
   const labelSettles=W.ledger.log.filter(([op,id])=>op==='settle'&&id.startsWith('sum:'));
-  assert.equal(labelSettles.length,1);const billed=labelSettles[0][2];assert.ok(billed>0);
+  assert.equal(labelSettles.length,2);const billed=labelSettles[0][2];assert.ok(billed>0);assert.equal(labelSettles[1][2],billed);
   const saved=W.turns().find(t=>t.id===r.turn);
   assert.equal(saved.charge_nano,r.charge+billed,'late charge is stored exactly once on the completed turn');
-  assert.equal(W.turns().find(t=>t.id===next.turn).charge_nano,before,'late charge cannot attach to the next turn');
+  assert.equal(W.turns().find(t=>t.id===next.turn).charge_nano,before+billed,'each label charge attaches only to its own turn');
   assert.equal(W.card(r.turn).title,'Completed fixture task');assert.ok(W.card(r.turn).charge_nano>=billed);
-  assert.equal(R.session(session).title,'Completed fixture chat');
+  assert.equal(R.session(session).title_revision,0,'the task label never renames the chat');
   assert.equal(r.charge,saved.charge_nano-billed,'returned stats remain stable after late labels');
   assert.equal(events.filter(e=>e.t==='done').length,1,'late enrichment emits no second done');
   await W.settle();assert.equal(W.turns().find(t=>t.id===r.turn).charge_nano,saved.charge_nano);

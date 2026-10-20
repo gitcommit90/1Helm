@@ -12,7 +12,7 @@ export const BACKGROUND_LIMITS = Object.freeze({
 });
 export const backgroundPolicy = role => BACKGROUND_LIMITS[role] || null;
 export function backgroundRole(kind) {
-  return ({ "card-label": "label", "live-notes-note": "notes", "live-notes-refine": "notes_refine",
+  return ({ "card-label": "label", "chat-title": "chat_title", "live-notes-note": "notes", "live-notes-refine": "notes_refine",
     "live-notes-final": "notes_final", "sidecar-card": "sidecar_card", "ambient-extract": "ambient_extract",
     "ambient-review": "ambient_review" })[kind] || null;
 }

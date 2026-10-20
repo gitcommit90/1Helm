@@ -190,7 +190,7 @@ await test("Needs attention lists only jobs with a warning or a problem; search 
   const st = { ...state, served: { label: { requested: "other/not-in-the-list", served_model: "other/unexpected", last_at: Date.now(), last_status: "ok" } } };
   const att = C.visibleInfo(st, ui0({ view: "attention" }), C.view(st, ui0({ view: "attention" }))).map((x) => x.row.key);
   assert.deepEqual(att, ["label"]);
-  const found = C.visibleInfo(state, ui0({ q: "task titles" }), C.view(state, ui0())).map((x) => x.row.key); assert.deepEqual(found, ["label"]);
+  const found = C.visibleInfo(state, ui0({ q: "task summaries" }), C.view(state, ui0())).map((x) => x.row.key); assert.deepEqual(found, ["label"]);
 });
 
 await test("the picker lists every model, and shows a model that the chain's privacy level forbids as unavailable instead of hiding it", () => {
@@ -228,3 +228,49 @@ await test("the old page is gone: no models-page.js, no inline script, and no pr
 
 console.log(`PASS ${checks} models console checks`);
 dev.db.close();
+
+// A JSON reply in the Sandbox shows as labeled fields.
+{
+  assert.equal(C.parseJsonReply("plain text"), null); assert.equal(C.parseJsonReply("{broken"), null); assert.equal(C.parseJsonReply("[1,2]"), null); assert.equal(C.parseJsonReply('"x"'), null);
+  assert.deepEqual(C.parseJsonReply(' {"a":1} '), { a: 1 }); assert.deepEqual(C.parseJsonReply('[{"a":1},{"b":2}]'), [{ a: 1 }, { b: 2 }]);
+  assert.equal(C.humanizeKey("occurred_start"), "Occurred start"); assert.equal(C.humanizeKey("title"), "Title");
+  const html = String(C.jsonFieldsHtml({ title: "T <i>x</i>", n: 3, ok: false, nil: null, why: { 1: "a", deep: { z: [1] } }, list: ["p", "q"] }));
+  assert.ok(html.indexOf("Title") < html.indexOf("Why") && html.indexOf("Why") < html.indexOf("List"), "the model's key order is kept");
+  assert.match(html, /<dt>Title<\/dt><dd><span class="sb-text">T &lt;i&gt;x&lt;\/i&gt;<\/span>/); assert.doesNotMatch(html, /<i>/);
+  assert.match(html, /<dt>N<\/dt><dd><span class="sb-text">3</); assert.match(html, /<dt>Ok<\/dt><dd><span class="sb-text">false</);
+  assert.match(html, /<dl class="sb-kv in"><dt>1<\/dt>/); assert.match(html, /<dt>Deep<\/dt><dd><pre class="sb-pre mono">\{\n  &quot;z&quot;: \[/);
+}
+
+await test("the Sandbox reasoning level starts on the saved level when the model has it, otherwise the model's default", () => {
+  assert.equal(C.startEffort("low", ["low", "medium", "high"], "medium"), "low");
+  assert.equal(C.startEffort("low", ["medium", "high"], "medium"), "medium");
+  assert.equal(C.startEffort("low", ["high"], "medium"), "high");
+  assert.equal(C.startEffort("low", [], null), null);
+});
+await test("the Sandbox reads the reasoning level a send carried from the recorded request", () => {
+  const rq = (body) => ({ requests: [{ url: "x", body }] });
+  assert.equal(C.sentEffort(rq({ model: "m", reasoning: { effort: "low" } })), "low");
+  assert.equal(C.sentEffort(rq({ model: "m", reasoning: { enabled: false } })), "none");
+  assert.equal(C.sentEffort(rq({ model: "m" })), null);
+  assert.equal(C.sentEffort(null), null);
+});
+await test("a reply shows the reasoning tokens inside the output count and the level sent", () => {
+  const state = { config: { catalog: {} }, jobs: [] };
+  const html = C.sandboxInner(state, { jobs: [{ id: "x", label: "X", group: "g" }], job: "x", turns: [{ role: "reply", reply: { ok: true, served: "m/a", tokens_in: 10, tokens_out: 4856, tokens_reasoning: 4693, raw_request: { requests: [{ body: { reasoning: { effort: "medium" } } }] }, view: { type: "chat", text: "hi" } } }] }).toString();
+  assert.match(html, /4,856 out \(4,693 reasoning\)/); assert.match(html, /reasoning medium/);
+});
+await test("Sandbox compare slots: slot 0 is the Sandbox state, up to three slots, one column each with its model name", () => {
+  const state = { config: { catalog: { "a/one": { name: "One", efforts: ["low"] }, "b/two": { name: "Two", efforts: [] } }, jobs: { x: { model: "a/one", effort: "low" } }, routing: { categories: [] } }, jobs: [{ id: "x", has_effort: true }] };
+  const job = { id: "x", label: "X", group: "g", model: "a/one" };
+  const reply = (text) => ({ role: "reply", reply: { ok: true, served: "m", view: { type: "chat", text } } });
+  const one = { jobs: [job], job: "x", turns: [] };
+  assert.deepEqual(C.slotsOf(one), [one]); assert.equal(C.SLOTS_MAX, 3);
+  assert.equal(C.slotModelName(state, job, one), "One"); assert.equal(C.slotModelName(state, job, { model: { id: "b/two", name: "Two <b>" } }), "Two <b>");
+  assert.doesNotMatch(C.sandboxInner(state, one).toString(), /sb-cols|rmslot/); assert.match(C.sandboxInner(state, one).toString(), /data-sb-act="addslot"/);
+  const two = { ...one, turns: [reply("first")], extra: [{ ...C.newSlot(), model: { id: "b/two", name: "Two <b>" }, turns: [reply("second <i>")] }] };
+  const html = C.sandboxInner(state, two).toString();
+  assert.match(html, /sb-cols c2/); assert.equal((html.match(/class="sb-col"/g) || []).length, 2); assert.match(html, /Two &lt;b&gt;/); assert.doesNotMatch(html, /Two <b>/);
+  assert.match(html, /second &lt;i&gt;/); assert.equal((html.match(/data-sb-act="rmslot"/g) || []).length, 1); assert.match(html, /data-sb-raw="1\.0"/); assert.match(html, /data-sb-raw="0\.0"/);
+  const three = { ...two, extra: [two.extra[0], C.newSlot()] };
+  assert.doesNotMatch(C.sandboxInner(state, three).toString(), /data-sb-act="addslot"/); assert.match(C.sandboxInner(state, three).toString(), /sb-cols c3/);
+});
