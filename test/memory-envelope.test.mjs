@@ -426,18 +426,38 @@ const T1 = Date.UTC(2026, 9, 14, 16, 2);   // Oct 14 09:02 in Los Angeles
   const ed = await route({ op: "edit", rec: "77", spk: "id:s2", name: "Priya" });
   assert.equal(ed.ok, true); assert.deepEqual(ed.matches.map((x) => [x.id, x.why]), [["p1", "part of the name"]], "a short Contacts lookup by the edited name");
   const row = bs.speakerRow("77", "id:s2"); assert.deepEqual([row.label, row.name, row.state], ["Speaker 2", "Priya", "accepted"], "Bee's label kept, the person's name beside it");
-  const ac = await route({ op: "accept", rec: "78", spk: "id:s2" }); assert.deepEqual([ac.ok, ac.matches], [true, []], "a generic label matches nobody");
+  const ac = await route({ op: "accept", rec: "78", spk: "id:s2" }); assert.deepEqual([ac.ok, ac.matches, ac.reviewed], [true, [], true], "a generic label matches nobody");
   assert.equal(bs.speakerRow("78", "id:s2").name, null);
+  // case 1: accepted with no possible match ends the review: state reviewed, row and label kept, off the list, nothing linked
+  assert.deepEqual([bs.speakerRow("78", "id:s2").state, bs.speakerRow("78", "id:s2").label, bs.speakerRow("78", "id:s2").person], ["reviewed", "Speaker 2", null]);
+  assert.ok(!bs.pendingSpeakers().some((x) => x.rec === "78") && !ac.speakers.some((x) => x.rec === "78"), "it left the review list"); assert.deepEqual(bs.speakerLinks(78), []); assert.deepEqual(seen, [], "no people_seen");
+  assert.equal(d78().metadata.speaker_links, undefined, "the recording is not linked to anyone");
+  // case 1b: Edit with a name nobody has also ends it
+  bsql.prepare("UPDATE speakers SET state='new' WHERE rec='78'").run(); const ed2 = await route({ op: "edit", rec: "78", spk: "id:s2", name: "Zed Nobody" });
+  assert.deepEqual([ed2.ok, ed2.reviewed, bs.speakerRow("78", "id:s2").state, bs.speakerRow("78", "id:s2").name], [true, true, "reviewed", "Zed Nobody"], "the person's name stays as stored");
+  // case 4: a failed Contacts lookup is not "no matches": the card stays pending
+  const realArchive = bs.archive; bs.archive = () => ({ ...realArchive.call(bs), peopleList: async () => { throw new Error("archive down"); } });
+  bsql.prepare("UPDATE speakers SET state='new', name=NULL WHERE rec='78'").run(); const accFail = await route({ op: "accept", rec: "78", spk: "id:s2" });
+  assert.deepEqual([accFail.ok, accFail.reviewed, bs.speakerRow("78", "id:s2").state], [true, undefined, "accepted"], "lookup failed: still pending");
+  assert.equal(await bs.speakerMatches(bs.speakerRow("78", "id:s2")), null, "an error is null, an empty result is []");
+  assert.ok((await bs.pendingSpeakersWithMatches()).some((x) => x.rec === "78"), "the Notebook load keeps it while the lookup fails"); assert.ok(bs.pendingSpeakers().some((x) => x.rec === "78"));
+  bs.archive = realArchive;
+  // case 3: a row already stuck (accepted, no match) clears itself on the next Notebook load
+  assert.deepEqual((await bs.pendingSpeakersWithMatches()).filter((x) => x.rec === "78"), [], "stuck row cleared on load"); assert.equal(bs.speakerRow("78", "id:s2").state, "reviewed");
+  bsql.prepare("UPDATE speakers SET state='accepted' WHERE rec='78'").run();
   assert.deepEqual((await route({ op: "matches", rec: "77", spk: "label:Priya" })).matches.map((x) => x.id), ["p1"]);
   bsql.prepare("UPDATE speakers SET phone='+351912345678' WHERE rec='78'").run(); assert.deepEqual((await route({ op: "matches", rec: "78", spk: "id:s2" })).matches.map((x) => [x.id, x.why]), [["p3", "phone"]], "a phone Bee gives matches exactly");
   // c2) not_them (Notebook phase 6): the person's answer is recorded on that speaker row, the match is not offered again, nothing is deleted
   assert.match((await route({ op: "not_them", rec: "78", spk: "id:s2" })).error, /contact required/);
-  assert.deepEqual(await route({ op: "not_them", rec: "78", sid: "id:s2", contact: "p3" }), { ok: true }, "the contract names the speaker sid");
+  // case 2: "Not them" to the last offered match ends the review
+  assert.deepEqual(await route({ op: "not_them", rec: "78", sid: "id:s2", contact: "p3" }), { ok: true, reviewed: true }, "the contract names the speaker sid; the last match answered ends the review");
+  assert.deepEqual([bs.speakerRow("78", "id:s2").state, bs.speakerRow("78", "id:s2").person], ["reviewed", null]); assert.ok(!bs.pendingSpeakers().some((x) => x.rec === "78"));
   assert.deepEqual((await route({ op: "matches", rec: "78", spk: "id:s2" })).matches, [], "the answered match is gone");
   assert.deepEqual(bs.notThem(bs.speakerRow("78", "id:s2")), ["p3"]); await route({ op: "not_them", rec: "78", spk: "id:s2", contact: "p3" }); assert.deepEqual(bs.notThem(bs.speakerRow("78", "id:s2")), ["p3"], "answered twice, recorded once");
-  const withM = await bs.pendingSpeakersWithMatches(); assert.deepEqual(withM.find((x) => x.rec === "78").matches, [], "GET /api/notebook/main leaves the answered match out");
+  const withM = await bs.pendingSpeakersWithMatches(); assert.ok(!withM.some((x) => x.rec === "78"), "GET /api/notebook/main no longer lists it");
   assert.deepEqual(withM.find((x) => x.rec === "77" && x.spk === "label:Priya").matches.map((x) => x.id), ["p1"], "other speakers keep their matches");
-  assert.equal(bs.speakerRow("78", "id:s2").state, "accepted", "the row stays: no data deleted"); assert.ok(bs.pendingSpeakers().some((x) => x.rec === "78"));
+  assert.equal(bs.speakerRow("78", "id:s2").state, "reviewed", "the row stays: no data deleted"); assert.equal(bs.speakerRow("78", "id:s2").label, "Speaker 2");
+  bsql.prepare("UPDATE speakers SET state='new' WHERE rec='78'").run();   // back to waiting, so the rest of the section keeps its two other speakers
   // d) confirm: the link, the recording again with the person, people_seen in General; other recordings untouched
   assert.match((await route({ op: "confirm", rec: "77", spk: "id:s2", person: "nobody" })).error, /contact isn't there/);
   const cf = await route({ op: "confirm", rec: "77", spk: "id:s2", person: "p1" });

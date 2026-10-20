@@ -8,6 +8,10 @@
 //   - Edit or Accept → "accepted". Possible matches: a short Contacts lookup by the name (or Bee's label), the aliases, and the email or phone
 //     when Bee gives one. Confirm → "linked": the speaker in that recording is that Contacts person (person, person_name), the recording is
 //     retained again with the person (adapters/bee.js), and the person is marked as seen in General (people_seen).
+//   - End of the review without a link: a speaker the person has reviewed (Accept, or Edit with a name) that has no possible Contacts match left
+//     (none found, or the person answered "Not them" to every one) goes to "reviewed" and leaves the queue. The row stays, Bee's label and the
+//     person's name stay as stored, and nothing is linked (no retain, no people_seen). Rows already "accepted" with no match leave the queue the next
+//     time the Notebook loads. A failed Contacts lookup is not "no matches": the card stays pending (speakerMatches returns null then).
 //   - A speaker that is not confirmed is never linked to a person. Inside one recording a speaker is its own entity (adapters/bee.js
 //     scopedSpeaker), never linked across recordings by its label.
 // The rows live in the BeeSync Durable Object, next to the facts waiting for review ("New from Bee"), and go with it.
@@ -61,8 +65,9 @@ export const speakerMethods = {
       .map((r) => ({ rec: r.rec, spk: r.spk, label: r.label, name: r.name || null, state: r.state, excerpt: r.excerpt || "", at: Number(r.rec_at) || null }));
   },
   // Possible matches: a short Contacts lookup. Email or E.164 phone first, then the full name or an alias, then a shared word of the name.
+  // Returns null when the Contacts lookup failed (not the same as no matches, which is []).
   async speakerMatches(row, preloaded = null) {
-    let people = preloaded || []; if (!preloaded) { try { people = (await this.archive().peopleList()) || []; } catch { return []; } }
+    let people = preloaded || []; if (!preloaded) { try { people = (await this.archive().peopleList()) || []; } catch { return null; } }
     const no = new Set(this.notThem(row));
     const q = String(row.name || row.label || "").trim().toLowerCase(), qw = words(q), em = String(row.email || "").toLowerCase(), ph = e164(row.phone);
     const out = [];
@@ -77,33 +82,50 @@ export const speakerMethods = {
     }
     return out.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, 5).map(({ score, ...x }) => x);
   },
+  // A reviewed speaker (state "accepted") with no possible match left ends the review: state "reviewed", the row and its names kept, never linked.
+  // matches null (the lookup failed) or a row that was not reviewed yet changes nothing. → true when the row left the queue.
+  speakerSettle(row, matches, why) {
+    if (!row || row.state !== "accepted" || !Array.isArray(matches) || matches.length) return false;
+    this.sql.exec("UPDATE speakers SET state='reviewed', at=? WHERE rec=? AND spk=? AND state='accepted'", now(), row.rec, row.spk);
+    this.ev(`speakers: ${row.rec}/${row.spk} review ended, ${why} (nothing linked, nothing deleted)`); return true;
+  },
   // The speakers waiting for review, each with its possible matches (the ones answered "not them" left out), for GET /api/notebook/main.
   async pendingSpeakersWithMatches() {
     const list = this.pendingSpeakers(); if (!list.length) return list;
-    let people = []; try { people = (await this.archive().peopleList()) || []; } catch {}
-    return Promise.all(list.map(async (x) => ({ ...x, matches: await this.speakerMatches({ ...this.speakerRow(x.rec, x.spk), name: x.name }, people) })));
+    let people = null; try { people = (await this.archive().peopleList()) || []; } catch {}
+    const out = await Promise.all(list.map(async (x) => {
+      const row = this.speakerRow(x.rec, x.spk), matches = people ? await this.speakerMatches({ ...row, name: x.name }, people) : null;   // no list of people: unknown, so no row leaves
+      return this.speakerSettle(row, matches, "no possible match left") ? null : { ...x, matches: matches || [] };
+    }));
+    return out.filter(Boolean);
   },
   // op: list | edit | accept | matches | confirm | not_them. o: { name } for edit, { person } (a Contacts id) for confirm.
   async speakerAction(tenant, op, rec, spk, o = {}) {
     if (!this.tid() && tenant) this.put("tenant", tenant);
     if (op === "list") return { speakers: this.pendingSpeakers() };
     const row = this.speakerRow(rec, spk); if (!row) return { error: "That speaker isn't waiting for review.", speakers: this.pendingSpeakers() };
-    if (op === "matches") return { matches: await this.speakerMatches(row) };
+    if (op === "matches") return { matches: (await this.speakerMatches(row)) || [] };
     if (row.state === "linked") return { error: "That speaker is already linked.", speakers: this.pendingSpeakers() };
     if (op === "edit") {
       const name = String(o.name || "").trim(); if (!name) return { error: "A name is required." };
       this.sql.exec("UPDATE speakers SET name=?, state='accepted', at=? WHERE rec=? AND spk=?", name, now(), row.rec, row.spk);
-      this.ev(`speakers: ${row.rec}/${row.spk} named by the person`); return { ok: true, speakers: this.pendingSpeakers(), matches: await this.speakerMatches({ ...row, name }) };
+      this.ev(`speakers: ${row.rec}/${row.spk} named by the person`);
+      const m = await this.speakerMatches({ ...row, name }), reviewed = this.speakerSettle({ ...row, state: "accepted" }, m, "named and no possible match");
+      return { ok: true, ...(reviewed ? { reviewed: true } : {}), speakers: this.pendingSpeakers(), matches: m || [] };
     }
     if (op === "accept") {
       this.sql.exec("UPDATE speakers SET state='accepted', at=? WHERE rec=? AND spk=?", now(), row.rec, row.spk);
-      this.ev(`speakers: ${row.rec}/${row.spk} accepted as Bee labelled it`); return { ok: true, speakers: this.pendingSpeakers(), matches: await this.speakerMatches(row) };
+      this.ev(`speakers: ${row.rec}/${row.spk} accepted as Bee labelled it`);
+      const m = await this.speakerMatches(row), reviewed = this.speakerSettle({ ...row, state: "accepted" }, m, "accepted and no possible match");
+      return { ok: true, ...(reviewed ? { reviewed: true } : {}), speakers: this.pendingSpeakers(), matches: m || [] };
     }
     if (op === "not_them") {
       const pid = String(o.contact || "").trim(); if (!pid) return { error: "contact required" };
       const no = this.notThem(row); if (!no.includes(pid)) no.push(pid);
       this.sql.exec("UPDATE speakers SET not_them=?, at=? WHERE rec=? AND spk=?", JSON.stringify(no), now(), row.rec, row.spk);
-      this.ev(`speakers: ${row.rec}/${row.spk} is not contact ${pid} (the person's answer; nothing deleted)`); return { ok: true };
+      this.ev(`speakers: ${row.rec}/${row.spk} is not contact ${pid} (the person's answer; nothing deleted)`);
+      const fresh = this.speakerRow(row.rec, row.spk), reviewed = this.speakerSettle(fresh, await this.speakerMatches(fresh), "answered not them to every match");
+      return reviewed ? { ok: true, reviewed: true } : { ok: true };
     }
     if (op === "confirm") {
       const pid = String(o.person || ""); let p = null; try { p = pid ? await this.archive().personGet(pid) : null; } catch {}

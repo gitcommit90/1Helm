@@ -74,6 +74,16 @@ test("text: word error rate after lowercasing and stripping punctuation, with th
   assert.equal(compareGolden({ type: "text", field: "a", value: "x" }, chat("plain")).problem, "The reply has no such field.");
 });
 
+test("contains with no field also searches tool call names and arguments; an explicit field does not", () => {
+  const view = { type: "chat", text: "", tool_calls: [{ name: "remember", arguments: JSON.stringify({ fact: "Receipt total $72.88" }) }, { name: "write_file", arguments: { path: "a.html", content: "<h1>Chore Tick</h1>" } }] };
+  assert.equal(compareGolden({ type: "contains", field: null, value: ["72.88", "chore tick", "remember"] }, view).pass, true, "phrases only in tool arguments and names pass");
+  assert.equal(compareGolden({ type: "contains", field: null, value: ["nowhere"] }, view).pass, false);
+  assert.equal(compareGolden({ type: "contains", field: "tool_calls.0.arguments.fact", value: ["72.88"] }, view).pass, true);
+  assert.equal(compareGolden({ type: "contains", field: "tool_calls.0.arguments.fact", value: ["Chore Tick"] }, view).pass, false, "an explicit field reads only that field");
+  assert.equal(compareGolden({ type: "contains", field: "missing", value: ["72.88"] }, view).pass, false);
+  assert.equal(compareGolden({ type: "contains", field: null, value: ["alpha"] }, { type: "chat", text: "Alpha", tool_calls: [] }).pass, true, "reply text still counts");
+});
+
 test("contains: each phrase must appear, case-insensitively, in the whole reply or one field", () => {
   const G = { type: "contains", field: null, value: ["Receipt", "reminder", "  ", "refund"] };
   const c = compareGolden(G, chat("The receipt was added and a Reminder was set."));

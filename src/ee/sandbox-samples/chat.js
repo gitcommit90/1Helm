@@ -58,7 +58,19 @@ const MESSAGES = (now) => [
   { created: now - 1 * DAY, body: "What time is Zoe's dentist appointment?", bot_id: "None" },
   { created: now - 1 * DAY + 30e3, body: "Thursday at 3:30 PM with Dr. Patel. I set a reminder for 9 AM that morning.", bot_id: "helper" },
 ];
-const ASKED = "Here's a photo of the pharmacy receipt from today. Can you add it to my expenses and remind me to send it to the insurance company?";
+// The first message of the sample for each chat category: an invented request of the kind of work the category routes (CATEGORY_LABEL in pool.js).
+// Only the general one has the picture. Its words match the picture (sample-photo.jpg is the Maple Street Bakery receipt, order 2047, October 14, total $72.88).
+const ASKED = "Here's a photo of the Maple Street Bakery receipt from Oct 14. Can you tell me the total you read on it, add it to my expenses, and remind me to send it to Priya for reimbursement?";
+const ASKED_BY = {
+  general: { text: ASKED, photo: true },
+  research: { text: "What is the IRS standard mileage rate for business driving in 2026, and on what date did it take effect? Please give me the source you used." },
+  apps_economical: { text: "Make me a small one-page web app called Chore Tick where I type in a chore, tick it off when it's done, and the list is kept in the browser. Keep it simple." },
+  skills: { text: "I have six family dentists to compare: Hawthorne Family Dental, Lakeview Pediatric Dentistry, Brightsmile Portland, Cedar Mill Dental, Sellwood Kids Dentistry and Alder Street Dental. For each one, find the phone number, whether they take Delta Dental, and how long the wait is for a new patient, in the same table for all six." },
+  spreadsheet: { text: "Make me a monthly budget spreadsheet from these numbers: rent 2,150, groceries 640, utilities 210, car 380, Zoe's activities 175, savings 500. Add a total row and a column with each item as a percent of the total, and tell me the total in your reply with a thousands comma." },
+  technical: { text: "In /workspace/workspace/invoice-tool, npm test fails with: AssertionError [ERR_ASSERTION]: expected 1075 to equal 1080, at test/totals.test.mjs:14. The function under test is roundTotal in src/totals.js. Find the cause and fix it." },
+  apps_complete: { text: "Build me a small invoicing app called Invoice Desk for my freelance work: a page to add clients, a page to write an invoice with line items and a total, and a list of unpaid invoices. Keep the data in a SQLite file and give me a link when it runs." },
+};
+const askedFor = (category) => ASKED_BY[category] || ASKED_BY.general;
 const PHOTO_BYTES = 184320;
 
 // The flags the chat reads at the start of a turn, taken from the environment exactly as the Durable Object takes them.
@@ -72,40 +84,40 @@ function chatSetup(env) {
 
 // The whole chat request for a General channel: the system prompt (core, developer rules, standing data with the pinned notes, the
 // "how to work with you" notes, the profile and the recent channel messages), the turn's data, the person's message with a picture, and the tools.
-export async function chatRequestFor(env, ctx = {}) {
-  const e = withSettings(env, ctx), now = NOW(ctx), c = chatSetup(e);
+export async function chatRequestFor(env, ctx = {}, category = "general") {
+  const e = withSettings(env, ctx), now = NOW(ctx), c = chatSetup(e), ask = askedFor(category), asked = ask.text;
   await prepareDesignTools(e).catch(() => {});   // the design servers' tool names, cached like the chat does before it lists tools
   const pinned = chatPinned(e, NOTEBOOK(now), c.mmode), useOn = pinned.useOn;
   const channelOptions = chatChannelOptions({ ee: eeEnabled(e), profile: PROFILE, tz: TZ, channel: "main", ch: CHANNEL, mmode: c.mmode, mem: pinned.text, recent: recentChannelLines(MESSAGES(now)),
     memoryProfile: useOn ? PROFILE_TEXT : "", keysLine: "", loginsLine: "Saved logins (browser_fill_login types them; you never see the passwords): hawthornemarket.example, brightwell-benefits.example.",
     skillsLine: channelSkillsLine([]), appsLine: "", textingLine: "", permLine: "" });
   const prompt = composeSystemPrompt(e, { flagOpts: { browser: c.browser, mode: c.mmode, betterDesign: false }, stable: true, cards: c.cards, layered: c.layered, append: c.appendRuntime, channelOptions });
-  const att = [{ name: PHOTO.name, mime: PHOTO.type, bytes: PHOTO_BYTES }], pic = { type: "image_url", image_url: { url: { $file: PHOTO.name, as: "data_url" } } };
-  const attNote = attachmentNote({ att, pics: [pic], sc: { got: [], saved: "", body: "" }, unseen: [], extra: 0 });
+  const att = ask.photo ? [{ name: PHOTO.name, mime: PHOTO.type, bytes: PHOTO_BYTES }] : [], pic = { type: "image_url", image_url: { url: { $file: PHOTO.name, as: "data_url" } } }, pics = ask.photo ? [pic] : [];
+  const attNote = ask.photo ? attachmentNote({ att, pics, sc: { got: [], saved: "", body: "" }, unseen: [], extra: 0 }) : "";
   const nowTag = currentTimeTag(now, TZ);
   const placeNote = `\n\n${placeLine({ device: { at: now - 5 * 60e3, place: "Portland, Oregon", lat: 45.52, lng: -122.68 }, tz: TZ, tzKnown: true, tzLabel: tzLabel(TZ), now, cards: c.cards }).line}`;
   const tc = { kind: "chat", appendRuntime: c.appendRuntime, appendLazy: c.appendLazy, context: c.layered ? { version: 2 } : null };
   const tools = modelChatTools(e, availableChatTools(e, chatBaseTools(e, { workmem: c.workmem, browser: c.browser, betterDesign: false, general: true, sidecars: sidecarOn(e) ? undefined : false }), () => "main", tc), tc);
   let messages;
   if (c.layered) {
-    const context = { version: 2, ...prompt, developer: taskDeveloperText(prompt.developer, { appendRuntime: c.appendRuntime, appendLazy: c.appendLazy }), userText: ASKED,
-      modelUserText: chatUserText({ asked: ASKED, attNote, nowTag, placeNote }), turn: chatTurnContext({ nowTag, placeNote, attNote }) };
-    const userMsg = { role: "user", content: [{ type: "text", text: context.modelUserText }, pic] };
+    const context = { version: 2, ...prompt, developer: taskDeveloperText(prompt.developer, { appendRuntime: c.appendRuntime, appendLazy: c.appendLazy }), userText: asked,
+      modelUserText: chatUserText({ asked, attNote, nowTag, placeNote }), turn: chatTurnContext({ nowTag, placeNote, attNote }) };
+    const userMsg = { role: "user", content: pics.length ? [{ type: "text", text: context.modelUserText }, ...pics] : context.modelUserText };
     messages = contextMessages([{ role: "system", content: context.core }, userMsg], context);
   } else {
-    messages = [{ role: "system", content: prompt }, { role: "user", content: [{ type: "text", text: chatUserText({ asked: ASKED, attNote, nowTag, placeNote }) }, pic] }];
+    messages = [{ role: "system", content: prompt }, { role: "user", content: pics.length ? [{ type: "text", text: chatUserText({ asked, attNote, nowTag, placeNote }) }, ...pics] : chatUserText({ asked, attNote, nowTag, placeNote }) }];
   }
   return { messages, tools, stream: true };
 }
-const chatBuild = async (env, ctx) => ({ request: await chatRequestFor(env, ctx), files: [PHOTO] });
+const chatBuild = (category) => async (env, ctx) => ({ request: await chatRequestFor(env, ctx, category), files: askedFor(category).photo ? [PHOTO] : [] });
 
 // The turn so far that the hand-off notes are written from: the chat request plus the work the helper did and its reply.
 async function handoffRequest(env, ctx) {
   const { messages } = await chatRequestFor(env, ctx);
   const work = [
-    { role: "assistant", content: "", tool_calls: [{ id: "call_1", type: "function", function: { name: "remember", arguments: JSON.stringify({ step_title: "Saved the pharmacy receipt to expenses", fact: "Pharmacy receipt, $42.18, paid today with Maya's Visa ending 4417. Keep for the insurance claim." }) } }] },
+    { role: "assistant", content: "", tool_calls: [{ id: "call_1", type: "function", function: { name: "remember", arguments: JSON.stringify({ step_title: "Saved the bakery receipt to expenses", fact: "Maple Street Bakery receipt, order 2047, Oct 14 2026, total $72.88, paid with Maya's Visa ending 4417. To send to Priya for reimbursement." }) } }] },
     { role: "tool", tool_call_id: "call_1", content: "Saved to your Notebook under expenses." },
-    { role: "assistant", content: "I added the pharmacy receipt ($42.18) to your expenses and set a reminder for tomorrow at 9 AM to send it to the insurance company. I did not send anything yet." },
+    { role: "assistant", content: "The total on the Maple Street Bakery receipt is $72.88. I added it to your expenses and set a reminder for tomorrow at 9 AM to send it to Priya for reimbursement. I did not send anything yet." },
   ];
   return { messages: [...messages, ...work, { role: "user", content: HANDOFF_PROMPT }], response_format: structuredFormat("handoff_notes", HANDOFF_SCHEMA), stream: true };
 }
@@ -161,9 +173,9 @@ async function labelRequestFor(env, ctx) {
   const e = withSettings(env, ctx), at = NOW(ctx) - 600e3;
   const input = { card: "c1", kind: "chat", title: "New task", name: null,
     msgs: [{ seq: 1, at, text: ASKED }],
-    steps: [{ seq: 2, tool: "remember", title: "Saved the pharmacy receipt to expenses", status: "ok", exit: null, ms: 420, out: "Saved to your Notebook under expenses." },
-      { seq: 3, tool: "schedule_followup", title: "Set a reminder to send the receipt to insurance", status: "ok", exit: null, ms: 610, out: "Reminder set for tomorrow at 9:00 AM." }],
-    handoffs: [], reply: "I added the pharmacy receipt ($42.18) to your expenses and set a reminder for tomorrow at 9 AM to send it to the insurance company.", error: null };
+    steps: [{ seq: 2, tool: "remember", title: "Saved the bakery receipt to expenses", status: "ok", exit: null, ms: 420, out: "Saved to your Notebook under expenses." },
+      { seq: 3, tool: "schedule_followup", title: "Set a reminder to send the receipt to Priya for reimbursement", status: "ok", exit: null, ms: 610, out: "Reminder set for tomorrow at 9:00 AM." }],
+    handoffs: [], reply: "The total on the Maple Street Bakery receipt is $72.88. I added it to your expenses and set a reminder for tomorrow at 9 AM to send it to Priya for reimbursement.", error: null };
   return structuredBody(labelRequest(input, await maxOut(e, "label")), "task_labels", labelSchema(input));
 }
 
@@ -268,13 +280,23 @@ async function ambientReviewRequest(env, ctx) {
 // ---------- golden answers (read by the Sandbox's Golden answers panel; the contract is in app-assets/app-static/sandbox-golden.js) ----------
 // Each one is what a careful reader gets from the sample's own request. The paths are from the job's real answer: the schema in background-schemas.js, or for the
 // decision jobs the answers object (question id -> { choice }).
+const calls = (...names) => ({ type: "items", list: "tool_calls", match: ["name"], value: names.map((name) => ({ name })), extras_fail: false });
+const CHAT_GOLDEN = {
+  general: () => ({ type: "contains", field: null, value: ["72.88"] }),
+  research: () => calls("web_search"),
+  skills: () => calls("read_skill"),
+  spreadsheet: () => calls("read_skill"),
+  technical: () => calls("run_command"),
+  apps_economical: () => ({ type: "contains", field: null, value: ["Chore Tick"] }),
+  apps_complete: () => ({ type: "contains", field: null, value: ["Invoice Desk"] }),
+};
 const GOLDEN = {
   // The hand-off notes' answer is { completed, changed_files, working_commands, decisions, key_facts, unfinished }. The facts the notes must carry from the turn: the
-  // receipt amount ($42.18), the card's last four digits (4417), the insurance company (the claim is the open item) and the reminder ("remind" fits reminder and reminded).
-  handoff: () => ({ type: "contains", field: null, value: ["42.18", "4417", "insurance", "remind"] }),
+  // receipt amount ($72.88), the card's last four digits (4417), what the receipt is for (reimbursement, the open item) and the reminder ("remind" fits reminder and reminded).
+  handoff: () => ({ type: "contains", field: null, value: ["72.88", "4417", "reimbursement", "remind"] }),
   // The task summary's answer is { title, result, summary, why: { "1": ..., "2": ... } } (one why per step, keyed by the step number). The quoted keys "1" and "2" must
   // appear, so a reply that leaves out a why fails, and the words are what the card is about. A golden has one type, so this one text check covers both.
-  label: () => ({ type: "contains", field: null, value: ["\"1\"", "\"2\"", "receipt", "insurance", "remind"] }),
+  label: () => ({ type: "contains", field: null, value: ["\"1\"", "\"2\"", "receipt", "reimbursement", "remind"] }),
   // The file card's answer is { what, summary, names, numbers, dates, outline }. The facts of the estimate (sample-doc text above): the total, what insurance covers, the doctor, the date.
   sidecar_card: () => ({ type: "contains", field: null, value: ["246", "184", "Patel", "October 2"] }),
   // The clean-up pass answers like the final notes (FINAL_NOTES_SCHEMA); the facts it must keep from the meeting: the spend, the contract price, the renewal date, the moved call.
@@ -283,9 +305,16 @@ const GOLDEN = {
   chat_title: () => ({ type: "contains", field: null, value: ["garden"] }),
   // The browser job asks for every exact string to type. The quotes make each one an exact value in the JSON list { values: [...] }. The day is chosen, not typed.
   browser: () => ({ type: "contains", field: "values", value: BROWSER_VALUES.map((v) => `"${v}"`) }),
-  // The chat's first turn for ASKED (a pharmacy receipt photo, add it to expenses, remind me about the insurance): the helper saves the receipt with remember and sets the
-  // reminder with schedule_followup, and calls nothing else (the photo is in the message, so no file tool is needed). tool_calls is the reply's list of { name, arguments }.
-  chat: () => ({ type: "items", list: "tool_calls", match: ["name"], value: [{ name: "remember" }, { name: "schedule_followup" }] }),
+  // The chat's first answer for each category's own first message (ASKED_BY). A golden checks only what every correct first answer does, never the whole job, so extras are allowed
+  // (extras_fail: false) and a first look around (recall_memory, run_command, a question) is not a failure. tool_calls is the reply's list of { name, arguments }.
+  //   general      the photo is in the message, so a reply that read it says the total: "72.88" (the person asks for it in words). The golden reads the reply text and every tool call (name and arguments).
+  //   research     the question needs a current source, and the prompt has no skill for it, so web_search must be called.
+  //   skills       six items looked up in one shape is the wide-research skill, and the prompt says to read a skill with read_skill before starting a task it covers.
+  //   spreadsheet  a spreadsheet is a file the artifacts skill covers, so read_skill comes first. (No other single tool is required: the file can be made with write_file or run_command.)
+  //   technical    a failing test is run or inspected with the shell, so run_command must be called.
+  //   apps_economical and apps_complete  no one tool must come first (a plan, a file write, a command or a skill read are all sound), so the golden is the app's name from the message
+  //                in the reply text or in a tool call (a write_file that creates it counts).
+  chat: (category = "general") => CHAT_GOLDEN[category](),
   // The review's answer is { items: [{ id, verdict, reason, context }] }; the candidate ids are the order of AMBIENT_FOUND.
   ambient_review: () => ({ type: "choices", list: "items", id: "id", field: "verdict", options: ["retain", "uncertain", "drop"],
     value: Object.fromEntries(AMBIENT_FOUND.map((f, i) => [`candidate:${i}`, f.verdict])) }),
@@ -305,7 +334,7 @@ const GOLDEN = {
 };
 
 export const samples = [
-  ...CATEGORIES.map((id) => ({ job: `chat:${id}`, golden: GOLDEN.chat(), via: "model-dispatch.js#dispatch", meta: { kind: "chat" }, build: chatBuild })),
+  ...CATEGORIES.map((id) => ({ job: `chat:${id}`, golden: GOLDEN.chat(id), via: "model-dispatch.js#dispatch", meta: { kind: "chat" }, build: chatBuild(id) })),
   { job: "decider", golden: GOLDEN.decider(), via: "text-decision.js#askJob", build: async (env, ctx) => ({ request: await deciderRequest(env, ctx), files: [] }) },
   { job: "handoff", golden: GOLDEN.handoff(), via: "model-dispatch.js#dispatch", meta: { kind: "chat" }, build: async (env, ctx) => ({ request: await handoffRequest(env, ctx), files: [PHOTO] }) },
   { job: "chat_title", golden: GOLDEN.chat_title(), via: "model-dispatch.js#dispatch", build: async (env, ctx) => ({ request: await chatTitleRequestFor(env, ctx), files: [] }) },
@@ -318,5 +347,5 @@ export const samples = [
   { job: "ambient_extract", golden: GOLDEN.ambient_extract(), via: "model-dispatch.js#dispatch", build: async (env, ctx) => ({ request: await ambientExtractRequest(env, ctx), files: [] }) },
   { job: "ambient_review", golden: GOLDEN.ambient_review(), via: "model-dispatch.js#dispatch", build: async (env, ctx) => ({ request: await ambientReviewRequest(env, ctx), files: [] }) },
   { job: "browser_decider", golden: GOLDEN.browser_decider(), via: "text-decision.js#askJob", meta: { kind: "decider" }, build: async () => ({ request: browserDeciderRequest(), files: [] }) },
-  { job: "workers_ai_chat", golden: GOLDEN.chat(), via: "model-dispatch.js#dispatch", meta: { kind: "chat-fallback" }, build: chatBuild },
+  { job: "workers_ai_chat", golden: GOLDEN.chat(), via: "model-dispatch.js#dispatch", meta: { kind: "chat-fallback" }, build: chatBuild("general") },
 ];

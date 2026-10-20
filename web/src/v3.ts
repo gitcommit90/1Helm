@@ -3827,15 +3827,19 @@ function bfMerge(ch: Channel, srv: BeeFact[]) {
 // it. Edit or Accept, then Possible matches from Contacts, each with Confirm. Confirm links that speaker in that recording to that person;
 // nothing else is ever linked. No helper or status text: the card shows Bee's label, the name given to it, and the matches.
 type BeeSpk = { rec: string; spk: string; label: string; name: string | null; state: "new" | "accepted"; excerpt?: string; at?: number | null };
-const SPK = { edit: "", busy: new Set<string>(), sent: new Set<string>(), matches: {} as Record<string, { id: string; name: string }[] | undefined> };
+const SPK = { demoNone: false, edit: "", busy: new Set<string>(), sent: new Set<string>(), matches: {} as Record<string, { id: string; name: string }[] | undefined> };
 const spkKey = (x: BeeSpk) => `${x.rec}|${x.spk}`;
 const beeSpk = (ch: Channel): BeeSpk[] => ((ch as any).beeSpeakers || []).filter((x: BeeSpk) => !SPK.sent.has(spkKey(x)));
-if (!LIVE) (window as any).__beeSpeakersDemo = (on: boolean | "matched" = true) => { const m = channels.find(c => c.slug === "main"); if (!m) return;
+if (!LIVE) (window as any).__beeSpeakersDemo = (on: boolean | "matched" | "nomatch" = true) => { SPK.demoNone = on === "nomatch"; const m = channels.find(c => c.slug === "main"); if (!m) return;
   (m as any).beeSpeakers = on ? [{ rec: "77", spk: "id:s2", label: "Speaker 2", name: on === "matched" ? "Priya" : null, state: on === "matched" ? "accepted" : "new", excerpt: "Yes, and the bread. … And a bottle of vinho verde.", at: NOW - 3 * H }] : [];
   SPK.matches["77|id:s2"] = on === "matched" ? [{ id: "p1", name: "Priya Shah" }, { id: "p4", name: "Priya Natarajan" }] : undefined; if (isNb()) render(); };
 async function spkCall(body: any): Promise<any> {
   if (LIVE) { try { return await api("/bee/speaker", body); } catch { return { net: true }; } }
-  await new Promise(z => setTimeout(z, 200)); return body.op === "confirm" ? { ok: true } : { ok: true, matches: [{ id: "p1", name: "Priya Shah" }] };
+  await new Promise(z => setTimeout(z, 200));
+  // The sandbox answers like the server: a reviewed speaker with no possible match left (demo "nomatch", or the last "Not them") ends its review.
+  if (body.op === "confirm") return { ok: true };
+  if (body.op === "not_them") { const k = `${body.rec}|${body.spk}`, left = (SPK.matches[k] || []).filter(p => p.id !== body.contact && !WKQ.no.has(`${k}|${p.id}`)); return left.length ? { ok: true } : { ok: true, reviewed: true }; }
+  return SPK.demoNone ? { ok: true, matches: [], reviewed: true } : { ok: true, matches: [{ id: "p1", name: "Priya Shah" }] };
 }
 async function spkMatches(ch: Channel, x: BeeSpk) {
   const k = spkKey(x); SPK.matches[k] = []; const r = await spkCall({ op: "matches", rec: x.rec, spk: x.spk });
@@ -3846,7 +3850,7 @@ async function spkAct(ch: Channel, op: "edit" | "accept" | "confirm", k: string,
   SPK.busy.add(k); SPK.edit = ""; if (op === "confirm") SPK.sent.add(k); nbRefresh();
   const r = await spkCall({ op, rec: x.rec, spk: x.spk, ...extra }); SPK.busy.delete(k);
   if (r?.ok) {
-    if (op === "confirm") (ch as any).beeSpeakers = ((ch as any).beeSpeakers || []).filter((y: BeeSpk) => spkKey(y) !== k);
+    if (op === "confirm" || r.reviewed) (ch as any).beeSpeakers = ((ch as any).beeSpeakers || []).filter((y: BeeSpk) => spkKey(y) !== k);
     else { x.state = "accepted"; if (op === "edit") x.name = extra.name; SPK.matches[k] = Array.isArray(r.matches) ? r.matches : SPK.matches[k]; }
   }
   SPK.sent.delete(k); if (isNb()) nbRefresh();
@@ -4188,7 +4192,8 @@ async function wkNotThem(ch: Channel, k: string, contact: string) {
   const x = beeSpk(ch).find(y => spkKey(y) === k); if (!x) return; const key = `${k}|${contact}`;
   WKQ.no.add(key); nbRefresh();
   const r = await spkCall({ op: "not_them", rec: x.rec, sid: x.spk, spk: x.spk, contact });
-  if (!r?.ok) { WKQ.no.delete(key); wkToast(r); if (isNb()) nbRefresh(); }
+  if (!r?.ok) { WKQ.no.delete(key); wkToast(r); if (isNb()) nbRefresh(); return; }
+  if (r.reviewed) { (ch as any).beeSpeakers = ((ch as any).beeSpeakers || []).filter((y: BeeSpk) => spkKey(y) !== k); if (isNb()) nbRefresh(); }   // the last match answered: the card goes, like Confirm
 }
 // Fact values are textareas that take exactly the height of their text, so Edit never changes a row's height.
 function wkFit() { if (CSS.supports("field-sizing", "content")) return; document.querySelectorAll<HTMLTextAreaElement>(".wkfv").forEach(t => { t.style.height = "0"; t.style.height = `${t.scrollHeight}px`; }); }

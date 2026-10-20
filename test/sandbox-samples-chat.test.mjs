@@ -88,15 +88,30 @@ for (const s of samples) {
   const inJson = (t) => JSON.stringify(t).slice(1, -1);   // the turn data is a JSON block
   const note = attachmentNote({ att: [{ name: "sample-photo.jpg", mime: "image/jpeg", bytes: 184320 }], pics: [pic], sc: { got: [], saved: "", body: "" }, unseen: [], extra: 0 });
   assert.ok(textOf(msgs[3]).includes(inJson(note)), "the attachment note is the real one");
-  assert.match(textOf(last), /pharmacy receipt/, "the person's own words come last, with the picture");
+  assert.match(textOf(last), /Maple Street Bakery receipt from Oct 14/, "the person's own words come last, with the picture, and they match the picture");
+  assert.ok(!/pharmacy/.test(JSON.stringify(msgs)), "nothing in the request calls the receipt a pharmacy receipt");
   assert.ok(textOf(msgs[3]).includes(inJson(currentTimeTag(now, "America/Los_Angeles"))), "the time line is the real one");
   const names = r.tools.map((t) => t.function.name);
   for (const n of ["load_tools", "recall_memory", "web_search", "remember", "list_channels", "start_task"]) assert.ok(names.includes(n), `General tool ${n}`);
   assert.ok(r.tools.every((t) => t.function.parameters.properties.step_title), "every tool has a step_title first");
   assert.equal(r.stream, true);
-  // Every category and the backup chat use this same builder.
+  // Every category and the backup chat use this same builder: the same core prompt, the same tools, and the backup chat sends the general message.
   for (const id of CATEGORIES) assert.deepEqual((await build(`chat:${id}`)).request.messages[0], msgs[0]);
   assert.deepEqual((await build("workers_ai_chat")).request.tools.map((t) => t.function.name), names);
+  assert.deepEqual((await build("workers_ai_chat")).request.messages, msgs, "the backup chat sends the general message");
+  // Each category has its own first message, and only the general one carries the picture.
+  const asked = {};
+  for (const id of CATEGORIES) {
+    const b = await build(`chat:${id}`), m = b.request.messages.at(-1);
+    asked[id] = textOf(m).split("\n\n")[0];
+    assert.equal(typeof m.content === "string", id !== "general", `${id}: the picture is only in the general message`);
+    assert.deepEqual(b.files.map((f) => f.name), id === "general" ? ["sample-photo.jpg"] : [], `${id}: files`);
+    assert.equal(/The person attached/.test(JSON.stringify(b.request.messages)), id === "general", `${id}: the attachment note is only in the general message`);
+  }
+  assert.equal(new Set(Object.values(asked)).size, CATEGORIES.length, "every category has its own message");
+  assert.match(asked.research, /mileage rate/); assert.match(asked.skills, /six family dentists/); assert.match(asked.spreadsheet, /spreadsheet/);
+  assert.match(asked.technical, /expected 1075 to equal 1080/); assert.match(asked.apps_economical, /Chore Tick/); assert.match(asked.apps_complete, /Invoice Desk/);
+  assert.match(asked.general, /Maple Street Bakery/); assert.match(asked.general, /Oct 14/);
 }
 
 // Handoff: the chat request, the work, then the real hand-off prompt with its JSON format.
@@ -174,14 +189,23 @@ for (const s of samples) {
   { const g = await facts("label"); assert.ok(g.value.includes('"1"') && g.value.includes('"2"')); assert.deepEqual(Object.keys(labelSchema({ steps: [1, 2] }).properties.why.properties), ["1", "2"], "one why per step, keyed by number"); }
   { const g = by("browser")[0].golden, r = (await build("browser")).request; assert.equal(g.type, "contains"); assert.ok(g.field in BROWSER_VALUES_SCHEMA.properties);
     assert.equal(g.value.length, 3); for (const p of g.value) { assert.match(p, /^".+"$/, "quoted, so the value is exact"); assert.ok(r.messages[1].content.includes(p.slice(1, -1)), `${p} is in the task`); } }
-  // The chat jobs: the tools the golden expects are in the request's own tool list, for every category and for the Workers AI fallback.
+  // The chat jobs: each golden checks only what a correct first answer must do, extras allowed, and what it expects is in the request.
+  const WANT = { research: "web_search", skills: "read_skill", spreadsheet: "read_skill", technical: "run_command" }, NAME = { apps_economical: "Chore Tick", apps_complete: "Invoice Desk", general: "72.88" };
   for (const job of [...CATEGORIES.map((c) => `chat:${c}`), "workers_ai_chat"]) {
-    const g = by(job)[0].golden, names = (await build(job)).request.tools.map((t) => t.function.name);
-    assert.deepEqual([g.type, g.list, g.match], ["items", "tool_calls", ["name"]], job);
-    assert.deepEqual(g.value.map((e) => e.name), ["remember", "schedule_followup"], job);
-    for (const e of g.value) assert.ok(names.includes(e.name), `${job}: ${e.name} is a tool of the request`);
-    assert.match((await build(job)).request.messages.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n"), /add it to my expenses and remind me/);
+    const id = job.replace(/^chat:/, ""), g = by(job)[0].golden, r = (await build(job)).request, names = r.tools.map((t) => t.function.name);
+    const text = r.messages.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
+    if (WANT[id]) {
+      assert.deepEqual([g.type, g.list, g.match, g.extras_fail], ["items", "tool_calls", ["name"], false], job);
+      assert.deepEqual(g.value, [{ name: WANT[id] }], job);
+      assert.ok(names.includes(WANT[id]), `${job}: ${WANT[id]} is a tool of the request`);
+    } else {
+      assert.deepEqual([g.type, g.field, g.value], ["contains", null, [NAME[id] || NAME.general]], job);
+      if (id !== "general" && job !== "workers_ai_chat") assert.ok(textOf(r.messages.at(-1)).includes(g.value[0]), `${job}: the name is in the message`);
+    }
   }
+  // The general golden reads the photo: the total is on the sample photo's receipt (the fixture's own page), not in the request text.
+  assert.ok(!JSON.stringify((await build("chat:general")).request.messages).includes("72.88"), "the total is only in the picture");
+  assert.equal(by("handoff")[0].golden.value[0], "72.88");
   const itemProps = (schema) => schema.properties.items.items.properties;
 
   // Ambient review: one verdict for each candidate of the request, covering all three verdicts, and the schema's own fields.

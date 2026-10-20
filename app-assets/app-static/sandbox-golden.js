@@ -135,7 +135,11 @@ export function compareGolden(golden, view) {
   }
   const phrases = (Array.isArray(g.value) ? g.value : []).filter((p) => !blank(p));
   if (!phrases.length) return null;
-  const t = textAt(r, g.field), hay = t === null ? "" : t.toLowerCase();
+  // A contains golden with no field (the whole reply) searches the reply text and also every tool call's name and arguments (stringified), so a first answer
+  // that is only tool calls still counts when a call carries the phrase. A golden with an explicit field reads only that field.
+  const wholeReply = g.field == null || g.field === "";
+  const calls = wholeReply && view?.type === "chat" ? toolCallsOf(view).map((c) => `${c.name ?? ""} ${shown(c.arguments)}`).join("\n") : "";
+  const t = wholeReply ? (calls ? `${r.text}\n${calls}` : r.text) : textAt(r, g.field), hay = t === null ? "" : t.toLowerCase();
   const rows = phrases.map((p) => ({ label: String(p), expected: String(p), got: "", ok: hay.includes(String(p).trim().toLowerCase()) }));
   const got = rows.filter((x) => x.ok).length;
   return { type: "contains", got, total: rows.length, rows, extras: [], problem: t === null ? "The reply has no such field." : "", pass: got === rows.length };
