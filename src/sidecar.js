@@ -891,7 +891,7 @@ export function residentSidecar() { return {
   scRow(id) { this.sql.exec(TABLE); return this.sql.exec("SELECT * FROM file_sidecars WHERE file_id=?", String(id)).toArray()[0] || null; },
   // A file arrived (or has new bytes): queue its prep. Cheap and idempotent; never blocks the caller (the job runs elsewhere).
   sidecarKick(f, { force = false } = {}) {
-    if (!f || !sidecarOn(this.env) || !this.env.FILE_PREP || !kindOf(f.name, f.mime)) return null;
+    if (!f || f.hidden || !sidecarOn(this.env) || !this.env.FILE_PREP || !kindOf(f.name, f.mime)) return null;
     const row = this.scRow(f.id);
     if (!force && row && row.src_key === f.r2key && (row.status === "ready" || row.status === "skipped" || row.status === "failed" || now() - Number(row.queued_at || 0) < ROW_STALE_MS)) return row.status;
     // A long file whose card never came: its text stays usable; the job is only asked again (it re-reports, or finishes stage 2).

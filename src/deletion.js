@@ -132,6 +132,26 @@ export async function r2DeletePrefix(env, prefix) {
   return n;
 }
 
+// ---------------------------------------------------------------- live notes ----------------------------------------------------------------
+// The meeting transcripts a task or a channel holds outside its own object: the LiveNotes object's stored lines (it stops a running session and wipes itself) and the R2
+// copy of every session under t/<tenant>/bee/live/<channel>/<task>/. Both end up empty, and the session numbers up to the returned floor are never used again.
+// The Library file and the memory documents live:<task>:s<n> are the Resident's and the memory step's. Safe to run again.
+// The object name is the one live-notes.js lnName makes (not imported: that file pulls in the whole note-taker).
+export async function lnPurgeTask(env, tid, slug, sid) {
+  const prefix = `t/${tid}/bee/live/${slug}/${sid}/`; let floor = 0, cursor;
+  for (let i = 0; i < 50; i++) { const l = await env.WS.list({ prefix, cursor, limit: 1000 }); for (const o of l.objects || []) { const m = /\/s(\d+)\.json$/.exec(o.key); if (m) floor = Math.max(floor, Number(m[1])); } if (!l.truncated) break; cursor = l.cursor; }
+  if (env.LIVE_NOTES) { const r = await env.LIVE_NOTES.get(env.LIVE_NOTES.idFromName(`ln:${tid}:${slug}:${sid}`)).purge({ tenant: tid, channel: slug, task: sid }); floor = Math.max(floor, Number(r?.floor || 0)); }
+  await r2DeletePrefix(env, prefix);
+  return floor;
+}
+export async function lnPurgeChannel(env, tid, slug) {
+  const prefix = `t/${tid}/bee/live/${slug}/`, tasks = new Set(); let cursor;
+  for (let i = 0; i < 50; i++) { const l = await env.WS.list({ prefix, cursor, limit: 1000 }); for (const o of l.objects || []) { const t = o.key.slice(prefix.length).split("/")[0]; if (t) tasks.add(t); } if (!l.truncated) break; cursor = l.cursor; }
+  try { for (const t of await resident(env, tid, slug).lnTasks()) tasks.add(t); } catch (e) { console.log("live notes tasks", e?.message); }
+  for (const t of tasks) await lnPurgeTask(env, tid, slug, t);
+  return (await r2DeletePrefix(env, prefix)) + tasks.size;
+}
+
 // ---------------------------------------------------------------- one chat ----------------------------------------------------------------
 // deleteSession(env, tenantId, slug, sessionId) → { ok, kept: [file names used in other chats, kept], counts, pending }.
 // pending = a turn of that chat is still finishing; the job stays and the cron deletes whatever it writes.
@@ -140,7 +160,10 @@ export async function deleteSession(env, tenantId, slug, sessionId, { reason = "
   const job = await jobStart(env, "session", tenantId, `${slug}/${sid}`, { slug, sid }, reasonOf(reason));
   try {
     // 1. What only the object knows, saved before its rows go: Hindsight items, texted cards (D1).
+    // 0. Its live notes transcripts: a running session stops, the stored lines and the R2 copies go, and the memory documents of every session number it had are deleted with the rest.
+    const lnFloor = await lnPurgeTask(env, tenantId, slug, sid);
     const inv = await R.sessionInventory(sid);
+    for (let i = 1; i <= Math.min(lnFloor, 2000); i++) if (!inv.hsDocs.includes(`live:${sid}:s${i}`)) inv.hsDocs.push(`live:${sid}:s${i}`);
     job.meta.counts ||= {};
     job.meta.counts.hindsight_docs = (job.meta.counts.hindsight_docs || 0) + inv.hsDocs.length;
     await forgetMemoryDocs(env, tenantId, slug, inv.hsDocs);
@@ -196,10 +219,11 @@ async function wipeChannelEverywhere(env, job, tid, slug, cid, prefix = "") {
   const A = archive(env, tid), DB = env.DB, k = (n) => `${prefix}${n}`;
   if (cid != null) await step(env, job, k("hide"), () => A.markChannelDeleting(cid));
   await step(env, job, k("schedules"), async () => Number((await DB.prepare("DELETE FROM resident_schedules WHERE tenant_id=? AND channel=?").bind(tid, slug).run()).meta?.changes || 0));
+  await step(env, job, k("live_notes"), () => lnPurgeChannel(env, tid, slug));   // before the channel object goes: it knows which tasks had live notes
   await step(env, job, k("resident"), async () => { const R = resident(env, tid, slug); await R.bind(tid, slug, String(cid ?? '')); return R.wipeChannel(); });
   if (env.NATIVE_TRANSPORT) await step(env, job, k('native_transport'), () => env.NATIVE_TRANSPORT.get(env.NATIVE_TRANSPORT.idFromName(`${tid}:${slug}`)).wipe({ tenant: tid, channel: slug }));
   await step(env, job, k("computer"), () => ccOf(env, tid, slug).wipe());
-  await step(env, job, k("r2"), async () => { let n = 0; for (const p of [`t/${tid}/c/${slug}/`, `t/${tid}/files/${slug}/`, `t/${tid}/shots/${slug}/`]) n += await r2DeletePrefix(env, p); return n; });
+  await step(env, job, k("r2"), async () => { let n = 0; for (const p of [`t/${tid}/c/${slug}/`, `t/${tid}/files/${slug}/`, `t/${tid}/shots/${slug}/`, `t/${tid}/bee/live/${slug}/`]) n += await r2DeletePrefix(env, p); return n; });
   await step(env, job, k("hindsight"), async () => {
     if (!hsOn(env)) return 0;
     const r = await forgetChannel(env, tid, slug);

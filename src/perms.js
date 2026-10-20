@@ -214,7 +214,9 @@ export function takeGrant(res, tc, kind) {
   return !!g;
 }
 
-const HOLD_MS = 120e3, TICK = 500;
+export const EXPIRED_TEXT = "The question \"Inspect other channels?\" wasn't answered in time, so it was closed and nothing was read from other channels. Answer from General's own memory, and say in one short line that you didn't look in other channels.";
+export const HOLD = { ms: 120e3 };   // how long a card holds the call (tests shorten it)
+const TICK = 500;
 // key: what an answer covers in this turn (tc.permOk / tc.permNo): the kind, or "personal@<site>" for personal details.
 export async function askPerson(res, tc, kind, what, key = kind) {
   const sql = res.sql, now = Date.now(), session = tc.session || null;
@@ -230,7 +232,7 @@ export async function askPerson(res, tc, kind, what, key = kind) {
   (res._permHeld ||= new Set()).add(a.id);
   try {
     tc.emit?.({ t: "approval", approval: res.approvalView(a) });
-    for (let i = 0; i < HOLD_MS / TICK; i++) {
+    for (let i = 0; i < HOLD.ms / TICK; i++) {
       const cur = sql.exec("SELECT status, decision FROM approvals WHERE id=?", a.id).one();
       if (cur.status !== "pending") {
         tc.emit?.({ t: "approval_done", id: a.id, status: cur.status });
@@ -243,6 +245,10 @@ export async function askPerson(res, tc, kind, what, key = kind) {
       await new Promise((z) => setTimeout(z, TICK));
     }
   } finally { res._permHeld.delete(a.id); }
+  if (kind === "channels") {   // General's front door: an unanswered card closes (expired) so a late tap can't resume this turn; the turn goes on with nothing read
+    sql.exec("UPDATE approvals SET status='expired', decided_at=? WHERE id=? AND status='pending'", Date.now(), a.id);
+    if (sql.exec("SELECT status FROM approvals WHERE id=?", a.id).one().status === "expired") { (tc.permExpired ||= new Set()).add(key); tc.emit?.({ t: "approval_done", id: a.id, status: "expired" }); return EXPIRED_TEXT; }
+  }
   return needs(kind, texted && !live ? "on their phone and in the app" : "in the app, on this task");
 }
 

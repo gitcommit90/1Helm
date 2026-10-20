@@ -22,5 +22,7 @@ export function channelLayers(o, extra = {}) {
     connections: o.appsLine || "No connected apps.", texting: o.textingLine || "",
     saved_credentials: "Availability details can be read with read_context. Secret values are never returned.",
     channel_skills: o.skillsLine || "", pinned_notes: o.pinned || "", ...(o.memoryProfile ? { memory_profile: o.memoryProfile } : {}), earlier_channel_messages: o.recent || "",
+    // General only. Kept in the standing data, not the frozen runtime message, so an existing task sees it and a changed list reaches it as a USER CONTEXT UPDATE.
+    ...(o.general && o.channelsLine ? { other_channels: o.channelsLine } : {}),
   } };
 }

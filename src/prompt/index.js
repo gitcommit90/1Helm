@@ -98,6 +98,7 @@ export function channelBlock(o = {}) {
   L.push(o.loginsLine || "Saved logins: none.");
   if (o.appsLine) L.push(String(o.appsLine).trim());
   if (o.textingLine) L.push(o.textingLine);   // texting.js textingPromptLine: their helper number + phone, or how to set it up
+  if (o.channelsLine && o.general) L.push(o.channelsLine);   // General only (front-door.js channelsLine)
   if (o.permLine) L.push(o.permLine);
   if (o.skillsLine) L.push(o.skillsLine);   // this channel's own skills (skills/channel.js), only when it has any   // Settings → Permissions, only when stricter than Standard (perms.js)
   L.push("");

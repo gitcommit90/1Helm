@@ -15,7 +15,7 @@ export function nativeHandoffText(event: any): string {
     : event?.text || "";
 }
 export function nativeReceiptStatus(a: any): string {
-  if (!["ssh", "ssh_hostkey"].includes(a?.perm)) return "pending";
+  if (!["ssh", "ssh_hostkey"].includes(a?.perm)) return a?.perm === "channels" && a.status === "expired" ? "expired" : "pending";   // General's front door card closed without an answer
   if (a.status === "approved") return "once";
   if (a.status === "denied") return "deny";
   return ["pending", "consumed", "cancelled", "expired", "failed", "host_key_required"].includes(a.status) ? a.status : "failed";

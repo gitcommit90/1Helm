@@ -10,6 +10,7 @@ assert.equal(nativeResumeInput({kind:'handoff',from:[{type:'ssh',id:6}]}),true);
 for(const card of [null,{}, {kind:'chat',from:[{type:'ssh'}]}, {kind:'handoff',from:[{type:'helper'}]}, {kind:'chat',text:'(Platform event: the person approved one SSH session...)'}])assert.equal(nativeResumeInput(card),false);
 for(const [status,wanted] of [['pending','pending'],['consumed','consumed'],['approved','once'],['denied','deny'],['failed','failed'],['host_key_required','host_key_required'],['expired','expired'],['unexpected','failed']])assert.equal(nativeReceiptStatus({perm:'ssh',status}),wanted);
 assert.equal(nativeReceiptStatus({perm:'confirm',status:'pending'}),'pending');
+assert.equal(nativeReceiptStatus({perm:'channels',status:'expired'}),'expired');assert.equal(nativeReceiptStatus({perm:'channels',status:'pending'}),'pending');assert.equal(nativeReceiptStatus({perm:'email',status:'expired'}),'pending');
 const v3=await readFile('src/v3.ts','utf8');
 assert.match(v3,/if \(lm.length\) lm.forEach/,'real human steer events still render before fallback guard');
 assert.match(v3,/d.live.user_text && !nativeResumeInput\(d.live.card\) && !internalHandoffInput\(d.live.card\)/);

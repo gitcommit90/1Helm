@@ -237,7 +237,7 @@ async function getSid(env, tid) { if (SID.has(tid)) return SID.get(tid); const r
 async function setSid(env, tid, sid) { SID.set(tid, sid); await env.DB.prepare("UPDATE composio_self SET mcp_sid=? WHERE tenant_id=?").bind(sid, tid).run().catch(() => {}); }
 // Rate limits (stage 6): the person's own Composio organization has its own budget, so each Self-managed workspace has its own gauge.
 const GAUGES = new Map();
-const gaugeOf = (tid) => { let g = GAUGES.get(tid); if (!g) { if (GAUGES.size > 500) GAUGES.clear(); GAUGES.set(tid, (g = new RateGauge())); } return g; };
+export const gaugeOf = (tid) => { let g = GAUGES.get(tid); if (!g) { if (GAUGES.size > 500) GAUGES.clear(); GAUGES.set(tid, (g = new RateGauge())); } return g; };
 // A Connect call that only reads: search, schemas, and MANAGE_CONNECTIONS when every toolkit is a "list". MULTI_EXECUTE is a read only
 // when the caller checked every action in it (opts.read: app_run's read-only check / multiExecute).
 export const mcpReadOnly = (tool, args = {}, opts = {}) => tool === "COMPOSIO_SEARCH_TOOLS" || tool === "COMPOSIO_GET_TOOL_SCHEMAS" || (tool === "COMPOSIO_MULTI_EXECUTE_TOOL" && opts.read === true)
@@ -275,7 +275,7 @@ export async function mcpCall(env, tid, tool, args = {}, opts = {}) {
     if (!sid) {
       const i = await post(tok.access, null, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: PROTO, capabilities: {}, clientInfo: { name: "1Helm", version: "1" } } }, gauge, CALL_MS("", env));
       if (i.status === 401) { await unauthorized(); continue; }
-      if (i.status === 429 || i.dropped || i.status >= 500) { if (await again(i.status === 429 ? retryAfterMs(i.headers) : null, i.status === 429 ? "429 starting" : "no answer starting")) continue; if (i.status === 429) throw rateLimited(); }   // nothing has run yet
+      if (i.status === 429 || i.dropped || i.status >= 500) { if (await again(i.status === 429 ? retryAfterMs(i.headers) : null, i.status === 429 ? "429 starting" : "no answer starting")) continue; if (i.status === 429) throw rateLimited(retryAfterMs(i.headers)); }   // nothing has run yet
       if (i.status !== 200) throw new Error(`Composio didn't start a connection (HTTP ${i.status}). Try again in a minute.`);
       sid = i.sid || STATELESS; await setSid(env, tid, sid);
       await post(tok.access, sid, { jsonrpc: "2.0", method: "notifications/initialized", params: {} }).catch(() => {});
@@ -283,7 +283,7 @@ export async function mcpCall(env, tid, tool, args = {}, opts = {}) {
     const r = await post(tok.access, sid, { jsonrpc: "2.0", id: now(), method: "tools/call", params: { name: tool, arguments: args || {} } }, gauge, CALL_MS(tool, env));
     if (r.status === 401) { await unauthorized(); continue; }
     if (r.status === 400 || r.status === 404) { await setSid(env, tid, null); continue; }   // the MCP session expired: start a new one
-    if (r.status === 429) { if (await again(retryAfterMs(r.headers), "429")) continue; rateLog("429, gave up", "POST", what); throw rateLimited(); }
+    if (r.status === 429) { if (await again(retryAfterMs(r.headers), "429")) continue; rateLog("429, gave up", "POST", what); throw rateLimited(retryAfterMs(r.headers)); }
     if (r.dropped || r.status >= 500 || r.status === 408) {
       const why = r.dropped === "timeout" ? "Composio didn't answer in time" : r.dropped ? "the connection to Composio dropped" : `Composio answered HTTP ${r.status}`;
       if (!read) { rateLog(`write not retried (${r.dropped || `HTTP ${r.status}`})`, "POST", what); throw unknownOutcome(why); }

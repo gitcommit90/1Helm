@@ -385,6 +385,7 @@ export const writerMethods = {
   async hsFileSync(fileId, { md = null, force = false } = {}) {
     if (!this.hsW()) return { skipped: "off" };
     const f = this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(fileId)).toArray()[0];
+    if (f?.hidden) return { skipped: "a hidden file for the helper: the live notes transcript is already retained as live:<task>:s<n>" };
     if (!f || f.pending) return { dropped: await this.hsDropDocs([DOC.file(fileId)]) };
     const r = await this.hsFileText(f, md); if (!r) return { skipped: "no text yet" };
     const sig = `${f.r2key}:${r.md.length}`;
@@ -444,6 +445,7 @@ export const writerMethods = {
   },
   // ---- live notes (DESIGN 5.1): the LiveNotes object sends raw lines, the Resident knows the names and the time zone ----
   async hsLiveAppend({ task, n, rows, mic = false, at, key }) {
+    if (this.lnBlocked?.(task, n)) return { skipped: "deleted" };   // the meeting notes were deleted: no line of that meeting goes into memory again
     if (!this.hsW()) return { skipped: "off" };
     const { names, tz, channel } = await this.hsLocal(), entries = liveEntries(rows, { first: names.first, tz, mic });
     if (!entries.length) return { skipped: "empty" };

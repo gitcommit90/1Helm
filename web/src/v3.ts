@@ -1805,24 +1805,38 @@ function cxErrRow() {
 const CXPEND: { app: string; label: string; offer: { ch: string; id: number } | null; at: number; known: string[] | null } = { app: "", label: "", offer: null, at: 0, known: null };
 const wsBase = () => (LIVE?.api || "").replace(/\/api$/, "");
 const offerDone = (app: string, offer: { ch: string; id: number }) => `${wsBase()}/apps/done?app=${encodeURIComponent(app)}&from=offer&ch=${encodeURIComponent(offer.ch)}&oid=${offer.id}`;
+// Coming back to the tab fires both "visibilitychange" and "focus", and every check lists the person's Composio accounts, so one check
+// runs at a time and at most one every 5 s (composio-ratelimit: Composio's request limit is per organization, per minute).
+let cxPendBusy = false, cxPendLast = 0;
 function cxPendCheck() {
-  if (!LIVE || !CXPEND.app || document.hidden) return;
+  if (!LIVE || !CXPEND.app || document.hidden || cxPendBusy) return;
   if (Date.now() - CXPEND.at > 20 * 60e3) { CXPEND.app = ""; return; }
+  if (Date.now() - cxPendLast < 5000) return;
+  cxPendBusy = true; cxPendLast = Date.now();
   fetch(`${LIVE.api}/apps?fresh=1`, { credentials: "same-origin" }).then(r => r.json()).then(d => {
     cmSet(d); cxSet(d.accounts); const p = { ...CXPEND }; if (!p.app) return;
     const a = (d.accounts || []).find((x: Acct) => x.app === p.app && x.status === "connected" && !(p.known || []).includes(x.id)); if (!a) return;
     CXPEND.app = "";
     if (p.offer) { location.assign(offerDone(p.app, p.offer)); return; }
     note(ic.check, `${a.name || p.label || p.app} connected`, `${who(main)} can use it now. Just ask.`, "");
-  }).catch(() => {});
+  }).catch(() => {}).finally(() => { cxPendBusy = false; cxPendLast = Date.now(); });
 }
 document.addEventListener("visibilitychange", cxPendCheck); window.addEventListener("focus", cxPendCheck);
+// The server answers { wait } instead of a link while Composio's one-minute request limit is spent (or right after another link was made for
+// this workspace). The button keeps showing "Opening", the new tab stays as it is, and the request is made again when the wait is over, so the
+// person never lands on Composio's "Too many requests" page. Only a wait of more than 6 s gets a line of its own.
 function appConnect(app: string, from: string, label = "", offer: { ch: string; id: number } | null = null, another = false) {
   if (!LIVE || CX.busy) return; CX.busy = app; appsRefresh(); if (S.open) sRender();
   const tab = cmNewTab(app) ? window.open("about:blank", "_blank") : null;   // opened now, while it's still the tap (no popup block)
   const done = () => { CX.busy = ""; appsRefresh(); if (S.open) sRender(); };
-  fetch(`${LIVE.api}/apps/connect`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ app, from: offer ? "offer" : from, ...(offer ? { offer } : {}), ...(another ? { another: true } : {}) }) }).then(r => r.json())
+  let told = false;
+  const ask = (tries: number): Promise<void> => fetch(`${LIVE.api}/apps/connect`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ app, from: offer ? "offer" : from, ...(offer ? { offer } : {}), ...(another ? { another: true } : {}) }) }).then(r => r.json())
     .then(d => {
+      if (d.wait && tries < 8) {
+        if (d.wait > 6 && !told) { told = true; note(g("help", 14), `Getting the ${label || "app"} sign-in page ready`, "It opens by itself in a moment.", ""); }
+        setTimeout(() => { ask(tries + 1); }, Math.min(65, Math.max(1, d.wait)) * 1000 + 250); return;
+      }
+      if (d.wait) { tab?.close(); done(); note(g("help", 14), `Couldn't open ${label || "that app"}`, "Composio is busy. Try again in a minute.", ""); return; }
       if (d.already) { tab?.close(); done(); cxLoad(true); if (offer) location.assign(offerDone(app, offer)); else note(ic.check, `${label || "That app"} is already connected`, `It's connected in your Composio account. ${who(main)} can use it now.`, ""); return; }
       if (d.url && d.newtab) {
         if (tab && !tab.closed) tab.location.href = d.url; else window.open(d.url, "_blank");
@@ -1833,6 +1847,7 @@ function appConnect(app: string, from: string, label = "", offer: { ch: string; 
       if (d.url) location.assign(d.url); else { done(); note(g("help", 14), `Couldn't open ${label || "that app"}`, d.error || "Try again in a minute.", ""); }
     })
     .catch(() => { tab?.close(); done(); });
+  ask(0);
 }
 const fmtDay = (iso: string) => { const d = new Date(iso); return isNaN(+d) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); };
 // App logos (Connected accounts, the connect card, the Apps list, app detail): logo.ts appLogo — tinted initial tile at once, the

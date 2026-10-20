@@ -77,7 +77,7 @@ function permHtml(a: Approval, v: ApView, o: ApOpts) {
   const btn = (k: Decision, cls: string, label: string) =>
     `<button type="button" class="gu-b ${cls}${busy === k ? " busy" : ""}" ${o.attr(k)}${dis}>${busy === k ? `<i class="gu-bspin" aria-hidden="true"></i>` : ""}${label}</button>`;
   let foot = "";
-  if (st === "expired") foot = `<div class="gu-pgone">${CLOCK}<span>This request expired. ${esc(o.helper)} will ask again if it still needs to.</span></div>`;
+  if (st === "expired") foot = `<div class="gu-pgone">${CLOCK}<span>${a.perm === "channels" ? `This request expired. Nothing was read from your other channels. ${esc(o.helper)} will ask again if it still needs to.` : `This request expired. ${esc(o.helper)} will ask again if it still needs to.`}</span></div>`;
   else if (done) {
     const d = st === "deny" ? { ok: false, label: "Not allowed", after: "" } : apDone(st, o.helper, "")!;
     foot = `<div class="gu-pdone" role="status"><span class="gu-b ${d.ok ? "picked" : "nope"}">${d.ok ? "✓ " : ""}${esc(d.label)}</span>${d.after ? `<span>${esc(d.after)}</span>` : ""}</div>`;
@@ -122,7 +122,7 @@ export function approvalHtml(a: Approval, v: ApView, o: ApOpts) {
   const btn = (k: Decision, cls: string, label: string) =>
     `<button type="button" class="gu-b ${cls}${busy === k ? " busy" : ""}" ${o.attr(k)}${dis}>${busy === k ? `<i class="gu-bspin" aria-hidden="true"></i>` : ""}${label}</button>`;
   let foot = "";
-  if (st === "expired") foot = `<div class="gu-pgone">${CLOCK}<span>This request expired. ${esc(o.helper)} will ask again if it still needs to.</span></div>`;
+  if (st === "expired") foot = `<div class="gu-pgone">${CLOCK}<span>${a.perm === "channels" ? `This request expired. Nothing was read from your other channels. ${esc(o.helper)} will ask again if it still needs to.` : `This request expired. ${esc(o.helper)} will ask again if it still needs to.`}</span></div>`;
   else if (done) {
     const d = apDone(st, o.helper, o.channel)!;
     foot = `<div class="gu-pdone" role="status"><span class="gu-b ${d.ok ? "picked" : "nope"}">${d.ok ? "✓ " : ""}${esc(d.label)}</span>${d.after ? `<span>${esc(d.after)}</span>` : ""}</div>`;

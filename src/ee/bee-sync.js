@@ -707,6 +707,8 @@ export class BeeSync extends DurableObject {
     if (name) await this.lnWatch(x, name); else for (const id of x) this.pend(id, "live notes");
     return this.poke(why, ENDED_KICK_MS);
   }
+  // A task's live notes were deleted: it is told nothing more about Bee's conversations.
+  async lnUnwatch(name) { const w = this.lnWatches(); for (const [k, v] of Object.entries(w)) { const names = (v?.names || []).filter((x) => x !== name); if (names.length) w[k] = { ...v, names }; else delete w[k]; } this.put("ln_watch", JSON.stringify(w)); return { ok: true }; }
   lnWatches() { try { const w = JSON.parse(this.get("ln_watch") || "{}"); for (const [k, v] of Object.entries(w)) if (now() - (v?.at || 0) > 7 * 86400e3) delete w[k]; return w; } catch { return {}; } }
   async lnNotify(conv) {
     const w = this.lnWatches(), x = w[Number(conv.id)]; if (!x || !this.env.LIVE_NOTES) return;

@@ -77,6 +77,9 @@ export const residentDeletion = {
       for (const c of chunks(turns)) for (const r of this.sql.exec(`SELECT at, session, workflow_id FROM turns WHERE id IN (${ph(c)})`, ...c).toArray()) for (const d of [-1, 0, 1]) add(convDocOf({ session: r.session, workflowId: r.workflow_id, at: Number(r.at) + d * 86400e3 }, tz));
       add(DOC.task(sid)); if (has(this.sql, "hs_outbox")) for (const d of new Set(wd)) this.sql.exec("DELETE FROM hs_outbox WHERE doc=? AND del=0", d);   // a queued write for the deleted chat never lands
     }
+    // The task's live notes transcripts in memory: live:<task>:s<n> for every session number it ever had (the Worker adds the ones the LiveNotes object and R2 know).
+    const lv = this.lnView?.(sid), lnN = Math.min(2000, Math.max(0, Number(lv?.n || 0), ...(lv?.sessions || []).map((x) => Number(x.n) || 0), this.lnx?.(sid).floor || 0));
+    for (let i = 1; i <= lnN; i++) wd.push(`live:${sid}:s${i}`);
     return { exists: !!this.session(sid), turns, approvals, plans, interviews, agentMemory: this.eeDeletion.agentSessionInventory(this,sid), hsDocs: [...turns.map((t) => `turn-${t}`), ...mj, ...new Set(wd)], texts: this.textsSessions().includes(sid), default: this.getRaw("default_session") === sid, live: this.liveIn(sid), bank: this.hsBankId?.() || null };
   },
   // Is this file used outside the chat being deleted? (attached to a message in another chat, or held for a scheduled message
@@ -116,7 +119,7 @@ export const residentDeletion = {
     if (this.getRaw("default_session") === sid) this.put("default_session", "");
     const texts = this.textsSessions();
     if (texts.includes(sid)) { this.put("texts_sessions", JSON.stringify(texts.filter((x) => x !== sid))); if (this.getRaw("texts_session") === sid) this.put("texts_session", ""); }
-    delIn(sql, "kv", "k", [`own_inc:${sid}`, `jev_failed:${sid}`]);
+    delIn(sql, "kv", "k", [`own_inc:${sid}`, `jev_failed:${sid}`]); sql.exec("DELETE FROM kv WHERE k LIKE ? OR k LIKE ? OR k=?", `lnt:${sid}:%`, `lnx:${sid}`, `lnx:${sid}`); delWhere(sql, "live_notes", "session=?", sid);   // live notes: the hidden transcript files' ids, the record of deleted notes, the mirror
     const until = Date.now() + waitMs; while (this.liveIn(sid) && Date.now() < until) await sleep(200);
     const { turns, workflows } = this.sessionTurnIds(sid), cards = new Set(turns);
     // 3. Files made or attached only in this chat: bytes out of R2 first, then the rows (a crash in between re-runs cleanly).
@@ -125,7 +128,7 @@ export const residentDeletion = {
       for (const id of jp(l.files)) { const f = sql.exec("SELECT * FROM files WHERE id=? AND pending>0", String(id)).toArray()[0]; if (f && !files.some((x) => x.id === f.id)) files.push(f); }
     const kept = [], gone = [];
     for (const f of files) {
-      const use = this.fileUseElsewhere(f.id, sid, cards);
+      const use = f.hidden ? null : this.fileUseElsewhere(f.id, sid, cards);   // a hidden live notes transcript goes with its task
       if (use) { sql.exec("UPDATE files SET session=?, turn=? WHERE id=?", use.session, use.turn, f.id); kept.push(f.name); } else gone.push(f);
     }
     const shots = sql.exec("SELECT id, r2key FROM shots WHERE session=?", sid).toArray();

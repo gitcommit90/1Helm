@@ -57,6 +57,7 @@ import { sttModels } from "../transcribe.js";
 import { structuredFormat, parseStructuredResponse, validateStructured } from "../structured-output.js";
 import { NOTE_PATCH_SCHEMA, FINAL_NOTES_SCHEMA } from "../background-schemas.js";
 import { PLAIN_STYLE } from "../plain-style.js";
+import { nameChat, applyChatTitle, CHAT_TITLE_TEXT_MAX } from "../chat-titles.js";   // the task's name after a meeting: the same chat_title job as every other chat
 import { hsWriters } from "../hs-flag.js";   // HS_WRITERS: the transcript goes into the channel's bank as live:<task>:s<n>, the meeting notes as a file
 
 // The note-taker's cadence (noteDueAt). First pass: 12 s after the first new line (or as soon as 240 chars came in), so notes show
@@ -163,7 +164,24 @@ export function refineMessages({ s, title, tz, cur, human, depth, text }) {
 }
 export const lnName = (tenant, channel, task) => `ln:${tenant}:${channel}:${task}`;
 export const transcriptKey = (tid, channel, task, n) => `t/${tid}/bee/live/${channel}/${task}/s${n}.json`;
-export const STOP_RE = /\b(stop|end|turn off|finish|pause)\b[^.?!\n]{0,24}\blive[ -]?notes\b/i;
+// File names (Library): the notes file and each session's hidden transcript carry the task's title and the meeting's start in the person's zone, so they are unique.
+export const isDefaultTitle = (t) => String(t ?? "").replace(/\s+/g, " ").trim().toLowerCase() === "live notes";   // the title every new live notes task starts with
+export const stampOf = (ms, tz) => fmt(ms, tz, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).replace(/\s+/g, " ");   // "Oct 20, 2:05 PM"
+const nameTitle = (t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 60) || "Meeting";
+export const notesFileName = (title, ms, tz) => safeName(`${nameTitle(title)} · Meeting notes · ${stampOf(ms, tz)}.md`);
+export const transcriptFileName = (title, n, ms, tz) => safeName(`${nameTitle(title)} · Transcript s${n} · ${stampOf(ms, tz)}.json`);
+export const LEGACY_NOTES_RE = /^(?:Live notes|Meeting) · Meeting notes(?: \(\d+\))?\.md$/;   // names made before the date and time were added: still ours to rename
+// The session's transcript as the hidden Library file and the Raw transcript link serve it: JSON, one utterance per line (read_file and search_files work on it),
+// with the clock time in the person's zone on each line. The same shape as the R2 copy always had (the app's viewer reads started_at and utterances).
+export function transcriptBody({ s, task, n, tz, utts, title = "", live = false, transcription = null }) {
+  const mic = s.source === "mic", t = (ms) => fmt(ms, tz, { hour: "numeric", minute: "2-digit", second: "2-digit" }).replace(/\s+/g, " ");
+  const head = { note: `Raw speech-recognition transcript of ${nameTitle(title)}, session ${n}, ${dayLine(s.started_at, tz)}, ${hm(s.started_at, tz)}${s.ended_at ? `-${hm(s.ended_at, tz)}` : ", still live (lines are added about once a minute)"}. It has errors. Times are in ${tz || "UTC"}.`,
+    source: mic ? "mic" : "bee", task, session: n, started_at: s.started_at, ended_at: s.ended_at || null, live, conversations: s.convs || [],
+    ...(mic ? { microphone: { chunks: s.chunks || 0, paused: s.pauses || [], ...(transcription ? { transcription } : {}) } } : {}) };
+  const rows = utts.map((u) => JSON.stringify(mic ? { id: u.uid, at: u.at, time: t(u.at), text: u.text } : { conv: u.conv, id: u.uid, at: u.at, time: t(u.at), speaker: u.speaker, text: u.text, realtime: !!u.rt }));
+  return `${JSON.stringify(head).slice(0, -1)},"utterances":[\n${rows.join(",\n")}\n]}\n`;
+}
+export const STOP_RE =/\b(stop|end|turn off|finish|pause)\b[^.?!\n]{0,24}\blive[ -]?notes\b/i;
 const now = () => Date.now();
 const usd = (nano) => { const d = Number(nano || 0) / 1e9; return d > 0 && d < 0.005 ? "<$0.01" : `$${d.toFixed(2)}`; };
 const jp = (s, d = null) => { try { return s == null ? d : JSON.parse(s); } catch { return d; } };
@@ -474,11 +492,11 @@ export class LiveNotes extends DurableObject {
       CREATE TABLE IF NOT EXISTS chunks (n INTEGER NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, bytes INTEGER NOT NULL, nano INTEGER NOT NULL, lines INTEGER NOT NULL, got INTEGER NOT NULL, PRIMARY KEY (n, seq));`);
   }
   get(k) { return this.sql.exec("SELECT v FROM kv WHERE k=?", k).toArray()[0]?.v; }
-  put(k, v) { if (v == null) this.sql.exec("DELETE FROM kv WHERE k=?", k); else this.sql.exec("INSERT INTO kv VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", k, String(v)); }
+  put(k, v) { if (this._purged) return; if (v == null) this.sql.exec("DELETE FROM kv WHERE k=?", k); else this.sql.exec("INSERT INTO kv VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", k, String(v)); }
   tid() { return this.get("tenant"); }
   name() { return lnName(this.tid(), this.get("channel"), this.get("task")); }
   s(n = Number(this.get("n") || 0)) { return n ? jp(this.sql.exec("SELECT st FROM sess WHERE n=?", n).toArray()[0]?.st) : null; }
-  setS(n, o) { const x = { ...(this.s(n) || {}), ...o }; this.sql.exec("INSERT INTO sess (n, st) VALUES (?,?) ON CONFLICT(n) DO UPDATE SET st=excluded.st", n, JSON.stringify(x)); return x; }
+  setS(n, o) { if (this._purged) return { ...(this.s(n) || {}), ...o }; const x = { ...(this.s(n) || {}), ...o }; this.sql.exec("INSERT INTO sess (n, st) VALUES (?,?) ON CONFLICT(n) DO UPDATE SET st=excluded.st", n, JSON.stringify(x)); return x; }
   // The session's diagnostics: fn(diag) changes the object, and it is saved with the session. Never throws.
   diag(n, fn) { try { const s = this.s(n); if (s) this.setS(n, { diag: fn(s.diag || {}) }); } catch (e) { console.log("live notes diag", String(e?.message || e).slice(0, 100)); } }
   oursOf(n) { return new Set(this.sql.exec("SELECT line FROM ours WHERE n=?", n).toArray().map((r) => r.line)); }
@@ -539,15 +557,16 @@ export class LiveNotes extends DurableObject {
     return { error: "the notes kept changing; will try again" };
   }
   async makeDoc(text = null) {
-    const name = safeName(`${String(this.get("title") || "Meeting").slice(0, 80)} · Meeting notes.md`);
+    const name = notesFileName(this.get("title"), now(), this.tz()); this.put("notes_t0", now());
     const f = await this.res().lnDocCreate(this.get("task"), name, text ?? docHeader(this.get("title"), this.get("want_source") || this.s()?.source));
     if (!f?.id) return null;
-    this.put("file_id", f.id); this.put("file_name", f.name); this.put("file_v", f.version || 1); return f;
+    this.put("file_id", f.id); this.put("file_name", f.name); this.put("file_gen", f.name); this.put("file_v", f.version || 1); return f;
   }
 
   // ---- Start (§9.1) ----
   // o: {tenant, channel, channelId, task, title, tz, source ("bee" | "mic"; nothing = Bee), mic (the device's mic id)}. → the view, or {error}.
   async start(o = {}) {
+    this._purged = false;   // a new meeting after the notes were deleted (purge)
     for (const k of ["tenant", "channel", "task"]) if (o[k]) this.put(k, o[k]);
     if (o.channelId) this.put("channel_id", o.channelId); if (o.title) this.put("title", String(o.title).slice(0, 120)); if (o.tz) this.put("tz", o.tz);
     const st = this.get("status") || "idle";
@@ -564,7 +583,7 @@ export class LiveNotes extends DurableObject {
     if (!c?.ok) return { ...this.view(), error: `Live notes are already on in “${c?.busy?.title || "another task"}”. Stop them there first.` };
     let d = await this.readDoc().catch(() => null);
     if (!d) { if (!(await this.makeDoc())) { await B?.liveRelease(this.name()); return { ...this.view(), error: "Couldn't create the notes file (is your storage full?)." }; } d = await this.readDoc(); }
-    const n = Math.max(Number(this.get("n") || 0), ...sessionsIn(d?.text || "").map((x) => x.n)) + 1, t0 = now();
+    const n = Math.max(Number(this.get("n") || 0), Number(this.get("floor") || 0), ...sessionsIn(d?.text || "").map((x) => x.n)) + 1, t0 = now();   // never a number a deleted meeting had: its memory documents are deleted by id
     this.setS(n, { n, started_at: t0, convs: [], cost_nano: 0, job_nano: 0, tokens: 0, notes: 0, note_upto: 0, prev: prevContext(d?.text || "", n), cont_at: t0, seen_at: t0, away_since: null, ask_at: null,
       source: pick.source, ...(mic ? { via: VIA.has(o.via) ? o.via : "mic", vias: [VIA.has(o.via) ? o.via : "mic"], mic_id: o.mic, mic_state: "live", mic_state_at: t0, mic_ping_at: t0, pauses: [], chunks: 0, stt_nano: 0, stt_ms: 0 } : {}) });
     this.put("n", n); this.put("status", "live"); this.put("job", null);
@@ -689,6 +708,7 @@ export class LiveNotes extends DurableObject {
     const s = this.s(n);
     if (!this.get("replay") && this.noteDue(n, s, t)) { await this.notePass(n); this._dirty = true; }
     await this.hsLivePush(n).catch((e) => console.log("live notes memory", String(e?.message || e).slice(0, 120)));   // HS_WRITERS: new transcript lines → memory, on its own cadence
+    await this.trPut(n, { minGap: 60e3 });   // the hidden transcript file, so the helper can read the whole meeting so far (no model call)
     if (this.get("status") === "live" && (this._dirty || t - Number(this.get("mirror_at") || 0) > 30e3)) { this.put("mirror_at", t); await this.mirror(); }
   }
   // A model call, reserved first. → {text, nano, tokens} | {refused: reason} | throws.
@@ -727,7 +747,7 @@ export class LiveNotes extends DurableObject {
   // so a deploy in the middle sends the same range again (same operation id, so it never writes twice), and the position (hs_upto_<n>) moves only
   // after Hindsight accepted it. Returns how many lines were sent.
   async hsLivePush(n, { final = false } = {}) {
-    if (!hsWriters(this.env) || !n || this.get(`nomem_${n}`)) return 0;   // a replay (TEST_MODE) writes nothing to memory
+    if (this._purged || !hsWriters(this.env) || !n || this.get(`nomem_${n}`)) return 0;   // a replay (TEST_MODE) writes nothing to memory
     const s = this.s(n); if (!s) return 0;
     const from = Number(this.get(`hs_upto_${n}`) || 0);
     let to = Number(this.get(`hs_to_${n}`) || 0);
@@ -847,12 +867,11 @@ export class LiveNotes extends DurableObject {
     let tkey = s.transcript_key || null;
     if (!tkey) {
       const mic = s.source === "mic";
-      const body = JSON.stringify({ source: mic ? "mic" : "bee", task: this.get("task"), session: n, started_at: s.started_at, ended_at: s.ended_at, conversations: s.convs || [],
-        ...(mic ? { microphone: { chunks: s.chunks || 0, paused: s.pauses || [], transcription: `${(await sttModels(this.env))[0]} (OpenRouter, zero data retention; Whisper large-v3-turbo if it failed)` } } : {}),
-        utterances: utts.map((u) => mic ? { id: u.uid, at: u.at, text: u.text } : { conv: u.conv, id: u.uid, at: u.at, speaker: u.speaker, text: u.text, realtime: !!u.rt }) });
+      const body = transcriptBody({ s, task: this.get("task"), n, tz, utts, title: this.get("title"), transcription: mic ? `${(await sttModels(this.env))[0]} (OpenRouter, zero data retention; Whisper large-v3-turbo if it failed)` : null });
       try { const k = transcriptKey(tid, this.get("channel"), this.get("task"), n); await stPut(env, k, body, { httpMetadata: { contentType: "application/json" } }, { check: true, replace: true }); tkey = k; this.setS(n, { transcript_key: k }); }
       catch (e) { this.setS(n, { note: "Your storage is full, so the raw transcript wasn't kept." }); await this.ev(`transcript not saved: ${String(e?.message || e).slice(0, 100)}`); }
     }
+    await this.trPut(n, { final: true });   // and the hidden transcript file in the Library (the helper reads it; the footer link serves it)
     // 2. the final pass on a stronger model (skipped when it can't be paid, or after 3 failures: the live notes stay as they are)
     const d = await this.readDoc(), cur = d ? sectionText(d.text, n) : null, ours = this.oursOf(n), human = cur ? humanLines(parseSection(cur), ours) : [];
     const head = sessionHeading(n, s.started_at, s.ended_at, tz);
@@ -892,6 +911,7 @@ export class LiveNotes extends DurableObject {
     if (hsWriters(env) && !w.error && !this.get(`nomem_${n}`)) { try { const d2 = await this.readDoc(); if (d2?.text) await this.res().hsFileSync(this.get("file_id"), { md: d2.text, force: true }); } catch (e) { console.log("live notes file memory", String(e?.message || e).slice(0, 120)); } }   // the meeting notes are a Library file, so they go in as one (file:<id>)
     this.setS(n, { final_at: now(), final_skipped: skipped || null, final_data: null }); this.put("status", "idle");
     this.diag(n, (g) => diagOutcome(g, "final", skipped ? "skipped" : "ok", skipped ? { err: skipped } : {}));
+    await this.nameTask(n);   // first, so the saved line below names the file under its new title (never blocks or fails finalize)
     try { await this.res().lnSysNote(this.get("task"), `Live notes saved: ${this.path()} (${hm(s.started_at, tz)}–${hm(s.ended_at, tz)}, ${reasonText(s.stop_reason)}).`, { n, file_id: this.get("file_id") }); } catch (e) { console.log("live notes sys note", String(e?.message || e).slice(0, 120)); }
     // 3. auto refine later: BeeSync tells us when each conversation is COMPLETED (with Bee's final transcript)
     const ids = (s.convs || []).filter((x) => !this.sql.exec("SELECT 1 FROM finals WHERE conv=?", x).toArray().length);
@@ -900,7 +920,82 @@ export class LiveNotes extends DurableObject {
     await this.mirror();
   }
   async slug() { if (this.get("slug")) return this.get("slug"); const r = await this.env.DB.prepare("SELECT slug FROM tenants WHERE id=?").bind(this.tid()).first().catch(() => null); if (r?.slug) this.put("slug", r.slug); return r?.slug || ""; }
+  // The meeting notes, the task or the channel were deleted: every copy of the transcript this object holds goes (the stored lines, the R2 copy of each session,
+  // the Library file is the Resident's), a running session stops, and nothing is made from it again. o: {tenant, channel, task} for an object that never started.
+  // The session numbers up to `floor` are never used again (a new meeting after the notes were deleted starts above it, so the delayed memory deletes can't hit it).
+  // → {ns: [the session numbers], floor}. Safe to call again.
+  async purge(o = {}) {
+    this._purged = true;
+    const tid = this.tid() || o.tenant || "", ch = this.get("channel") || o.channel || "", task = this.get("task") || o.task || "", name = tid && ch && task ? lnName(tid, ch, task) : null;
+    const rows = this.sql.exec("SELECT n, st FROM sess").toArray(), ns = rows.map((r) => r.n);
+    const floor = Math.max(0, Number(this.get("floor") || 0), Number(this.get("n") || 0), ...ns), job = jp(this.get("job"));
+    if (job) { try { await this.computer().beeLiveStop(job.run); } catch {} if (!job.settled) await this.settleJob(job, now() - (job.last_push || job.started_at)).catch(() => {}); }
+    if (name) { await this.beeSync()?.liveRelease(name).catch(() => {}); await this.beeSync()?.lnUnwatch?.(name).catch(() => {}); }
+    if (tid && ch && task) {   // every session's R2 copy lives under the task's prefix
+      const gone = []; let cursor; for (let i = 0; i < 50; i++) { const l = await this.env.WS.list({ prefix: `t/${tid}/bee/live/${ch}/${task}/`, cursor, limit: 1000 }); gone.push(...(l.objects || [])); if (!l.truncated) break; cursor = l.cursor; }
+      if (gone.length) await stDelete(this.env, gone.map((o) => ({ key: o.key, size: o.size ?? null })));
+    }
+    try { await this.ctx.storage.deleteAlarm?.(); } catch {}
+    try { await this.ctx.storage.deleteAll?.(); } catch (e) { console.log("live notes purge", String(e?.message || e).slice(0, 100)); }
+    this.init(); for (const t of ["kv", "sess", "utts", "finals", "ours", "chunks"]) this.sql.exec(`DELETE FROM ${t}`);
+    this.sql.exec("INSERT INTO kv VALUES (?,?)", "floor", String(Math.max(floor, Number(o.floor || 0))));
+    return { ns, floor: Math.max(floor, Number(o.floor || 0)) };
+  }
   async transcriptFile(n) { const s = this.s(Number(n)); return s?.transcript_key ? { key: s.transcript_key } : null; }
+
+  // ---- the hidden transcript file: a Library file (hidden: never in the person's list, never retained as file:<id>, because the lines are already in memory as live:<task>:s<n>)
+  // that the helper reads in its files/ folder. Live, it is rewritten when new lines came in (at most every minGap ms, no model call); finished sessions that only have the R2 copy get it on demand.
+  async trUtts(n) {
+    const rows = this.transcriptOf(n); if (rows.length) return { utts: rows, sig: `${rows.length}:${this.sql.exec("SELECT COALESCE(MAX(rid),0) m FROM utts WHERE n=?", n).toArray()[0]?.m}` };
+    const s = this.s(n); if (!s?.transcript_key) return { utts: [], sig: "0" };
+    try { const o = await this.env.WS.get(s.transcript_key), j = o ? await o.json() : null; return { sig: "r2", utts: (j?.utterances || []).map((u) => ({ conv: u.conv || 0, uid: u.id || "", at: Number(u.at) || 0, speaker: u.speaker || null, text: String(u.text || ""), rt: u.realtime ? 1 : 0 })) }; } catch { return { utts: [], sig: "0" }; }
+  }
+  // → {id, name, path} | null. Never throws.
+  async trPut(n, { final = false, minGap = 0 } = {}) {
+    if (this._purged) return null;
+    try {
+      const s = this.s(n); if (!s) return null; const task = this.get("task"), id = this.get(`tr_id_${n}`);
+      if (id && !final && minGap && now() - Number(this.get(`tr_at_${n}`) || 0) < minGap) return { id, path: this.get(`tr_path_${n}`) };
+      const { utts, sig } = await this.trUtts(n), k = `${sig}:${s.ended_at ? 1 : 0}`, have = await this.res().lnTranscriptPut(task, n, null, null);
+      if (have && !final && this.get(`tr_sig_${n}`) === k) { this.put(`tr_at_${n}`, now()); return have; }
+      if (!utts.length) return have || null;   // no speech: nothing to keep
+      const title = this.get("title"), tz = this.tz(), name = transcriptFileName(title, n, s.started_at, tz);
+      const w = await this.res().lnTranscriptPut(task, n, name, transcriptBody({ s, task, n, tz, utts, title, live: !s.ended_at }));
+      if (!w?.id) return have || null;
+      this.put(`tr_id_${n}`, w.id); this.put(`tr_path_${n}`, w.path); this.put(`tr_sig_${n}`, k); this.put(`tr_at_${n}`, now()); if (w.created) this.put(`tr_gen_${n}`, w.name);
+      return w;
+    } catch (e) { console.log("live notes transcript file", String(e?.message || e).slice(0, 120)); return null; }
+  }
+  // The route behind the footer's Raw transcript link: the hidden file's id (made now when it is missing), or null (then the R2 copy is served).
+  async trEnsure(n) { const f = await this.trPut(Number(n), { minGap: this.get("status") === "live" && Number(this.get("n")) === Number(n) ? 5e3 : 0 }); return f?.id ? { id: f.id } : null; }
+  // The per-turn tag's list: the last sessions' transcript files (the live one brought up to date, at most every 15 s). → [{n, path, started_at, ended_at}]
+  async transcripts() {
+    const out = [], live = this.get("status") === "live" ? Number(this.get("n")) : 0;
+    for (const r of this.sql.exec("SELECT n, st FROM sess ORDER BY n DESC LIMIT 4").toArray()) { const x = jp(r.st, {}), f = await this.trPut(r.n, { minGap: r.n === live ? 15e3 : 0 }); if (f?.path) out.push({ n: r.n, path: f.path, started_at: x.started_at, ended_at: x.ended_at || null }); }
+    return out;
+  }
+  // The task's title changed (the person renamed it, or the chat title job named it): the notes file and the transcript files follow it, keeping their ids, unless the file was renamed by someone else.
+  async renameTo(title) {
+    title = String(title || "").replace(/\s+/g, " ").trim().slice(0, 120); if (!title) return { ok: false };
+    this.put("title", title); const tz = this.tz(), res = this.res(); let renamed = 0;
+    const starts = this.sql.exec("SELECT n, st FROM sess ORDER BY n").toArray().map((r) => ({ n: r.n, at: jp(r.st, {}).started_at })).filter((x) => x.at);
+    const id = this.get("file_id");
+    if (id) {
+      const t0 = Number(this.get("notes_t0") || 0) || Math.min(...starts.map((x) => x.at), now());
+      const r = await res.lnRenameFile(id, notesFileName(title, t0, tz), this.get("file_gen") || "");
+      if (r?.name && !r.kept) { this.put("file_name", r.name); this.put("file_gen", r.name); renamed++; await this.editDoc((doc) => doc.replace(/^# .*· Meeting notes$/m, docHeader(title, this.get("want_source") || this.s()?.source).split("\n")[0])).catch(() => {}); }
+    }
+    for (const x of starts) { const tid = this.get(`tr_id_${x.n}`); if (!tid) continue; const r = await res.lnRenameFile(tid, transcriptFileName(title, x.n, x.at, tz), this.get(`tr_gen_${x.n}`) || ""); if (r?.name && !r.kept) { this.put(`tr_gen_${x.n}`, r.name); this.put(`tr_path_${x.n}`, `files/${r.name}`); renamed++; } }
+    if (renamed) await this.mirror();
+    return { ok: true, renamed };
+  }
+  // After a meeting: a task still called "Live notes" is named by the chat title job from the notes (never over a name the person gave), then the files follow its title.
+  async nameTask(n) {
+    try {
+      const d = await this.readDoc(), sec = d ? sectionText(d.text, n) : null, text = (sec || d?.text || "").replace(/^#.*$/gm, "").replace(/_Live notes ·[^\n]*_/g, "").replace(/\s+\n/g, "\n").trim();
+      const r = await this.res().lnNameTask(this.get("task"), text); if (r?.title) await this.renameTo(r.title);
+    } catch (e) { console.log("live notes task name", String(e?.message || e).slice(0, 120)); }
+  }
 
   // ---- the device's microphone (live-mic.js lnAudio → here) ----
   micOf(mic) { const n = Number(this.get("n") || 0), s = this.s(n); return s?.source === "mic" && s.mic_id === mic ? { n, s } : null; }
@@ -949,6 +1044,7 @@ export class LiveNotes extends DurableObject {
   // ---- auto refine (§9.5) ----
   // BeeSync: a conversation this DO follows is COMPLETED. utts = Bee's final transcript [{id, at, sp, tx}].
   async convDone(conv, utts = []) {
+    if (this._purged || !this.get("tenant")) return { ok: false };   // deleted: no copy of Bee's transcript is kept here
     this.sql.exec("INSERT INTO finals (conv, at, utts) VALUES (?,?,?) ON CONFLICT(conv) DO UPDATE SET at=excluded.at, utts=excluded.utts", Number(conv), now(), JSON.stringify(Array.isArray(utts) ? utts.slice(0, 20000) : []));
     if (this.refineDue()) await this.arm(now() + 500);
     return { ok: true };
@@ -1011,8 +1107,29 @@ export function lnResidentMethods() { return {
   lnInit() { this.sql.exec(LN_DDL); },
   lnView(session) { let r = null; try { r = session ? this.sql.exec("SELECT st FROM live_notes WHERE session=?", String(session)).toArray()[0] : null; } catch { return null; } return r ? jp(r.st) : null; },
   lnField(session) { const v = this.lnView(session); return v && (v.status !== "idle" || v.file || v.refine) ? { livenotes: { status: v.status, started_at: v.started_at || null, cost_usd: v.cost_usd || null, ask: !!v.ask, refine: v.refine || null, file: v.file || null, ...(v.mic ? { source: "mic", mic: { id: v.mic.id, state: v.mic.state } } : {}) } } : {}; },
+  // The Resident's record of deleted meeting notes (kv lnx:<task>): floor = the highest session number whose transcript was deleted (nothing of a session at or below it
+  // is made again: not its mirror, its transcript file, its memory document), pending = the delete has not finished yet (retried on the next turn).
+  lnx(session) { const x = jp(this.getRaw(`lnx:${session}`), {}); return { floor: Number(x.floor || 0), pending: !!x.pending }; },
+  lnBlocked(session, n) { const x = this.lnx(session); return x.pending || (x.floor > 0 && Number(n) <= x.floor); },
+  async lnTasks() { try { return this.sql.exec("SELECT session FROM live_notes").toArray().map((r) => r.session); } catch { return []; } },
+  // The meeting notes of a task were deleted: the hidden transcript files, the LiveNotes object's stored lines and R2 copies (a running session stops there), the mirror, and
+  // the memory documents live:<task>:s<n> of those sessions (they are the same transcript lines; document names are built here to keep this file free of the writers' imports).
+  // Deleting only the hidden transcript file does not come here: it is made again from the stored lines. Safe to run again; a failure leaves it pending.
+  async lnPurge(session) {
+    session = String(session); const v = this.lnView(session), cur = this.lnx(session), tenant = this.get("tenant"), channel = this.get("channel");
+    let floor = Math.max(cur.floor, Number(v?.n || 0), ...(v?.sessions || []).map((x) => Number(x.n) || 0));
+    this.put(`lnx:${session}`, JSON.stringify({ floor, pending: 1 }));   // from here no mirror, transcript file or memory write for these sessions is accepted
+    for (const h of this.sql.exec("SELECT id FROM files WHERE hidden=1 AND deleted=0 AND session=?", session).toArray()) await this.deleteFile(h.id);
+    const S = this.lnStub(session); if (S) { const r = await S.purge({ tenant, channel, task: session, floor }); floor = Math.max(floor, Number(r?.floor || 0)); }
+    this.put(`lnx:${session}`, JSON.stringify({ floor, pending: 1 }));
+    if (floor > 0) await this.hsDropDocs(Array.from({ length: Math.min(floor, 2000) }, (_, i) => `live:${session}:s${i + 1}`));
+    this.sql.exec("DELETE FROM live_notes WHERE session=?", session); this.sql.exec("DELETE FROM kv WHERE k LIKE ?", `lnt:${session}:%`);
+    this.put(`lnx:${session}`, JSON.stringify({ floor, pending: 0 }));
+    return { ok: true, floor };
+  },
   async lnSet(session, v) {
     if (!session || !this.session(session)) return { error: "No such task in this channel." };
+    { const x = this.lnx(session); if (x.pending || (x.floor > 0 && !(Number(v?.n || 0) > x.floor))) return { error: "Those meeting notes were deleted." }; }
     this.sql.exec("INSERT INTO live_notes (session, st, updated) VALUES (?,?,?) ON CONFLICT(session) DO UPDATE SET st=excluded.st, updated=excluded.updated", String(session), JSON.stringify(v), Date.now());
     try { this.liveTurn?.(session)?.emit?.({ t: "livenotes", session, livenotes: v }); } catch {}
     return { ok: true };
@@ -1033,11 +1150,11 @@ export function lnResidentMethods() { return {
   },
   // A new version of the doc, only if it's still at `expect` (else {conflict}). Same id, new R2 key, the one before kept (share_file's
   // in-place update rules: prev_key; the version before that deleted).
-  async lnDocWrite(id, text, expect) {
+  async lnDocWrite(id, text, expect, ctype = "text/markdown; charset=utf-8") {
     const f = this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(id)).toArray()[0]; if (!f) return { gone: true };
     const v = Number(f.version || 1); if (expect != null && v !== Number(expect)) return { conflict: true, version: v };
     const key = `t/${this.get("tenant")}/files/${this.get("channel")}/${f.id}.v${v + 1}`, b = enc(text);
-    try { await stPut(this.env, key, b, { httpMetadata: { contentType: "text/markdown; charset=utf-8" } }, { check: true, size: b.byteLength }); }
+    try { await stPut(this.env, key, b, { httpMetadata: { contentType: ctype } }, { check: true, size: b.byteLength }); }
     catch (e) { if (e.code === "storage_full") return { error: "storage full" }; throw e; }
     const g = this.sql.exec("SELECT version FROM files WHERE id=? AND deleted=0", f.id).toArray()[0];
     if (!g || Number(g.version || 1) !== v) { await stDelete(this.env, [{ key, size: b.byteLength }]).catch(() => {}); return g ? { conflict: true, version: Number(g.version || 1) } : { gone: true }; }
@@ -1045,6 +1162,49 @@ export function lnResidentMethods() { return {
     try { await stDelete(this.env, [...(f.prev_key ? [{ key: f.prev_key, size: f.prev_bytes ?? null }] : []), ...(f.view_key ? [f.view_key] : [])]); } catch (e) { console.log("live notes old version", e.message); }
     try { await this.env.DB?.prepare("UPDATE share_links SET r2key=?, bytes=? WHERE tenant_id=? AND file_id=?").bind(key, b.byteLength, this.get("tenant"), f.id).run(); } catch {}
     return { version: v + 1, bytes: b.byteLength };
+  },
+  // The hidden transcript file of session n of a task (files.hidden = 1: not in the Library list, not retained as file:<id>, in the helper's files/ folder). Its id is kept in kv lnt:<task>:<n>.
+  lnTrRow(session, n) { const id = this.getRaw(`lnt:${session}:${n}`); return id ? this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", id).toArray()[0] || null : null; },
+  async lnHiddenFiles() { return this.sql.exec("SELECT * FROM files WHERE hidden=1 AND deleted=0 ORDER BY at DESC LIMIT 100").toArray().map((r) => ({ ...this.fileView(r), hidden: true, synced: Number(r.synced) })); },
+  // text null: only look. → {id, name, path} | null; a new file also has created: true.
+  async lnTranscriptPut(session, n, name, text) {
+    if (!this.session(session) || this.lnBlocked(session, n)) return null;
+    const cur = this.lnTrRow(session, n), out = (r, x = {}) => ({ id: r.id, name: r.name, path: `files/${r.name}`, ...x });
+    if (text == null) return cur ? out(cur) : null;
+    if (cur) { const w = await this.lnDocWrite(cur.id, text, null, "application/json"); return w?.error || w?.gone ? { error: w.error || "gone" } : out(cur, { version: w.version }); }
+    const tenant = this.get("tenant"), channel = this.get("channel"), id = crypto.randomUUID(), key = `t/${tenant}/files/${channel}/${id}`, b = enc(text);
+    try { await stPut(this.env, key, b, { httpMetadata: { contentType: "application/json" }, customMetadata: { name: name.slice(0, 200) } }, { check: true, size: b.byteLength }); }
+    catch (e) { if (e.code === "storage_full") return { error: "storage full" }; throw e; }
+    const f = this.addFileRow({ id, name, mime: "application/json", bytes: b.byteLength, r2key: key, source: "helper", session, turn: null, synced: 0, hidden: 1 });
+    this.put(`lnt:${session}:${n}`, id); return { id, name: f.name, path: f.path, created: true };
+  },
+  // A new name for a notes or transcript file, same id (links, versions and memory stay), only while it still has the name live notes gave it (gen) or an older default one.
+  async lnRenameFile(id, name, gen) {
+    const f = this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(id)).toArray()[0]; if (!f) return { gone: true };
+    if (f.name === name) return { name };
+    if (!(f.name === gen || LEGACY_NOTES_RE.test(f.name))) return { kept: true, name: f.name };
+    const taken = new Set(this.sql.exec("SELECT name FROM files WHERE deleted=0 AND id<>?", f.id).toArray().map((x) => x.name.toLowerCase())); let to = safeName(name);
+    if (taken.has(to.toLowerCase())) { const m = to.match(/^(.*?)(\.[^.]{1,8})?$/); for (let i = 2; i < 1000; i++) { const c = `${m[1]} (${i})${m[2] || ""}`; if (!taken.has(c.toLowerCase())) { to = c; break; } } }
+    if (Number(f.synced) === 1) { let l = []; try { l = JSON.parse(this.getRaw("rm_paths") || "[]"); } catch {} this.put("rm_paths", JSON.stringify([...new Set([...l, `files/${f.name}`])])); }   // the old name on the computer goes on the next sync
+    this.sql.exec("UPDATE files SET name=?, synced=0 WHERE id=?", to, f.id);
+    if (!f.hidden) { try { this.liveTurn?.(f.session)?.emit?.({ t: "file", file: this.fileView(this.sql.exec("SELECT * FROM files WHERE id=?", f.id).one()) }); } catch {} }
+    return { name: to };
+  },
+  // The chat title job names a task that still has the default "Live notes" title, from the meeting notes. Never over a title the person set (title_manual), and the update only lands if the title is still the one it read.
+  async lnNameTask(session, text) {
+    const row = this.session(session); if (!row) return { title: null };
+    if (!row.title_manual && isDefaultTitle(row.title) && String(text || "").trim()) {
+      let ledger = null; try { ledger = this.ledger(); } catch {}
+      const claim = { id: session, title: row.title, revision: Number(row.title_revision || 0), text: `Name this meeting from its notes.\n\n${String(text).slice(0, CHAT_TITLE_TEXT_MAX - 200)}` };
+      const answer = await nameChat({ env: this.env, ledger, meta: { tenant: this.get("tenant"), channel: this.get("channel") }, claim }).catch(() => null);
+      if (answer) applyChatTitle(this, claim, answer);
+    }
+    return { title: this.session(session)?.title || null };
+  },
+  // The person renamed the task: its live notes files follow (the Live notes object does the renaming, from the task's first start and the title).
+  lnTitleChanged(session, title) {
+    if (!this.lnView(session)) return;
+    const S = this.lnStub(session); if (S) this.ctx?.waitUntil?.(Promise.resolve().then(() => S.renameTo(title)).catch((e) => console.log("live notes rename", String(e?.message || e).slice(0, 120))));
   },
   // "Live notes saved: …" (§9.5): a line in the task the person sees, and the assistant reads in its history (no model turn).
   async lnSysNote(session, text, meta = {}) {
@@ -1066,10 +1226,24 @@ export function lnResidentMethods() { return {
     }
     return r;
   },
+  // The transcript files the per-turn tag names: [{n, path, started_at, ended_at}], newest first. The live session's file is brought up to date (a call to the Live notes object, at most every 15 s); a finished session with no file yet gets it now.
+  async lnTranscripts(session, v, S) {
+    const meta = new Map((v.sessions || []).map((x) => [x.n, x])), ns = [...new Set([v.n, ...(v.sessions || []).map((x) => x.n)].filter(Boolean))].slice(0, 4);
+    let list = ns.map((n) => { const r = this.lnTrRow(session, n); return r ? { n, path: `files/${r.name}`, started_at: meta.get(n)?.started_at || v.started_at, ended_at: meta.get(n)?.ended_at || null } : null; });
+    if (S && (v.status === "live" || list.some((x) => !x))) { try { list = await S.transcripts(); } catch (e) { console.log("live notes transcripts", String(e?.message || e).slice(0, 100)); } }
+    return list.filter(Boolean);
+  },
+  lnTranscriptLine(list, tz, live = false) {
+    if (!list.length) return "";
+    const one = (x) => `/workspace/${x.path} (session ${x.n}, ${dayLine(x.started_at, tz)}, ${hm(x.started_at, tz)}${x.ended_at ? `-${hm(x.ended_at, tz)}` : ", still live"})`;
+    return ` The raw transcript of ${list.length > 1 ? "each session" : "the session"} is a file in your files folder, JSON with one utterance per line and its clock time (speech recognition, so wording has errors): ${list.map(one).join("; ")}.${live ? " The live one is rewritten about once a minute and holds the whole meeting so far." : ""} Use read_file or search_files on it for anything older than the last 5 minutes, or when someone's exact words are asked.`;
+  },
   // The per-turn tag (§9.4), in the message (never the system prompt). personText: "stop live notes" in chat stops it first.
   async lnNote(session, personText = "") {
+    if (this.lnx(session).pending) await this.lnPurge(session).catch((e) => console.log("live notes purge", String(e?.message || e).slice(0, 120)));   // a delete that did not finish
     const v = this.lnView(session); if (!v) return "";
     const path = v.file?.path || "the meeting notes file", S = this.lnStub(session), tz = this.tz();
+    const trs = await this.lnTranscripts(session, v, S).catch(() => []), trLine = this.lnTranscriptLine(trs, tz, v.status === "live");
     const prev = (v.sessions || []).filter((x) => x.n !== v.n || v.status === "idle").filter((x) => x.ended_at).slice(0, 4)
       .map((x) => `Session ${x.n} (${dayLine(x.started_at, tz)}, ${hm(x.started_at, tz)}–${hm(x.ended_at, tz)})`);
     if (v.status === "live" && personText && STOP_RE.test(personText) && S) {
@@ -1080,10 +1254,10 @@ export function lnResidentMethods() { return {
       let r = null; try { r = await S.recent(RECENT_MS); } catch {}
       const lines = r?.lines || [], st = r?.view?.started_at || v.started_at;
       const micSrc = (r?.view?.source || v.source) === "mic", via = (r?.view?.mic || v.mic)?.via, tabSrc = micSrc && (via === "tab" || via === "system");
-      return `\n\n(Live notes are ON in this task: started ${hm(st, tz)}, ${mins(Date.now() - st)} so far. ${tabSrc ? `The person's computer is sharing ${via === "system" ? "its sound" : "an online meeting's browser tab"} (the others in the call) mixed with their own microphone` : micSrc ? "The microphone of the person's device (the one that started Live notes) is listening" : "The person's Bee wearable is listening"} and a note-taker keeps the meeting notes in ${path} (Library) up to date by itself about once a minute: don't post updates on your own. Answer questions about the meeting from the transcript below. To change the notes when asked (e.g. "add action item X"), edit ${path} with your file tools and share_file it again (the same Library file updates in place); the note-taker keeps your edit. They can say "stop live notes" to stop.${prev.length ? ` Earlier sessions of this meeting are in the same file: ${prev.join(", ")}.` : ""}\nLast ~5 min of the transcript (speech recognition: it has errors; ${tabSrc ? '"You" = the person, "Others" = the other people in the call, unmarked = either' : micSrc ? "one microphone, no speaker labels" : "speakers as Bee labels them"}):\n${lines.length ? lines.join("\n").slice(-6000) : "(nothing heard yet)"})`;
+      return `\n\n(Live notes are ON in this task: started ${hm(st, tz)}, ${mins(Date.now() - st)} so far. ${tabSrc ? `The person's computer is sharing ${via === "system" ? "its sound" : "an online meeting's browser tab"} (the others in the call) mixed with their own microphone` : micSrc ? "The microphone of the person's device (the one that started Live notes) is listening" : "The person's Bee wearable is listening"} and a note-taker keeps the meeting notes in ${path} (Library) up to date by itself about once a minute: don't post updates on your own. Answer questions about the meeting from the transcript below and, for anything older, the transcript file.${trLine} To change the notes when asked (e.g. "add action item X"), edit ${path} with your file tools and share_file it again (the same Library file updates in place); the note-taker keeps your edit. They can say "stop live notes" to stop.${prev.length ? ` Earlier sessions of this meeting are in the same file: ${prev.join(", ")}.` : ""}\nLast ~5 min of the transcript (speech recognition: it has errors; ${tabSrc ? '"You" = the person, "Others" = the other people in the call, unmarked = either' : micSrc ? "one microphone, no speaker labels" : "speakers as Bee labels them"}):\n${lines.length ? lines.join("\n").slice(-6000) : "(nothing heard yet)"})`;
     }
-    if (v.status === "finalizing") return `\n\n(Live notes just stopped in this task; the final notes are being written into ${path} in the Library.)`;
-    if (v.file) return `\n\n(Meeting notes for this task, written by Live notes: ${path} in the Library${prev.length ? ` (${prev.join(", ")})` : ""}. Use that file for questions about those meetings.)`;
+    if (v.status === "finalizing") return `\n\n(Live notes just stopped in this task; the final notes are being written into ${path} in the Library.${trLine})`;
+    if (v.file) return `\n\n(Meeting notes for this task, written by Live notes: ${path} in the Library${prev.length ? ` (${prev.join(", ")})` : ""}. Use that file for questions about those meetings.${trLine})`;
     return "";
   },
 }; }

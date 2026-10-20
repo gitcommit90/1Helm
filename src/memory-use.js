@@ -49,7 +49,11 @@ export async function cachedModelText({ id, read, store, now = Date.now(), check
 // ================= 2. the arms (DESIGN 6.2) =================
 // B2 is arm B with observations only: a recall over fewer candidates, so the reranker answers in one call (DESIGN 6.10).
 export const ARMS = ["A", "B", "B2"];
-export const ARM_DEADLINE_MS = 1500;     // the Captain's limit: at most this much added to a turn at p95. An arm that is not ready by then is left out of the turn.
+// The most the automatic lookup can hold a turn, counted from the moment the turn starts it. An arm that is not ready by then is left out of the turn.
+// Captain, 2026-10-20: up to 5 s (was 1.5 s). At 1.5 s about one lookup in four timed out on dev (47 of 172 receipts, 2026-10-07 to 2026-10-20) and a
+// 27 row Live bank took about 2 s. The lookup starts at the top of the turn, so most of the wait overlaps the rest of the turn's setup, and a fast
+// lookup (median about 0.9 s) adds only its own time.
+export const ARM_DEADLINE_MS = 5000;
 // HS_USE_DEADLINE_MS (dev tuning) replaces it, between 100 and 5000.
 export const armDeadline = (env) => { const n = Number(env?.HS_USE_DEADLINE_MS); return Number.isFinite(n) && n >= 100 && n <= 5000 ? n : ARM_DEADLINE_MS; };
 // B2 is the default arm of every channel while HS_USE is on (Captain decision, 2026-10-14). The test setting (Resident kv "mem_arm", only the dev ops route

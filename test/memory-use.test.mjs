@@ -383,9 +383,9 @@ for (const engine of ["classic", "pi"]) {
   const W = mk({ server: f, extraEnv: { HS_USE_DEADLINE_MS: "150" } }), R = W.R; R.memoryMode = () => "on"; await R.memArmAdmin({ arm: "B" });
   const h = R.memUseStart("Dinner?", { session: "s", turn: "tt" }); assert.equal(h.deadline, 150); const t0 = Date.now(); const j = await R.memUseJoin(h, { session: "s", turn: "tt" }); const took = Date.now() - t0;
   assert.ok(took < 400, `the join returned at the deadline (${took} ms), not when the recall finished`); assert.equal(j.block, ""); assert.equal(j.info.error, "deadline"); assert.ok(j.info.waited_ms < 400);
-  const { armDeadline } = await import("../src/memory-use.js"); assert.equal(armDeadline({}), 1500); assert.equal(armDeadline({ HS_USE_DEADLINE_MS: "50" }), 1500); assert.equal(armDeadline({ HS_USE_DEADLINE_MS: "900" }), 900);
+  const { armDeadline } = await import("../src/memory-use.js"); assert.equal(armDeadline({}), 5000); assert.equal(armDeadline({ HS_USE_DEADLINE_MS: "50" }), 5000); assert.equal(armDeadline({ HS_USE_DEADLINE_MS: "900" }), 900);
   { const rc = R.mem.stats().receipts.find((x) => x.turn === "tt"); assert.ok(rc && /^on:hindsight/.test(rc.mode), "the arm leaves a receipt with the recall mode, even when it timed out"); }
-  ok("D2b. the active arm never holds the turn past the deadline (HS_USE_DEADLINE_MS, default 1500 ms)");
+  ok("D2b. the active arm never holds the turn past the deadline (HS_USE_DEADLINE_MS, default 5000 ms)");
 }
 {
   // no shadow: the active arm is the only memory call of a turn

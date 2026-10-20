@@ -4,12 +4,12 @@ export function approvalCards(channels: any[], slug: string, id: string) {
     .filter(c => c.t === 'approval' && String(c.a.id) === String(id));
 }
 export function approvalResponse(channels: any[], slug: string, id: string, decision: string, result: any) {
-  const cards = approvalCards(channels, slug, id), already = /^already (approved|denied)/.exec(result?.error || '');
+  const cards = approvalCards(channels, slug, id), already = /^already (approved|denied|expired)/.exec(result?.error || '');
   for (const card of cards) {
     card.busy = '';
     if (!result?.error && result?.approval && String(result.approval.id) === String(id)) card.a = { ...card.a, ...result.approval };
     if (!result?.error) { card.st = result?.state === 'host_key_confirmation_required' ? 'host_key_required' : decision; card.confirm = false; }
-    else if (already) { if (card.st === 'pending') card.st = already[1] === 'denied' ? 'deny' : 'allowed'; card.confirm = false; }
+    else if (already) { if (card.st === 'pending') card.st = already[1] === 'denied' ? 'deny' : already[1] === 'expired' ? 'expired' : 'allowed'; card.confirm = false; }
     else if (['ssh','ssh_hostkey'].includes(card.a.perm) && ['expired','cancelled','failed','consumed','host_key_required'].includes(result.status)) { card.st = result.status; card.confirm = false; }
     else card.err = `Couldn't send that (${result.error}). Try again.`;
   }

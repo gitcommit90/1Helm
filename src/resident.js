@@ -119,7 +119,7 @@ import { staticCore, channelBlock, familyGuidance } from "./prompt/index.js";
 import { cutTitle, cutLazy, guidanceFor, stubTool, checkArgs, coerceArgs } from "./payload-cut.js";
 import { personSubject } from "./people.js";
 import { hsWalls } from "./walls.js";   // HS_WALLS: Memory Overhaul phase 4B (front door and Contacts visibility)
-import { frontDoorGate, frontDoorOpen, wallsTools, OTHER_CHANNELS_NOTE } from "./front-door.js";
+import { frontDoorGate, frontDoorOpen, wallsTools, OTHER_CHANNELS_NOTE, readableChannel, channelsLine } from "./front-door.js";
 import { pinnedBlock, identityNote, ownNote, FROM_GENERAL, PINNED_BUDGET, REFLECT_ID } from "./pinned-notes.js";   // the Notebook block: budgeted, their own notes first
 import { genuiPromptSection, genuiEnvOn, cardsToText, cardsTree, splitCardParts, isRealCard, hasCards, stripPauseButtons } from "./genui.js";
 // Texted files (photos, videos, documents): how long to gather a caption / more photos sent as separate messages.
@@ -402,10 +402,10 @@ export function recentChannelLines(messages) {
   return (messages || []).filter((m) => !m.system_message || m.system_message === "0" || m.system_message === 0).slice(-12)
     .map((m) => `[${new Date(Number(m.created)).toISOString().slice(0, 16)}] ${m.bot_id && m.bot_id !== "None" ? "helper" : "person"}: ${String(m.body || "").slice(0, 600)}`).join("\n");
 }
-export function chatChannelOptions({ ee, profile, tz, channel, ch, mmode, mem, recent, memoryProfile, keysLine, loginsLine, skillsLine, appsLine, textingLine, permLine }) {
+export function chatChannelOptions({ ee, profile, tz, channel, ch, mmode, mem, recent, memoryProfile, keysLine, loginsLine, skillsLine, appsLine, textingLine, permLine, channelsLine }) {
   return { ee: !!ee, helperName: profile?.helper_name, firstName: profile?.first_name, tone: profile?.helper_tone, tz,
     channel: ch?.name || channel, purpose: ch?.purpose || ch?.topic, general: channel === SKIPPER_SLUG, recall: mmode === "on",
-    keysLine, loginsLine, skillsLine, appsLine, textingLine, permLine,
+    keysLine, loginsLine, skillsLine, appsLine, textingLine, permLine, channelsLine,
     pinnedLabel: mmode === "on" ? "Pinned notes and preferences ((you) = their own words; everything else you remember arrives with each message as Memory recall):" : "Channel memory (durable knowledge and preferences, their own notes first):",
     pinned: mem, recent, memoryProfile };
 }
@@ -512,6 +512,7 @@ export class Resident extends DurableObject {
     for (const c of ["src_path TEXT", "version INTEGER NOT NULL DEFAULT 1", "prev_key TEXT", "prev_bytes INTEGER"]) { try { this.sql.exec(`ALTER TABLE files ADD COLUMN ${c}`); } catch {} }
     // tags = a JSON array of lowercase words the Library filters on (e.g. ["meeting"]: the Library's Meetings chip; live notes save with it).
     try { this.sql.exec("ALTER TABLE files ADD COLUMN tags TEXT"); } catch {}
+    try { this.sql.exec("ALTER TABLE files ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"); } catch {}   // 1 = a file for the helper only (live notes' transcript): not in the Library list, not retained as file:<id>, no sidecar
     initRoutingArtifacts(this.sql);
     this.fvInit();   // file-versions.js: orig_key (the person's original, kept for good) and file_uses (which Library files the agent used)
     // A task's to-do list (todos.js): items JSON, rev = a counter bumped on every change, seen = the rev the helper last saw, next item id.
@@ -607,7 +608,7 @@ export class Resident extends DurableObject {
   async memoryExplainFor(about, o = {}) { if (!this.get("tenant")) return { entries: [] }; return explainChannel(this, String(about || ""), o); }
   // General's helper: fan the question out to every other channel's Hindsight bank (no Durable Object hop), label each by channel.
   async crossChannelRecall(q, scope = null) {
-    const t0 = Date.now(), chans = (await this.archive().channels()).filter((c) => c.kind !== "dm" && (c.slug || c.name) !== SKIPPER_SLUG);
+    const t0 = Date.now(), chans = (await this.archive().channels()).filter((c) => readableChannel(c, SKIPPER_SLUG));   // the same list the front door counts (front-door.js)
     if (!hsOn(this.env)) return { pack: "", ids: [], channels: 0, ms: 0 };
     const got = await Promise.all(chans.map(async (c) => { const slug = c.slug || c.name;
       try { const h = await this.byokHold("hs-recall", await this.hsRecallPrice(this.hsBankId(slug))); if (!h) return { slug, rows: [] };
@@ -955,6 +956,7 @@ export class Resident extends DurableObject {
     const channelOptions = chatChannelOptions({ ee: eeEnabled(this.env), profile, tz: this.tz(), channel: this.get("channel"), ch, mmode, mem, recent, memoryProfile,
       keysLine: this._keysLine, loginsLine: this._loginsLine, skillsLine: channelSkillsLine(listChannelSkills(this.sql)), appsLine,
       textingLine: eeEnabled(this.env) ? await textingLine(this.env, this.get("tenant")) : "",
+      channelsLine: await channelsLine(this),   // front-door.js: General only; "" in every other channel
       permLine: permPromptLine((await loadPerms(this.env, this.get("tenant"))).level) });   // perms.js: "" on Standard (the block stays as it was)
     return composeSystemPrompt(this.env, { flagOpts: { browser: this.browserAgentOn(), mode: mmode, betterDesign: this._betterDesign }, stable, cards, layered, append, channelOptions, appsInstructions: appContext.instructions || "" });
   }
@@ -3654,6 +3656,10 @@ export class Resident extends DurableObject {
     const maxSteps = opts.max_steps || (kind === "chat" && compact ? tc.limits.chatSteps : tc.limits.otherTurnSteps);
     this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId);
     if(kind==="chat"&&tc.inputReply&&!this.session(tc.session))throw Object.assign(new Error("The original task was deleted before this answer could run."),{status:410});
+    // HS_USE (phase 4A, DESIGN 6.2, dev test arms A, B and B2): the automatic memory lookup starts as soon as the channel is known, before the settings reads, the
+    // attachments and the routing decision, so its time overlaps theirs. The turn waits for it (memUseJoin) where its context is built, at most ARM_DEADLINE_MS after this start.
+    // Same condition as layered && !nativeWorker further down; a resumed turn never starts one.
+    const memUse = !opts.resume && !tc.helper?.dynamic_routing && contextV2(this.env) ? this.memUseStart(String(text), tc, { kind, resumed: false }) : null;
     await this.byokRefresh(0, tc);   // own AI key: this turn's model calls go to their endpoint (byok.js; a backup key once credits are used up)
     this._privacy = await privacyOf(this.env, tenant);   // AI data privacy for this turn's docs (read_doc); every model dispatch re-reads it
     await this.betterDesignOn().catch(() => {});   // the Better Design switch for this turn's prompt text and docs (better-design.js)
@@ -3711,8 +3717,6 @@ export class Resident extends DurableObject {
     let recallNote = "";
     const mmode = this.memoryMode();
     if (!layered && !RS && (kind === "chat" || kind === "followup") && mmode !== "off") recallNote = await this.recallContext(String(text), tc, { onDemand: false, at: t0 });
-    // HS_USE (phase 4A, DESIGN 6.2, dev test arms A, B and B2): the arms start now and the turn waits for the active one at the point where its context is built.
-    const memUse = layered && !nativeWorker ? this.memUseStart(String(text), tc, { kind, resumed: !!RS }) : null;
     // This task's to-do list (update_todos), so the helper continues it instead of starting over. In the message, not the system prompt.
     const todoNote = (kind === "chat" || kind === "followup") && tc.session ? this.todoContext(tc.session) : "";
     // Helpers still running in this task (helpers.js, when present), so a reply mentions them.
@@ -4390,7 +4394,7 @@ export class Resident extends DurableObject {
     const hasTitle = Object.prototype.hasOwnProperty.call(b, "title"), title = hasTitle ? taskTitle(b.title) : null;
     if (hasTitle && title === null) return { error: "Use a title of 1–120 characters on one line.", status: 400 };
     const now = Date.now();
-    if (hasTitle) this.sql.exec("UPDATE sessions SET title=?, title_manual=1, title_revision=title_revision+1 WHERE id=?", title, id);
+    if (hasTitle) { this.sql.exec("UPDATE sessions SET title=?, title_manual=1, title_revision=title_revision+1 WHERE id=?", title, id); this.lnTitleChanged?.(id, title); }   // live-notes.js: the notes file and transcript files follow the title
     if (typeof b.pinned === "boolean") this.sql.exec("UPDATE sessions SET pinned=? WHERE id=?", b.pinned ? 1 : 0, id);
     // Texting conversations are ongoing threads: they can't be marked done (reopening an old one is fine).
     if(b.done===true) {
@@ -4420,7 +4424,7 @@ export class Resident extends DurableObject {
   addFileRow(f) {
     const name = f.source === "helper" ? (this.sql.exec("SELECT id FROM files WHERE deleted=0 AND lower(name)=lower(?)", f.name).toArray().length ? this.uniqueName(f.name) : f.name) : this.uniqueName(f.name);
     const tags = fileTags(f.tags);
-    this.sql.exec("INSERT INTO files (id,at,name,mime,bytes,r2key,view_key,source,session,turn,synced,src_path,tags) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", f.id, Date.now(), name, f.mime, f.bytes, f.r2key, f.view_key || null, f.source, f.session || null, f.turn || null, name === f.name ? (f.synced || 0) : 0, f.src_path || null, tags.length ? JSON.stringify(tags) : null);
+    this.sql.exec("INSERT INTO files (id,at,name,mime,bytes,r2key,view_key,source,session,turn,synced,src_path,tags,hidden) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", f.id, Date.now(), name, f.mime, f.bytes, f.r2key, f.view_key || null, f.source, f.session || null, f.turn || null, name === f.name ? (f.synced || 0) : 0, f.src_path || null, tags.length ? JSON.stringify(tags) : null, f.hidden ? 1 : 0);
     const row = this.sql.exec("SELECT * FROM files WHERE id=?", f.id).one();
     this.sidecarKick?.(row);   // sidecar.js: its text, card and index are prepared now, in the background (every way a file arrives comes here)
     return this.fileView(row);
@@ -4537,7 +4541,9 @@ export class Resident extends DurableObject {
   // deletes them; drafts never sent (tab closed) are swept after a day.
   async addUpload(tenant, channel, channelId, f) {
     this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId); await this.sweepDrafts();
-    const v = this.addFileRow({ ...f, source: "upload", synced: 0 });
+    // Keyed by the id storeUpload made, so the Worker can send it again after a Durable Object reset (do-stub.js IDEMPOTENT): the row may already be there.
+    const had = f.id ? this.sql.exec("SELECT * FROM files WHERE id=?", f.id).toArray()[0] : null;
+    const v = had ? this.fileView(had) : this.addFileRow({ ...f, source: "upload", synced: 0 });
     if (f.pending) this.sql.exec("UPDATE files SET pending=1 WHERE id=?", v.id);
     return { ...v, pending: !!f.pending };
   }
@@ -4553,7 +4559,7 @@ export class Resident extends DurableObject {
     return this.fileView(this.sql.exec("SELECT * FROM files WHERE id=?", r.id).one());
   }
   async setFileView(id, key) { this.sql.exec("UPDATE files SET view_key=? WHERE id=? AND deleted=0", key, id); return { ok: true }; }
-  async listFiles() { return this.sql.exec("SELECT * FROM files WHERE deleted=0 AND pending=0 ORDER BY at DESC LIMIT 1000").toArray().map((r) => this.fileView(r)); }
+  async listFiles() { return this.sql.exec("SELECT * FROM files WHERE deleted=0 AND pending=0 AND hidden=0 ORDER BY at DESC LIMIT 1000").toArray().map((r) => this.fileView(r)); }
   async snapshotFileKeys() {
     if (this.env.ENV_NAME !== "selfhost") throw new Error("snapshot unavailable");
     const prefix = `t/${this.get("tenant")}/files/`;
@@ -4577,7 +4583,8 @@ export class Resident extends DurableObject {
       catch { return { error: "Couldn't delete the file from storage. Try again.", status: 503 }; }
       this.sql.exec("UPDATE files SET deleted=1, synced=CASE WHEN synced=1 THEN -1 ELSE 0 END WHERE id=?", r.id);   // -1 = still on the computer, remove on next sync
       await shareFileDeleted(this.env, this.get("tenant"), r.id).catch((e) => console.log("share links", e.message));   // its share links die with it
-      if (hsWriters(this.env)) { this.sql.exec("DELETE FROM kv WHERE k=?", `hsf:${r.id}`); await this.hsDropDocs([HS_DOC.file(r.id)]).catch((e) => console.log("file memory", e.message)); }   // its document in the channel's bank goes too
+      if (!r.hidden && r.session && this.lnView(r.session)?.file?.id === r.id) await this.lnPurge(r.session).catch((e) => console.log("live notes purge", String(e?.message || e).slice(0, 120)));   // the meeting notes take every copy of their transcript with them: the hidden files, the stored lines, the R2 copies, the memory documents (live-notes.js; a failure stays pending and is retried on the next turn)
+      if (hsWriters(this.env) && !r.hidden) { this.sql.exec("DELETE FROM kv WHERE k=?", `hsf:${r.id}`); await this.hsDropDocs([HS_DOC.file(r.id)]).catch((e) => console.log("file memory", e.message)); }   // its document in the channel's bank goes too
       return { ok: true };
     })().finally(() => jobs.delete(id));
     jobs.set(id, work);
@@ -4848,7 +4855,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
     if (!a) return { status: "expired" };
     if (SSH_PERMS.has(a.perm)) return { status: sshApprovalStatus(a), approval: { id: a.id, host: a.host, ...sshApprovalView(a) } };
     if (a.perm === CONFIRM) return { status: confirmStatus(a), approval: { id: a.id, host: "", ...confirmView(a) } };
-    const status = a.status === "pending" ? (Date.now() - a.at > APPROVAL_TTL ? "expired" : "pending") : a.status === "denied" ? "deny" : a.decision || "once";
+    const status = a.status === "pending" ? (Date.now() - a.at > APPROVAL_TTL ? "expired" : "pending") : a.status === "denied" ? "deny" : a.status === "expired" ? "expired" : a.decision || "once";
     const keys = JSON.parse(a.keys || "[]");
     if (a.perm) return { status, approval: { id: a.id, host: "", ...permView(a) } };
     return { status, approval: { id: a.id, host: a.host, ...(a.bytes ? { bytes: a.bytes } : {}), ...(keys.length ? { keys } : {}), ...(a.via ? { via: a.via } : {}) } };

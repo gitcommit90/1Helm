@@ -27,6 +27,7 @@ import { verifyImportLayer } from "./import-tar.js";
 import { boundedText, boundedJson, boundedForm, BodyTooLargeError, UnsupportedFormTypeError } from "./bounded-body.js";
 import { appDetail } from "./ee/index.js";
 import { transportFor } from "./ee/index.js";   // the Composio transport: connections, connect links, disconnect
+import { pacedConnect } from "./ee/index.js";   // spaces sign-in links and waits out Composio's one-minute limit
 import { composioWebhook } from "./ee/index.js";   // stage 5: signed app events → the workflow that owns the trigger
 import { appsMode, selfStatus, selfAvailable, signInStart, signInFinish, isEnded, appsModeRoute, saveOnboardingChoice, composioDonePage } from "./ee/index.js";   // Managed vs Self-managed apps (part 2)
 import { paypalSetupRoute } from "./ee/index.js";
@@ -181,7 +182,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "283";
+const APP_V = "285";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -1179,7 +1180,7 @@ export default {
           // Hidden apps (Cloudflare toolkits other than Cloudflare MCP, the deny list) and Soon apps they aren't connected to can't be connected (app-visibility.js).
           if (app !== "composio") { const no = await connectBlock(env, t.id, app); if (no) return json({ error: no, unavailable: true }, 403); }
           if (app === "composio") return json({ url: `/w/${t.slug}/composio/connect?back=${encodeURIComponent(`/w/${t.slug}/apps/done?app=composio&from=${from}${from === "offer" ? offerCallbackQuery(b) : ""}`)}` });
-          try { return json(await transportFor(env, t.id).connectLink(app, `${origin}/w/${t.slug}/apps/done?app=${app}&from=${from}${from === "offer" ? offerCallbackQuery(b) : ""}`, { another: b.another === true })); }
+          try { return json(await pacedConnect(env, t.id, () => transportFor(env, t.id).connectLink(app, `${origin}/w/${t.slug}/apps/done?app=${app}&from=${from}${from === "offer" ? offerCallbackQuery(b) : ""}`, { another: b.another === true }))); }
           catch (e) { console.log("app connect", app, e.message); return json({ error: `${e.message.includes("can't") || e.message.includes("doesn't") ? e.message : "That app isn't available right now. Try again in a minute."}` }); }
         }
         if (sub === "/api/apps/default" && req.method === "POST") {
@@ -1643,7 +1644,8 @@ export default {
           if (lnm[4]) { if (access.mode === "read_only") return payRequired(access); return lnAudio(req, env, { LN, L, q: url.searchParams, meta: { tenant: t.id, kind: "live-notes-stt" } }); }
           if (lnm[3]) {
             if (req.method !== "GET") return json({ error: "method" }, 405);
-            const f = await LN.transcriptFile(Number(lnm[3])), o = f ? await env.WS.get(f.key) : null;
+            if (await Promise.resolve(R.lnBlocked(lnm[2], Number(lnm[3]))).catch(() => false)) return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });   // the meeting notes were deleted: no copy of the transcript is served or made again
+            const hid = await LN.trEnsure(Number(lnm[3])).catch(() => null), hf = hid ? await R.fileRow(hid.id) : null, f = hf ? { key: hf.r2key } : await LN.transcriptFile(Number(lnm[3])), o = f ? await env.WS.get(f.key) : null;   // the hidden Library file (made now if it is missing), else the R2 copy
             if (!o) return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
             return new Response(o.body, { headers: { "content-type": "application/json; charset=utf-8", "content-disposition": `inline; filename="live-notes-session-${lnm[3]}-transcript.json"`, "cache-control": "no-store" } });
           }

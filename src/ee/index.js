@@ -61,6 +61,7 @@ export { cancelApi, cancelCron, cancelSync, cancelWebhook } from "./cancel.js";
 export { APP_FILE_MAX } from "./composio-files.js";
 export { ENDED_PREFIX, appsMode, appsModeRoute, composioDonePage, endedToolText, isEnded, saveOnboardingChoice, selfAvailable, selfSignOut, selfStatus, signInFinish, signInStart } from "./composio-self.js";
 export { ReadBatch, transportFor } from "./composio-transport.js";
+export { pacedConnect } from "./connect-pace.js";
 export { APP_EVENTS_TOOL, appEventsTool, composioWebhook, eventsReady } from "./composio-triggers.js";
 export { APP_TOOLS, GOOGLE_TOOLS, GOOGLE_TOOL_NAMES, RETIRED_APPS, RETIRED_NOTE, SUPER_COVERS, appName, disconnectAllManaged, googleDisconnect, googleStatus, listConnections, managedCount, pickAccount, runAppTool, runGoogleTool, setAccountNote, setDefaultAccount, tidyAfterConnect } from "./composio.js";
 export { CONNECT_LINES, CONNECT_TOOLS, appCatalog, catalogFile, composioSigninOffer, connectBlock, connectOfferApi, connectOfferDone, connectOfferInit, connectTool, connectWriteBlock, offerAct, offerCallbackQuery, offerConnected, offerGet, offersView } from "./connect-offer.js";

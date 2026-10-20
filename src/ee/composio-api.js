@@ -50,7 +50,7 @@ export function unknownOutcome(why) {
   return Object.assign(new Error(`${UNKNOWN_LINE}: ${String(why || "no answer").slice(0, 70)} after the request went out, so this may or may not have happened. Don't run it again: check in the app first (e.g. look for the message or item), then tell the person.`), { code: UNKNOWN_OUTCOME, unknownOutcome: true });
 }
 export const BUSY_LINE = "Composio is busy right now (too many requests), so this didn't run. Try again in a minute.";
-export const rateLimited = () => Object.assign(new Error(BUSY_LINE), { rateLimited: true });   // nothing ran; callers don't fall back to another route (it shares the limit)
+export const rateLimited = (retryAfter = null) => Object.assign(new Error(BUSY_LINE), { rateLimited: true, retryAfterMs: Number.isFinite(retryAfter) ? retryAfter : null });   // nothing ran; callers don't fall back to another route (it shares the limit)
 const route = (method, path) => `${method} ${String(path || "").split("?")[0].replace(/\/(trs|ca|ti|ac)_[\w-]+/g, "/$1_…").slice(0, 80)}`;
 export const rateLog = (what, method, path, extra = "") => RETRY.log(`composio rate limit: ${what} on ${route(method, path)}${extra ? ` (${extra})` : ""}`);
 
@@ -125,7 +125,7 @@ export async function composioRequest(env, path, init = {}) {
       const ra = retryAfterMs(r.headers), ms = read || ownLimit(d, r.headers) ? nextWait(attempt, waited, ra) : -1;
       if (ms >= 0) { rateLog(`429, retry ${attempt + 1} of ${RETRY.max}`, method, path, `waiting ${ms} ms${ra != null ? `, Retry-After ${Math.round(ra / 1000)} s` : ""}`); waited += ms; await RETRY.sleep(ms); GAUGE.waited(); continue; }
       rateLog(read || ownLimit(d, r.headers) ? "429, gave up" : "429 from the app on a write, not retried", method, path, ra != null ? `Retry-After ${Math.round(ra / 1000)} s` : "");
-      throw rateLimited();
+      throw rateLimited(ra);
     }
     if (r.status >= 500 || r.status === 408) {
       if (!read) { rateLog(`write not retried (HTTP ${r.status})`, method, path); const m = d?.error?.message || d?.message; throw unknownOutcome(`Composio answered HTTP ${r.status}${m ? ` (${errorText(env, r.status, d).slice(0, 40)})` : ""}`); }

@@ -283,7 +283,7 @@ export const rebuildMethods = {
       return { items: out, next: page.length ? k2(page.at(-1).created, page.at(-1).id) : null, done: rows.length <= lim };
     }
     if (kind === "files") {
-      const rows = sql.exec("SELECT * FROM files WHERE deleted=0 AND pending=0 AND at<=? ORDER BY at, id", snap).toArray().filter((r) => !after || k2(r.at, r.id) > after), page = rows.slice(0, lim), out = [];
+      const rows = sql.exec("SELECT * FROM files WHERE deleted=0 AND pending=0 AND hidden=0 AND at<=? ORDER BY at, id", snap).toArray().filter((r) => !after || k2(r.at, r.id) > after), page = rows.slice(0, lim), out = [];
       for (const f of page) { const r = await this.hsFileText(f); if (r) out.push(await this.hsFileEnrich(f, fileItem({ id: f.id, name: f.name, md: r.md, kind: r.kind, at: Number(f.at) || Date.now(), names, mime: f.mime, channel }))); }
       return { items: out, next: page.length ? k2(page.at(-1).at, page.at(-1).id) : null, done: rows.length <= lim };
     }

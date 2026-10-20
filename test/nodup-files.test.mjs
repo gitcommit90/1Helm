@@ -242,4 +242,14 @@ let IDX, PAGE1, LINK1;
   assert.equal(del.status, 200); assert.equal(r2Under(`t/t1/files/main/${id}`).length, 0, "all versions and the original are gone"); await countsRight("temp after delete");
   ok("deleting an edited upload deletes its original and every kept version; storage stays exact");
 }
+// ---- addUpload sent twice (the Worker retries it after a Durable Object reset): one row, same id and name, still a draft ----
+{
+  const id = crypto.randomUUID(), key = `t/t1/files/main/${id}`; await stPut(env, key, "retry body");
+  const f = { id, name: "retry.txt", mime: "text/plain", bytes: 10, r2key: key, pending: true };
+  const a = await R.addUpload("t1", "main", "1", f), b = await R.addUpload("t1", "main", "1", f);
+  assert.equal(a.id, id); assert.equal(b.id, id); assert.equal(b.name, "retry.txt", "the retry does not become 'retry (2).txt'"); assert.equal(b.pending, true);
+  assert.equal(R.sql.exec("SELECT COUNT(*) n FROM files WHERE id=?", id).one().n, 1, "one row");
+  assert.equal(R.sql.exec("SELECT pending FROM files WHERE id=?", id).one().pending, 1);
+  ok("addUpload is safe to send again: one row, same name, still a draft");
+}
 console.log(`nodup-files: ${passed} checks passed`);
