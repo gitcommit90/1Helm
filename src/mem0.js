@@ -25,15 +25,27 @@ export const CATEGORIES = ["identity", "preference", "rule", "decision", "projec
 const als = new AsyncLocalStorage();
 const plain = (env) => (env.BYOK ? Object.create(env, { BYOK: { value: null } }) : env);   // memory models are 1HC's, never the person's own key
 const EMBED_BATCH = 50;
+// Embedding retries: a transient failure (429, 408, 5xx, or no status at all, e.g. a network error or a short count) is tried again after these waits (ms) before it is thrown.
+// Mem0 turns a thrown batch into one embed() call per fact and skips a fact whose call fails (mem0ai issue 5509), so the batch must succeed or throw here. Tests set the waits to 0.
+export const EMBED_RETRY_MS = [300, 900];
+const transient = (e) => { const s = e?.orStatus ?? e?.status; return !e?.permanent && !e?.privacyBlocked && (s == null || s === 408 || s === 425 || s === 429 || s >= 500); };
+async function embedBatchOnce(x, miss) {
+  const r = await dispatch(plain(x.env), "mem_embed", { input: miss }, { meta: { ...x.meta, kind: "memory-embed" } }), j = await r.json().catch(() => null);
+  if (!Array.isArray(j?.data) || j.data.length !== miss.length) throw Object.assign(new Error(`memory embeddings ${r.status}`), { status: r.ok ? undefined : r.status });
+  return j.data.slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((d) => { if (d.embedding?.length !== DIMS) throw Object.assign(new Error(`memory embedding has ${d.embedding?.length} dimensions, the index has ${DIMS}`), { permanent: true }); return d.embedding; });
+}
 async function embedAll(texts) {
   const x = als.getStore(), out = [];
   if (x.capture) return texts.map(() => new Array(DIMS).fill(0));   // a capture (buildExtraction) makes no model call
   for (let i = 0; i < texts.length; i += EMBED_BATCH) {
     const part = texts.slice(i, i + EMBED_BATCH), miss = part.filter((t) => !x.pre?.has(t));
     if (miss.length) {
-      const r = await dispatch(plain(x.env), "mem_embed", { input: miss }, { meta: { ...x.meta, kind: "memory-embed" } }), j = await r.json().catch(() => null);
-      if (!Array.isArray(j?.data) || j.data.length !== miss.length) throw new Error(`memory embeddings ${r.status}`);
-      j.data.slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).forEach((d, k) => { if (d.embedding?.length !== DIMS) throw new Error(`memory embedding has ${d.embedding?.length} dimensions, the index has ${DIMS}`); (x.pre ||= new Map()).set(miss[k], d.embedding); });
+      let vectors;
+      for (let n = 0; ; n++) {
+        try { vectors = await embedBatchOnce(x, miss); break; }
+        catch (e) { if (n >= EMBED_RETRY_MS.length || !transient(e)) throw e; console.log("memory embed retry", n + 1, String(e?.message || e).slice(0, 120)); await new Promise((r) => setTimeout(r, EMBED_RETRY_MS[n])); }
+      }
+      vectors.forEach((v, k) => (x.pre ||= new Map()).set(miss[k], v));
     }
     out.push(...part.map((t) => x.pre.get(t)));
   }
@@ -44,7 +56,12 @@ async function extract(messages, format) {
   const x = als.getStore();
   if (x.capture) { x.capture.push({ messages, response_format: format }); return '{"memory":[]}'; }   // a capture records the request and extracts nothing
   const r = await dispatch(plain(x.env), "mem_extract", { messages, response_format: format }, { meta: { ...x.meta, kind: "memory-extract" } }), j = await r.json().catch(() => null), text = j?.choices?.[0]?.message?.content ?? "";
-  try { for (const m of JSON.parse(/\{[\s\S]*\}/.exec(text)?.[0] || "{}").memory || []) if (m?.text && CATEGORIES.includes(m.category)) x.cats.set(m.text, m.category); } catch {}
+  // The input of an add is never empty, so an empty, cut-off or unparseable answer is a failed call (mem0ai issue 4932: a reasoning model can return nothing). Mem0 would read it as "no facts" and report success.
+  const bad = !String(text).trim() ? "no content" : j?.choices?.[0]?.finish_reason === "length" ? "cut off at the token limit" : null;
+  if (bad) throw new Error(`memory extraction returned ${bad}`);
+  let facts; try { facts = JSON.parse(/\{[\s\S]*\}/.exec(text)?.[0] || "null")?.memory; } catch { facts = null; }
+  if (!Array.isArray(facts)) throw new Error("memory extraction returned an answer that is not the memory list");
+  for (const m of facts) if (m?.text) { x.extracted.add(m.text); if (CATEGORIES.includes(m.category)) x.cats.set(m.text, m.category); }
   return text;
 }
 // The stores of a capture: nothing is found and nothing is written.
@@ -52,19 +69,29 @@ const CAPTURE_STORE = { initialize: async () => {}, getUserId: async () => "1hc"
 const CAPTURE_HISTORY = { addHistory: async () => {}, getHistory: async () => [], reset: async () => {}, close() {} };
 let engine;
 const load = () => engine ||= import("mem0ai/oss").then((m) => {
-  m.EmbedderFactory.create = () => ({ embed: async (t) => (await embedAll([t]))[0], embedBatch: embedAll });
+  m.EmbedderFactory.create = () => ({ embed: async (t) => { try { return (await embedAll([t]))[0]; } catch (e) { als.getStore().embedFailed?.push(String(e?.message || e)); throw e; } }, embedBatch: embedAll });   // Mem0 skips a fact whose embed() throws (and an entity too), so the failure is also recorded for withMemory
   m.LLMFactory.create = () => ({ generateResponse: extract, generateChat: async (messages) => ({ role: "assistant", content: await extract(messages) }) });
   m.VectorStoreFactory.create = (_provider, c) => { const x = als.getStore(); if (x.capture) return CAPTURE_STORE; const main = c.collectionName === x.ns, st = new MemStore(x.env, c.collectionName, x.cats, main ? [] : null); if (main) x.main = st; return st; };   // a capture finds and writes nothing; the fact store buffers its inserts (flushed in withMemory); an entity store writes at once
   m.HistoryManagerFactory.create = () => als.getStore().capture ? CAPTURE_HISTORY : new MemHistory(als.getStore().env, als.getStore().ns);
   return m.Memory;
 });
+// Mem0's add() drops a fact without an error when its embedding failed (mem0ai issue 5509). Every fact the model extracted must be buffered for writing, or already stored (Mem0 skips a duplicate),
+// and no embedding may have failed, or the add throws so the writer's retry path (outbox, rebuild step) sends the item again. Runs before the flush, so nothing is half written.
+async function lostFacts(ctx) {
+  if (ctx.embedFailed.length) throw new Error(`memory embedding failed, so the add was not kept: ${ctx.embedFailed[0].slice(0, 200)}`);
+  if (!ctx.extracted.size || !ctx.main) return;
+  const kept = new Set((ctx.main.pending || []).flatMap((p) => p.payloads.map((q) => q.data))), missing = [...ctx.extracted].filter((t) => !kept.has(t));
+  for (const t of missing.slice()) if (await ctx.env.DB.prepare("SELECT 1 AS y FROM mem WHERE ns=? AND json_extract(payload,'$.data')=?").bind(ctx.ns, t).first()) missing.splice(missing.indexOf(t), 1);
+  if (missing.length) throw new Error(`memory lost ${missing.length} of ${ctx.extracted.size} extracted facts, so the add was not kept`);
+}
 // Runs fn(memory) inside the call's context. instructions: Mem0's customInstructions for an add.
 async function withMemory(env, bank, instructions, fn) {
   const Memory = await load(), ns = await nsOf(bank), tenant = /[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/.exec(bank)?.[0];
-  const ctx = { env, ns, cats: new Map(), meta: tenant ? { tenant } : {} };
+  const ctx = { env, ns, cats: new Map(), extracted: new Set(), embedFailed: [], meta: tenant ? { tenant } : {} };
   try { const out = await als.run(ctx, () => fn(new Memory({
     embedder: { provider: "1hc", config: { embeddingDims: DIMS } }, llm: { provider: "1hc", config: {} }, vectorStore: { provider: "1hc", config: { collectionName: ns, dimension: DIMS } },
     historyStore: { provider: "1hc", config: {} }, ...(instructions ? { customInstructions: instructions } : {}) }), ns));
+    await lostFacts(ctx);
     await ctx.main?.flush();   // the facts of the add are written here, in one batch
     return out;
   } catch (e) { if (e?.cause?.orStatus) e.status = e.cause.orStatus; throw e; }   // an extraction model's HTTP status, so the writers can tell a refusal from an outage
@@ -171,6 +198,15 @@ export async function listDocuments(env, bank, { q = "", limit = 100, offset = 0
 export async function memoryCounts(env, bank, prefix = "") {
   const r = await env.DB.prepare("SELECT COUNT(*) facts, COUNT(DISTINCT doc) documents FROM mem WHERE ns=? AND doc LIKE ? ESCAPE '\\'").bind(await nsOf(bank), like(prefix)).first();
   return { facts: r.facts, documents: r.documents };
+}
+// Which of the document ids have at least one fact in a channel's memory (a document the extraction found nothing in has none). One D1 query per 50 ids, no model call.
+export async function docsWithFacts(env, bank, ids) {
+  const ns = await nsOf(bank), list = [...new Set(ids)], have = new Set();
+  for (let i = 0; i < list.length; i += 50) {
+    const part = list.slice(i, i + 50), r = await env.DB.prepare(`SELECT DISTINCT doc FROM mem WHERE ns=? AND doc IN (${part.map(() => "?").join(",")})`).bind(ns, ...part).all();
+    for (const x of r.results || []) have.add(x.doc);
+  }
+  return have;
 }
 // The whole text of a document of raw chunks, in order.
 export async function documentText(env, bank, doc) {

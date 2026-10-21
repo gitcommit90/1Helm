@@ -14,7 +14,7 @@ import { tolerantEnv, codeV, isResetErr } from "./do-stub.js";
 import { resumeInit, resumeMix, guardIn, JOURNALED, runIdOf } from "./resume.js";
 import { traceMix } from "./turn-trace.js";   // Langfuse turn traces: a root, a span per model step, a TOOL per tool run (no text)
 import { runTurnPi } from "./pi-engine.js";
-import { TaskTranscript, TASK_ARCHIVE_TOOL, contextBudget, contextSize, estimateTokens, compactionPlan, transcriptGroups, prefixDigest, transcriptDelete, hasTaskTranscript } from "./task-transcript.js";
+import { TaskTranscript, TASK_ARCHIVE_TOOL, archiveReply, contextBudget, contextSize, estimateTokens, compactionPlan, transcriptGroups, prefixDigest, transcriptDelete, hasTaskTranscript } from "./task-transcript.js";
 import { ensureTaskRuntime, authorizeTaskProfile, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./ee/index.js";
 import { effectiveTaskCatalog } from "./ee/index.js";
 import { trackerInit, listCards, cardDetail, stepDetail, SILENT_TOOLS } from "./tracker.js";
@@ -1648,7 +1648,7 @@ export class Resident extends DurableObject {
     if (NATIVE_TOOL_NAMES.has(name)) return JSON.stringify(await nativeTool(this, name, a, ctx));
     if (ctx.emit && name !== "update_todos" && name !== "react") { ctx.line = lineFor(name, a); ctx.emit({ t: "status", line: ctx.line }); }   // to-do lists and reactions show themselves
     switch (name) {
-      case "read_task_archive": return ctx.transcript && (ctx.transcript.state().memoryRevision || null) === (this.get("task_memory_revision") || null) ? JSON.stringify(ctx.transcript.archive(a)) : "Archive unavailable pending an authorized privacy context reset.";
+      case "read_task_archive": return ctx.transcript && (ctx.transcript.state().memoryRevision || null) === (this.get("task_memory_revision") || null) ? archiveReply(ctx.transcript.archive(a), a) : "Archive unavailable pending an authorized privacy context reset.";
       case "start_helper": case "list_helpers": case "send_helper": case "stop_helper": case (ctx.kind === "helper" && !helperAllowed(name, ctx.helper, ctx.coordinatorPhase) ? name : null): return this.helperTool(name, a, ctx);
       case "start_browser_task": case "stop_browser_task": case "list_browser_tasks": return this.browserJobTool(name, a, ctx);
       case "list_channels": return listChannels(this, a);

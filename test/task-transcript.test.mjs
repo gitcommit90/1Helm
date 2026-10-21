@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { TaskTranscript, contextBudget, contextSize, estimateTokens, compactionPlan, transcriptDelete, transcriptDiagnostics } from "../src/task-transcript.js";
+import { TaskTranscript, archiveReply, contextBudget, contextSize, estimateTokens, compactionPlan, transcriptDelete, transcriptDiagnostics } from "../src/task-transcript.js";
 
 const db = new DatabaseSync(":memory:");
 db.exec("CREATE TABLE kv(k TEXT PRIMARY KEY,v TEXT)");
@@ -36,6 +36,24 @@ store.bound(huge); assert.ok(huge.content.length < 16000);
 const ref = huge.content.match(/ref="([^"]+)"/)[1]; assert.equal(store.readBlob(ref), raw);
 assert.equal(store.archive({ ref, offset: 100, limit: 80 }).text, raw.slice(100, 180));
 assert.equal(new TaskTranscript(storage, "other").archive({ ref }).error, "Archive reference not found in this task");
+{
+  const json = JSON.stringify([{ id: "x", text: "[12:37] Unknown: I'm \"not\" saying\nnext" }]);
+  const big = { role: "tool", tool_call_id: "j", content: json.repeat(300) }; store.bound(big);
+  const r2 = big.content.match(/ref="([^"]+)"/)[1], page = archiveReply(store.archive({ ref: r2, offset: 10, limit: 60 }), { ref: r2 });
+  const [head, ...body] = page.split("\n");
+  assert.equal(head, `[archive ref=${r2} offset=10 total=${json.length * 300} next=70]`);
+  assert.equal(body.join("\n"), json.repeat(300).slice(10, 70)); assert.ok(!page.includes("\\\\"));
+  assert.match(archiveReply(store.archive({ ref: r2, offset: json.length * 300 - 5 }), { ref: r2 }), /next=none\]\n/);
+  assert.equal(archiveReply(store.archive({ ref: "nope" }), { ref: "nope" }), "Archive reference not found in this task");
+  const ep = archiveReply(store.archive({ epoch: store.state().epoch, limit: 50 }), { epoch: store.state().epoch });
+  assert.match(ep, new RegExp(`^\\[archive epoch=${store.state().epoch} offset=0 total=\\d+ next=50\\]\\n`));
+}
+{
+  const t = "abcdefghij".repeat(3500), tb = { role: "tool", tool_call_id: "k", content: t }; store.bound(tb);
+  const r3 = tb.content.match(/ref="([^"]+)"/)[1], a = store.archive({ ref: r3, offset: 12345, limit: 16000 }), reply = archiveReply(a, { ref: r3 });
+  assert.ok(reply.length <= 16000, `reply ${reply.length}`); assert.equal(a.next, 12345 + a.text.length); assert.equal(a.text, t.slice(12345, a.next));
+  const m = { role: "tool", tool_call_id: "k2", content: reply }; store.bound(m); assert.equal(m.content, reply);
+}
 const before = store.request(); failWrite = true;
 assert.throws(() => store.compact([{ role: "user", content: "summary" }], "near_model_capacity"), /injected/);
 failWrite = false; assert.deepEqual(store.request(), before); assert.equal(store.state().epoch, 0);

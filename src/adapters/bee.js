@@ -4,8 +4,8 @@
 //   where   Bee's primary_location: its address and its latitude and longitude exactly as given (ambient.js ambientLocation), and the
 //           whole location object in raw; 1HC adds no place name of its own here
 //   who     each speaker label as Bee gave it, with Bee's speaker id as ref; the wearer is the person (self)
-//   from    "bee", with Bee's device_type. source "user": the person's own recording (each line still names its speaker, and other
-//           speakers are marked "not the user")
+//   from    "bee", with Bee's device_type. source "user": the person's own recording (each line still carries Bee's speaker label as sent, with no
+//           reading of who spoke added)
 import { makeEnvelope, withEnvelope } from "../memory-envelope.js";
 
 export const modality = "bee";

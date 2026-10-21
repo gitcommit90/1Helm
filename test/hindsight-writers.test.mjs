@@ -10,7 +10,7 @@
 //  G. The estimate and the admin path (dry run, two at a time, one account).
 //  H to K. The secrets sweep, the Archive's notes, live notes cadence and Bee's inbox.
 import assert from "node:assert/strict"; import { DatabaseSync } from "node:sqlite";
-import { FILE_MD_MAX, hsWriters, DOC, docKind, TAG, STRATEGY, dayKey, isoLocal, dayRange, convEntries, sliceEntries, convDocOf, ctxFor, ambientSpeaker, noteItem, fileItem, taskItem, skillItem, contactItem, liveEntries, liveItem, beeEntries, beeItem, itemsNano, inboxItem, inboxEligible, inboxText, rounds, itemExtractChars, hsNoteNotify, hsContactNotify } from "../src/hindsight-writers.js";
+import { FILE_MD_MAX, hsWriters, DOC, docKind, TAG, STRATEGY, dayKey, isoLocal, dayRange, convEntries, sliceEntries, convDocOf, ctxFor, ambientSpeaker, beeRawText, noteItem, fileItem, taskItem, skillItem, contactItem, liveEntries, liveItem, beeEntries, beeItem, itemsNano, inboxItem, inboxEligible, inboxText, rounds, itemExtractChars, hsNoteNotify, hsContactNotify } from "../src/hindsight-writers.js";
 import { hsRetainBatchNano } from "../src/byok.js"; import { retainV2, scrubContent, bankId, listDocuments, memoriesList, documentText } from "../src/mem0.js";
 import { readFileSync } from "node:fs"; import { fakeIndex, embedding, fakeExtraction } from "./helpers/mem0-fakes.mjs"; import { withSettings } from "./helpers/seed-settings.mjs";
 import { speakerLabels } from "../src/hindsight-template.js";
@@ -53,8 +53,8 @@ const names = { first: "Sam", helper: "Ollie", channel: "main" };
   for (const k of ["chat", "note", "helper-note", "live", "bee", "skill", "task", "contact", "inbox"]) assert.ok(ctxFor(k, long).includes("F".repeat(90)), `${k}: the name is kept whole`);
   assert.ok(ctxFor("skill", long).includes("n".repeat(300)) && ctxFor("task", long).includes("n".repeat(300)) && ctxFor("file", long).includes("f".repeat(300)), "nothing is cut");
   assert.match(ctxFor("contact", names), /not words Sam said/); assert.match(ctxFor("bee", { ...names, address: "12 Elm St" }), /12 Elm St/);
-  assert.equal(ambientSpeaker("Unknown", { first: "Sam" }), "Unknown speaker (not the user)"); assert.equal(ambientSpeaker(null, { first: "Sam", isUser: true }), "Sam (wearer, the user)"); assert.equal(ambientSpeaker("sam", { first: "Sam" }), "Sam (wearer, the user)");
-  assert.equal(ambientSpeaker("Priya", { first: "Sam" }), "Priya (not the user)"); assert.equal(ambientSpeaker({ name: "Dan" }, { first: "Sam" }), "Dan (not the user)"); assert.equal(ambientSpeaker("Others", { first: "Sam" }), "Others (not the user)");
+  assert.equal(ambientSpeaker("Unknown"), "Unknown"); assert.equal(ambientSpeaker(null), ""); assert.equal(beeRawText([{ time: "T", speaker: "", text: "hi" }, { time: "T", speaker: "Unknown", text: "yo" }]), "[T] hi\n[T] Unknown: yo"); assert.equal(ambientSpeaker("sam"), "sam"); assert.equal(ambientSpeaker("wearer"), "wearer");
+  assert.equal(ambientSpeaker("Priya"), "Priya"); assert.equal(ambientSpeaker({ name: "Dan" }), "Dan"); assert.equal(ambientSpeaker("Others"), "Others");
   // retain items: constant tag per kind, strategy per kind, shared observation scopes
   const note = noteItem({ row: { id: "n1", content: "Likes HTML", author_type: "human", sec: "how", created: 5, edited: 9 }, names, channel: "main" });
   assert.deepEqual([note.document_id, note.strategy, note.tags, note.update_mode, note.observation_scopes, note.at], ["note:n1", "note", ["source:note"], "replace", "shared", 9]); assert.match(note.context, /A note Sam wrote in their 1Helm Notebook, in the how to work together section/);
@@ -69,12 +69,12 @@ const names = { first: "Sam", helper: "Ollie", channel: "main" };
   assert.deepEqual([skillItem({ slug: "weekly", description: "Use when", body: "# W", at: 1, names, channel: "main" }).document_id, skillItem({ slug: "weekly", description: "d", body: "# W", at: 1, names, channel: "main" }).strategy], ["skill:weekly", "note"]);
   const contact = contactItem({ p: { id: "p1", name: "Dana Lee", rel: "Your sister", aka: ["Dani"], phone: "555-0100", email: "d@x.com", bday: "May 3", facts: [{ text: "Likes tea", src: "You added" }, { text: "secret channel fact", channel: "work" }], created: 1 }, names });
   assert.deepEqual([contact.document_id, contact.tags], ["contact:p1", ["source:contact"]]); assert.match(contact.content, /Dana Lee/); assert.match(contact.content, /Likes tea/); assert.doesNotMatch(contact.content, /secret channel fact/, "facts a channel learned stay out of the card");
-  const le = liveEntries([{ at: t0, speaker: "Sam", text: "hello" }, { at: t0 + 1000, speaker: "Unknown", text: "hi" }, { at: t0 + 2000, speaker: null, text: "  " }], { first: "Sam", tz }); assert.deepEqual(le.map((x) => x.speaker), ["Sam (wearer, the user)", "Unknown speaker (not the user)"]);
+  const le = liveEntries([{ at: t0, speaker: "Sam", text: "hello" }, { at: t0 + 1000, speaker: "Unknown", text: "hi" }, { at: t0 + 2000, speaker: null, text: "  " }], { first: "Sam", tz }); assert.deepEqual(le.map((x) => x.speaker), ["Sam", "Unknown"]);
   assert.equal(liveEntries([{ at: t0, text: "hello" }], { first: "Sam", tz, mic: true })[0].speaker, "Unlabeled speech (microphone)");
   const li = liveItem({ task: "t1", n: 2, entries: le, at: t0, names, channel: "main", key: "2:9" }); assert.deepEqual([li.document_id, li.strategy, li.tags, li.update_mode], ["live:t1:s2", "ambient", ["source:live"], "append"]);
   const rawE = beeEntries([{ at: t0, speaker: "wearer", is_user: true, text: "buy oat milk" }, { at: t0 + 60000, speaker: "Speaker 2", is_user: false, text: "ok" }], { first: "Sam", tz }), bi = beeItem({ id: 5, entries: rawE, at: t0, address: "Elm St", summary: "Errands", started: "a", ended: "b", names });
   assert.deepEqual([bi.document_id, bi.strategy, bi.tags, bi.update_mode, bi.observation_scopes], ["bee:conv:5", "raw-transcript", ["source:bee", "kind:raw"], "replace", "shared"], "the constant source:bee tag plus kind:raw, observation scopes shared");
-  assert.equal(bi.content, `[${rawE[0].time}] Sam (wearer, the user): buy oat milk\n[${rawE[1].time}] Speaker 2 (not the user): ok`, "one line per utterance: the time and the speaker label exactly as the entries carry them, then the words");
+  assert.equal(bi.content, `[${rawE[0].time}] wearer: buy oat milk\n[${rawE[1].time}] Speaker 2: ok`, "one line per utterance: the time and the speaker label exactly as the entries carry them, then the words");
   assert.equal(typeof bi.content, "string"); assert.equal(itemExtractChars(bi), 0, "chunks mode makes no model call, so no extraction characters are priced"); assert.equal(itemsNano([bi]), 0); assert.match(bi.context, /Summary: Errands/); assert.equal(bi.metadata.kind, "bee");
   const it = { id: "i1", kind: "task", text: "Buy milk", status: "open", confidence: "captured", needs_review: false, source_at: t0, source_id: "5", evidence: [{ quote: "buy milk tomorrow" }], attribution: { is_user: true } };
   assert.equal(inboxEligible(it), true); assert.equal(inboxEligible({ ...it, needs_review: true }), false); assert.equal(inboxEligible({ ...it, confidence: "unverified" }), false); assert.equal(inboxEligible({ ...it, confidence: "unverified", confirmed: true }), true);
@@ -86,7 +86,7 @@ const names = { first: "Sam", helper: "Ollie", channel: "main" };
 }
 
 // ---- the Mem0 memory behind the real Resident: the migration in a D1 on node:sqlite, the index fake, the embedding fake and an extraction model that answers with the new messages as one fact ----
-const echo = (p) => [{ text: p.split("## New Messages").pop().split("## Observation Date")[0].trim(), category: "other" }];
+const echo = (p) => /ZEROFACT/.test(p.split("## New Messages").pop()) ? [] : [{ text: p.split("## New Messages").pop().split("## Observation Date")[0].trim(), category: "other" }];
 const X = fakeExtraction(echo);
 process.on("exit", () => X.done());
 const seen = (re) => X.calls.some((c) => re.test(JSON.stringify(c.messages)));   // what the extraction model was told, for the context of an item
@@ -190,8 +190,8 @@ const rowDocs = (m) => m.d1.prepare("SELECT doc FROM mem WHERE doc IS NOT NULL O
   const r = await R.hsTurnWrite({ turn: "t2", session: "s1", at: T1 + 1, userText: "more", reply: "ok" }); assert.equal(r.skipped, 1); assert.equal(X.calls.length, n0, "out of credits: not saved"); assert.ok(holds.some((h) => h[0] === "skipped"));
   R.byokHold = async () => ({ done: async () => 0 });
   // a server error: the item goes to the outbox and the alarm sends it again
-  m.fail(503); const rq = await R.hsTurnWrite({ turn: "t3", session: "s1", at: T1 + 2, userText: "retry me", reply: "ok" }); assert.equal(rq.queued, 1); assert.equal(R.hsOutboxCount(), 1);
-  assert.ok(R.hsOutboxNext() > Date.now(), "the alarm is asked to come back"); const fl = await R.hsFlush({ max: 10, paid: true }); assert.equal(fl.sent, 1); assert.equal(R.hsOutboxCount(), 0);
+  m.fail(503, false); const rq = await R.hsTurnWrite({ turn: "t3", session: "s1", at: T1 + 2, userText: "retry me", reply: "ok" }); assert.equal(rq.queued, 1); assert.equal(R.hsOutboxCount(), 1);
+  assert.ok(R.hsOutboxNext() > Date.now(), "the alarm is asked to come back"); m.heal(); const fl = await R.hsFlush({ max: 10, paid: true }); assert.equal(fl.sent, 1); assert.equal(R.hsOutboxCount(), 0);
   assert.match(await txt(m, "conv:s1:2026-10-14"), /retry me/, "the queued turn arrived");
   // a client error is dropped, not retried forever
   m.fail(400); const bad = await R.hsTurnWrite({ turn: "t4", session: "s1", at: T1 + 3, userText: "bad", reply: "ok" }); assert.equal(bad.dropped, 1); assert.equal(R.hsOutboxCount(), 0);
@@ -237,10 +237,10 @@ const rowDocs = (m) => m.d1.prepare("SELECT doc FROM mem WHERE doc IS NOT NULL O
   // live notes: a chunk is appended to live:<task>:s<n>
   await R.hsLiveAppend({ task: "t1", n: 1, rows: [{ at: T1, speaker: "Sam", text: "let's meet at noon" }, { at: T1 + 1000, speaker: "Unknown", text: "ok" }], mic: false, at: T1, key: "1:2" });
   await R.hsLiveAppend({ task: "t1", n: 1, rows: [{ at: T1 + 5000, speaker: "Unknown", text: "see you" }], mic: false, at: T1, key: "1:3" });
-  const live = await txt(m, "live:t1:s1"); assert.match(live, /let's meet at noon/); assert.match(live, /see you/); assert.match(live, /Unknown speaker \(not the user\)/); assert.equal(await facts(m, "live:t1:s1"), 2, "each chunk was added");
+  const live = await txt(m, "live:t1:s1"); assert.match(live, /let's meet at noon/); assert.match(live, /see you/); assert.match(live, /Unknown: ok|Unknown: see you/); assert.equal(await facts(m, "live:t1:s1"), 2, "each chunk was added");
   // Bee conversation (General): the transcript lines as chunks, with no model call
   c0 = X.calls.length; await R.hsBeePut({ id: 5, lines: [{ at: T1, speaker: "wearer", is_user: true, text: "buy milk" }, { at: T1 + 1000, speaker: "Speaker 2", is_user: false, text: "ok" }], at: T1, address: "12 Elm St", summary: "Errands", started: "a", ended: "b" });
-  assert.equal(X.calls.length, c0, "a recording is kept as chunks, with no extraction"); assert.match(await documentText(m.env, m.bank, "bee:conv:5"), /^\[\d{4}-\d\d-\d\dT[\d:]+[+-]\d\d:\d\d\] Sam \(wearer, the user\): buy milk\n\[.*\] Speaker 2 \(not the user\): ok$/, "plain text, one line per utterance"); assert.equal((await ids(m, "bee:")).length, 1, "one document per recording");
+  assert.equal(X.calls.length, c0, "a recording is kept as chunks, with no extraction"); assert.match(await documentText(m.env, m.bank, "bee:conv:5"), /^\[\d{4}-\d\d-\d\dT[\d:]+[+-]\d\d:\d\d\] wearer: buy milk\n\[.*\] Speaker 2: ok$/, "plain text, one line per utterance"); assert.equal((await ids(m, "bee:")).length, 1, "one document per recording");
   // deleting the recording removes its document, and the delayed re-delete (hs_forget) holds it
   await R.hsDropDocs(["bee:conv:5"]); assert.ok(!(await has(m, "bee:conv:5")), "forgetting a recording removes its chunks"); assert.ok(m.dues().includes("bee:conv:5"), "and it is re-checked later");
   assert.deepEqual(await mkRes({ channel: "work" }).R.hsBeePut({ id: 1, lines: [], at: 1 }), { skipped: "not General" }, "Bee goes to General only");
@@ -354,8 +354,8 @@ async function runToEnd(m, { max = 200 } = {}) {
   R._rbUnits = 2; await R.hsRebuild("start"); await R.hsRebuildAlarm();   // the reset and the first batch
   const s1 = R.hsRb(); assert.equal(s1.phase, "send"); assert.ok(s1.sent.items > 0);
   // the second batch fails after its cursor was saved
-  m.fail(503); s1.retry_at = 0; R.hsRbSave(s1); const before = R.hsRb(); const cursorBefore = JSON.stringify([before.kind, before.after]);
-  await R.hsRebuildAlarm(); const mid = R.hsRb(); assert.equal(mid.status, "running"); assert.equal(mid.tries, 1, "a failed batch is retried with a back off"); assert.ok(mid.retry_at > Date.now(), "the retry waits"); assert.ok(mid.error.includes("503"));
+  m.fail(503, false); s1.retry_at = 0; R.hsRbSave(s1); const before = R.hsRb(); const cursorBefore = JSON.stringify([before.kind, before.after]);
+  await R.hsRebuildAlarm(); m.heal(); const mid = R.hsRb(); assert.equal(mid.status, "running"); assert.equal(mid.tries, 1, "a failed batch is retried with a back off"); assert.ok(mid.retry_at > Date.now(), "the retry waits"); assert.ok(mid.error.includes("503"));
   assert.equal(JSON.stringify([mid.kind, mid.after]), cursorBefore, "the cursor still points at the batch that failed: it is sent again"); assert.ok(mid.next, "the end of the batch was saved before it was sent");
   // "restart": a new Resident object on the same storage (a deploy), then resume
   const R2 = new Resident(R.ctx, R.env); R2.archive = R.archive; assert.equal(R2.hsRb().status, "running", "the state survives a restart"); assert.ok(R2.hsRebuildNext() >= mid.retry_at - 1);
@@ -468,7 +468,7 @@ async function runToEnd(m, { max = 200 } = {}) {
     const doc = "conv:s1:2026-10-14"; assert.ok(await has(m2, doc)); m2.d1.exec("DELETE FROM hs_forget");
     const good = await rewriteOrDelete(R2, [doc], ["z1"]); assert.deepEqual(good, { rewritten: 1, deleted: 0, fellBack: false }); assert.ok(await has(m2, doc), "rewrite succeeded: the document stays"); assert.equal(m2.dues().length, 0, "no hs_forget row");
     // the memory refuses the rewrite (a server error: hsPut queues it): the document is deleted instead, and its queued rewrite is taken out of the outbox
-    m2.fail(503); const bad = await rewriteOrDelete(R2, [doc], ["z1"]);
+    m2.fail(503, false); const bad = await rewriteOrDelete(R2, [doc], ["z1"]); m2.heal();
     assert.deepEqual(bad, { rewritten: 0, deleted: 1, fellBack: true }); assert.ok(!(await has(m2, doc)), "rewrite failed: the document is deleted"); assert.ok(m2.dues().includes(doc), "with an hs_forget row for the delayed re-delete"); assert.equal(R2.hsOutboxCount(), 0, "the queued rewrite is gone, so the forgotten text cannot come back");
     // the rewrite throws outright: same fallback
     await R2.hsTurnWrite({ turn: "z3", session: "s1", at: T1 + 120e3, userText: "tea again", reply: "ok" }); R2.hsConvRewrite = async () => { throw new Error("boom"); };
@@ -559,6 +559,44 @@ async function runToEnd(m, { max = 200 } = {}) {
   R._rbUnits = 12; const fin = await runToEnd(m); assert.equal(fin.status, "done", JSON.stringify(fin.error));
   const noteDocs = await ids(m, "note:"); assert.equal(noteDocs.length, 27, "all 27 notes, once each"); assert.ok((await Promise.all(noteDocs.map((d) => facts(m, d)))).every((n) => n === 1), "one fact each");
   ok("F2b. rebuild: a failed job resumes from its cursor on the next use after 10 minutes, with no document stored twice");
+}
+
+// ================= L. the verify step: documents with no facts, a replayed page, reconciling an old mismatch =================
+{
+  const { EMBED_RETRY_MS } = await import("../src/mem0.js"); EMBED_RETRY_MS.splice(0, EMBED_RETRY_MS.length, 0, 0);
+  const note = (id, text) => ({ document_id: `note:${id}`, content: text, at: 1, strategy: "note", tags: ["source:note"], update_mode: "replace" });
+  const only = (R, items) => { R.hsSourcePage = async (kind, after) => (kind === "notes" && !after ? { items, next: "x", done: true } : { items: [], next: null, done: true }); };
+  // 1. a document the extraction found no fact in has no rows, counts as empty and verify is ok
+  {
+    const m = mkRes({ channel: "work" }); const { R } = m; await seedRich(m); m.notes.set("n3", { id: "n3", content: "ZEROFACT bare", author_type: "human", sec: "how", created: 300, status: "current" });
+    await R.hsRebuild("start"); const fin = await runToEnd(m);
+    assert.equal(fin.report.ok, true, JSON.stringify(fin.report.counts)); assert.deepEqual(fin.report.mismatched, []);
+    assert.deepEqual([fin.report.counts.notes.sent, fin.report.counts.notes.empty, fin.report.counts.notes.in_memory], [3, 1, 2], "three notes sent, one without facts");
+    assert.equal(await has(m, "note:n3"), false, "the empty document has no rows");
+    // 4. reconcile an old finished run that said mismatch (conv counted twice by a replay, no empty counts): the source is counted again from D1 with no model call
+    const refuse = await R.hsRebuild("reconcile"); assert.match(refuse.error, /nothing to reconcile/, "a run that is ok is not reconciled");
+    const st = R.hsRb(); st.sent.docs.conv += 8; st.sent.docs.notes = 3; st.sent.empty = {}; st.report = { ...st.report, ok: false, mismatched: ["conv", "notes"] }; R.hsRbSave(st);
+    const calls = X.calls.length, r = await R.hsRebuild("reconcile"); assert.equal(r.reconciling, true); assert.equal(r.status, "running");
+    const rec = await runToEnd(m); assert.equal(rec.status, "done", JSON.stringify(rec.error)); assert.equal(X.calls.length, calls, "reconciling calls no model");
+    assert.equal(rec.report.ok, true, JSON.stringify(rec.report.counts)); assert.deepEqual([rec.report.counts.notes.sent, rec.report.counts.notes.empty, rec.report.counts.notes.in_memory], [3, 1, 2]); assert.equal(rec.report.counts.conv.sent, rec.report.counts.conv.in_memory, "conv is no longer double counted");
+    assert.ok(rec.report.reconciled, "the report says it was reconciled"); assert.match((await R.hsRebuild("reconcile")).error, /nothing to reconcile/, "and it runs once");
+    // 3. a real missing document still fails verify: a stored document taken out, with the empty count unchanged
+    m.d1.prepare("DELETE FROM mem WHERE doc='note:n1'").run(); const s = R.hsRb(); s.status = "running"; s.phase = "verify"; R.hsRbSave(s); await R.hsRbVerify(R.hsRb());
+    const bad = R.hsRb().report; assert.equal(bad.ok, false); assert.deepEqual(bad.mismatched, ["notes"], "a lost document is not explained by the empty one");
+  }
+  // 2. a replayed page does not count its rounds twice
+  {
+    const m = mkRes({ channel: "work" }); const { R } = m; await seedRich(m);
+    const items = [1, 2, 3, 4, 5].map((i) => note(`r${i}`, i === 5 ? "BOOM fifth note" : `plain note ${i}`)); only(R, items);
+    let boom = true; const run = R.env.AI.run; R.env.AI.run = async (mod, b) => { if (boom && b.text.some((t) => /BOOM/.test(t))) throw Object.assign(new Error("memory 503"), { status: 503 }); return run(mod, b); };
+    R._rbUnits = 1; await R.hsRebuild("start"); await R.hsRebuildAlarm();   // reset
+    for (let i = 0; i < 3; i++) { const s = R.hsRb(); s.retry_at = 0; R.hsRbSave(s); await R.hsRebuildAlarm(); }
+    const mid = R.hsRb(); assert.equal(mid.sent.docs.notes, 4, "the first round is counted once, the failed round is not"); assert.equal(mid.kind, "notes"); assert.ok(mid.error, "the page failed in its second round");
+    boom = false; R._rbUnits = 12; for (let i = 0; i < 3; i++) { const s = R.hsRb(); s.retry_at = 0; R.hsRbSave(s); await R.hsRebuildAlarm(); }
+    const fin = await runToEnd(m); assert.equal(fin.status, "done", JSON.stringify(fin.error));
+    assert.equal(fin.sent.docs.notes, 5, "a replayed page counts each document once"); assert.equal(fin.report.counts.notes.sent, 5); assert.equal(fin.report.counts.notes.in_memory, 5); assert.ok(!fin.report.mismatched.includes("notes"), "notes verify ok (the task card kind is outside this stubbed source)");
+  }
+  ok("L1. verify: zero fact documents count as stored, a replayed page counts once, a real missing document fails, an old mismatch is reconciled without a model call");
 }
 console.log("  ok all");
 log0("hindsight-writers: all checks passed");

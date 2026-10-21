@@ -362,7 +362,7 @@ const bd = async (m, id) => { const items = (await memoriesList(m.env, m.bk, { d
   const base = beeItem({ id: 77, entries, at: c.at, address: location.address, summary: "Lunch", started: c.started, ended: c.ended, names }), it = beeEnveloped(base, c, { first: "Sam" });
   assert.equal(it.content, base.content, "the transcript is unchanged"); assert.deepEqual(it.tags, base.tags); assert.equal(it.strategy, base.strategy);
   assert.match(it.metadata.speakers_scoped, /^1hc/);
-  assert.match(it.content, /Speaker 2 \(not the user\): Yes, and the bread\./, "Bee's label stays unchanged in the transcript");
+  assert.match(it.content, /Speaker 2: Yes, and the bread\./, "Bee's label stays unchanged in the transcript");
   assert.deepEqual([it.metadata.kind_1hc, it.metadata.vendor_id, it.metadata.address, it.metadata.lat, it.metadata.who, it.metadata.who_refs, it.metadata.device], ["transcript", "77", "1 Ferry Building, San Francisco, CA", "37.795512345", "Speaker 2, Priya", "bee:s2", "bee-pioneer"]);
   assert.doesNotMatch(it.context, /third party/); assert.equal(it.metadata.kind, "bee", "the writer's kind stays");
   assert.equal(beeEnvelope({ id: 1, lines: [], started: null, at: 5 }).where, null, "no location from Bee: no place");
@@ -651,7 +651,7 @@ async function seed_k(m) {
   const r601 = bs.speakerRow("601", "label:Unknown"); assert.deepEqual([r601.state, r601.label, r601.person, r601.name], ["reviewed", "Unknown", null, null], "stored as reviewed, Bee's label unchanged, nothing linked");
   assert.equal(events.filter((e) => /601\/label:Unknown has no name and no separate Bee speaker id/.test(e)).length, 1, "logged as an event");
   // memory: each recording is its own document, and the transcript keeps the label as the writer renders it
-  assert.deepEqual((await ids(m, "bee:conv:")).filter((d) => /:60[12]$/.test(d)), ["bee:conv:601", "bee:conv:602"]); assert.match((await doc(601)).text, /Unknown speaker \(not the user\): Yes, and the bread\./);
+  assert.deepEqual((await ids(m, "bee:conv:")).filter((d) => /:60[12]$/.test(d)), ["bee:conv:601", "bee:conv:602"]); assert.match((await doc(601)).text, /Unknown: Yes, and the bread\./);
   // a recording synced again changes nothing and logs nothing more
   const ev0 = events.length; await bs.hsBeePut(conv(601, [utt(1, "2026-10-15T17:30:05Z", "Unknown", "Should we get oysters?")])); assert.equal(events.length, ev0, "no second event for the same row");
 

@@ -1,5 +1,5 @@
 // the design sandbox / v3 — "Soft": v2's structure with Muse-style surfaces: raised stage, soft bubbles, pill composer, character identity.
-import { ask } from "./dialog";   // first: its Esc handler must run before every other one
+import { ask, dialogOpen } from "./dialog";   // first: its Esc handler must run before every other one
 import { createAmbientCue } from "./ee/ambient-cue";
 import { openTaskRename } from "./task-rename";   // modal keys stay out of app shortcuts
 import { registerShortcut, scInit, scPage, scLabel, scLabelN, scReset } from "./shortcuts";   // third: the one key handler + Settings → Keyboard shortcuts (registers its capture listener before every app one but the dialog's)
@@ -299,6 +299,21 @@ function railWire(railTop: number) {
   const cs = document.querySelector<HTMLElement>("#rail .chs")!; cs.scrollTop = railTop; const fade = () => cs.classList.toggle("end", cs.scrollHeight - cs.scrollTop - cs.clientHeight < 4); fade(); cs.onscroll = fade;
     const on = cs.querySelector<HTMLElement>(".ch.on"); if (on && (on.offsetTop < cs.scrollTop || on.offsetTop + on.offsetHeight > cs.scrollTop + cs.clientHeight)) on.scrollIntoView({ block: "nearest" });
 }
+// The one rule for focus a re-render restores or sets on its own (a job finishing, a server push, a route repaint). It never takes focus from
+// another field the person is typing in, and never moves it behind an open pop-up. Focus that follows the person's own click or key calls .focus() directly.
+function overlayRoot(): Element | null {
+  return document.querySelector('[aria-modal="true"], #sheet.on .sheet, .pkpop') ?? (NT.open ? document.querySelector("#nt .nmodal") : null);
+}
+function autoFocus(el: HTMLElement | null | undefined, opts?: FocusOptions, caretEnd = false): boolean {
+  if (!el || !el.isConnected) return false;
+  const a = document.activeElement as HTMLElement | null;
+  if (a && a !== el && a.isConnected && (a instanceof HTMLInputElement || a instanceof HTMLTextAreaElement || a.isContentEditable)) return false;
+  const ov = overlayRoot(); if (ov && !ov.contains(el)) return false;
+  if (dialogOpen()) return false;
+  el.focus(opts);
+  if (caretEnd && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) el.setSelectionRange(el.value.length, el.value.length);
+  return true;
+}
 function render() {
   if (isNb()) nbBeeVisit(route().ch);
   requestAnimationFrame(nbBeePaint);
@@ -340,7 +355,7 @@ function render() {
     <div class="dhome" id="scroll"><div class="hwrap">${homeHead(ch)}${composer(`Give ${esc(who(ch))} a task`)}
       <p class="hhint" id="hhint">${HINT}</p><div id="htasks">${tasksHtml(ch)}</div></div></div>`);
   const sc = document.getElementById("scroll"); if (sc && s) sc.scrollTop = sc.scrollHeight;
-  if (!s) ($("#box") as HTMLTextAreaElement).focus();
+  if (!s) autoFocus($("#box"));
   if (LIVE && s) { tkSync(ch.slug, s.id); pomoSync(ch.slug, s.id); if (hasFeature("ambient")) lnSync(ch.slug, s.id); }
   hWatch();
   clearFresh(ch);
@@ -4313,7 +4328,7 @@ function nbSync(ch: Channel, force = false) {
       nb.notes.forEach((n: any) => { if (!had.has(String(n.id)) || was.has(String(n.id))) n.fresh = true; }); }   // "New" stays until the page reloads
     if (isNb() && route().ch === ch && !NBUI.edit && !NBUI.add && !BF.edit && !NBW.edit) nbPaint(ch); }).catch(() => {});
 }
-function nbAfter() { wkAfter(); const t = document.getElementById("nedit") as HTMLTextAreaElement | null || document.getElementById("nadd") as HTMLTextAreaElement | null; if (t) { if (t.scrollHeight > t.clientHeight) t.style.height = `${Math.min(t.scrollHeight + 2, innerHeight * 0.5)}px`; t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }   // a long note opens tall enough to read whole
+function nbAfter() { wkAfter(); const t = document.getElementById("nedit") as HTMLTextAreaElement | null || document.getElementById("nadd") as HTMLTextAreaElement | null; if (t) { if (t.scrollHeight > t.clientHeight) t.style.height = `${Math.min(t.scrollHeight + 2, innerHeight * 0.5)}px`; autoFocus(t, undefined, true); } }   // a long note opens tall enough to read whole
 // Unsaved edits (unsaved.ts): editing another note, leaving the Notebook, Esc, a reload... ask first.
 unsavedKind("note", {
   active: () => !!(NBUI.edit || NBUI.add || BF.edit),
@@ -4547,7 +4562,7 @@ function ctImport() {
     <button class="cximprow" data-cxfrom="csv"><span class="aplogo cxapple">${KIND.sheet ? I(KIND.sheet[1], 20) : ""}</span><span><b>A spreadsheet</b><small>Upload a CSV or Excel file, or pick a Google Sheet.</small></span>${ic.chev}</button>
     <p class="apfoot cxnote">${g("lock", 14)}You can delete any imported contact, or all of them, anytime.</p></div></div>`;
 }
-function ctAfter() { clMount(); const f = document.querySelector<HTMLInputElement>('#cxform input[name="name"]'); if (f && !f.value) f.focus(); }
+function ctAfter() { clMount(); const f = document.querySelector<HTMLInputElement>('#cxform input[name="name"]'); if (f && !f.value) autoFocus(f); }
 function ctRefresh(listOnly = false) { if (!isCt()) return; if (phone()) { renderM(); return; } const l = document.getElementById("cxlist"); if (l) l.innerHTML = ctList(); if (!listOnly) { $("#stage").innerHTML = ctPage(); ctAfter(); } render(); }
 function ctUsed(m: any) {
   if (!m.ct?.length) return ""; const cs = m.ct.map((id: number) => CT.list.find(c => c.id === id)).filter(Boolean) as Contact[];

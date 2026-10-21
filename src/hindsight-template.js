@@ -45,8 +45,8 @@ export function contextFor(kind, { first, helper, channel: ch, section, file, ad
   else if (kind === "page-edit") s = `A correction ${f} made to the "${nm(page) || "notes"}" page of their 1Helm Notebook${nm(heading) ? `, in the section "${nm(heading)}"` : ""}. It is ${f}'s own statement of what the page should say, and it overrides anything else about that subject.`;
   else if (kind === "helper-note") s = `A note ${h} saved about ${f} in the ${nm(section, 30) || "notes"} section of the 1Helm Notebook.`;
   else if (kind === "file") s = `A file in ${f}'s 1Helm Library: ${nm(file, 80)}.`;
-  else if (kind === "live") s = `Live meeting transcript recorded by ${f}'s Bee wearable. The speaker marked wearer is ${f}. Unknown speakers are other people, never ${f}.`;
-  else if (kind === "bee") s = `Ambient recording by ${f}'s Bee wearable${address ? ` at ${nm(address, 60)}` : ""}. The wearer is ${f}. Unknown speakers are other people.${summary ? ` Summary: ${nm(summary, 80)}` : ""}`;
+  else if (kind === "live") s = `Live meeting transcript recorded by ${f}'s Bee wearable. These are raw transcripts captured from the person's surroundings by their Bee wearable. They may contain other people's voices. Speaker labels come from Bee and may be missing or wrong, and a single label such as "Unknown" often covers lines from two or more people.`;
+  else if (kind === "bee") s = `Ambient recording by ${f}'s Bee wearable${address ? ` at ${nm(address, 60)}` : ""}. These are raw transcripts captured from the person's surroundings by their Bee wearable. They may contain other people's voices. Speaker labels come from Bee and may be missing or wrong, and a single label such as "Unknown" often covers lines from two or more people.${summary ? ` Summary: ${nm(summary, 80)}` : ""}`;
   else throw new Error(`unknown context kind: ${kind}`);
   return s;   // no length limit: Hindsight 1.0 sets none on context
 }

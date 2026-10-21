@@ -9,12 +9,15 @@ import { conversationMessages } from "./message-origin.js";
 //            inbox), in batches. The cursor (the place the batch starts) is saved before it is sent, so a resumed job sends the same batch again, and a
 //            document written twice is replaced, never doubled
 //   flush    the outbox (what was written while the channel rebuilt), then clear the rebuilding mark
-//   verify   count the documents of every kind against what was sent
+//   verify   count the documents of every kind against what was sent. A document the extraction found no fact in (a bare task card, a one line chat) has no rows,
+//            so each page also records which of its documents have none (sent.empty), and verify accepts in_memory + empty = sent
+//   recount  only for a finished run whose report said mismatch (cmd "reconcile"): walks the source again with no extraction, counts the documents and the ones
+//            with no rows from D1, then flush and verify give a new report
 // The source is read live and only records up to the snapshot time are in it, so a record deleted during the rebuild just is not sent, and
 // anything written after the snapshot arrives through the outbox. A delete that arrives mid rebuild also removes the queued writes of that
 // document and goes through hs_forget (deletion.js), which deletes what was already sent. Pause stops after the current batch and resume
 // goes on from the cursor.
-import { retainV2, contentHash, hsOn, bankId, memoryCounts } from "./mem0.js";
+import { retainV2, contentHash, hsOn, bankId, memoryCounts, docsWithFacts } from "./mem0.js";
 import { speakerLabels } from "./hindsight-template.js";
 import { hsEnvelope } from "./hs-flag.js";
 import { withEnvelope, makeEnvelope } from "./memory-envelope.js";   // HS_ENVELOPE: a rebuilt conversation keeps the places its turns had
@@ -30,6 +33,7 @@ function rbEnvelope(g, item) {
   for (const p of g.places) if (p.place && !have.has(p.place.toLowerCase())) { have.add(p.place.toLowerCase()); (out.entities ||= []).push({ text: p.place, type: "LOCATION" }); }
   return out;
 }
+import { sendBackfillSnapshot } from "./backfill-trace.js";
 import { hsRetainBatchNano } from "./byok-meter.js";
 import { EXTRACT_CHARS } from "./mem0-store.js";
 import { memoryReply } from "./status-notes.js";
@@ -50,7 +54,7 @@ const Q = { notes: "note:", skills: "skill:", tasks: "task:", files: "file:", co
 
 // A state with defaults. status: idle | running | paused | failed | done.
 const blank = () => ({ v: REBUILD_VERSION, status: "idle", phase: null, snapshot: 0, started: 0, updated: 0, finished: 0, kind: null, after: "", next: null, tries: 0, retry_at: 0, error: null,
-  pause: false, step: null, sent: { docs: {}, items: 0, chars: 0, batches: 0 }, outbox_flushed: 0, dropped: 0, report: null });
+  pause: false, step: null, sent: { docs: {}, empty: {}, items: 0, chars: 0, batches: 0 }, rd: null, reconciled: 0, outbox_flushed: 0, dropped: 0, report: null });
 
 export const rebuildMethods = {
   hsRb() { const x = jp(this.get("hs_rb")); return x?.v === REBUILD_VERSION ? { ...blank(), ...x } : blank(); },   // the saved state of another version is the Hindsight rebuild: it means nothing here
@@ -59,8 +63,11 @@ export const rebuildMethods = {
   async hsRbSync(s) {
     try {
       await this.env.DB.prepare("CREATE TABLE IF NOT EXISTS hs_rebuild_runs (bank TEXT PRIMARY KEY, tenant TEXT, channel TEXT, status TEXT NOT NULL, phase TEXT, version INTEGER, started_at INTEGER, updated_at INTEGER NOT NULL, summary TEXT)").run();
+      // A change of status sends one snapshot of the counts to Langfuse (backfill-trace.js). The last status is kept in memory, and read from D1 after a restart.
+      const before = this._rbStatus ?? (await this.env.DB.prepare("SELECT status FROM hs_rebuild_runs WHERE bank=?").bind(this.hsBankId()).first())?.status ?? null; this._rbStatus = s.status;
       await this.env.DB.prepare("INSERT INTO hs_rebuild_runs (bank, tenant, channel, status, phase, version, started_at, updated_at, summary) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(bank) DO UPDATE SET status=excluded.status, phase=excluded.phase, version=excluded.version, started_at=excluded.started_at, updated_at=excluded.updated_at, summary=excluded.summary")
         .bind(this.hsBankId(), this.get("tenant"), this.get("channel"), s.status, s.phase, REBUILD_VERSION, s.started || null, now(), JSON.stringify({ kind: s.kind, sent: s.sent.items, error: s.error, report: s.report && { ok: s.report.ok, counts: s.report.counts } })).run();
+      if (before !== s.status && !(await this.hsTestOwner())) this.ctx?.waitUntil?.(sendBackfillSnapshot(this.env, { kind: "change" }));
     } catch (e) { console.log("hs rebuild row", String(e?.message || e).slice(0, 100)); }
   },
   // The next time the alarm should run this job (null when nothing is due).
@@ -75,8 +82,10 @@ export const rebuildMethods = {
   // itself, so an idle test account costs nothing; the dev ops path (hsRebuild "start") hydrates it on request.
   async hsHydrate() {
     const s = this.hsRb();
-    if (!hsWriters(this.env) || !hsOn(this.env) || this.memoryMode() === "off" || !this.get("tenant") || !(s.status === "idle" || (s.status === "failed" && now() - s.updated > 600e3))) return;
-    if (!(await this.hsTestOwner())) await this.hsRebuild(s.status === "failed" ? "resume" : "start");
+    // A run that finished before the empty documents were counted (report.ok false) is counted again once, from D1 and the source, with no extraction.
+    const recount = s.status === "done" && s.report?.ok === false && !s.reconciled;
+    if (!hsWriters(this.env) || !hsOn(this.env) || this.memoryMode() === "off" || !this.get("tenant") || !(s.status === "idle" || recount || (s.status === "failed" && now() - s.updated > 600e3))) return;
+    if (!(await this.hsTestOwner())) await this.hsRebuild(recount ? "reconcile" : s.status === "failed" ? "resume" : "start");
   },
   // The RPC method. cmd: start | pause | resume | status | estimate. o: { force, live } for status (live reads the server), { force } for start.
   async hsRebuild(cmd = "status", o = {}) {
@@ -92,16 +101,24 @@ export const rebuildMethods = {
       const st = { ...blank(), status: "running", phase: "reset", snapshot: now(), started: now() };
       this.hsRbSave(st); await this.arm(); return { started: true, ...(await this.hsRbView(st)) };
     }
+    if (cmd === "reconcile") {
+      // No extraction: only the source is read again. Allowed for a finished run with a mismatch report (o.force: any finished run).
+      if (s.status !== "done" || (!o.force && s.report?.ok !== false)) return { error: `nothing to reconcile (${s.status}${s.report ? `, ok ${s.report.ok}` : ""})`, ...(await this.hsRbView(s)) };
+      if (this.memoryMode() === "off") return { error: "memory is off for this channel" };
+      const st = { ...s, status: "running", phase: "recount", snapshot: now(), kind: kindsFor(this.get("channel"))[0], after: "", next: null, rd: null, tries: 0, retry_at: 0, error: null, pause: false, finished: 0,
+        sent: { ...s.sent, docs: {}, empty: {} }, outbox_flushed: 0, dropped: 0, live_rewound: [], reconciled: now() };
+      this.hsRbSave(st); await this.arm(); return { reconciling: true, ...(await this.hsRbView(st)) };
+    }
     if (cmd === "pause") { if (s.status !== "running") return { error: `nothing to pause (${s.status})`, ...(await this.hsRbView(s)) }; s.pause = true; this.hsRbSave(s); return { pausing: true, ...(await this.hsRbView(s)) }; }
     if (cmd === "resume") {
       if (s.status !== "paused" && s.status !== "failed") return { error: `nothing to resume (${s.status})`, ...(await this.hsRbView(s)) };
       s.status = "running"; s.pause = false; s.error = null; s.tries = 0; s.retry_at = 0; this.hsRbSave(s); await this.arm(); return { resumed: true, ...(await this.hsRbView(s)) };
     }
-    return { error: "cmd must be start, pause, resume, status or estimate" };
+    return { error: "cmd must be start, pause, resume, reconcile, status or estimate" };
   },
   async hsRbView(s, live = false) {
     const v = { status: s.status, phase: s.phase, kind: s.kind, after: s.after ? String(s.after).slice(0, 40) : "", started_at: s.started || null, updated_at: s.updated || null, finished_at: s.finished || null, snapshot: s.snapshot || null,
-      sent: { items: s.sent.items, chars: s.sent.chars, batches: s.sent.batches, docs: s.sent.docs }, outbox: this.hsOutboxCount(), outbox_flushed: s.outbox_flushed, dropped_during: s.dropped, last_error: s.error, tries: s.tries, report: s.report, pause_requested: !!s.pause };
+      sent: { items: s.sent.items, chars: s.sent.chars, batches: s.sent.batches, docs: s.sent.docs, empty: s.sent.empty || {} }, outbox: this.hsOutboxCount(), outbox_flushed: s.outbox_flushed, dropped_during: s.dropped, last_error: s.error, tries: s.tries, report: s.report, pause_requested: !!s.pause };
     if (live && hsOn(this.env)) { try { v.stored = await memoryCounts(this.env, this.hsBankId()); } catch (e) { v.stored = { error: String(e.message || e).slice(0, 120) }; } }
     return v;
   },
@@ -135,6 +152,7 @@ export const rebuildMethods = {
       return "go";
     }
     if (s.phase === "send") return this.hsRbSend(s);
+    if (s.phase === "recount") return this.hsRbRecount(s);
     if (s.phase === "flush") return this.hsRbFlush(s);
     if (s.phase === "verify") return this.hsRbVerify(s);
     throw new Error(`unknown phase ${s.phase}`);
@@ -144,15 +162,37 @@ export const rebuildMethods = {
     // The batch starts at the saved cursor. Its end is saved before it is sent (inflight), so a resume sends the same batch again.
     const page = await this.hsSourcePage(s.kind, s.after, s.snapshot);
     s.next = { kind: page.done ? (kinds[kinds.indexOf(s.kind) + 1] || null) : s.kind, after: page.done ? "" : page.next }; this.hsRbSave(s);
-    const items = page.items.filter((i) => itemChars(i) > 0);
-    for (const r of rounds(items, BATCH_ITEMS)) {
-      await retainV2(env, bank, r);
-      s.sent.batches++; s.sent.items += r.length; s.sent.chars += r.reduce((n, i) => n + itemChars(i), 0);
+    const items = page.items.filter((i) => itemChars(i) > 0), pageKey = `${s.kind}|${s.after}`;
+    // A page that is sent again (a step failed after some of its rounds) sends every round again, which only replaces documents, but counts only the rounds it has not counted:
+    // s.rd says how many rounds of this page are counted, and is saved with the counts.
+    const counted = s.rd?.k === pageKey ? s.rd.n : 0, rs = rounds(items, BATCH_ITEMS);
+    for (let n = 0; n < rs.length; n++) {
+      const r = rs[n]; await retainV2(env, bank, r);
+      if (n < counted) continue;
+      s.sent.batches++; s.sent.items += r.length; s.sent.chars += r.reduce((x, i) => x + itemChars(i), 0);
       for (const i of r) if (i.update_mode !== "append") { const k = reportKind(i.document_id); s.sent.docs[k] = (s.sent.docs[k] || 0) + 1; }
+      s.rd = { k: pageKey, n: n + 1 }; this.hsRbSave(s);
     }
+    await this.hsRbEmpty(s, items);   // after the last round, because a document's appended lines may come in a later round of the page
     if (s.next.kind) { s.kind = s.next.kind; s.after = s.next.after; } else { s.phase = "flush"; s.kind = null; s.after = ""; }
-    s.next = null; this.hsRbSave(s);
+    s.next = null; s.rd = null; this.hsRbSave(s);
     return "go";
+  },
+  // The documents of a page that have no fact in D1 (the extraction found none): counted once per kind, in the same save that moves the cursor past the page. No model call.
+  async hsRbEmpty(s, items) {
+    const docs = [...new Set(items.filter((i) => i.update_mode !== "append").map((i) => i.document_id))]; if (!docs.length) return;
+    const have = await docsWithFacts(this.env, this.hsBankId(), docs); s.sent.empty ||= {};
+    for (const d of docs) if (!have.has(d)) { const k = reportKind(d); s.sent.empty[k] = (s.sent.empty[k] || 0) + 1; }
+  },
+  // Reconcile (cmd "reconcile"): count the source again without extraction. The documents of each page are counted as sent, and the ones with no rows as empty.
+  async hsRbRecount(s) {
+    const kinds = kindsFor(this.get("channel")), page = await this.hsSourcePage(s.kind, s.after, s.snapshot);
+    s.next = { kind: page.done ? (kinds[kinds.indexOf(s.kind) + 1] || null) : s.kind, after: page.done ? "" : page.next };
+    const items = page.items.filter((i) => itemChars(i) > 0);
+    for (const d of new Set(items.filter((i) => i.update_mode !== "append").map((i) => i.document_id))) { const k = reportKind(d); s.sent.docs[k] = (s.sent.docs[k] || 0) + 1; }
+    await this.hsRbEmpty(s, items);
+    if (s.next.kind) { s.kind = s.next.kind; s.after = s.next.after; } else { s.phase = "flush"; s.kind = null; s.after = ""; }
+    s.next = null; this.hsRbSave(s); return "go";
   },
   async hsRbFlush(s) {
     // The outbox, oldest first. The rebuilding mark is cleared in the same step in which the outbox is seen empty (no await between), so a write can never slip past it.
@@ -162,10 +202,10 @@ export const rebuildMethods = {
   },
   async hsRbVerify(s) {
     const kinds = kindsFor(this.get("channel")), counts = {};
-    for (const k of kinds) counts[k] = { sent: s.sent.docs[k] || 0, in_memory: (await memoryCounts(this.env, this.hsBankId(), Q[k])).documents };
-    const slack = s.dropped + s.outbox_flushed;   // documents deleted or added while the channel rebuilt explain a difference
-    const mismatched = Object.entries(counts).filter(([, c]) => Math.abs(c.in_memory - c.sent) > slack).map(([k]) => k);
-    s.report = { ok: !mismatched.length, mismatched, counts, stored: await memoryCounts(this.env, this.hsBankId()), sent: { items: s.sent.items, chars: s.sent.chars, batches: s.sent.batches }, duration_ms: now() - s.started };
+    for (const k of kinds) counts[k] = { sent: s.sent.docs[k] || 0, empty: s.sent.empty?.[k] || 0, in_memory: (await memoryCounts(this.env, this.hsBankId(), Q[k])).documents };
+    const slack = s.dropped + s.outbox_flushed;   // documents deleted or added while the channel rebuilt explain a difference. A document with no fact (empty) counts as stored, a document missing for any other reason does not
+    const mismatched = Object.entries(counts).filter(([, c]) => Math.abs(c.in_memory + c.empty - c.sent) > slack).map(([k]) => k);
+    s.report = { ok: !mismatched.length, mismatched, counts, stored: await memoryCounts(this.env, this.hsBankId()), sent: { items: s.sent.items, chars: s.sent.chars, batches: s.sent.batches }, duration_ms: now() - s.started, ...(s.reconciled ? { reconciled: s.reconciled } : {}) };
     s.status = "done"; s.phase = "done"; s.finished = now(); this.hsRbSave(s); return "done";
   },
   // A document was deleted while the bank rebuilds: counted, so the verify step can explain the difference.
@@ -319,7 +359,7 @@ const raceMs = (p, ms) => { let t; return Promise.race([p, new Promise((_, rej) 
 // status reads D1 (hs_rebuild_runs) only, unless live=1 asks the channel's Resident for its own view (one channel, needs slug and channel).
 export async function hsRebuildAdmin(env, action, { dry = true, slug = "", channel = "", limit = 2, offset = 0, onlyTest = false, live: wantLive = false, now: clock = Date.now, budgetMs = ADMIN_BUDGET_MS } = {}) {
   if (!hsWriters(env)) return { error: "HS_WRITERS is off" };
-  if (!["estimate", "start", "status", "pause", "resume"].includes(action)) return { error: "action must be estimate, start, status, pause or resume" };
+  if (!["estimate", "start", "status", "pause", "resume", "reconcile"].includes(action)) return { error: "action must be estimate, start, status, pause, resume or reconcile" };
   if (env.ENV_NAME !== "dev") return { error: "dev only" };
   const t0 = clock(), left = () => budgetMs - (clock() - t0);
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS hs_rebuild_runs (bank TEXT PRIMARY KEY, tenant TEXT, channel TEXT, status TEXT NOT NULL, phase TEXT, version INTEGER, started_at INTEGER, updated_at INTEGER NOT NULL, summary TEXT)").run().catch(() => {});

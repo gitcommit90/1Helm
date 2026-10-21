@@ -93,7 +93,7 @@ export { hindsightRoute } from "./hindsight-llm.js";
 
 export { customMcpRoute, isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED, withCustomRows, CUSTOM_WORDS } from "./custom-mcp.js";
 
-export { ambientQuery, AMBIENT_QUERY_TOOL } from "./ambient-query.js";
+export { ambientQuery, addLocalTimes, tzOf, AMBIENT_QUERY_TOOL } from "./ambient-query.js";
 
 export { modelSettingsEnv, readModelSettings, jobModel, jobModels, jobCost, modelFacts } from "./model-settings.js";
 export { MOONDREAM } from "./model-seed.js";

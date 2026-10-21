@@ -66,6 +66,7 @@ import { modelsRoute } from "./ee/index.js";
 import { hindsightRoute } from "./ee/index.js";   // the memory server model endpoint (Cloud only, 404 without the Cloud switch)
 import { hsOn, sweepMemory, recall as hsRecall, bankId as hsBankId } from "./mem0.js";
 import { privacyBoot, privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // AI data privacy (onboarding step, boot)
+import { sendBackfillSnapshot } from "./backfill-trace.js";   // Mem0 backfill counts for Langfuse (numbers only)
 import { askDecider, dispatch } from "./ee/index.js";
 import { parityRoute } from "./internal-shim.js";
 import { pageDialog } from "./page-dialog.js";
@@ -181,7 +182,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "286";
+const APP_V = "287";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -589,6 +590,8 @@ export default {
     if (ev.cron === "17 * * * *" && eeEnabled(env)) ctx.waitUntil(cancelCron(env, { stripe }).then((r) => console.log("cancel cron", JSON.stringify(r))).catch((e) => console.log("cancel cron failed", e.message)));
     // Unpaid plans: first notices, reminders (start of the final 7 days, 1 day before), deletion when the 7 days are up (src/pastdue.js).
     if (ev.cron === "17 * * * *" && eeEnabled(env)) ctx.waitUntil(pastdueCron(env, { stripe }).then((r) => console.log("pastdue cron", JSON.stringify(r))).catch((e) => console.log("pastdue cron failed", e.message)));
+    // Backfill progress for Langfuse (src/backfill-trace.js): hourly counts of every real channel by backfill status. Sends nothing without APP_OTEL_TOKEN.
+    if (ev.cron === "17 * * * *" && hsOn(env)) ctx.waitUntil(sendBackfillSnapshot(env, { kind: "cron" }).then((r) => console.log("backfill snapshot", JSON.stringify(r))).catch(() => {}));
     // Own router pool: rebuilt nightly at 2:17 AM PT (09:17 UTC) when the own router is on (dev only for now).
     // Memory: delete the facts of an account that no longer exists. Nightly at 3:17 AM PT (10:17 UTC).
     if (ev.cron === "17 * * * *" && hsOn(env) && new Date(ev.scheduledTime).getUTCHours() === 10) ctx.waitUntil(sweepMemory(env).then((r) => console.log("memory sweep", JSON.stringify(r))).catch((e) => console.log("memory sweep failed", e.message)));

@@ -17,7 +17,7 @@ const ok = (name) => console.log("  ok", name);
   assert.equal(contextFor("scheduled", n), "Scheduled run of a Skipper workflow in #main. These lines are the assistant's own work, not the user's words.");
   assert.match(contextFor("note", { ...n, section: "about" }), /^A note Sam wrote in their 1Helm Notebook, in the about section\. It is Sam's own statement\.$/);
   assert.match(contextFor("helper-note", { ...n, section: "about" }), /^A note Skipper saved about Sam/); assert.match(contextFor("file", { ...n, file: "menu.pdf" }), /^A file in Sam's 1Helm Library: menu\.pdf\.$/);
-  assert.match(contextFor("live", n), /wearer is Sam\. Unknown speakers are other people, never Sam\./); assert.match(contextFor("bee", { ...n, address: "12 Main St", summary: "Lunch" }), /at 12 Main St\. The wearer is Sam\..*Summary: Lunch/);
+  assert.match(contextFor("live", n), /Speaker labels come from Bee and may be missing or wrong, and a single label such as "Unknown" often covers lines from two or more people\./); assert.match(contextFor("bee", { ...n, address: "12 Main St", summary: "Lunch" }), /at 12 Main St\. These are raw transcripts captured from the person's surroundings by their Bee wearable\. They may contain other people's voices\. Speaker labels come from Bee and may be missing or wrong, and a single label such as "Unknown" often covers lines from two or more people\. Summary: Lunch/);
   assert.throws(() => contextFor("nope", n));
   assert.deepEqual(speakerLabels(n), { user: "Sam (user)", assistant: "Skipper (assistant)", notes: "Skipper (assistant notes)", scheduled: "Scheduled run prompt" });
   assert.equal(speakerLabels({}).user, "User"); assert.equal(speakerLabels({}).assistant, "Skipper (assistant)");

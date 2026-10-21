@@ -75,19 +75,15 @@ export function ctxFor(kind, v = {}) {
   if (kind === "skill") return `A procedure ${f} asked ${h} to save as a skill in #${c}: ${one(v.name)}. It is ${f}'s own instruction to ${h}.`;
   if (kind === "task") return `The task card of "${one(v.name)}" in #${c}: the task title and its checklist. The assistant and ${f} both add items.`;
   if (kind === "contact") return `A contact card in ${f}'s 1Helm Contacts. It is information ${f} keeps about a person, not words ${f} said.`;
-  if (kind === "inbox") return `A voice inbox item found in ${f}'s Bee recordings and kept with its status. The wearer is ${f}.`;
+  if (kind === "inbox") return `A voice inbox item found in ${f}'s Bee recordings and kept with its status. These are raw transcripts captured from the person's surroundings by their Bee wearable. They may contain other people's voices. Speaker labels come from Bee and may be missing or wrong, and a single label such as "Unknown" often covers lines from two or more people.`;
   return contextFor(kind, { ...v, first: f, helper: h, channel: c });
 }
 const SECTION_CATEGORY = { about: "identity", how: "preference", people: "person", places: "place", now: "project" };   // Notebook section to fact category
 const SECTION_NAMES = { ov: "overview", about: "about", how: "how to work together", people: "people", places: "places", now: "right now" };
 export const sectionName = (sec) => SECTION_NAMES[sec] || one(sec) || "notes";
-// A speaker in ambient audio: the wearer is the user, everyone else is another person (DESIGN 3.4).
-export function ambientSpeaker(raw, { first, isUser } = {}) {
-  const f = one(first) || "the user", s = one(typeof raw === "object" && raw ? (raw.name || raw.display_name || raw.id) : raw);
-  if (isUser === true || /^(wearer|you|me|user)$/i.test(s) || (s && s.toLowerCase() === f.toLowerCase())) return `${f} (wearer, the user)`;
-  if (!s || /^unknown( speaker)?$/i.test(s)) return "Unknown speaker (not the user)";
-  if (/^others?$/i.test(s)) return "Others (not the user)";
-  return `${s} (not the user)`;
+// A speaker in ambient audio, exactly as the source labelled it (Captain 2026-10-21): 1Helm adds no reading of who spoke. An empty label stays empty.
+export function ambientSpeaker(raw) {
+  return one(typeof raw === "object" && raw ? (raw.name || raw.display_name || raw.id) : raw);
 }
 
 // ---- conversation entries (DESIGN 3.3): one JSON element per speaker line, appended to the day's document ----
@@ -162,30 +158,29 @@ export function contactItem({ p, names }) {
 }
 // Live notes (DESIGN 3.3): the transcript lines of one session, as JSON elements. utts: [{ at, speaker, text }]; mic: no speaker labels.
 export function liveEntries(utts, { first, tz, mic = false } = {}) {
-  return utts.map((u) => ({ speaker: mic && !u.speaker ? "Unlabeled speech (microphone)" : ambientSpeaker(u.speaker, { first }), time: isoLocal(u.at, tz), text: scrubSecrets(String(u.text || "")) })).filter((x) => x.text.trim());
+  return utts.map((u) => ({ speaker: mic && !u.speaker ? "Unlabeled speech (microphone)" : ambientSpeaker(u.speaker), time: isoLocal(u.at, tz), text: scrubSecrets(String(u.text || "")) })).filter((x) => x.text.trim());
 }
 export function liveItem({ task, n, entries, at, names, channel, key, mode = "append" }) {
   return itemOf(DOC.live(task, n), "live", STRATEGY.ambient, { content: entries, at, update_mode: mode, key, context: ctxFor("live", names), metadata: { kind: "live", task, session: String(n), channel } });
 }
 // A Bee conversation: lines = ambientLines(conv) ([{ at, speaker, is_user, text }]). summary goes into the context, clipped.
 export function beeEntries(lines, { first, tz }) {
-  return lines.map((u) => ({ speaker: ambientSpeaker(u.speaker, { first, isUser: u.is_user }), time: isoLocal(u.at || Date.now(), tz), text: scrubSecrets(String(u.text || "")) })).filter((x) => x.text.trim());
+  return lines.map((u) => ({ speaker: ambientSpeaker(u.speaker), time: isoLocal(u.at || Date.now(), tz), text: scrubSecrets(String(u.text || "")) })).filter((x) => x.text.trim());
 }
 // Bee option A (Captain decision 2026-10-14): a recording goes into General's bank once, as its own words and nothing else. Hindsight splits the text into chunks (strategy
 // raw-transcript, chunks mode, no model call) and stores each chunk as it is, so Bee's own facts (the Notebook notes the person approved) are the only facts that come from Bee.
 // One line per utterance, "[time] speaker label: words", with the time and label exactly as the entries carry them. Tags: source:bee (the one constant tag of Bee documents) and
 // kind:raw, which marks a hit as the recording's own words. Observation scopes stay "shared" and consolidation is Hindsight's own. This is the one place a Bee document is built.
-export const beeRawText = (entries) => entries.map((e) => `[${e.time}] ${e.speaker}: ${e.text}`).join("\n");
+export const beeRawText = (entries) => entries.map((e) => `[${e.time}] ${e.speaker ? `${e.speaker}: ` : ""}${e.text}`).join("\n");
 export function beeItem({ id, entries, at, address, summary, started, ended, names }) {
   return itemOf(DOC.bee(id), "bee", STRATEGY.rawTranscript, { content: beeRawText(entries), at, update_mode: "replace", tags: [TAG.bee, TAG_RAW], context: ctxFor("bee", { ...names, address, summary }),
     metadata: { kind: "bee", source: "bee", vendor_id: String(id), started_at: started || "", ended_at: ended || "", location: address || "" } });
 }
 // A voice inbox item (DESIGN 7, option (a)): kept with its status in the text, so a status change replaces the document.
 export function inboxText(it, { first, tz }) {
-  const f = one(first) || "the user", when = it.source_at ? dayKey(it.source_at, tz) : "";
+  const when = it.source_at ? dayKey(it.source_at, tz) : "";
   const ev = (it.evidence || []).map((e) => `"${one(e.quote || e.text)}"`).filter((x) => x !== '""');
-  const who = it.attribution?.is_user === false ? `someone other than ${f}` : f;
-  return [`Voice inbox ${one(it.kind)}: ${one(it.text)}`, `Status: ${one(it.status || "open")}.`, `Said by ${who}${when ? ` on ${when}` : ""}, heard by the Bee wearable.`, ...(it.due_text ? [`When: ${one(it.due_text)}`] : []), ...(ev.length ? [`Evidence: ${ev.join(" ")}`] : [])].join("\n");
+  return [`Voice inbox ${one(it.kind)}: ${one(it.text)}`, `Status: ${one(it.status || "open")}.`, `Heard by the Bee wearable${when ? ` on ${when}` : ""}.`, ...(it.due_text ? [`When: ${one(it.due_text)}`] : []), ...(ev.length ? [`Evidence: ${ev.join(" ")}`] : [])].join("\n");
 }
 export function inboxItem({ it, names, tz }) {
   return itemOf(DOC.inbox(it.id), "inbox", STRATEGY.note, { content: scrubSecrets(inboxText(it, { first: names?.first, tz })), at: it.source_at || Date.now(), update_mode: "replace",
