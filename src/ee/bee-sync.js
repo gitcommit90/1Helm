@@ -1,7 +1,7 @@
 // Ambient → Bee, live sync (notes/2026-10-07-ambient-bee/SPEC.md §5, §10 step 3). One BeeSync Durable Object per person, named by
-// the tenant id. No always-on server and no held connection: a DO alarm (adaptive: see cadence() below) and Sync now run ONE short container job
-// (bee.js SYNC_JS on the Computer class as "beejob:<tenant>", the Bee CA pinned, the token on stdin) that reads
-// GET /v1/changes?cursor= and the changed conversations, then the container is stopped at once.
+// the tenant id. No always-on server and no held connection: a DO alarm (adaptive: see cadence() below) and Sync now run ONE short run
+// (bee-api.js syncCore: Worker fetch to Bee's public endpoint, the token opened at use) that reads
+// GET /v1/changes?cursor= and the changed conversations.
 //   - A finished conversation (end_time set), with HS_WRITERS on → General's Hindsight bank as its words in chunks, no extraction (hsBeePut, which scrubs secrets),
 //     document_id "bee:conv:<id>". Retained again when its updated_at changes (the same document_id replaces it in Hindsight).
 //     A conversation Bee no longer has (404) is forgotten (deletion.js hsForgetDocs: re-checked, since retain is async).
@@ -14,11 +14,12 @@
 //     sec about / people), shown "From Bee". confirmed:false → the "New from Bee" block (Approve / Edit / Deny). Facts have no
 //     updated_at: an edit in the Bee app is found by comparing text / confirmed with the last copy; a fact gone from a complete
 //     list is gone from the Notebook too. Our own change still owed to Bee (a failed write-back) wins until it's written.
-//     Writes go through the job (bee.js WRITE_CORE): PUT always with the fact's existing tags, DELETE, POST (undo of a delete).
+//     Writes go through the run (bee-api.js writeCore): PUT always with the fact's existing tags, DELETE, POST (undo of a delete).
 //   - Todos / dailies / journals: ignored.
 //   - 401 → bee_accounts.status needs_reconnect, the alarm stops; Reconnect (bee.js verify → start) resumes from the cursor.
 //     429 / 5xx / no answer → backoff 5, 10, 20, 40, 60 min (the job itself retries each call 3 times first).
-//   - Cost: every run reserves its container time from the account's Ledger first (never on credit, never a negative balance) and
+//   - Cost: a run's Bee calls cost nothing (Worker fetch, no container since 2026-10-21). Every run still takes a 1 nano hold on the account's
+//     Ledger first (never on credit, never a negative balance, the day limit applies) and settles it at 0, so out of credits still pauses it, and
 //     settles the measured seconds; every retain reserves its Hindsight cost (byok.js hsRetainNano) the same way. Out of
 //     credits / the daily limit / a read-only (unpaid) account → nothing runs, the card says why, the next alarm tries again.
 //   - Disconnect: keep (memories and transcripts stay; the cursor goes) or remove (every bee:conv:<id> document in General's bank
@@ -36,14 +37,13 @@ import { hsNoteNotify, hsWriters, inboxEligible, DOC as HS_DOC } from "../hindsi
 import { stPut, stDelete, stDeleteListed, StorageFull } from "../storage.js";
 import { hsRetainNano, hsRawNano } from "../byok-meter.js";
 import { scrubSecrets } from "../secrets-scrub.js";
-import { beeSyncJob, beeFactsJob, beeEvent, JOB_IDLE_MS, SYNC_KILL_MS } from "./bee.js";
+import { beeSyncJob, beeFactsJob, beeEvent } from "./bee.js";
 import { AmbientStore, ambientLines, ambientLocation } from "./ambient.js";
 import { speakersMix } from "./bee-speakers.js";   // HS_ENVELOPE: the new speaker review (one row per speaker per recording)
 
 export const EVERY_MS = 5 * 60e3, MANUAL_GAP_MS = 15e3, MAX_PER_RUN = 25, OVERLAP_MS = 10 * 60e3, STALE_CURSOR_MS = 6 * 86400e3, MAX_BACKOFF_MS = 60 * 60e3;
-// The Computer class's "basic" container at cost + 15%, per second (the same formula as index.js COMPUTER_NANO_PER_SEC).
-export const JOB_NANO_PER_SEC = Math.ceil((1 * 0.0000025 + 0.25 * 0.000020 + 4 * 0.00000007) * 1e9 * 1.15);
-export const JOB_RESERVE_NANO = Math.ceil((SYNC_KILL_MS + 30e3) / 1000 * JOB_NANO_PER_SEC);   // the longest a run can bill
+// A Bee run's hold on the Ledger: the credit and day-limit check, settled at 0 (Worker fetch has nothing to bill).
+export const JOB_RESERVE_NANO = 1;
 export const RETAIN_MARKUP = 1.15;
 // Write-back to Bee (Approve / Edit / Deny, a From-Bee note edited / deleted / restored): the Notebook changes at once and the request
 // returns; the write is a row in `facts` (write put|delete|post) sent by the DO alarm (kicked now), retried with backoff
@@ -57,8 +57,8 @@ export const docId = (id) => `bee:conv:${id}`;
 export const r2Key = (tid, id) => `t/${tid}/bee/conv/${id}.json`;
 export const r2Prefix = (tid) => `t/${tid}/bee/`;
 export const backoff = (fails) => Math.min(EVERY_MS * 2 ** Math.max(0, fails - 1), MAX_BACKOFF_MS);
-// Adaptive cadence (2026-10-08, the Captain): every check is one container cold start (~1.5 s billed, ~$0.000015), so an idle Bee
-// at a flat 5 min cost ~$0.14/person/month for nothing. Now:
+// Adaptive cadence (2026-10-08, the Captain): every check was one container cold start (~1.5 s billed, ~$0.000015), so an idle Bee
+// at a flat 5 min cost ~$0.14/person/month for nothing. The container is gone, and the cadence stays because it also limits calls to Bee. Now:
 //   - every 5 min (EVERY_MS) while something is going on: a conversation still recording at the last check, a new / changed /
 //     deleted conversation or fact within ACTIVE_MS (60 min), Live notes on (its claim), a Live notes refine waiting for Bee's final
 //     transcript (a watch under REFINE_WAIT_MS old), or conversations left to retry;
@@ -89,7 +89,7 @@ export function cadence({ t, active, idleRuns = 0, tz = null }) {
   if (night > 0 && night > step) return { ms: Math.min(NIGHT_EVERY_MS, night), idleRuns: k, why: "night" };
   return { ms: step, idleRuns: k, why: "quiet" };
 }
-// A job that met a 429/5xx (SYNC_CORE slow {status, retry_ms}): Bee's Retry-After (up to 6 h), else 30 s; 0 when it didn't.
+// A job that met a 429/5xx (syncCore slow {status, retry_ms}): Bee's Retry-After (up to 6 h), else 30 s; 0 when it didn't.
 export const SLOW_WAIT_MS = 30e3;
 export const slowWait = (r) => !r?.slow ? 0 : Number(r.slow.retry_ms) >= 0 && r.slow.retry_ms != null ? Math.min(6 * 3600e3, Number(r.slow.retry_ms)) : SLOW_WAIT_MS;
 const now = () => Date.now();
@@ -129,14 +129,14 @@ export const transcriptDoc = (conv, withSummary = false) => ({ source: "bee", id
 
 // Facts (§7): a full listing at least hourly (plus whenever the change feed names a fact); a write job's longest bill.
 export const FACTS_EVERY_MS = 60 * 60e3;
-// Backfill: 20 conversations per container job, the next batch 1 s after; seeds (the Captain's first sync, 10-07: 6 conversations,
+// Backfill: 20 conversations per run, the next batch 1 s after; seeds (the Captain's first sync, 10-07: 6 conversations,
 // 10,125 summary characters, $0.00142 job + retains → ~$0.00024 each at the old meter; ~0.4 s of job time each; the retain part is now priced by hsRetainNano, about $0.0008 each) until this account has its own.
 // Raw transcript chunks are dated by their own first line since version 2 (mem0.js chunkTimes). A recording kept with an older version (convs.raw_v null or lower) is put again, once, by the alarm:
 // replace mode, no extraction call, embeddings only. RESAVE_BATCH recordings per alarm, the next alarm RESAVE_GAP_MS later, so a deploy or restart goes on from the rows still marked old.
 export const BEE_RAW_VERSION = 2, RESAVE_BATCH = 3, RESAVE_GAP_MS = 5e3, RESAVE_CREDITS_WAIT_MS = 60 * 60e3, RESAVE_MAX_TRIES = 3;
 export const BF_BATCH = 20, BF_GAP_MS = 1000, BF_SEED_MS = 700, BF_BATCH_OVERHEAD_MS = 3000;
 export const BF_SEED_RETAIN_NANO = Math.ceil(hsRetainNano(1688) * RETAIN_MARKUP);
-export const FACTS_RESERVE_NANO = Math.ceil(120 * JOB_NANO_PER_SEC);
+export const FACTS_RESERVE_NANO = 1;
 // Notebook section for a fact: "people" when it's about someone else (a relation word or a people-ish tag), else "about".
 const REL = /\b(wife|husband|partner|girlfriend|boyfriend|fianc[eé]e?|spouse|sister|brother|sibling|mother|father|mom|dad|parents?|son|daughter|kids?|child(ren)?|grand(ma|pa|mother|father|son|daughter)|aunt|uncle|cousin|niece|nephew|friends?|coworkers?|co-workers?|colleagues?|boss|manager|team ?mates?|neighbou?rs?|roommates?|in-laws?)\b/i;
 export function factSec(text, first = "", tags = null) {
@@ -397,7 +397,7 @@ export class BeeSync extends DurableObject {
     const t = await env.DB.prepare("SELECT status FROM tenants WHERE id=?").bind(tid).first();
     if (t?.status !== "active") { this.put("note", NOTE.readonly); await this.mirror(); await this.ev(`sync (${why}): skipped, the account is ${t?.status || "gone"} (read-only)`); return; }
 
-    // The container time, reserved first (never on credit).
+    // The hold on the Ledger first (never on credit).
     const L = this.ledger(), jobId = `bee-sync:${crypto.randomUUID()}`;
     let held = null; try { held = await L.reserve(jobId, JOB_RESERVE_NANO); } catch (e) { held = { ok: false, reason: String(e?.message || e).slice(0, 80) }; }
     if (!held?.ok) { this.put("note", held?.reason === "day_limit" ? NOTE.day : NOTE.credits); await this.mirror(); await this.ev(`sync (${why}): skipped, ${held?.reason || "no reservation"}`); return; }
@@ -413,11 +413,10 @@ export class BeeSync extends DurableObject {
     try { r = await beeSyncJob(env, tid, token, { cursor, ids: retry, max: MAX_PER_RUN, facts: factsMode, ...(gap != null ? { catchup: gap } : cursor ? { cursor_at: cAt || this.num("live_since") || 0 } : {}) }); }
     catch (e) { r = { status: 0, error: String(e?.message || e).slice(0, 120), ms: 0 }; }
     finally { token = null; }
-    const billMs = Number(r?.ms || 0) + (r?.stopped === false ? JOB_IDLE_MS : 0);
-    const jobNano = Math.min(JOB_RESERVE_NANO, Math.ceil(billMs / 1000 * JOB_NANO_PER_SEC));
+    const jobNano = 0;
     await L.settle(jobId, jobNano).catch((e) => console.log("bee sync settle", String(e?.message || e).slice(0, 120)));
     this.bump({ runs: 1, job_ms: Number(r?.ms || 0), cost_nano: jobNano });
-    const timing = `job ${r?.ms ?? 0}ms${r?.cold ? " (cold start)" : ""}`;
+    const timing = `run ${r?.ms ?? 0}ms`;
 
     if (r?.status === 401) {
       await env.DB.prepare("UPDATE bee_accounts SET status='needs_reconnect', checked_at=?, last_error=? WHERE tenant_id=?").bind(now(), "Bee said 401 (sync)", tid).run();
@@ -536,21 +535,20 @@ export class BeeSync extends DurableObject {
   // ---------------- Backfill (§6): import past conversations ----------------
   // State in this DO (survives deploys and restarts): kv "bf" {days, from, to, status ready|running|paused|done|cancelled, total, done,
   // failed, active_ms, resumed_at, cost_nano, est_nano, est_ms, reason}, the queue bf_queue (id, start_time, state todo|done|fail) and
-  // the history bf_hist. Pre-count: list calls only (SYNC_CORE only:"list"); the queue = finished conversations that started in
+  // the history bf_hist. Pre-count: list calls only (syncCore only:"list"); the queue = finished conversations that started in
   // [now−N days, now] minus the ranges already covered (live sync, earlier backfills), minus every id already ingested. The run takes
-  // the newest BF_BATCH at a time in ONE container job (only:"convs", the container kept warm between batches and stopped after the
-  // last), each conversation the same as a sync (ingestOne: R2 + retain, reserved first), checkpointed after every item. The DO alarm
-  // drives it between the live syncs, which keep running (both use the same beejob container, one job at a time).
+  // the newest BF_BATCH at a time in ONE run (only:"convs"), each conversation the same as a sync (ingestOne: R2 + retain, reserved first), checkpointed after every item. The DO alarm
+  // drives it between the live syncs, which keep running.
   bf() { try { return JSON.parse(this.get("bf") || "null"); } catch { return null; } }
   setBf(o) { this.put("bf", o ? JSON.stringify(o) : null); }
   bfCount(state) { return Number(this.sql.exec("SELECT COUNT(*) n FROM bf_queue" + (state ? " WHERE state=?" : ""), ...(state ? [state] : [])).toArray()[0]?.n || 0); }
-  // Measured cost and time per conversation: this account's own retains (average summary length × the meter) + the container
-  // seconds; seeded from the Captain's first sync until there are 3.
+  // Measured cost and time per conversation: this account's own retains (average summary length × the meter); the Bee reads cost nothing.
+  // Seeded from the Captain's first sync until there are 3.
   perConv() {
     const c = this.counters(), rows = this.sql.exec("SELECT COUNT(*) n, AVG(chars) a FROM convs WHERE retained_at IS NOT NULL").toArray()[0] || {};
     const retain = c.retain_n >= 3 ? c.retain_nano / c.retain_n : Number(rows.n) >= 3 ? hsRetainNano(Number(rows.a)) * RETAIN_MARKUP : BF_SEED_RETAIN_NANO;
     const b = this.bf(), ms = b?.done >= 10 && b.active_ms ? b.active_ms / b.done : BF_SEED_MS;
-    return { nano: Math.ceil(retain + ms / 1000 * JOB_NANO_PER_SEC), ms };
+    return { nano: Math.ceil(retain), ms };
   }
   async backfill(tenant, op, days = 30) {
     if (!this.tid() && tenant) this.put("tenant", tenant);
@@ -583,15 +581,12 @@ export class BeeSync extends DurableObject {
     if (!held?.ok) return { error: held?.reason === "day_limit" ? NOTE.day : NOTE.credits };
     let token = await openSecret(env, a.token_sealed), r;
     try { r = await beeSyncJob(env, tid, token, { only: "list", from }); } catch (e) { r = { status: 0, error: String(e?.message || e).slice(0, 120) }; } finally { token = null; }
-    const nano = Math.min(JOB_RESERVE_NANO, Math.ceil(Number(r?.ms || 0) / 1000 * JOB_NANO_PER_SEC)); await L.settle(jobId, nano).catch(() => {}); this.bump({ runs: 1, job_ms: Number(r?.ms || 0), cost_nano: nano });
+    const nano = 0; await L.settle(jobId, nano).catch(() => {}); this.bump({ runs: 1, job_ms: Number(r?.ms || 0), cost_nano: nano });
     if (r?.status === 401) { await env.DB.prepare("UPDATE bee_accounts SET status='needs_reconnect', checked_at=?, last_error=? WHERE tenant_id=?").bind(now(), "Bee said 401 (backfill count)", tid).run(); this.put("status", "needs_reconnect"); this.put("note", NOTE.reconnect); await this.mirror(); return { error: NOTE.reconnect }; }
     if (r?.status !== 200 || !r.list) {
-      // A 200 without a list = the job ran SYNC_CORE from before step 5 (the beejob Computer DO kept the previous deployment's code for
-      // a minute or two after the 10-07 deploy and treated only:"list" as a normal sync). Say exactly what came back.
-      const stale = r?.status === 200 && !r.list, why = stale ? `the Bee job answered with the previous version's sync (no list; keys: ${Object.keys(r).filter((k) => k !== "convs").join(",")}); a deploy is still settling`
-        : r?.status ? `Bee answered ${r.status}${r.error ? `: ${String(r.error).slice(0, 160)}` : ""}` : r?.error || "no answer";
+      const why = r?.status ? `Bee answered ${r.status}${r.error ? `: ${String(r.error).slice(0, 160)}` : ""}` : r?.error || "no answer";
       await this.ev(`backfill: couldn't count (${why})`);
-      return { error: stale ? "1Helm was just updated. Try again in a minute." : "Bee isn't answering right now. Try again in a minute.", detail: why, status: r?.status ?? 0, ms: r?.ms ?? null, cold: !!r?.cold };
+      return { error: "Bee isn't answering right now. Try again in a minute.", detail: why, status: r?.status ?? 0, ms: r?.ms ?? null };
     }
     const gaps = subtractRanges([[from, to]], this.covered());
     const have = new Set(this.sql.exec("SELECT id FROM convs").toArray().map((x) => Number(x.id)));
@@ -634,10 +629,9 @@ export class BeeSync extends DurableObject {
     const L = this.ledger(), jobId = `bee-backfill:${crypto.randomUUID()}`;
     let held = null; try { held = await L.reserve(jobId, JOB_RESERVE_NANO); } catch { held = { ok: false }; }
     if (!held?.ok) return pause(held?.reason === "day_limit" ? "day" : "credits", held?.reason || "no reservation");
-    const last = this.bfCount("todo") <= ids.length;
     let token = await openSecret(env, a.token_sealed), r;
-    try { r = await beeSyncJob(env, tid, token, { only: "convs", ids, stop: last }); } catch (e) { r = { status: 0, error: String(e?.message || e).slice(0, 120), ms: 0 }; } finally { token = null; }
-    const jobNano = Math.min(JOB_RESERVE_NANO, Math.ceil((Number(r?.ms || 0) + (last && r?.stopped === false ? JOB_IDLE_MS : 0)) / 1000 * JOB_NANO_PER_SEC));
+    try { r = await beeSyncJob(env, tid, token, { only: "convs", ids }); } catch (e) { r = { status: 0, error: String(e?.message || e).slice(0, 120), ms: 0 }; } finally { token = null; }
+    const jobNano = 0;
     await L.settle(jobId, jobNano).catch(() => {}); this.bump({ runs: 1, job_ms: Number(r?.ms || 0), cost_nano: jobNano });
     b = this.bf(); if (b) this.setBf({ ...b, cost_nano: b.cost_nano + jobNano });
     if (r?.status === 401) {
@@ -698,7 +692,7 @@ export class BeeSync extends DurableObject {
     this.put("remove_r2", "1"); await this.removeTranscripts().catch((e) => console.log("bee remove r2", String(e?.message || e).slice(0, 120)));
     const r2Left = this.get("remove_r2") === "1";
     await this.ev(`sync: off (disconnected; removed ${ids.length} conversation${ids.length === 1 ? "" : "s"} from memory${r2Left ? "; transcripts retried in 1 min" : " and their transcripts"}${notes ? `; ${notes} From-Bee note${notes === 1 ? "" : "s"} removed from the Notebook` : ""})`);
-    if (r2Left) { this.sql.exec("DELETE FROM convs"); this.sql.exec("DELETE FROM pending"); this.sql.exec("DELETE FROM facts"); try { this.spkInit(); this.sql.exec("DELETE FROM speakers"); } catch {} await this.ctx.storage.setAlarm(now() + 60e3); return { memories: "removed", removed: ids.length }; }
+    if (r2Left) { this.sql.exec("DELETE FROM convs"); this.sql.exec("DELETE FROM pending"); this.sql.exec("DELETE FROM facts"); try { this.spkInit(); this.sql.exec("DELETE FROM speakers"); this.sql.exec("DELETE FROM speaker_map"); } catch {} await this.ctx.storage.setAlarm(now() + 60e3); return { memories: "removed", removed: ids.length }; }
     await this.ctx.storage.deleteAll(); this.init(); this.ambient = new AmbientStore(this);
     return { memories: "removed", removed: ids.length };
   }
@@ -826,6 +820,7 @@ export class BeeSync extends DurableObject {
   async hsBeePut(conv) {
     const tid = this.tid(), cid = await this.generalCid(), addr = typeof conv.primary_location?.address === "string" && conv.primary_location.address.trim() ? conv.primary_location.address : "", lines = ambientLines(conv);
     try { this.speakersSeen(conv, lines); } catch (e) { console.log("bee speakers", String(e?.message || e).slice(0, 120)); }   // the new speaker review (bee-speakers.js)
+    try { await this.speakersCarry(); } catch (e) { console.log("bee speakers carry", String(e?.message || e).slice(0, 120)); }   // a label with a remembered contact links now, so its recording is retained with the person just below
     const R = this.env.RESIDENT.get(this.env.RESIDENT.idFromName(`res:${tid}:${GENERAL}`)); await R.bind(tid, GENERAL, String(cid));
     const r = await R.hsBeePut({ id: conv.id, lines, at: msOf(conv.start_time) ?? msOf(conv.created_at) ?? now(), address: addr, summary: String(conv.short_summary || conv.summary || ""), started: iso(conv.start_time), ended: iso(conv.end_time),
       location: ambientLocation(conv), primary: conv.primary_location ?? null, timezone: typeof conv.timezone === "string" ? conv.timezone : null, device: typeof conv.device_type === "string" ? conv.device_type : null, start_raw: conv.start_time ?? null, end_raw: conv.end_time ?? null, speakers: this.speakerLinks(conv.id) });   // the envelope (adapters/bee.js); an older Resident ignores the extra fields
@@ -906,7 +901,7 @@ export class BeeSync extends DurableObject {
     return this.sql.exec("SELECT id, text, tags, created_at FROM facts WHERE state='pending' AND write IS NULL ORDER BY COALESCE(created_at, at) DESC LIMIT 200").toArray()
       .map((r) => ({ id: Number(r.id), text: r.text, tags: r.tags ? JSON.parse(r.tags) : [], at: msOf(r.created_at) }));
   }
-  // One write job, its container time reserved first and settled. → the WRITE_CORE answer ({status: 0, error} if it never ran).
+  // One write run, a hold on the Ledger first and settled at 0. → the writeCore answer ({status: 0, error} if it never ran).
   async writeOps(ops) {
     const env = this.env, tid = this.tid();
     const a = await env.DB.prepare("SELECT status, token_sealed FROM bee_accounts WHERE tenant_id=?").bind(tid).first();
@@ -916,7 +911,7 @@ export class BeeSync extends DurableObject {
     if (!held?.ok) return { status: 0, error: held?.reason === "day_limit" ? "day_limit" : "credits" };
     let token = await openSecret(env, a.token_sealed), r;
     try { r = await beeFactsJob(env, tid, token, ops); } catch (e) { r = { status: 0, error: String(e?.message || e).slice(0, 120), ms: 0 }; } finally { token = null; }
-    const nano = Math.min(FACTS_RESERVE_NANO, Math.ceil(Number(r?.ms || 0) / 1000 * JOB_NANO_PER_SEC));
+    const nano = 0;
     await L.settle(jobId, nano).catch(() => {}); this.bump({ fact_writes: ops.length, cost_nano: nano });
     if (r?.status === 401) { await env.DB.prepare("UPDATE bee_accounts SET status='needs_reconnect', checked_at=?, last_error=? WHERE tenant_id=?").bind(now(), "Bee said 401 (fact write)", tid).run(); this.put("status", "needs_reconnect"); this.put("note", NOTE.reconnect); await this.mirror(); }
     return r || { status: 0 };
@@ -937,7 +932,7 @@ export class BeeSync extends DurableObject {
     const parked = r.status === 401 || (!r.results?.length && ["credits", "day_limit", "not connected"].includes(r.error));
     let done = 0, retry = 0, stuck = 0;
     for (let i = 0; i < rows.length; i++) {
-      const w = rows[i], cur = this.factRow(w.id), x = r.results?.[i];   // WRITE_CORE answers one result per op, in order
+      const w = rows[i], cur = this.factRow(w.id), x = r.results?.[i];   // writeCore answers one result per op, in order
       if (!cur || cur.write !== w.write || cur.text !== w.text) continue;   // changed while this was being sent: the newer change goes next
       if (parked && !x) { this.setFact(w.id, { try_at: r.status === 401 ? null : now() + (r.error === "not connected" ? 60e3 : EVERY_MS) }); retry++; continue; }
       const okay = x && ((x.status >= 200 && x.status < 300) || (w.write === "delete" && x.status === 404));
@@ -1015,7 +1010,7 @@ export class BeeSync extends DurableObject {
     const held = await L.reserve(jobId, JOB_RESERVE_NANO).catch(() => null); if (!held?.ok) return { error: "no reservation (credits)" };
     let token = await openSecret(env, a.token_sealed), r;
     try { r = await beeSyncJob(env, tid, token, { only: "facts" }); } catch (e) { r = { status: 0, error: String(e?.message || e).slice(0, 120) }; } finally { token = null; }
-    const nano = Math.min(JOB_RESERVE_NANO, Math.ceil(Number(r?.ms || 0) / 1000 * JOB_NANO_PER_SEC)); await L.settle(jobId, nano).catch(() => {});
+    const nano = 0; await L.settle(jobId, nano).catch(() => {});
     if (r?.status !== 200) return { status: r?.status ?? 0, error: r?.error || null };
     const list = r.facts?.list || [], conf = list.filter((f) => f.confirmed);
     return { confirmed: conf.length, unconfirmed: list.length - conf.length, complete: !!r.facts?.complete, already_in_notebook: Number(this.sql.exec("SELECT COUNT(*) n FROM facts WHERE state='note'").toArray()[0]?.n || 0),

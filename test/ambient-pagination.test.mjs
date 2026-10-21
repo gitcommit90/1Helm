@@ -34,7 +34,9 @@ try {
     const filters = { mode, ...dates, limit: 1 }, found = []; let cursor;
     do {
       const page = await ambientQuery(res, { ...filters, ...(cursor ? { cursor } : {}) });
-      assert.equal(page.error, undefined); const list = page[mode === "items" ? "items" : mode === "transcript" ? "transcripts" : "locations"];
+      assert.equal(page.error, undefined); const list = mode === "transcript" ? page.transcript.split("\n").filter(l => l.startsWith("[")) : page[mode === "items" ? "items" : "locations"];
+      // A transcript page holds every line that fits, so only items and locations are paged one record at a time.
+      if (mode === "transcript") { assert.equal(list.length, 3); found.push(1, 2, 3); cursor = page.next_cursor; assert.equal(cursor, null); break; }
       assert.equal(list.length, 1); found.push(list[0].id);
       cursor = page.next_cursor;
       if (cursor) { assert.notEqual(cursor, "[secret removed]"); assert.equal(scrubSecrets(cursor), "[secret removed]", "actual backend cursor triggers the old bug"); }
@@ -51,9 +53,7 @@ try {
   assert.equal(new Set(places).size, 3, "unified location tool preserves real Bee pagination");
   forgotten = true;
   const hidden = await ambientQuery(res, { mode: "transcript", ...dates, limit: 1 });
-  assert.equal(hidden.transcripts.length, 0); assert.equal(hidden.coverage.withheld_by_memory_preferences, 1); assert.ok(hidden.next_cursor);
-  const next = await ambientQuery(res, { mode: "transcript", ...dates, limit: 1, cursor: hidden.next_cursor });
-  assert.equal(next.transcripts.length, 1); assert.match(next.transcripts[0].text, /book 2/); forgotten = false;
+  assert.doesNotMatch(hidden.transcript, /book 3/); assert.match(hidden.transcript, /book 2/); assert.equal(hidden.coverage.withheld_by_memory_preferences, 1); forgotten = false;
   const valid = await ambientQuery(res, { ...dates, limit: 1 });
   for (const args of [
     { cursor: "[secret removed]" }, { cursor: "page-2" }, { cursor: valid.next_cursor, kind: "idea", ...dates },
@@ -70,7 +70,7 @@ try {
     const malicious = { ...res, env: { ONEHELM_EE: "1hc",  BEE_SYNC: { idFromName: x => x, get: () => ({ ambientQuery: async () => ({ items: [{ text: `API key ${secret}`, next_cursor: valid.next_cursor }], coverage: {}, next_cursor: bad }) }) } } };
     const out = await ambientQuery(malicious, dates);
     assert.equal(out.next_cursor, null); assert.equal(out.coverage.pagination_incomplete, true);
-    assert.equal(out.items[0].next_cursor, "[secret removed]", "only top-level validated protocol may bypass scrubbing");
+    assert.equal(out.items[0].next_cursor, undefined, "a cursor nested in an item is not part of the compact item");
     assert.doesNotMatch(JSON.stringify(out), new RegExp(secret)); assert.match(out.items[0].text, /secret removed/);
   }
   const stale = valid.next_cursor;

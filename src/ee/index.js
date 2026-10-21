@@ -53,7 +53,7 @@ export { PAUSE_FACTS, appFirstBlock, callKey, repeatBlock, repeatNote } from "./
 export { appLogoRoute } from "./applogo.js";
 export { APPS_USED_LINE, APPS_USED_TOOL, APP_OPTIONS, NONE, appsUsedApi, appsUsedLine, appsUsedTool, getAppsUsed, optionsView, setAppsUsed, usedSlugs } from "./apps-used.js";
 export { BeeSync };
-export { beeCron, beeJobAlarm, beeJobOn, beeLiveOn, beeLiveStopOn, beeNoteDeleted, beeNoteEdited, beeNoteRestored, beeOps, beePendingFacts, beePendingSpeakers, beeRoute } from "./bee.js";
+export { beeCron, beeNoteDeleted, beeNoteEdited, beeNoteRestored, beeOps, beePendingFacts, beePendingSpeakers, beeRoute } from "./bee.js";
 export { runBrowserTask } from "./browser-agent.js";
 export { BUILTIN_APPS, BUILTIN_TEXT, builtinApps } from "./builtin-apps.js";
 export { hiddenReason, isHiddenApp, isHiddenToolkitAction, visibleCatalog, connectRefusal } from "./app-visibility.js";

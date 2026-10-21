@@ -16,6 +16,7 @@ import { locateEvidence, findPhrase, foldText } from "./ambient-ground.js";
 import { structuredChat, parseStructuredResponse } from "../structured-output.js";
 import { AMBIENT_EXTRACT_SCHEMA, AMBIENT_REVIEW_SCHEMA } from "../background-schemas.js";
 import { AMBIENT_REVIEW_VERSION, AMBIENT_REVIEW_SYSTEM, ambientReviewInput, applyAmbientReview, assertAmbientReview } from "./ambient-review.js";
+import { compactItem, transcriptLineCost, reviewBeyondSpeaker } from "./ambient-query.js";
 import { PLAIN_STYLE } from "../plain-style.js";
 
 export const AMBIENT_VERSION = 2, CHUNK_CHARS = 10000, BATCH_CHUNKS = 6;
@@ -255,7 +256,11 @@ export const ambientReviewMessages = (input) => [{ role: "system", content: AMBI
 // A tool result longer than 16000 characters is cut before the model sees it (src/task-transcript.js bound()), so a whole transcript page has to stay under that.
 // The budget counts each line as it is returned (the raw line plus the id, source and state fields added below) plus LOCAL_PAD, and leaves about 3000 for the
 // coverage block (about 1700 with its local times), the wrapper and the cursor.
-const LOCAL_PAD = 44, PAGE_BUDGET = 13000;
+const LOCAL_PAD = 44, PAGE_BUDGET = 12000;   // 12000 here, a little under HITS_BUDGET in ambient-query.js: coverage (about 1700), the header and the cursor fill the rest of the 15000
+// ambient_query asks for model: true. Then items and transcript lines are paged by size, counting the compact shape the helper receives (compactItem, transcriptText in
+// ambient-query.js), and locations count the <key>_local field that addLocalTimes adds beside each millisecond time plus the comparison location_query adds for each place.
+const LOCAL_TIME = /"((?:at|from|to|[a-z_]*_(?:at|from|to|until))":\d{12,})/g, COMPARISON_PAD = 260;
+const recordCost = (view, extra = 0) => { const json = JSON.stringify(view); let pad = extra; for (const m of json.matchAll(LOCAL_TIME)) pad += m[1].indexOf('"') + 41; return json.length + pad; };
 export class AmbientStore {
   constructor(host) { this.host = host; this.sql = host.sql; this.init(); }
   init() { this.sql.exec(`CREATE TABLE IF NOT EXISTS ambient_sources (source TEXT NOT NULL, source_id TEXT NOT NULL, revision TEXT NOT NULL, source_at INTEGER, live INTEGER NOT NULL, ingested_at INTEGER NOT NULL, processed_at INTEGER, chunks INTEGER NOT NULL, PRIMARY KEY(source,source_id));
@@ -675,7 +680,7 @@ export class AmbientStore {
       recovery: { strategy: AMBIENT_RECOVERY_VERSION, source_only_chunks: Number(recovery.n || 0), processed_source_only_chunks: Number(recovery.done || 0), legacy_activations: Number(h.get("ambient_recovery_migrated") || 0), alarm_pending: h.get("ambient_recovery_arm") === "1", historical_reconciliation_limited: !!recovery.n, note: recovery.n ? "Source-only recovery attempts withhold historical notes; processing counters separately show whether they finished. Old tasks and unresolved updates must not be treated as independent confirmed commitments or a fully reconciled list." : null },
       grounding: { located: Number(grounding.located || 0), approximate: Number(grounding.approximate || 0), unlocated: Number(grounding.unlocated || 0), malformed_model_items: Number(grounding.malformed || 0), dropped_by_review: Number(grounding.review_dropped || 0), chunks_without_counts: Number(grounding.uncounted || 0),
         note: "located: evidence copied from matching speech. approximate: best-guess span, needs review. unlocated: the extractor reported it but no matching speech was found, so treat it as unverified. Chunks without counts were processed before grounding states existed; their item text is the raw transcript quote." },
-      history: "Only recordings synced into 1Helm are covered. Older Bee history may require Import past conversations.", reconciliation: "Related intentions use up to 70 recent and topic-matching prior items; ambiguous speakers remain marked for review.", reminders: "Captured only; no notifications have been scheduled." };
+      history: "Only recordings synced into 1Helm are covered. Older Bee history may require Import past conversations.", reconciliation: "Related intentions use up to 70 recent and topic-matching prior items.", reminders: "Captured only; no notifications have been scheduled." };
     const revision = Number(h.get("ambient_revision") || 0), signature = JSON.stringify([o.mode || "items", o.source_id || null, o.kind || "all", o.status || "all", String(o.query || ""), from, to, o.evidence_id || null]);
     let cursor = null;
     if (o.cursor) { try { cursor = decodeCursor(String(o.cursor)); } catch {} if (!cursor || cursor.revision !== revision || cursor.signature !== signature) return { items: [], ...(o.mode === "transcript" ? { transcripts: [] } : {}), ...(o.mode === "locations" ? { locations: [] } : {}), coverage, next_cursor: null, error: "Ambient records or query changed. Restart from the first page." }; }
@@ -701,8 +706,14 @@ export class AmbientStore {
     const total = Number(this.rows(`SELECT COUNT(*) n ${joins} WHERE ${where.join(" AND ")}`, ...args)[0]?.n || 0);
     if (cursor) { where.push("(COALESCE(i.source_at,0)<? OR (COALESCE(i.source_at,0)=? AND i.id>?))"); args.push(cursor.at, cursor.at, cursor.id); }
     const rows = this.rows(`SELECT i.*,s.revision,s.source_state${o.evidence_id ? ",c.lines" : ""} ${joins} WHERE ${where.join(" AND ")} ORDER BY COALESCE(i.source_at,0) DESC,i.id LIMIT ?`, ...args, limit + 1);
-    const selected = rows.slice(0, limit), last = selected.at(-1), next = rows.length > limit ? encodeCursor({ revision, signature, at: last.source_at || 0, id: last.id }) : null;
-    const items = selected.map((r) => this.itemOut(r));
+    // The page stops at PAGE_BUDGET (the first record always fits), and next_cursor continues after the last record returned.
+    let chars = 0; const items = [], kept = [];
+    for (const r of rows.slice(0, limit)) {
+      const out = this.itemOut(r), n = o.model ? JSON.stringify(compactItem(out)).length + 2 : 0;
+      if (items.length && chars + n > PAGE_BUDGET) break; chars += n; items.push(out); kept.push(r);
+    }
+    const last = kept.at(-1), next = last && rows.length > items.length ? encodeCursor({ revision, signature, at: last.source_at || 0, id: last.id }) : null;
+    const selected = kept;
     return { items, coverage, next_cursor: next, total, ...(o.evidence_id && selected[0] ? { evidence: { source: selected[0].source, source_id: selected[0].source_id, revision: selected[0].revision, lines: parse(selected[0].lines, []).slice(0, 40), bounded: true } } : {}) };
   }
   // HS_WRITERS (hindsight-writers.js, DESIGN section 7 option (a)): the voice inbox items as they stand now (an item a newer, still active one
@@ -719,22 +730,24 @@ export class AmbientStore {
     const item = { ...rest, ...(stored.grounding ? {} : { grounding: { state: "legacy_quote", note: "Saved before clean statements existed. text is the raw transcript quote." } }), source_revision: r.revision, source_state: r.source_state };
     const prior = this.rows("SELECT i.data FROM ambient_links l JOIN ambient_items i ON i.id=l.old_id WHERE l.new_id=? ORDER BY i.source_at DESC LIMIT 4", r.id).map((x) => parse(x.data, {}));
     const later = this.rows("SELECT i.data FROM ambient_links l JOIN ambient_items i ON i.id=l.new_id JOIN ambient_chunks c ON c.source=i.source AND c.source_id=i.source_id AND c.hash=i.chunk_hash WHERE l.old_id=? AND c.active=1 AND c.state='done' ORDER BY i.source_at DESC LIMIT 1", r.id).map((x) => parse(x.data, {}))[0];
-    return { ...item, ...(later ? { current_resolution: { id: later.id, status: later.status, text: later.text, evidence: later.evidence, grounding: later.grounding?.state || "legacy_quote", needs_review: later.needs_review } } : {}), ...(prior.length ? { earlier_evidence: prior.flatMap((x) => x.evidence || []), previous_ids: prior.map((x) => x.id), relationship_needs_review: item.needs_review || prior.some((x) => x.needs_review) } : {}) };
+    return { ...item, ...(later ? { current_resolution: { id: later.id, status: later.status, text: later.text, evidence: later.evidence, grounding: later.grounding?.state || "legacy_quote", needs_review: reviewBeyondSpeaker(later) } } : {}), ...(prior.length ? { earlier_evidence: prior.flatMap((x) => x.evidence || []), previous_ids: prior.map((x) => x.id), relationship_needs_review: reviewBeyondSpeaker(item) || prior.some(reviewBeyondSpeaker) } : {}) };
   }
   transcriptQuery(o, { coverage, revision, signature, cursor, limit, from, to }) {
-    const where = ["c.active=1"], args = [], at = "COALESCE(json_extract(j.value,'$.at'),0)", id = "c.source||':'||c.source_id||':'||c.hash||':'||j.key";
+    const where = ["c.active=1"], args = [], at = "COALESCE(json_extract(j.value,'$.at'),0)", id = `c.source||':'||c.source_id||':'||c.hash||':'||${o.model ? "printf('%08d',j.key)" : "j.key"}`;
+    // model: true is ambient_query. A recording named by source_id is read oldest first, so paging walks it from the start, and a page holds as many lines as fit PAGE_BUDGET.
+    const oldest = !!(o.model && o.source_id), dir = oldest ? "ASC" : "DESC", after = oldest ? ">" : "<";
     if (o.source_id) { where.push("c.source_id=?"); args.push(String(o.source_id)); }
     if (from != null) { where.push(`${at}>=?`); args.push(from); }
     if (to != null) { where.push(`${at}<=?`); args.push(to); }
     for (const word of String(o.query || "").trim().slice(0, 300).split(/\s+/).filter(Boolean).slice(0, 10)) { where.push("instr(lower(json_extract(j.value,'$.text')),lower(?))>0"); args.push(word); }
     const joins = "FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id JOIN json_each(c.lines) j";
     const total = Number(this.rows(`SELECT COUNT(*) n ${joins} WHERE ${where.join(" AND ")}`, ...args)[0]?.n || 0);
-    if (cursor) { where.push(`(${at}<? OR (${at}=? AND ${id}>?))`); args.push(cursor.at, cursor.at, cursor.id); }
-    const rows = this.rows(`SELECT c.source,c.source_id,s.revision,s.source_state,c.state,${id} id,${at} at,j.value line ${joins} WHERE ${where.join(" AND ")} ORDER BY ${at} DESC,${id} LIMIT ?`, ...args, limit + 1);
+    if (cursor) { where.push(`(${at}${after}? OR (${at}=? AND ${id}>?))`); args.push(cursor.at, cursor.at, cursor.id); }
+    const fetch = o.model ? 800 : limit, rows = this.rows(`SELECT c.source,c.source_id,s.revision,s.source_state,c.state,${id} id,${at} at,j.value line ${joins} WHERE ${where.join(" AND ")} ORDER BY ${at} ${dir},${id} LIMIT ?`, ...args, fetch + 1);
     let chars = 0; const transcripts = [];
-    for (const r of rows.slice(0, limit)) {
+    for (const r of rows.slice(0, fetch)) {
       const out = { ...parse(r.line, {}), id: r.id, source: r.source, source_id: r.source_id, source_revision: r.revision, source_state: r.source_state, extraction_state: r.state, untrusted: true };
-      const n = JSON.stringify(out).length + LOCAL_PAD; if (transcripts.length && chars + n > PAGE_BUDGET) break; chars += n;
+      const n = o.model ? transcriptLineCost(out) : JSON.stringify(out).length + LOCAL_PAD; if (transcripts.length && chars + n > PAGE_BUDGET) break; chars += n;
       transcripts.push(out);
     }
     const last = transcripts.at(-1), next = last && rows.length > transcripts.length ? encodeCursor({ revision, signature, at: last.at || 0, id: last.id }) : null;
@@ -756,10 +769,12 @@ export class AmbientStore {
     const total = Number(this.rows(`SELECT COUNT(*) n FROM ambient_sources s WHERE ${where.join(" AND ")}`, ...args)[0]?.n || 0);
     if (cursor) { where.push(`(${at}<? OR (${at}=? AND ${id}>?))`); args.push(cursor.at, cursor.at, cursor.id); }
     const rows = this.rows(`SELECT s.source,s.source_id,s.revision,s.source_state,s.location_json,${id} id,${at} at FROM ambient_sources s WHERE ${where.join(" AND ")} ORDER BY ${at} DESC,${id} LIMIT ?`, ...args, limit + 1);
-    const selected = rows.slice(0, limit), last = selected.at(-1), locations = selected.map((r) => {
-      return { ...parse(r.location_json, {}), id: r.id, source: r.source, source_id: r.source_id, source_revision: r.revision, source_state: r.source_state, untrusted: true };
-    });
-    const next = rows.length > limit ? encodeCursor({ revision, signature, at: last.at, id: last.id }) : null;
+    let chars = 0; const locations = [], kept = [];
+    for (const r of rows.slice(0, limit)) {
+      const place = { ...parse(r.location_json, {}), id: r.id, source: r.source, source_id: r.source_id, source_revision: r.revision, source_state: r.source_state, untrusted: true }, n = recordCost(place, COMPARISON_PAD);
+      if (locations.length && chars + n > PAGE_BUDGET) break; chars += n; locations.push(place); kept.push(r);
+    }
+    const last = kept.at(-1), next = last && rows.length > locations.length ? encodeCursor({ revision, signature, at: last.at, id: last.id }) : null;
     return { items: [], locations, coverage: { ...coverage, location_index_complete: !coverage.backfill_sources, locations_matching: total, location_evidence: "Recorded provider locations only. A missing place is not proof that the person was nowhere; coordinates and metadata times do not establish continuous presence. Locations do not require speech extraction to finish." }, next_cursor: next, total, mode: "locations" };
   }
 }

@@ -361,7 +361,7 @@ const bd = async (m, id) => { const items = (await memoriesList(m.env, m.bk, { d
   const names = { first: "Sam", helper: "Ollie", channel: "main" }, entries = beeEntries(lines, { first: "Sam", tz: "America/Los_Angeles" });
   const base = beeItem({ id: 77, entries, at: c.at, address: location.address, summary: "Lunch", started: c.started, ended: c.ended, names }), it = beeEnveloped(base, c, { first: "Sam" });
   assert.equal(it.content, base.content, "the transcript is unchanged"); assert.deepEqual(it.tags, base.tags); assert.equal(it.strategy, base.strategy);
-  assert.match(it.metadata.speakers_scoped, /^1hc/);
+  assert.equal(it.metadata.speakers_scoped, undefined, "no per recording speaker scope any more (Mem0 reads no entities)"); assert.ok(!(it.entities || []).some((x) => /bee_speaker/.test(x.text)));
   assert.match(it.content, /Speaker 2: Yes, and the bread\./, "Bee's label stays unchanged in the transcript");
   assert.deepEqual([it.metadata.kind_1hc, it.metadata.vendor_id, it.metadata.address, it.metadata.lat, it.metadata.who, it.metadata.who_refs, it.metadata.device], ["transcript", "77", "1 Ferry Building, San Francisco, CA", "37.795512345", "Speaker 2, Priya", "bee:s2", "bee-pioneer"]);
   assert.doesNotMatch(it.context, /third party/); assert.equal(it.metadata.kind, "bee", "the writer's kind stays");
@@ -457,6 +457,51 @@ const bd = async (m, id) => { const items = (await memoriesList(m.env, m.bk, { d
   const off = new BeeSync({ storage: { sql, getAlarm: async () => null, setAlarm: async () => {}, deleteAlarm: async () => {} } }, { ...benv, HS_ENVELOPE: "off" }); off.put("tenant", "t1");
   assert.equal(off.speakersSeen(conv(79, [utt(1, "2026-10-14T09:00:00Z", "Dana", "hi")]), ambientLines(conv(79, [utt(1, "2026-10-14T09:00:00Z", "Dana", "hi")]))), 0);
   assert.equal((await beeRoute(new Request("https://x/api/bee/speaker", { method: "POST", body: JSON.stringify({ op: "list" }) }), { ...benv, HS_ENVELOPE: "off" }, { id: "t1" }, "/api/bee/speaker", { sync: () => bs })).status, 404);
+  // e) the standing mapping (Captain 2026-10-21): a confirm is remembered for its label, so the same label links by itself
+  const evs = []; bs.ev = (w) => { evs.push(w); return Promise.resolve(); };
+  const hear = async (id, label, at = "2026-10-15T09:00:09Z") => { const c = conv(id, [utt(1, "2026-10-15T09:00:05Z", { is_user: true }, "Hi"), utt(2, at, label, `Words from ${id}.`)]); m.R2.set(`bee/${id}.json`, JSON.stringify(c)); bsql.prepare("INSERT INTO convs (id, start_time, r2_key, at) VALUES (?,?,?,?)").run(id, Date.parse(c.start_time), `bee/${id}.json`, Date.now()); await bs.hsBeePut(c); return c; };
+  const pend = () => bs.pendingSpeakers().map((x) => `${x.rec}/${x.spk}`), st = (rec, spk) => bs.speakerRow(String(rec), spk), dtext = async (id) => (await bd(m, `bee:conv:${id}`)).text;
+  await hear(80, "Joseph"); await hear(81, "Joseph"); await hear(82, "Unknown"); await hear(83, "Lilly");
+  assert.deepEqual(pend().filter((x) => /^(80|81|82|83)\//.test(x)).sort(), ["80/label:Joseph", "81/label:Joseph", "83/label:Lilly"], "no mapping yet: every recording gets its card (Unknown has none)");
+  const seenBefore = seen.length, c80 = await route({ op: "confirm", rec: "80", spk: "label:Joseph", person: "p3" });
+  assert.deepEqual([c80.ok, c80.carried], [true, 1], "the confirm links the other waiting Joseph recording too");
+  assert.deepEqual([st(81, "label:Joseph").state, st(81, "label:Joseph").person, st(80, "label:Joseph").person], ["linked", "p3", "p3"]); assert.ok(!pend().includes("81/label:Joseph"), "no card for it");
+  assert.match(await dtext(81), /^\[Written by 1Helm: Joseph in this recording is Marco Rossi, confirmed by Sam\]\n/, "retained again with the person, like Confirm"); assert.deepEqual(seen.slice(seenBefore), [["p3", ["main"]], ["p3", ["main"]]], "people_seen for each");
+  assert.deepEqual(bs.speakerMapGet(" JOSEPH ")?.person, "p3"); assert.ok(evs.some((x) => /81\/label:Joseph linked to contact p3 \(remembered from an earlier confirm\)/.test(x)), "an event says it was remembered");
+  // a later recording with the same label (case and spaces ignored) links on arrival, with no card, and its first retain already carries the person
+  await hear(84, "JOSEPH"); assert.ok(!pend().includes("84/label:JOSEPH")); assert.equal(st(84, "label:JOSEPH").state, "linked"); assert.match(await dtext(84), /JOSEPH in this recording is Marco Rossi/);
+  assert.equal(pend().includes("83/label:Lilly"), true, "another label is untouched");
+  // a generic label never maps: confirming "Speaker 9" (it has a Bee id) stores no mapping, and the next one still gets a card
+  await hear(85, { id: "s9", name: "Speaker 9" }); const g = await route({ op: "confirm", rec: "85", spk: "id:s9", person: "p1" }); assert.equal(g.ok, true); assert.equal(bs.speakerMapGet("Speaker 9"), null);
+  await hear(86, { id: "s9", name: "Speaker 9" }); assert.ok(pend().includes("86/id:s9"), "a generic label still gets its card"); assert.equal(st(86, "id:s9").state, "new");
+  assert.equal(bs.speakerMapSet({ rec: "1", spk: "label:Unknown", label: "Unknown" }, "p1", "x"), false); assert.equal(bs.speakerMapSet({ rec: "1", spk: "id:s2", label: "Speaker 2" }, "p1", "x"), false);
+  // "Not them" on a linked recording unlinks that recording only and keeps the mapping
+  const un = await route({ op: "not_them", rec: "81", spk: "label:Joseph", contact: "p3" }); assert.deepEqual([un.ok, un.unlinked], [true, true]);
+  assert.deepEqual([st(81, "label:Joseph").state, st(81, "label:Joseph").person], ["reviewed", null]); assert.ok(!(await dtext(81)).includes("Written by 1Helm"), "its recording is retained without the link");
+  assert.deepEqual([st(80, "label:Joseph").state, st(84, "label:JOSEPH").state, bs.speakerMapGet("Joseph").person], ["linked", "linked", "p3"], "the other recordings and the mapping stay"); assert.ok(!pend().includes("81/label:Joseph"), "and it is not asked again");
+  assert.match((await route({ op: "not_them", rec: "80", spk: "label:Joseph", contact: "p1" })).error, /different contact/, "a wrong contact unlinks nothing");
+  await hear(87, "Joseph"); assert.equal(st(87, "label:Joseph").person, "p3", "the mapping still links a new recording");
+  // the newest confirm of a label replaces the mapping; earlier links keep their person
+  bsql.prepare("UPDATE speakers SET state='new', not_them=NULL WHERE rec='81'").run();
+  const rp = await route({ op: "confirm", rec: "81", spk: "label:Joseph", person: "p1" }); assert.equal(rp.ok, true); assert.equal(bs.speakerMapGet("Joseph").person, "p1");
+  assert.ok(evs.some((x) => /now maps to contact p1 \(replacing contact p3; recordings already linked keep their link\)/.test(x)));
+  assert.deepEqual([st(80, "label:Joseph").person, st(84, "label:JOSEPH").person, st(87, "label:Joseph").person], ["p3", "p3", "p3"], "older links are not rewritten"); await hear(88, "Joseph"); assert.equal(st(88, "label:Joseph").person, "p1", "new recordings follow the newest choice");
+  // seeding: the mapping starts from the rows already linked, the newest link per label; a generic label is skipped
+  bsql.prepare("INSERT INTO speakers (rec, spk, label, state, person, person_name, at) VALUES ('900','label:Zed','Zed','linked','p1','Priya Shah',100),('901','label:Zed','Zed','linked','p3','Marco Rossi',200),('902','id:s2','Speaker 2','linked','p1','Priya Shah',300)").run();
+  bsql.exec("DELETE FROM speaker_map"); bs.put("spk_map_seeded", null); bs._spkSeeded = false; bs.spkInit();
+  const mapNow = Object.fromEntries(bsql.prepare("SELECT k, person FROM speaker_map ORDER BY k").all().map((r) => [r.k, r.person]));
+  assert.equal(mapNow.zed, "p3", "newest link per label"); assert.equal(mapNow.joseph, "p1"); assert.equal(mapNow["speaker 2"], undefined, "a generic label is not seeded"); assert.equal(mapNow["speaker 9"], undefined);
+  assert.equal(bs.get("spk_map_seeded"), "1"); bsql.prepare("DELETE FROM speaker_map WHERE k='zed'").run(); bs.spkInit(); assert.equal(bs.speakerMapGet("zed"), null, "the seed runs once");
+  // pending rows that match a mapping are settled the next time the Notebook loads
+  bsql.prepare("INSERT INTO speakers (rec, spk, label, state, excerpt, rec_at, at) VALUES ('910','label:Joseph','Joseph','new','x',1,1),('911','id:s7','Speaker 7','new','x',1,1)").run();
+  const load = await bs.pendingSpeakersWithMatches(); assert.ok(!load.some((x) => x.rec === "910"), "settled on load, no card"); assert.deepEqual([st(910, "label:Joseph").state, st(910, "label:Joseph").person], ["linked", "p1"]); assert.ok(load.some((x) => x.rec === "911"), "a generic row stays");
+  // a contact that is gone drops its mapping and leaves the card
+  bsql.prepare("INSERT INTO speaker_map (k,label,person,person_name,at) VALUES ('gone','Gone','p9','Gone Person',1)").run(); bsql.prepare("INSERT INTO speakers (rec, spk, label, state, excerpt, rec_at, at) VALUES ('912','label:Gone','Gone','new','x',1,1)").run();
+  await bs.speakersCarry(); assert.equal(st(912, "label:Gone").state, "new"); assert.equal(bs.speakerMapGet("Gone"), null);
+  // "Not them" to the last match of a card that was never accepted ends its review (one click cards)
+  bsql.prepare("INSERT INTO speakers (rec, spk, label, state, excerpt, rec_at, at) VALUES ('913','label:Marco','Marco','new','x',1,1)").run(); assert.deepEqual((await route({ op: "matches", rec: "913", spk: "label:Marco" })).matches.map((x) => x.id), ["p3"]);
+  assert.deepEqual(await route({ op: "not_them", rec: "913", spk: "label:Marco", contact: "p3" }), { ok: true, reviewed: true }); assert.equal(st(913, "label:Marco").state, "reviewed");
+  ok("G2. Remembered label to contact mapping: a confirm links the same label on its own (waiting rows, new recordings, case and spaces ignored), a generic label never maps, Not them unlinks one recording, the newest confirm replaces, seeding, settle on load, a gone contact");
   ok("G. New speaker detected: one row per speaker per recording (no cross recording link), list, edit, accept, matches (name, alias, phone), confirm (link, recording retained with the person, seen in General), rebuild keeps links, flag off");
 }
 
@@ -472,7 +517,7 @@ const bd = async (m, id) => { const items = (await memoriesList(m.env, m.bk, { d
   const card = W.contactItem({ p: { id: "p9", name: `Dana ${"x".repeat(200)}`, aka: Array.from({ length: 12 }, (_, i) => `alias${i}`), phones: Array.from({ length: 6 }, (_, i) => ({ v: `+1555000000${i}` })), facts: Array.from({ length: 12 }, (_, i) => ({ text: `fact ${i}` })), created: 1 }, names: { first: "Sam", helper: "Ollie" } });
   assert.ok(card.content.includes("x".repeat(200)) && card.content.includes("alias11") && card.content.includes("+15550000005") && card.content.includes("fact 11"), "every contact field, no count caps");
   assert.ok(W.ctxFor("bee", { first: "Sam", helper: "Ollie", address: "a".repeat(400), summary: "s".repeat(400) }).includes("s".repeat(400)), "context lines are whole");
-  assert.ok(readFileSync(new URL("../src/ee/bee.js", import.meta.url), "utf8").includes("sp: typeof u.speaker === \"string\" ? u.speaker : null, tx: u.text,"), "the live job keeps Bee's speaker and words whole");
+  assert.ok(readFileSync(new URL("../src/ee/bee-api.js", import.meta.url), "utf8").includes("sp: typeof u.speaker === \"string\" ? u.speaker : null, tx: u.text,"), "the live job keeps Bee's speaker and words whole");
   // coordinates: 0,0 from a photo's GPS is kept; no place is looked up for it
   const z = await readMetadataBytes(jpeg({ gps: [{ tag: 1, type: 2, v: "N" }, { tag: 2, type: 5, v: [[0, 1], [0, 1], [0, 1]] }, { tag: 3, type: 2, v: "E" }, { tag: 4, type: 5, v: [[0, 1], [0, 1], [0, 1]] }] }));
   assert.deepEqual([z.lat, z.lng, z.tags.gps_latitude], [0, 0, "0/1 0/1 0/1"]);

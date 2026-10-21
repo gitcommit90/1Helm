@@ -30,16 +30,7 @@
       },
       "raw-transcript": {
         "retain_extraction_mode": "chunks",
-        "retain_chunk_size": 800,
-        "entity_labels": [
-          {
-            "key": "bee_speaker",
-            "description": "One speaker in one Bee recording, as Bee labelled it. Matched exactly, never merged with another recording's speaker.",
-            "type": "text",
-            "optional": true,
-            "tag": false
-          }
-        ]
+        "retain_chunk_size": 800
       }
     },
     "memory_defense": {

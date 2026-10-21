@@ -40,7 +40,7 @@ import { deletionRoute, deletionCron, deleteNote, deleteChannel } from "./deleti
 import { archiveDeletionMix, wipeMix } from "./deletion-do.js";
 import { pomoGlobalMethods } from "./pomodoro.js";
 export { PrepContainer } from "./prep-container.js";
-export { BeeContainer } from "./ee/index.js";
+export { BeeContainer } from "./ee/index.js";   // unused since the Bee calls moved to the Worker (src/ee/bee-api.js); the empty class stays so its Durable Object class is not deleted by this deploy
 export { ChannelComputer, ComputerLink } from "./channel-computer.js";
 export { NativeTransport, NativeTransportState } from "./native-transport.js";
 export { Resident } from "./resident.js";
@@ -48,7 +48,7 @@ export { UsageLedger };
 export { Sentinel } from "./sentinel.js";
 import { sealSecret, newStandin } from "./sentinel.js";
 import { linkStartConnect, linkStatus, linkDisconnect, linkListPurchases, linkGetPurchase, linkApi } from "./ee/index.js";
-import { beeRoute, beeJobOn, beeJobAlarm, beeLiveOn, beeLiveStopOn, beeOps, beeCron, beePendingFacts, beePendingSpeakers, beeNoteEdited, beeNoteDeleted, beeNoteRestored } from "./ee/index.js";   // Settings → Ambient → Bee: pairing, sealed token, /v1/me in a container job
+import { beeRoute, beeOps, beeCron, beePendingFacts, beePendingSpeakers, beeNoteEdited, beeNoteDeleted, beeNoteRestored } from "./ee/index.js";   // Settings → Ambient → Bee: pairing, sealed token, /v1/me
 export { BeeSync } from "./ee/index.js";
 export { LiveNotes } from "./ee/index.js";
 export { FilePrep } from "./sidecar.js";   // file sidecars: one object per file version prepares its text in the background
@@ -182,7 +182,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "287";
+const APP_V = "288";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -2355,15 +2355,16 @@ export class Computer extends DurableObject {
   async endTurn() { return this.get("dirty") === "1" && this.ctx.container.running ? await this.checkpoint() : { ok: true, skipped: true, reason: "nothing to save" }; }
   async armAlarm(at) { const cur = await this.ctx.storage.getAlarm(); if (!cur || at < cur) await this.ctx.storage.setAlarm(at); }
 
-  // Bee data API jobs (src/bee.js) run on this class under their own name "beejob:<tenant>": no workspace, no restore, no saves.
-  async beeJob(input) { return beeJobOn(this, input); }
+  // The Bee data calls moved to the Worker (src/bee-api.js). These three RPC names stay for one deploy because a Durable Object still running the
+  // previous code may call them; they answer "moved" and are removed in the next deploy (RPC methods are only ever added in the same deploy).
+  async beeJob() { return { status: 0, error: "Bee calls now run in the Worker; try again in a minute" }; }
   // File sidecars (sidecar.js) under "prepjob:<tenant>": anydoc / pdf-inspector natively (scanned-page OCR, files too big for the Worker).
   async prepJob(input) { return prepJobOn(this, input); }
-  async beeLive(input) { return beeLiveOn(this, input); }   // Live notes: one chunk of the polling job (bee.js LIVE_JS), lines → the LiveNotes DO
-  async beeLiveStop(run) { return beeLiveStopOn(this, run); }
+  async beeLive() { return { ok: false, why: "moved" }; }
+  async beeLiveStop() { return { stopped: false }; }
   async alarm() {
     if (this.env.ENV_NAME === "selfhost" && this.env.BACKUP_MAINTENANCE === "1") { await this.ctx.storage.setAlarm(Date.now() + 60e3); return; }
-    if (this.get("role") === "bee") return beeJobAlarm(this);
+    if (this.get("role") === "bee") { try { await this.ctx.container.destroy("Bee jobs moved to the Worker"); } catch {} return; }   // a beejob container that was running at the deploy
     if (this.get("role") === "prep") return prepJobAlarm(this);
     if (!this.ctx.container.running || this.get("ready") !== "1") return;
     const idleMs = Number(this.get("idle_ms") || IDLE_MS);

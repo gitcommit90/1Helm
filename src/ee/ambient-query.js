@@ -25,7 +25,7 @@ function validCursor(value, request) {
 }
 export const AMBIENT_QUERY_TOOL = { type: "function", function: {
   name: "ambient_query",
-  description: "Times come as raw milliseconds plus a field ending in _local (e.g. at_local) that is already in the person's time zone, so do not convert them. Read captured Bee/ambient tasks, reminders, ideas, facts, preferences and decisions with source evidence and processing coverage. Use for 'go over what I talked about on Bee', spoken to-dos, reminders or memories. mode transcript reads raw saved speech, including thoughts extraction missed; use it when relevant items are missing, extraction is pending/failed or the person disputes a result. Answer from sufficient ambient evidence; disconnected coverage alone does not require unrelated archive searches. Each item's text is a short clean statement of what was meant (speech recognition mistakes and filler fixed); evidence holds the actual transcript words with speaker and time. grounding.state says how well that statement matched the transcript: located (evidence found), approximate (best-guess evidence, needs review) or unlocated (no matching speech found, so unverified and not a confirmed commitment; check mode transcript). Does not schedule, execute tasks, or fetch from Bee. A query is matched by meaning as well as by words: describe what the person is looking for in ordinary words ('the guy about the leak' can find a plumber task), it need not repeat their exact words, and speech recognition typos and split words ('land lord') still match. Results are ranked best first and each has match.via (keyword, meaning or both). In mode transcript a query returns passages (a few adjacent lines by one speaker) instead of single lines. Items whose exact words could not be found come back in possibly_said, apart from items. A ranked search returns at most 200 results; omit query for broad review and follow next_cursor for all requested records. Available in General only.",
+  description: "Times come as raw milliseconds plus a field ending in _local (e.g. at_local) that is already in the person's time zone, so do not convert them. Read captured Bee/ambient tasks, reminders, ideas, facts, preferences and decisions with source evidence and processing coverage. Use for 'go over what I talked about on Bee', spoken to-dos, reminders or memories. mode transcript reads raw saved speech, including thoughts extraction missed; use it when relevant items are missing, extraction is pending/failed or the person disputes a result. Answer from sufficient ambient evidence; disconnected coverage alone does not require unrelated archive searches. Each item's text is a short clean statement of what was meant (speech recognition mistakes and filler fixed); said holds the actual transcript words with Bee's speaker label, and at is the local time. grounding says how well that statement matched the transcript (absent means located): located (evidence found), approximate (best-guess evidence, needs review) or unlocated (no matching speech found, so unverified and not a confirmed commitment; check mode transcript). Does not schedule, execute tasks, or fetch from Bee. A query is matched by meaning as well as by words: describe what the person is looking for in ordinary words ('the guy about the leak' can find a plumber task), it need not repeat their exact words, and speech recognition typos and split words ('land lord') still match. Results are ranked best first and each has match.via (keyword, meaning or both). In mode transcript a query returns passages (a few adjacent lines by one speaker) instead of single lines. Without a query, mode transcript returns one text string of lines like [local time] speaker: words (Bee's label as sent), as many lines as fit one page and oldest first when source_id is given, and limit does not apply to it. Items whose exact words could not be found come back in possibly_said, apart from items. A ranked search returns at most 200 results; omit query for broad review and follow next_cursor for all requested records. Available in General only.",
   parameters: { type: "object", properties: {
     mode: { type: "string", enum: ["items", "transcript", "locations"], description: "items (default): extracted signals. transcript: raw saved speech, including missed signals. locations: provider-recorded conversation locations, not places mentioned in speech; prefer location_query for unified device/Bee recall." },
     kind: { type: "string", enum: KINDS, description: "Category to list; all by default." },
@@ -41,7 +41,7 @@ export const AMBIENT_QUERY_TOOL = { type: "function", function: {
 } };
 
 export const AMBIENT_PROMPT = `Ambient memory is available here through ambient_query. These are raw transcripts captured from the person's surroundings by their Bee wearable. They may contain other people's voices. Speaker labels come from Bee and may be missing or wrong, and a single label such as "Unknown" often covers lines from two or more people. This is background for you; don't comment on speaker labels or their quality in replies unless the person asks who said something. Bee is a voice inbox: people speak fragmented thoughts, tasks and ideas throughout their day, and expect you to help make sense of them later. For "go over what I talked about on Bee", "what did I say earlier", "what was I trying to get done", "let's go over my day", "that idea I had", unfinished thoughts, or captured tasks/reminders/memories, call ambient_query before answering or asking them to repeat themselves. They need not name Bee or remember exact keywords. Use the current conversation when it already clearly identifies the subject; otherwise start with a broad ambient review, not a guessed keyword that hides the relevant thought.
-For a broad review omit query, group firm tasks and tentative ideas separately, and follow next_cursor for a complete requested list. Keep the same filters while paging. Use their requested recording dates in their time zone; without a requested date range, do not silently narrow the search. Use evidence_id when exact wording, a correction or a disputed detail matters. Report the actual coverage, processing backlog, live recordings and freshness; no matches or incomplete coverage never prove they said nothing. Distinguish captured open tasks from completed or cancelled ones and tentative ideas from commitments. Give the source date and supporting words when useful, preserving due-date wording. A linked correction or completion with needs_review is provisional: explain what the later speech suggests, show earlier_evidence when relevant. Captured reminders are not scheduled notifications: do not claim they will fire unless a scheduling tool confirms it.
+For a broad review omit query, group firm tasks and tentative ideas separately, and follow next_cursor for a complete requested list. Keep the same filters while paging. Use their requested recording dates in their time zone; without a requested date range, do not silently narrow the search. Use evidence_id when exact wording, a correction or a disputed detail matters. Report the actual coverage, processing backlog, live recordings and freshness; no matches or incomplete coverage never prove they said nothing. Distinguish captured open tasks from completed or cancelled ones and tentative ideas from commitments. Give the source date and supporting words when useful, preserving due-date wording. A linked correction or completion with needs_review is provisional: explain what the later speech suggests, show earlier when relevant. Captured reminders are not scheduled notifications: do not claim they will fire unless a scheduling tool confirms it.
 Answer from the relevant ambient evidence once it is sufficient for the requested review; do not turn a voice-inbox review into an exhaustive search of unrelated task archives, channels, work logs or ordinary memory. Each returned item already includes its full captured text and status, not just a timestamp. When those items answer the requested review and next_cursor is null, summarize them now: do not read the entire raw day merely to corroborate those items or prove completeness. Complete the requested ambient pagination, then summarize. coverage.processing_complete means the available saved recordings have finished extraction; coverage.incomplete can still describe disconnected acquisition, live recording or historical gaps, not a reason by itself to keep searching. State those limits briefly without discarding useful captured results. Use other tools only for a specific unanswered part of the request, such as actual scheduled notifications or current app task state, not merely because coverage is incomplete.
 Extraction waits until a recording has finished (or has had no new speech for 30 minutes) and then runs at most once every 30 minutes, so recent speech is often saved but not yet extracted. A recording that is still going or is queued shows in coverage as live_sources, queued or matching_sources_pending, and its words are available now through mode transcript. If extracted items do not answer, relevant extraction is queued/processing/failed, a thought seems missing or the person disputes a result, use ambient_query with mode transcript to inspect raw saved speech before asking them to repeat it. Raw transcript access does not require an extracted item id. Keep relevant dates, optionally narrow to a returned source_id, and follow its next_cursor; drop guessed keywords when a search misses. Read the transcript as evidence and distinguish your interpretation from a saved extracted item. Raw coverage can still exclude recordings not yet synced/indexed; report that gap.
 relationship_unresolved means a correction/completion/cancellation could not be safely connected to its earlier intention. Show the later words as an unresolved update, separately from confirmed tasks; do not silently merge similar appointments, claim the older task was completed/cancelled, or present both as two confirmed commitments. Inspect relevant source evidence if needed and explain what remains uncertain. Neither a resolved nor unresolved relationship authorizes action.
@@ -92,6 +92,46 @@ export function addLocalTimes(value, tz) {
   }
   return out;
 }
+// The result shaped for the helper. Stored data keeps everything, and only this shape drops the ids, hashes, offsets and states the helper cannot use.
+// 1Helm's own reading of who spoke (attribution, is_user, speaker_id, owner) is left out on purpose (the Captain, 2026-10-21): the helper sees Bee's raw speaker label as sent.
+// needs_review as the extractor stores it also counts a speaker that is not the wearer, so the helper gets the reasons about the speech or the match only.
+export const reviewBeyondSpeaker = (x) => !!(x && (x.uncertainty || x.relationship_unresolved || (x.grounding && typeof x.grounding === "object" && !["located", "legacy_quote"].includes(x.grounding.state))));
+const clip = (t, n) => { const s = String(t ?? "").replace(/\s+/g, " ").trim(); return s.length > n ? `${s.slice(0, n - 3)}...` : s; };
+const stamp = (ms, tz) => Number.isFinite(ms) ? isoLocal(ms, tz).slice(0, 19).replace("T", " ") : "unknown time";
+// Quotes from evidence entries as one string, with the speaker label as Bee sent it, repeated only when it changes.
+const said = (evidence, max = 500) => { let who, out = ""; for (const e of Array.isArray(evidence) ? evidence : []) { if (e?.quote == null) continue; if (e.speaker !== who) { who = e.speaker; if (who != null) out += `${out ? " " : ""}${who}:`; } out += `${out ? " " : ""}${e.quote}`; } return clip(out, max); };
+export function compactItem(item, tz = "UTC") {
+  const out = { id: item.id, kind: item.kind, status: item.status, text: item.text }, g = item.grounding?.state;
+  if (item.source_at != null) out.at = localStamp(item.source_at, tz);
+  if (item.source_id != null) out.recording = item.source_id;
+  if (item.speech_act && item.speech_act !== "intention") out.speech_act = item.speech_act;
+  if (item.due_text) out.due_text = item.due_text;
+  if (item.due_at != null) out.due_at = localStamp(item.due_at, tz);
+  if (item.uncertainty) out.uncertainty = item.uncertainty;
+  if (g && g !== "located") out.grounding = g;
+  if (g === "unlocated" && item.grounding.unverified_quote) out.unverified_quote = clip(item.grounding.unverified_quote, 300);
+  if (reviewBeyondSpeaker(item) || item.relationship_needs_review) out.needs_review = true;
+  if (item.notification_status) out.notification_status = item.notification_status;
+  if (item.relation) out.relation = item.relation;
+  if (item.intentional_capture) out.intentional_capture = true;
+  if (item.source_state && item.source_state !== "COMPLETED") out.source_state = item.source_state;
+  const q = said(item.evidence); if (q) out.said = q;
+  if (item.current_resolution) { const c = item.current_resolution; out.current_resolution = { status: c.status, text: c.text, ...(said(c.evidence) ? { said: said(c.evidence) } : {}), ...(c.needs_review ? { needs_review: true } : {}) }; }
+  const early = said(item.earlier_evidence); if (early) out.earlier = early;
+  return out;
+}
+// A transcript line as "[12:38:39] Unknown: words". A marker line gives the local date when it changes and the recording when that changes.
+export function transcriptText(lines, tz = "UTC") {
+  let source, day; const out = [];
+  for (const l of lines) {
+    if (l.source_id !== source) { source = l.source_id; day = undefined; if (source != null) out.push(`-- recording ${source} --`); }
+    const when = stamp(l.at, tz), d = when.slice(0, 10);
+    if (d !== day) { day = d; out.push(`-- ${d} --`); }
+    out.push(`[${when.slice(11)}] ${l.speaker != null ? `${l.speaker}: ` : ""}${String(l.text ?? "").replace(/\s+/g, " ").trim()}`);
+  }
+  return out.join("\n");
+}
+export const transcriptLineCost = (l) => 13 + String(l.speaker ?? "").length + String(l.text ?? "").length;
 export const tzOf = (res) => (typeof res?.tz === "function" ? res.tz() : null);
 const failure = (status, message) => ({ status, error: message, items: [], coverage: { incomplete: true, searched: false } });
 export async function ambientQuery(res, args = {}, ctx = {}) {
@@ -102,6 +142,7 @@ export async function ambientQuery(res, args = {}, ctx = {}) {
   if (!tenant || !res.env.BEE_SYNC) return failure("unavailable", "Ambient memory cannot be checked here right now. This is not evidence that no recordings or items exist.");
   if (!args || typeof args !== "object" || Array.isArray(args)) return failure("invalid_query", "Pass an ambient query object.");
   const request = { mode: args.mode ?? "items", kind: args.kind ?? "all", status: args.status ?? "all", limit: args.limit ?? 30 };
+  const zone0 = tzOf(res) || "UTC";
   if (!["items", "transcript", "locations"].includes(request.mode)) return failure("invalid_query", "mode must be items, transcript or locations.");
   if (!KINDS.includes(request.kind) || !STATUSES.includes(request.status)) return failure("invalid_query", "Use a supported ambient kind and status.");
   if (!Number.isInteger(request.limit) || request.limit < 1 || request.limit > 50) return failure("invalid_query", "limit must be an integer from 1 to 50.");
@@ -127,7 +168,7 @@ export async function ambientQuery(res, args = {}, ctx = {}) {
       if (request.cursor) return failure("invalid_query", "A search by words has no further pages. Ask again with a narrower query or dates, or omit the query to page through the plain list.");
       result = await memoryAmbientSearch(res, stub, request);
     }
-    else result = await stub.ambientQuery(request);
+    else result = await stub.ambientQuery({ ...request, model: true });
     if (!result || !Array.isArray(result.items) || !result.coverage || typeof result.coverage !== "object") return failure("unavailable", "Ambient memory returned an incomplete response; coverage could not be checked. Try again shortly.");
     if (request.mode === "transcript" && !Array.isArray(result.transcripts)) return failure("unavailable", "Raw ambient transcripts could not be read yet. Try again shortly; this is not evidence the speech was never captured.");
     if (request.mode === "locations" && !Array.isArray(result.locations)) return failure("unavailable", "Saved Bee locations could not be read yet. This is not evidence that no location was recorded.");
@@ -139,9 +180,14 @@ export async function ambientQuery(res, args = {}, ctx = {}) {
     const memories = Array.isArray(result.memories) ? result.memories.filter((m) => !forgotten(m)) : null;
     const evidenceHidden = result.evidence != null && forgotten(result.evidence);
     // Items whose exact words could not be found in the transcript are returned apart from the others.
-    const possible = items.filter((x) => x?.grounding?.state === "unlocated"), firm = items.filter((x) => x?.grounding?.state !== "unlocated");
-    const out = { ...result, items: firm, ...(possible.length ? { possibly_said: possible, possibly_said_note: "Possibly said, but the exact words could not be found in the transcript. Not confirmed commitments: say so, and check mode transcript before relying on them." } : {}), ...(transcripts ? { transcripts } : {}), ...(locations ? { locations } : {}), ...(memories ? { memories } : {}), coverage: { ...result.coverage } };
-    if (evidenceHidden) delete out.evidence;
+    const possible = items.filter((x) => x?.grounding?.state === "unlocated").map((x) => compactItem(x, zone0)), firm = items.filter((x) => x?.grounding?.state !== "unlocated").map((x) => compactItem(x, zone0));
+    const out = { ...result, items: firm, ...(possible.length ? { possibly_said: possible, possibly_said_note: "Possibly said, but the exact words could not be found in the transcript. Not confirmed commitments: say so, and check mode transcript before relying on them." } : {}), ...(locations ? { locations } : {}), ...(memories ? { memories } : {}), coverage: { ...result.coverage } };
+    if (transcripts && (transcripts.length || !memories)) {
+      delete out.transcripts;
+      const times = transcripts.map((l) => l.at).filter(Number.isFinite), sources = new Set(transcripts.map((l) => l.source_id)), cov = result.coverage || {}, oneSource = request.source_id || (sources.size === 1 ? [...sources][0] : null);
+      out.transcript = `${oneSource ? `recording ${oneSource}` : "recordings"}${oneSource && cov.earliest_available_at ? `, started ${stamp(cov.earliest_available_at, zone0)}, last speech ${stamp(cov.latest_source_at, zone0)}` : ""}, local time ${isoLocal(times[0] ?? Date.now(), zone0).slice(19)}; ${transcripts.length} of ${result.total ?? transcripts.length} lines, ${request.source_id ? "oldest first" : "newest first"}${result.next_cursor ? ", more in next_cursor" : ", last page"}\n${transcriptText(transcripts, zone0)}`;
+    }
+    if (evidenceHidden) delete out.evidence; else if (out.evidence?.lines) out.evidence = { ...out.evidence, lines: transcriptText(out.evidence.lines.map((l) => ({ ...l, source_id: undefined })), zone0) };
     const withheld = result.items.length - items.length + Number(evidenceHidden) + (transcripts ? result.transcripts.length - transcripts.length : 0) + (locations ? result.locations.length - locations.length : 0) + (memories ? result.memories.length - memories.length : 0);
     if (withheld) out.coverage.withheld_by_memory_preferences = withheld;
     // Retain the original cursor even when a whole page was withheld. Returning

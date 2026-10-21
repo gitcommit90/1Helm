@@ -15,7 +15,7 @@
 // Steps 1-2 are stage 1 (a document's text is ready in well under a second); step 3 is stage 2 (the card LLM takes several seconds),
 // which a short file never needs: its whole text goes into the message.
 // Files the Worker can't safely hold (over 20 MB; spreadsheets over 1 MB; a conversion that hits the WASM's 64 MB ceiling) go to a
-// short container job on the Computer class as "prepjob:<tenant>" (stock node image, like beejob: no workspace, never the person's
+// short container job on the Computer class as "prepjob:<tenant>" (stock node image: no workspace, never the person's
 // computer): native anydoc / pdf-inspector, and Indra OCR for scanned PDF pages.
 //
 // Storage: hidden companions next to the file, like file-preview.js's .preview.pdf: <r2key>.sidecar.json (the Markdown, outline,
@@ -676,7 +676,7 @@ async function indexChunks(P, job, md, chunks, meta, { charge = true } = {}) {
 // ---- the container job (Computer class, "prepjob:<tenant>"): what anydoc / pdf-inspector can do but not inside the Worker ----
 // Scanned PDF pages are read by the OCR Worker first (see ocrPages); this is where the pages it can't read go, and every page when the binding is absent.
 // Scanned PDF pages (Indra OCR, sidecar-ocr.js: ONNX Runtime + a small set of ONNX models, all local in the container, no hosted fallback)
-// and files too big for the Worker's memory (native anydoc / pdf-inspector). The stock node image, like beejob: no workspace, never the
+// and files too big for the Worker's memory (native anydoc / pdf-inspector). The stock node image: no workspace, never the
 // person's computer. Tools are installed once per container start under /opt/1hc-prep, pinned and checked (the npm packages by version;
 // for OCR, uv, the Python wheels and the model files by SHA-256, see sidecar-ocr.js for the pins and the license note). pdf-inspector still
 // decides which pages are scans (the Worker's WASM, and the "md" op below); only the "ocr" op reads them, and only the pages asked for.

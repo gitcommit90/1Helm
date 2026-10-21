@@ -24,15 +24,21 @@ try {
   await store.ingest("fixture", 1, { id: 1, state: "COMPLETED", start_time: T, end_time: T + 130000, transcriptions: [{ realtime: false, utterances }] });
   const res = { tz: () => "America/Los_Angeles", get: k => ({ tenant: "pagination", channel: "main" })[k], memoryMode: () => "on", forgottenNow: () => false, env: {
     ONEHELM_EE: "1hc", BEE_SYNC: { idFromName: x => x, get: () => ({ ambientQuery: async args => store.query(args) }) } } };
-  const page = await ambientQuery(res, { mode: "transcript", limit: 50 });
-  const size = JSON.stringify(page).length;
-  console.log("lines", page.transcripts.length, "chars", size);
+  // The words are about 235 characters a line. A page holds as many compact lines as fit, oldest first for a named recording, and the cursor continues it.
+  const page = await ambientQuery(res, { mode: "transcript", source_id: "1", limit: 50 });
+  const size = JSON.stringify(page).length, lines = page.transcript.split("\n").filter(l => l.startsWith("["));
+  console.log("lines", lines.length, "chars", size);
   assert.ok(size <= 15000, `a full transcript page is ${size} characters`);
-  assert.ok(page.transcripts.length >= 10 && page.transcripts.length < 50, "the budget cut the page");
+  assert.ok(lines.length >= 40 && lines.length < 120, "the budget cut the page");
   assert.ok(page.next_cursor, "more lines remain");
-  assert.match(page.transcripts[0].at_local, /^(Fri|Sat) 2026-10-\d\dT\d\d:\d\d:\d\d-07:00$/);
+  assert.match(lines[0], /^\[\d\d:\d\d:\d\d\] S: so we talked about the budget.* 0$/, "the oldest line comes first, with Bee's label");
+  assert.match(page.transcript.split("\n")[0], /^recording 1, .*local time -07:00; \d+ of 120 lines, oldest first, more in next_cursor$/);
   assert.match(page.coverage.latest_source_at_local, /-07:00$/);
-  const next = await ambientQuery(res, { mode: "transcript", limit: 50, cursor: page.next_cursor });
-  assert.equal(next.transcripts.length > 0, true, "the cursor from a cut page still works");
+  assert.doesNotMatch(page.transcript, /utterance_id|source_revision|extraction_state|untrusted|is_user|speaker_id/);
+  const next = await ambientQuery(res, { mode: "transcript", source_id: "1", cursor: page.next_cursor });
+  const more = next.transcript.split("\n").filter(l => l.startsWith("["));
+  assert.match(more[0], / (\d+)$/); assert.equal(Number(/ (\d+)$/.exec(more[0])[1]), lines.length, "the next page starts at the next line");
+  const whole = [...lines, ...more]; let c = next.next_cursor; while (c) { const p = await ambientQuery(res, { mode: "transcript", source_id: "1", cursor: c }); whole.push(...p.transcript.split("\n").filter(l => l.startsWith("["))); c = p.next_cursor; }
+  assert.equal(whole.length, 120, "paging reaches every line once");
   console.log("PASS ambient-page-size");
 } finally { globalThis.fetch = originalFetch; db.close(); }

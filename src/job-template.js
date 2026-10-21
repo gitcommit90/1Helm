@@ -1,4 +1,4 @@
-// Shared dependency template helpers for job containers on the durable_object scheduling policy (PrepContainer, BeeContainer).
+// Shared dependency template helpers for job containers on the durable_object scheduling policy (PrepContainer).
 // A template is a snapshot of a container's root filesystem after its dependencies were installed. Rules kept here for every family:
 //  - the builder (buildTemplate) runs only setup scripts the caller passes in. It never receives tenant files, tokens or R2 access;
 //  - a container that handled a job must never become a template (callers check their own role before calling buildTemplate);

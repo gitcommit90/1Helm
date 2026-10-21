@@ -36,11 +36,11 @@ const stub = (result) => ({ idFromName: (n) => n, get: () => ({ ambientQuery: as
 const make = (tz, result) => ({ get: (k) => ({ channel: "main", tenant: "t1" })[k], tz: () => tz, env: { ONEHELM_EE: "1hc", BEE_SYNC: stub(result) } });
 const page = { items: [], transcripts: [{ utterance_id: "1", at: PDT, text: "hi", id: "bee:1:h:0", offset: 0 }], coverage: { incomplete: false, latest_source_at: PDT }, next_cursor: null };
 const la = await ambientQuery(make("America/Los_Angeles", page), { mode: "transcript" });
-assert.equal(la.transcripts[0].at, PDT); assert.equal(la.transcripts[0].at_local, "Tue 2026-10-20T12:51:32-07:00"); assert.equal(la.coverage.latest_source_at_local, la.transcripts[0].at_local);
+assert.match(la.transcript, /local time -07:00;/); assert.match(la.transcript, /\n-- 2026-10-20 --\n\[12:51:32\] hi$/); assert.equal(la.coverage.latest_source_at_local, "Tue 2026-10-20T12:51:32-07:00");
 const ny = await ambientQuery(make("America/New_York", page), { mode: "transcript" });
-assert.equal(ny.transcripts[0].at_local, "Tue 2026-10-20T15:51:32-04:00");
+assert.match(ny.transcript, /local time -04:00;[^\n]*\n-- 2026-10-20 --\n\[15:51:32\] hi$/);
 const winter = await ambientQuery(make("America/Los_Angeles", { ...page, transcripts: [{ ...page.transcripts[0], at: PST }] }), { mode: "transcript" });
-assert.equal(winter.transcripts[0].at_local, "Tue 2026-12-01T12:00:00-08:00");
+assert.match(winter.transcript, /local time -08:00;[^\n]*\n-- 2026-12-01 --\n\[12:00:00\] hi$/);
 
 // location_query: Bee places and the requested range.
 const places = { items: [], locations: [{ id: "l1", source_id: "9", conversation_from: PDT, conversation_to: PDT + 1000, latitude: 1, longitude: 2 }], coverage: { incomplete: false }, next_cursor: null };

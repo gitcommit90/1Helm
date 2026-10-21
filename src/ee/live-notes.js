@@ -3,10 +3,10 @@
 // One LiveNotes Durable Object per task ("ln:<tenant>:<channel>:<task>"); each Start → Stop is a session, appended to the task's ONE
 // doc as its own section "## Session N · <day date, start–end>", newest on top (§9.7). Only one task per person is live at a time
 // (the claim lives in the person's BeeSync DO).
-//  - Source (§9.2-9.3): one container job per session, alive only while the session is: bee.js LIVE_JS on the "beejob:<tenant>"
-//    Computer, in chunks of 3 min. It follows the CAPTURING conversation(s), reads new utterances every 5 s and hands each round to
-//    this DO (livePush). A job that stops talking for 25 s is started again (deploys, a lost container); a job running the code from
-//    before a deploy (another LIVE_V) is told to stop and started again a little later, the same way BeeSync handles a stale job.
+//  - Source (§9.2-9.3): one polling chunk at a time while the session is live: bee-api.js beeLiveRun, run in this Durable Object with
+//    Worker fetch to Bee's public endpoint (no container since 2026-10-21), in chunks of 3 min. It follows the CAPTURING conversation(s), reads new utterances every 5 s and hands each round to
+//    this DO (livePush). A chunk that stops talking for 25 s is started again (a deploy or restart of this object ends the chunk with it); the next
+//    chunk starts from the saved lines (cursors), so no line is lost.
 //  - Note-taker (§9.3): the DO alarm every 5 s; only if new text arrived (noteDueAt): the first pass ~12 s after the first words, then
 //    at most every 40 s (when ≥ 600 chars came in) and at least every 60 s, so a dense hour is ~75 passes. The chore model (route2.js
 //    choreRoute "notes": Claude Haiku 5.5, reasoning off, ZDR hosts) gets the current session's section + the new lines + a rolling summary and answers with PATCHES
@@ -18,7 +18,7 @@
 //    in the footer), then a final pass on a stronger model (Luna) rewrites the session's section cleanly; lines a person added are
 //    kept as written (re-inserted by code if the model dropped them). Saved in place (same Library file), plus a system note in the
 //    task "Live notes saved: files/<name> (start–end)".
-//  - Bee's /v1/stream (2026-10-08): the job also holds the SSE feed while it runs (bee.js LIVE_CORE): events are hints that make it
+//  - Bee's /v1/stream (2026-10-08): the chunk also holds the SSE feed while it runs (bee-api.js liveCore, a streaming fetch): events are hints that make it
 //    read sooner (and the polls slow to a 15 s safety round while it's open); the full GET stays the source of truth. A conversation
 //    of this session that the poll sees end → BeeSync.lnEnded (watch + Bee's final read within seconds, not at the next scheduled
 //    sync); Bee saying its summary is in → a re-read too. New lines with the note-taker due → the alarm runs now.
@@ -50,7 +50,7 @@ import { backgroundRole, backgroundReserve } from "./background-policy.js";
 import { jobRoute } from "./model-jobs.js";
 import { stPut, stDelete } from "../storage.js";
 import { safeName } from "../files.js";
-import { beeEvent, LIVE_V } from "./bee.js";
+import { beeEvent, beeLiveRun } from "./bee.js";
 import { deliverText, appLink } from "./texting.js";
 import { pickSource, MIC_ID_RE } from "./live-mic.js";
 import { sttModels } from "../transcribe.js";
@@ -141,9 +141,8 @@ export function diagOutcome(diag, group, outcome, extra = {}) {
   return d;
 }
 export const MIC_GRACE_MS = 12e3, MIC_LOST_MS = 90e3, MIC_PROMPT_CHARS = 300;   // the device's last chunk after a stop from elsewhere; no word from it for 90 s = lost
-// The Computer class's "basic" container at cost + 15%, per second (bee-sync.js JOB_NANO_PER_SEC).
-export const JOB_NANO_PER_SEC = Math.ceil((1 * 0.0000025 + 0.25 * 0.000020 + 4 * 0.00000007) * 1e9 * 1.15);
-export const CHUNK_RESERVE = Math.ceil((CHUNK_MS + 60e3) / 1000 * JOB_NANO_PER_SEC);
+// A chunk's hold on the Ledger: the credit and day-limit check, settled at 0 (Worker fetch has nothing to bill; the container is gone).
+export const CHUNK_RESERVE = 1;
 export const FINAL_ROUTE = jobRoute("notes_final");
 export function notesRequest(kind, messages, maxTokens = undefined) {
   return { messages, ...(maxTokens ? { max_tokens: maxTokens } : {}), response_format: structuredFormat(`live_notes_${kind}`, kind === "note" ? NOTE_PATCH_SCHEMA : FINAL_NOTES_SCHEMA) };
@@ -504,7 +503,8 @@ export class LiveNotes extends DurableObject {
   ledger() { return this.env.LEDGER.get(this.env.LEDGER.idFromName(`tenant:${this.tid()}`)); }
   res() { return this.env.RESIDENT.get(this.env.RESIDENT.idFromName(`res:${this.tid()}:${this.get("channel")}`)); }
   beeSync() { return this.env.BEE_SYNC?.get(this.env.BEE_SYNC.idFromName(this.tid())) || null; }
-  computer() { const b = this.env.BEE_SNAPSHOTS === "on" && this.env.BEE_CONTAINER ? this.env.BEE_CONTAINER : this.env.COMPUTER; return b.get(b.idFromName(`beejob:${this.tid()}`)); }   // same choice as beeJobStub in bee.js
+  // The running chunk's handle (in memory only: a restart loses it, and the watchdog starts the next chunk from the saved lines).
+  liveStop(run) { const c = this._liveCtl; if (c && c.run === run) { try { c.stop?.(); } catch {} } }
   ev(what) { return beeEvent(this.env, this.tid(), `live notes: ${what}`).catch(() => {}); }
   tz() { return this.get("tz") || "UTC"; }
   path() { return `files/${this.get("file_name") || "Meeting notes.md"}`; }
@@ -595,13 +595,9 @@ export class LiveNotes extends DurableObject {
     return this.view();
   }
 
-  // ---- the job's rounds (Computer.beeLive → here) ----
+  // ---- the chunk's rounds (bee-api.js beeLiveRun → here) ----
   async livePush(run, m = {}) {
     const job = jp(this.get("job")); if (this.get("status") !== "live" || !job || job.run !== run) return { go: false };
-    if (m.v !== LIVE_V) {   // the beejob Computer still runs the code from before a deploy: stop it, start again in a little while
-      this.put("job", JSON.stringify({ ...job, stale: true, retry_at: now() + STALE_RETRY_MS })); await this.ev(`the Bee job answered with another version (${m.v ?? "none"}, want ${LIVE_V}); a deploy is still settling, restarting it`);
-      return { go: false };
-    }
     const n = job.n, s = this.s(n); if (!s) return { go: false };
     job.last_push = now();
     if (m.t === "auth") { this.put("job", null); await this.env.DB.prepare("UPDATE bee_accounts SET status='needs_reconnect', checked_at=?, last_error=? WHERE tenant_id=?").bind(now(), "Bee said 401 (live notes)", this.tid()).run().catch(() => {}); await this.stop("needs_reconnect"); return { go: false }; }
@@ -631,7 +627,7 @@ export class LiveNotes extends DurableObject {
   }
   async settleJob(job, ms) {
     if (!job?.rid || job.settled) return;
-    const nano = Math.min(CHUNK_RESERVE, Math.ceil(Math.max(0, ms) / 1000 * JOB_NANO_PER_SEC)); job.settled = true;
+    const nano = 0; job.settled = true;
     await this.ledger().settle(job.rid, nano).catch((e) => console.log("live notes settle", String(e?.message || e).slice(0, 120)));
     const s = this.s(job.n); if (s) this.setS(job.n, { job_nano: (s.job_nano || 0) + nano, cost_nano: (s.cost_nano || 0) + nano });
   }
@@ -645,13 +641,14 @@ export class LiveNotes extends DurableObject {
     const cursors = Object.fromEntries(this.sql.exec("SELECT conv, MAX(at) at FROM utts WHERE n=? GROUP BY conv", n).toArray().map((r) => [r.conv, r.at]));
     const job = { run, n, rid, started_at: t0, last_push: t0 }; this.put("job", JSON.stringify(job));
     let token = await openSecret(env, a.token_sealed);
-    const input = { kind: "live", ln: this.name(), run, token, v: LIVE_V, since: s.started_at - 30e3, convs: s.convs || [], cursors, every: POLL_MS, list_every: LIST_MS, max_ms: CHUNK_MS,
+    const input = { ln: this.name(), run, token, since: s.started_at - 30e3, convs: s.convs || [], cursors, every: POLL_MS, list_every: LIST_MS, max_ms: CHUNK_MS,
       stream: true, safety_every: SAFETY_MS, min_gap: MIN_GAP_MS, ...(s.hold_until > t0 ? { hold_until: s.hold_until } : {}) };
     token = null;
-    const p = (async () => { try { return await this.computer().beeLive(input); } finally { input.token = null; } })().then((r) => r, async (e) => {
+    const ctl = { run }; this._liveCtl = ctl;
+    const p = (async () => { try { return await beeLiveRun(input, (m) => this.livePush(run, m), ctl); } finally { input.token = null; if (this._liveCtl === ctl) this._liveCtl = null; } })().then((r) => r, async (e) => {
       const msg = String(e?.message || e).slice(0, 160), j = jp(this.get("job"));
       if (j?.run === run) { await this.settleJob(j, now() - j.started_at); this.put("job", JSON.stringify({ ...j, settled: true, failed: msg, retry_at: now() + STALE_RETRY_MS })); }
-      await this.ev(`the Bee job couldn't run (${msg})${/beeLive|not a function|does not exist|RPC/i.test(msg) ? "; the beejob computer may still run the code from before a deploy" : ""}`);
+      await this.ev(`the Bee job couldn't run (${msg})`);
     });
     this._job = p; this.ctx.waitUntil?.(p);
     return null;
@@ -696,13 +693,13 @@ export class LiveNotes extends DurableObject {
     const s0 = this.s(n), mic = s0?.source === "mic";
     if (t - Number(this.get("claim_at") || 0) > 60e3) { this.put("claim_at", t); await this.beeSync()?.liveClaim(this.name(), { channel: this.get("channel"), task: this.get("task"), title: this.get("title") || "", source: s0?.source || "bee" }).catch(() => {}); }
     const job = jp(this.get("job"));
-    const dead = !mic && (!job || (job.failed || job.stale ? t >= (job.retry_at || 0) : t - (job.last_push || job.started_at) > WATCHDOG_MS));   // the mic has no job: the device sends
+    const dead = !mic && (!job || (job.failed ? t >= (job.retry_at || 0) : t - (job.last_push || job.started_at) > WATCHDOG_MS));   // the mic has no job: the device sends
     if (mic && this.micView(s0, t)?.state !== this.get("mic_seen")) { this.put("mic_seen", this.micView(s0, t).state); this._dirty = true; }   // live → lost shows without a push
     if (dead) {
       if (job && !job.settled) await this.settleJob(job, (job.last_push || t) - job.started_at);
-      if (job?.stale || job?.failed) this.put("restarts", Number(this.get("restarts") || 0) + 1);
-      if (job && !job.failed && !job.stale) await this.ev(`the Bee job went quiet for ${Math.round((t - (job.last_push || job.started_at)) / 1000)}s; starting it again`);
-      if (job) try { await this.computer().beeLiveStop(job.run); } catch {}
+      if (job?.failed) this.put("restarts", Number(this.get("restarts") || 0) + 1);
+      if (job && !job.failed) await this.ev(`the Bee job went quiet for ${Math.round((t - (job.last_push || job.started_at)) / 1000)}s; starting it again`);
+      if (job) this.liveStop(job.run);
       await this.startJob(n); if (this.get("status") !== "live") return;
     }
     const s = this.s(n);
@@ -850,7 +847,7 @@ export class LiveNotes extends DurableObject {
     if (this.get("status") !== "live") return this.view();
     const n = Number(this.get("n") || 0), t = now(), job = jp(this.get("job")), s = this.s(n), mic = s?.source === "mic";
     this.setS(n, { ended_at: t, stop_reason: reason, ask_at: null, ...(mic ? { flushed: !!o.flushed, pauses: closePauses(s.pauses, t) } : {}) }); this.put("status", "finalizing"); this.put("job", null);
-    if (job) { try { await this.computer().beeLiveStop(job.run); } catch {} if (!job.settled) await this.settleJob(job, t - job.started_at); }
+    if (job) { this.liveStop(job.run); if (!job.settled) await this.settleJob(job, t - job.started_at); }
     await this.beeSync()?.liveRelease(this.name()).catch(() => {});
     await this.ev(`session ${n} stopped (${reason})`);
     await this.mirror(); await this.ctx.storage.setAlarm(now() + (mic && !o.flushed ? MIC_GRACE_MS : 200));
@@ -929,7 +926,7 @@ export class LiveNotes extends DurableObject {
     const tid = this.tid() || o.tenant || "", ch = this.get("channel") || o.channel || "", task = this.get("task") || o.task || "", name = tid && ch && task ? lnName(tid, ch, task) : null;
     const rows = this.sql.exec("SELECT n, st FROM sess").toArray(), ns = rows.map((r) => r.n);
     const floor = Math.max(0, Number(this.get("floor") || 0), Number(this.get("n") || 0), ...ns), job = jp(this.get("job"));
-    if (job) { try { await this.computer().beeLiveStop(job.run); } catch {} if (!job.settled) await this.settleJob(job, now() - (job.last_push || job.started_at)).catch(() => {}); }
+    if (job) { this.liveStop(job.run); if (!job.settled) await this.settleJob(job, now() - (job.last_push || job.started_at)).catch(() => {}); }
     if (name) { await this.beeSync()?.liveRelease(name).catch(() => {}); await this.beeSync()?.lnUnwatch?.(name).catch(() => {}); }
     if (tid && ch && task) {   // every session's R2 copy lives under the task's prefix
       const gone = []; let cursor; for (let i = 0; i < 50; i++) { const l = await this.env.WS.list({ prefix: `t/${tid}/bee/live/${ch}/${task}/`, cursor, limit: 1000 }); gone.push(...(l.objects || [])); if (!l.truncated) break; cursor = l.cursor; }

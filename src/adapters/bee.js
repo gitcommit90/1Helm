@@ -32,22 +32,15 @@ export function beeEnvelope(c) {
     privacy: { location: address || lat != null || lng != null ? "on" : "off" }, who, from: { key: "bee", device: c.device || null }, id: { record: `bee:${c.id}` },
     source: "user", raw: { ...(P ? { bee_location: P } : L?.raw ? { bee_location: L.raw } : {}), ...(c.start_raw != null ? { bee_start_time: c.start_raw } : {}), ...(c.end_raw != null ? { bee_end_time: c.end_raw } : {}) } });
 }
-// A speaker as an entity of ONE recording (Captain 2026-10-14, option C): a Hindsight entity label of the group "bee_speaker", which the
-// raw-transcript strategy declares in both bank templates. Hindsight matches label entities exactly and keeps them out of every fuzzy
-// match (hindsight@v1.0.0 engine/memories/pg/entity_resolver.py, entity_kind 'label'), so the same label in another recording, or a
-// contact with the same name, is never merged with it. The value carries the recording id; Bee's label stays unchanged in the transcript.
-// Bee's address and the confirmed people keep Hindsight's default resolution.
-export const scopedSpeaker = (rec, p) => `bee_speaker:${rec}/${p.ref ? String(p.ref).replace(/^bee:/, "") : "-"} ${p.name}`;
 // The Bee item (beeItem) with its envelope. c.speakers: the speakers the person confirmed as a Contacts person (bee-speakers.js
 // speakerLinks), each added as that person's entity with a marked line naming the speaker; an unconfirmed speaker is never a person.
 export function beeEnveloped(item, c, { first } = {}) {
   const e = beeEnvelope(c), out = withEnvelope(item, e, { first, people: false }), ents = [...(out.entities || [])], have = new Set(ents.map((x) => x.text.toLowerCase()));
   const add = (text, type) => { const k = String(text).toLowerCase(); if (text && !have.has(k)) { have.add(k); ents.push({ text, type }); } };
   const addr = e.where?.address; if (addr && !e.where.place) add(addr, "LOCATION");   // Bee's address has no place name of its own, so it is the place entity
-  for (const p of e.who) if (!p.self) add(scopedSpeaker(c.id, p), "PERSON");
   const links = (c.speakers || []).filter((l) => l?.person && l?.person_name);
   for (const l of links) add(String(l.person_name), "PERSON");
   const head = links.map((l) => `[Written by 1Helm: ${l.label} in this recording is ${l.person_name}, confirmed by ${first || "the user"}]`).join("\n");
   return { ...out, ...(head && typeof out.content === "string" ? { content: `${head}\n${out.content}` } : {}), entities: ents,
-    metadata: { ...out.metadata, speakers_scoped: "1hc: each speaker is a bee_speaker label entity of this recording only", ...(links.length ? { speaker_links: links.map((l) => `${l.label}=c:${l.person}`).join(", ") } : {}) } };
+    metadata: { ...out.metadata, ...(links.length ? { speaker_links: links.map((l) => `${l.label}=c:${l.person}`).join(", ") } : {}) } };
 }
