@@ -70,12 +70,13 @@ export const rebuildMethods = {
     if (s0.retry_at && s0.retry_at > now()) return null;
     return this.hsRbStep();
   },
-  // Hydrate: the first use of a channel makes its memory from its own records, once (a failed job starts again after 10 minutes). A test account's channel never starts by
+  // Hydrate: the first use of a channel makes its memory from its own records, once. A failed job (8 failed steps in a row) goes on from its saved cursor on the first use
+  // after 10 minutes, so the batches already stored are not read or extracted again, and the sent counts keep growing. A test account's channel never starts by
   // itself, so an idle test account costs nothing; the dev ops path (hsRebuild "start") hydrates it on request.
   async hsHydrate() {
     const s = this.hsRb();
     if (!hsWriters(this.env) || !hsOn(this.env) || this.memoryMode() === "off" || !this.get("tenant") || !(s.status === "idle" || (s.status === "failed" && now() - s.updated > 600e3))) return;
-    if (!(await this.hsTestOwner())) await this.hsRebuild("start");
+    if (!(await this.hsTestOwner())) await this.hsRebuild(s.status === "failed" ? "resume" : "start");
   },
   // The RPC method. cmd: start | pause | resume | status | estimate. o: { force, live } for status (live reads the server), { force } for start.
   async hsRebuild(cmd = "status", o = {}) {

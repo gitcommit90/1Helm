@@ -544,5 +544,21 @@ async function runToEnd(m, { max = 200 } = {}) {
   const src = await bs.hsBeeSource("", 10, Infinity); assert.equal(src.items.length, 1, "a conversation with no saved transcript is skipped"); assert.equal(src.items[0].summary, "Errands"); assert.equal(src.items[0].lines.length, 2); assert.equal((await bs.hsBeeSource("", 10, T1 - 1)).items.length, 0, "snapshot cut");
   ok("K. Bee: the inbox reconcile (eligible only, a status change replaces, a gone item drops, clear), the transcript write and the rebuild source");
 }
+{
+  // a rebuild that failed (8 failed steps, e.g. a Vectorize limit error) goes on from its cursor on the next use after 10 minutes, and nothing is stored twice
+  const m = mkRes(); const { R } = m; await seedRich(m); for (let i = 0; i < 25; i++) m.notes.set(`x${i}`, { id: `x${i}`, content: `note number ${i}`, author_type: "human", sec: "now", created: 1000 + i, status: "current" });
+  m.d1.exec("UPDATE users SET email='sam@real.test' WHERE id='u1'"); R._hsTest = null;   // a test account (@example.com) never hydrates by itself
+  R._rbUnits = 2; await R.hsRebuild("start"); await R.hsRebuildAlarm();
+  const s1 = R.hsRb(); assert.ok(s1.sent.items > 0); const cursor = JSON.stringify([s1.kind, s1.after]), sentBefore = s1.sent.items;
+  s1.status = "failed"; s1.tries = 8; s1.error = "VECTOR_DELETE_ERROR (code = 40007): too many ids in payload"; s1.updated = Date.now(); R.hsRbSave(s1);
+  await R.hsHydrate(); assert.equal(R.hsRb().status, "failed", "a job that failed a moment ago is left alone");
+  const s2 = R.hsRb(); s2.updated = Date.now() - 11 * 60e3; R.put("hs_rb", JSON.stringify(s2));
+  R._hsTest = null; await R.hsHydrate(); const r = R.hsRb();
+  assert.equal(r.status, "running", "the next use after 10 minutes resumes it"); assert.equal(r.tries, 0); assert.equal(r.error, null);
+  assert.equal(JSON.stringify([r.kind, r.after]), cursor, "it resumes from the saved cursor, not from the start"); assert.equal(r.sent.items, sentBefore, "what was already sent is kept");
+  R._rbUnits = 12; const fin = await runToEnd(m); assert.equal(fin.status, "done", JSON.stringify(fin.error));
+  const noteDocs = await ids(m, "note:"); assert.equal(noteDocs.length, 27, "all 27 notes, once each"); assert.ok((await Promise.all(noteDocs.map((d) => facts(m, d)))).every((n) => n === 1), "one fact each");
+  ok("F2b. rebuild: a failed job resumes from its cursor on the next use after 10 minutes, with no document stored twice");
+}
 console.log("  ok all");
 log0("hindsight-writers: all checks passed");

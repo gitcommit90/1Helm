@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { retainV2, recall, forgetDocument, forgetChannel, forgetTenant, memoriesList, listDocuments, categoryBlock, factsOf, bankId, pieces, CATEGORIES } from "../src/mem0.js";
-import { vecFilter, sqlFilter, nsOf, MemStore } from "../src/mem0-store.js";
+import { vecFilter, sqlFilter, nsOf, MemStore, removeRows } from "../src/mem0-store.js";
 import { memEnv, fakeExtraction } from "./helpers/mem0-fakes.mjs";
 
 const T1 = "11111111-2222-3333-4444-555555555555", T2 = "99999999-2222-3333-4444-555555555555";
@@ -165,4 +165,14 @@ test("Vectorize mutations are batched, and a 429 (code 40041) is tried again ins
   assert.ok((await memoriesList(env, bankA, { doc: "r" })).items.length >= 6);
   await forgetDocument(env, bankA, "r"); assert.equal(deletes, 1, "all the vectors of a delete go in one call");
   fail = 99; await assert.rejects(retainV2(env, bankA, [{ document_id: "s", content: "text", at: Date.now(), strategy: "verbatim" }]), /40041/, "after five tries the error is thrown");
+});
+
+test("a delete of more than 100 vectors is split into calls of at most 100 ids, as Vectorize requires (error 40007)", async () => {
+  const { env, index } = memEnv(); const calls = [], del = index.deleteByIds, ns = await nsOf(bankA);
+  index.deleteByIds = async (ids) => { calls.push(ids.length); if (ids.length > 100) throw new Error(`VECTOR_DELETE_ERROR (code = 40007): too many ids in payload; max id count is 100, got ${ids.length}`); return del(ids); };
+  const n = 230, ids = Array.from({ length: n }, (_, i) => `v${i}`);
+  await new MemStore(env, ns, null).write(ids.map(() => Array.from({ length: 1024 }, () => 0.5)), ids, ids.map((id) => ({ data: id, hash: id, createdAt: "2026-10-20T00:00:00Z" })));
+  assert.equal(await removeRows(env, ns), n);
+  assert.deepEqual(calls, [100, 100, 30], "each call has at most 100 ids and every id is sent");
+  assert.equal(index.rows.size, 0, "no vector is left behind");
 });

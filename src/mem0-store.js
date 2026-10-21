@@ -1,6 +1,7 @@
 // The storage under Mem0 (docs/configuration.md, "Memory"). Facts, their history and the keyword index live in D1 (tables mem, mem_history and mem_fts,
 // db/migrations/0063_memory.sql). Vectors live in the Vectorize index bound as MEMORY_INDEX. A namespace is one channel's memory (nsOf), so channels never share rows.
 // Vectorize cannot list or delete by filter, so every list, count and delete reads D1 first and then removes the vectors by id.
+const VEC_IDS_MAX = 100;   // deleteByIds refuses more than 100 ids in one call (error 40007, seen on Live); the docs state no limit, so getByIds is held to the same size
 const TOP_K_MAX = 100;   // Vectorize returns at most 100 results when it returns no values and no metadata (limits page, 2026-08)
 export const EXTRACT_CHARS = 12000;   // the most characters one extraction call reads (the meter in byok.js prices it)
 export const DIMS = 1024;   // the dimension of both Vectorize indexes, set when they are created (docs/configuration.md, "Memory")
@@ -59,7 +60,7 @@ export async function removeRows(env, prefix, where = "", args = []) {
     }
     for (const part of chunks(dead, 90)) { await env.DB.prepare(`DELETE FROM mem WHERE ns=? AND id IN (${part.map(() => "?").join(",")})`).bind(`${ns}_entities`, ...part).run(); gone_vectors.push(...part); }
   }
-  for (const part of chunks(gone_vectors, 1000)) await vec(() => env.MEMORY_INDEX.deleteByIds(part));   // one call for each 1,000 vectors
+  for (const part of chunks(gone_vectors, VEC_IDS_MAX)) await vec(() => env.MEMORY_INDEX.deleteByIds(part));
   return ids.length;
 }
 
@@ -107,7 +108,8 @@ export class MemStore {
     const { out, query, topK } = this.last || {}; if (!out) return;
     const have = new Set(out.map((x) => x.id)), extra = hits.filter((h) => !have.has(h.id)).slice(0, KEYWORD_EXTRA);
     if (!extra.length) return;
-    const vectors = new Map(((await this.env.MEMORY_INDEX.getByIds(extra.map((h) => h.id))) || []).map((v) => [v.id, v.values])), add = extra.filter((h) => vectors.has(h.id)).map((h) => ({ id: h.id, payload: h.payload, score: cosine(query, vectors.get(h.id)) }));
+    const got = []; for (const part of chunks(extra.map((h) => h.id), VEC_IDS_MAX)) got.push(...((await this.env.MEMORY_INDEX.getByIds(part)) || []));
+    const vectors = new Map(got.map((v) => [v.id, v.values])), add = extra.filter((h) => vectors.has(h.id)).map((h) => ({ id: h.id, payload: h.payload, score: cosine(query, vectors.get(h.id)) }));
     out.length = Math.min(out.length, Math.max(0, topK - add.length)); out.push(...add);
   }
   async get(id) { return row(await this.env.DB.prepare("SELECT id,payload FROM mem WHERE ns=? AND id=?").bind(this.ns, id).first()); }
