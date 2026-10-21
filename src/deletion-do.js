@@ -103,11 +103,9 @@ export const residentDeletion = {
   async deleteSessionData(sid, { waitMs = 20000 } = {}) {
     sid = String(sid); const sql = this.sql, counts = {};
     const phoneFiles = this.eeDeletion.dropPhoneFiles(this,sid);
-    const memoryRefresh = this.hsCancelConversationRefresh?.(sid);
     const existed = !!this.session(sid);
     // 1. Stop it: the running turn(s) stop at their next step, its helpers stop (no handoff), unread inputs are dropped.
     for (const tc of this.active?.values() || []) if (tc.session === sid && !tc.finished) tc.abort = "hard";
-    await memoryRefresh;
     await phoneFiles;
     await this.eeDeletion.dropNativePolls(this,sid);
     await this.nativeCancel?.(sid, 'Task deleted');
@@ -222,10 +220,8 @@ export const residentDeletion = {
   // The whole channel: stop everything, delete every R2 object this object knows (files, views, screenshots), then the storage.
   async wipeChannel() {
     const phoneFiles = this.eeDeletion.dropPhoneFiles(this);
-    const memoryRefresh = this.hsCancelConversationRefresh?.();
     const sql = this.sql;
     for (const tc of this.active?.values() || []) tc.abort = "hard";
-    await memoryRefresh;
     await phoneFiles;
     await this.eeDeletion.dropNativePolls(this);
     await this.nativeCancel?.(null, 'Channel deleted');

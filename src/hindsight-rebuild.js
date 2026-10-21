@@ -1,28 +1,25 @@
 import { conversationMessages } from "./message-origin.js";
-// Memory Overhaul phase 3 (DESIGN.md 5.2): rebuild one channel's Hindsight bank from 1HC's own records. A resumable job in the channel's
-// Resident, driven by its alarm, behind the added-only RPC method hsRebuild(cmd) with cmd start, pause, resume, status or estimate.
+// Hydrate (docs/configuration.md, "Memory"): make one channel's Mem0 memory from 1HC's own records. A resumable job in the channel's Resident, driven by its alarm, behind
+// the added-only RPC method hsRebuild(cmd) with cmd start, pause, resume, status or estimate. It runs once, the first time the channel is used (hsHydrate in
+// hindsight-writers.js), and the dev ops path can start it by hand.
 //
-// The order of work for one bank (state in the Resident's key value store, key hs_rb, saved before every step):
-//   reset    mark the bank as rebuilding (writers queue into hs_outbox), cancel pending operations, delete the bank, create it again from its template
+// The order of work for one channel (state in the Resident's key value store, key hs_rb, saved before every step):
+//   reset    mark the channel as rebuilding (writers queue into hs_outbox)
 //   send     the source list, oldest first (notes, skills, task cards, files, conversations by day, live notes, Bee conversations, contacts, voice
-//            inbox), in async batches of about 20 items. Every batch has operation ids made from the document id and a hash of the content, and the
-//            cursor (the place the batch starts) is saved before it is sent, so a resumed job sends the same batch again and Hindsight returns the
-//            same operations: nothing is written twice
-//   wait     until the bank has no pending operations and no pending consolidation
-//   flush    the outbox (what was written while the bank rebuilt), then clear the rebuilding mark
-//   settle   wait again, because the outbox queued work
-//   models   refresh every mental model once, and wait until each one has content
-//   repair   retry failed operations and reprocess long documents that have no facts, up to three rounds
-//   verify   count the documents of every kind against what was sent, and count documents with no facts
+//            inbox), in batches. The cursor (the place the batch starts) is saved before it is sent, so a resumed job sends the same batch again, and a
+//            document written twice is replaced, never doubled
+//   flush    the outbox (what was written while the channel rebuilt), then clear the rebuilding mark
+//   verify   count the documents of every kind against what was sent
 // The source is read live and only records up to the snapshot time are in it, so a record deleted during the rebuild just is not sent, and
 // anything written after the snapshot arrives through the outbox. A delete that arrives mid rebuild also removes the queued writes of that
 // document and goes through hs_forget (deletion.js), which deletes what was already sent. Pause stops after the current batch and resume
-// goes on from the cursor. A rerun from scratch is safe, because every document id is stable and the bank is deleted first.
-import { retainV2, contentHash, cancelOperation, hs, bankPath, listDocuments, freshStats, pendingWork, retryOperation, reprocessDocument, cancelPending, listOperations, listMentalModels, refreshMentalModel, setupBank, testBankManifest, deleteBank, recoverConsolidation, hsOn, bankId } from "./hindsight.js";
-import { templateKind, templateKey, fillTemplate, speakerLabels } from "./hindsight-template.js";
+// goes on from the cursor.
+import { retainV2, contentHash, hsOn, bankId, memoryCounts } from "./mem0.js";
+import { speakerLabels } from "./hindsight-template.js";
 import { hsEnvelope } from "./hs-flag.js";
 import { withEnvelope, makeEnvelope } from "./memory-envelope.js";   // HS_ENVELOPE: a rebuilt conversation keeps the places its turns had
-import { TURN_PLACE } from "./hindsight-writers.js";
+import { TURN_PLACE, REBUILD_VERSION } from "./hindsight-writers.js";
+export { REBUILD_VERSION };
 import { beeEnveloped } from "./adapters/bee.js";
 // A rebuilt conversation document's envelope: the day's span, the latest place of its turns, and every place as an entity.
 function rbEnvelope(g, item) {
@@ -33,41 +30,30 @@ function rbEnvelope(g, item) {
   for (const p of g.places) if (p.place && !have.has(p.place.toLowerCase())) { have.add(p.place.toLowerCase()); (out.entities ||= []).push({ text: p.place, type: "LOCATION" }); }
   return out;
 }
-import { METER as BYOK_METER, hsRetainBatchNano } from "./byok-meter.js";
+import { hsRetainBatchNano } from "./byok-meter.js";
+import { EXTRACT_CHARS } from "./mem0-store.js";
 import { memoryReply } from "./status-notes.js";
 import { cardsToText } from "./genui.js";
 import { hsWriters, DOC, docKind, STRATEGY, convEntries, convSession, dayKey, dayRange, sliceEntries, turnItem, noteItem, skillItem, taskItem, fileItem, liveEntries, liveItem, RAW_CHUNK_CHARS, beeEntries, beeItem, contactItem, inboxItem, ctxFor, rounds, itemChars, itemExtractChars } from "./hindsight-writers.js";
 
-export const REBUILD_VERSION = 1;
 export const KINDS_GENERAL = ["notes", "skills", "tasks", "files", "conv", "live", "bee", "contacts", "inbox"];
 export const KINDS_CHANNEL = ["notes", "skills", "tasks", "files", "conv", "live"];
 export const kindsFor = (channel) => (channel === "main" ? KINDS_GENERAL : KINDS_CHANNEL);
-export const BATCH_ITEMS = 20, MAX_PENDING_OPS = 60, STEP_MS = 20e3, STEP_UNITS = 12, WAIT_MAX_MS = 6 * 3600e3, MODEL_WAIT_MS = 30 * 60e3, REPAIR_ROUNDS = 3, REPAIR_WAIT_MS = 20 * 60e3, REPAIR_MAX_DOCS = 100, MAX_TRIES = 8, STALL_MS = 45 * 60e3;
+export const BATCH_ITEMS = 4, STEP_MS = 20e3, STEP_UNITS = 12, MAX_TRIES = 8, STALL_MS = 45 * 60e3;   // a batch is a few extraction calls, so a step stays short
 const jp = (s, d = null) => { try { return s == null ? d : JSON.parse(s); } catch { return d; } };
 const now = () => Date.now();
 // Which kind of document an id is, in the words the report uses.
 const KIND_OF_DOC = { conv: "conv", note: "notes", file: "files", live: "live", skill: "skills", task: "tasks", contact: "contacts", inbox: "inbox", bee: "bee" };
 export const reportKind = (doc) => KIND_OF_DOC[docKind(doc)] || "other";
-// Search prefixes for the document list (Hindsight's q is a substring). "bee:conv:" contains "conv:", so the conv count subtracts it.
+// Prefixes of each kind's document ids, for the counts.
 const Q = { notes: "note:", skills: "skill:", tasks: "task:", files: "file:", conv: "conv:", live: "live:", bee: "bee:conv:", contacts: "contact:", inbox: "inbox:" };
 
 // A state with defaults. status: idle | running | paused | failed | done.
 const blank = () => ({ v: REBUILD_VERSION, status: "idle", phase: null, snapshot: 0, started: 0, updated: 0, finished: 0, kind: null, after: "", next: null, tries: 0, retry_at: 0, error: null,
-  pause: false, step: null, waited_since: 0, sent: { docs: {}, items: 0, chars: 0, batches: 0 }, outbox_flushed: 0, dropped: 0, retried_ops: [], models: {}, repair: null, report: null });
-
-// Long documents (600 characters or more) with no facts among the newest 2,000 documents of a bank. → { count, scanned, byKind, ids }
-async function zeroFactDocs(env, bank) {
-  const out = { count: 0, scanned: 0, byKind: {}, ids: [] };
-  for (let off = 0; off < 2000; off += 100) {
-    const r = await listDocuments(env, bank, { limit: 100, offset: off }), items = r?.items || []; out.scanned += items.length;
-    for (const d of items) if (!Number(d.memory_unit_count || 0) && Number(d.text_length || 0) >= 600) { out.count++; out.ids.push(d.id); const k = reportKind(d.id); out.byKind[k] = (out.byKind[k] || 0) + 1; }
-    if (items.length < 100) break;
-  }
-  return out;
-}
+  pause: false, step: null, sent: { docs: {}, items: 0, chars: 0, batches: 0 }, outbox_flushed: 0, dropped: 0, report: null });
 
 export const rebuildMethods = {
-  hsRb() { return { ...blank(), ...(jp(this.get("hs_rb")) || {}) }; },
+  hsRb() { const x = jp(this.get("hs_rb")); return x?.v === REBUILD_VERSION ? { ...blank(), ...x } : blank(); },   // the saved state of another version is the Hindsight rebuild: it means nothing here
   hsRbSave(s) { s.updated = now(); this.put("hs_rb", JSON.stringify(s)); this.ctx?.waitUntil?.(this.hsRbSync(s)); return s; },
   // A row in D1 (hs_rebuild_runs) so the dev ops path can see every bank's state and count how many run at once.
   async hsRbSync(s) {
@@ -84,16 +70,21 @@ export const rebuildMethods = {
     if (s0.retry_at && s0.retry_at > now()) return null;
     return this.hsRbStep();
   },
+  // Hydrate: the first use of a channel makes its memory from its own records, once (a failed job starts again after 10 minutes). A test account's channel never starts by
+  // itself, so an idle test account costs nothing; the dev ops path (hsRebuild "start") hydrates it on request.
+  async hsHydrate() {
+    const s = this.hsRb();
+    if (!hsWriters(this.env) || !hsOn(this.env) || this.memoryMode() === "off" || !this.get("tenant") || !(s.status === "idle" || (s.status === "failed" && now() - s.updated > 600e3))) return;
+    if (!(await this.hsTestOwner())) await this.hsRebuild("start");
+  },
   // The RPC method. cmd: start | pause | resume | status | estimate. o: { force, live } for status (live reads the server), { force } for start.
   async hsRebuild(cmd = "status", o = {}) {
     if (!hsWriters(this.env)) return { error: "HS_WRITERS is off" };
-    if (!hsOn(this.env)) return { error: "Hindsight is not configured" };
+    if (!hsOn(this.env)) return { error: "Memory is not configured" };
     if (!this.get("tenant")) return { error: "no such channel" };
     const s = this.hsRb();
     if (cmd === "status") return this.hsRbView(s, !!o.live);
     if (cmd === "estimate") return this.hsEstimate(o);
-    if (cmd === "conversation-refresh") return this.hsConversationRefresh(o);
-    if (cmd === "conversation-status") return this.hsConversationStatus(o.session);
     if (cmd === "start") {
       if (s.status === "running" || s.status === "paused") return { error: `a rebuild is already ${s.status} (resume or wait)`, ...(await this.hsRbView(s)) };
       if (this.memoryMode() === "off") return { error: "memory is off for this channel" };
@@ -109,8 +100,8 @@ export const rebuildMethods = {
   },
   async hsRbView(s, live = false) {
     const v = { status: s.status, phase: s.phase, kind: s.kind, after: s.after ? String(s.after).slice(0, 40) : "", started_at: s.started || null, updated_at: s.updated || null, finished_at: s.finished || null, snapshot: s.snapshot || null,
-      sent: { items: s.sent.items, chars: s.sent.chars, batches: s.sent.batches, docs: s.sent.docs }, outbox: this.hsOutboxCount(), outbox_flushed: s.outbox_flushed, dropped_during: s.dropped, last_error: s.error, tries: s.tries, models: s.models, report: s.report, pause_requested: !!s.pause };
-    if (live && hsOn(this.env)) { try { const st = await freshStats(this.env, this.hsBankId()); v.server = { documents: st.total_documents, nodes: st.total_nodes, observations: st.total_observations, pending_operations: st.pending_operations, failed_operations: st.failed_operations, pending_consolidation: st.pending_consolidation, failed_consolidation: st.failed_consolidation }; } catch (e) { v.server = { error: String(e.message || e).slice(0, 120) }; } }
+      sent: { items: s.sent.items, chars: s.sent.chars, batches: s.sent.batches, docs: s.sent.docs }, outbox: this.hsOutboxCount(), outbox_flushed: s.outbox_flushed, dropped_during: s.dropped, last_error: s.error, tries: s.tries, report: s.report, pause_requested: !!s.pause };
+    if (live && hsOn(this.env)) { try { v.stored = await memoryCounts(this.env, this.hsBankId()); } catch (e) { v.stored = { error: String(e.message || e).slice(0, 120) }; } }
     return v;
   },
 
@@ -129,134 +120,51 @@ export const rebuildMethods = {
       s.tries = (s.tries || 0) + 1; s.error = String(e?.message || e).slice(0, 300);
       if (s.tries >= MAX_TRIES) { s.status = "failed"; arm = false; }
       else s.retry_at = now() + Math.min(10 * 60e3, 15e3 * 2 ** (s.tries - 1));
-      this.hsRbSave(s); console.log("hindsight rebuild step", s.phase, s.error);
+      this.hsRbSave(s); console.log("memory rebuild step", s.phase, s.error);
     }
     if (arm) await this.arm().catch(() => {});
     return this.hsRbView(this.hsRb());
   },
   // One unit of the current phase. Returns "wait" to stop this step, "done" at the end, anything else to go on.
   async hsRbPhase(s) {
-    const env = this.env, bank = this.hsBankId();
     if (s.phase === "reset") {
-      // 1. cancel what is queued (a queued retain would write facts after the delete), 2. delete the bank, 3. create it again from its template.
-      if (!s.step) { s.step = "cancel"; this.hsRbSave(s); }
-      if (s.step === "cancel") {
-        // A live notes session that is running now already sent its earlier lines to the bank that is about to go: its position goes back to the start, so the outbox gets all of its lines.
-        if (!s.live_rewound) { s.live_rewound = []; try { for (const r of this.sql.exec("SELECT session, st FROM live_notes").toArray()) { const v = jp(r.st); if (!["live", "finalizing"].includes(v?.status)) continue; const x = await this.lnStub(r.session)?.hsLiveRewind?.(); if (x?.n) s.live_rewound.push(`${r.session}:${x.n}`); } } catch (e) { console.log("live rewind", String(e?.message || e).slice(0, 100)); } this.hsRbSave(s); } await cancelPending(env, bank).catch((e) => { if (e.status !== 404) throw e; }); s.step = "delete"; this.hsRbSave(s); }
-      if (s.step === "delete") {
-        await deleteBank(env, bank).catch((e) => { if (e.status !== 404) throw e; });
-        await env.DB.prepare("DELETE FROM hs_forget WHERE bank=?").bind(bank).run().catch(() => {});   // the old deletes are moot now (a new one made during the rebuild is added after this)
-        this.put("hs_bank", ""); this.put("hs_tpl", ""); s.step = "create"; this.hsRbSave(s);
-      }
-      if (s.step === "create") {
-        const n = (await this.hsNames()) || {}, kind = templateKind(this.get("channel"));
-        const manual = await this.hsTestOwner(); await setupBank(env, bank, manual ? testBankManifest(fillTemplate(kind, n)) : fillTemplate(kind, n), { manual }); this.put("hs_bank", bank); this.put("hs_tpl", templateKey(kind, n) + (manual ? "|manual" : ""));
-        const kinds = kindsFor(this.get("channel")); s.step = null; s.phase = "send"; s.kind = kinds[0]; s.after = ""; this.hsRbSave(s);
-      }
+      // A live notes session that is running now already sent its earlier lines before this job began: its position goes back to the start, so the outbox gets all of its lines.
+      if (!s.live_rewound) { s.live_rewound = []; try { for (const r of this.sql.exec("SELECT session, st FROM live_notes").toArray()) { const v = jp(r.st); if (!["live", "finalizing"].includes(v?.status)) continue; const x = await this.lnStub(r.session)?.hsLiveRewind?.(); if (x?.n) s.live_rewound.push(`${r.session}:${x.n}`); } } catch (e) { console.log("live rewind", String(e?.message || e).slice(0, 100)); } }
+      this.put("hs_bank", this.hsBankId()); s.phase = "send"; s.kind = kindsFor(this.get("channel"))[0]; s.after = ""; this.hsRbSave(s);
       return "go";
     }
     if (s.phase === "send") return this.hsRbSend(s);
-    if (s.phase === "wait" || s.phase === "settle") return this.hsRbWait(s);
     if (s.phase === "flush") return this.hsRbFlush(s);
-    if (s.phase === "models") return this.hsRbModels(s);
-    if (s.phase === "repair") return this.hsRbRepair(s);
     if (s.phase === "verify") return this.hsRbVerify(s);
     throw new Error(`unknown phase ${s.phase}`);
   },
   async hsRbSend(s) {
     const env = this.env, bank = this.hsBankId(), kinds = kindsFor(this.get("channel"));
-    // Do not flood the server: wait while a lot is queued.
-    const st = await freshStats(env, bank); if (Number(st.pending_operations || 0) >= MAX_PENDING_OPS) { s.retry_at = now() + 10e3; this.hsRbSave(s); return "wait"; }
-    s.retry_at = 0;
     // The batch starts at the saved cursor. Its end is saved before it is sent (inflight), so a resume sends the same batch again.
     const page = await this.hsSourcePage(s.kind, s.after, s.snapshot);
     s.next = { kind: page.done ? (kinds[kinds.indexOf(s.kind) + 1] || null) : s.kind, after: page.done ? "" : page.next }; this.hsRbSave(s);
     const items = page.items.filter((i) => itemChars(i) > 0);
     for (const r of rounds(items, BATCH_ITEMS)) {
-      await retainV2(env, bank, r, { timeoutMs: 40000 });
+      await retainV2(env, bank, r);
       s.sent.batches++; s.sent.items += r.length; s.sent.chars += r.reduce((n, i) => n + itemChars(i), 0);
       for (const i of r) if (i.update_mode !== "append") { const k = reportKind(i.document_id); s.sent.docs[k] = (s.sent.docs[k] || 0) + 1; }
     }
-    if (s.next.kind) { s.kind = s.next.kind; s.after = s.next.after; } else { s.phase = "wait"; s.kind = null; s.after = ""; s.waited_since = now(); }
+    if (s.next.kind) { s.kind = s.next.kind; s.after = s.next.after; } else { s.phase = "flush"; s.kind = null; s.after = ""; }
     s.next = null; this.hsRbSave(s);
     return "go";
-  },
-  async hsRbWait(s) {
-    const env = this.env, bank = this.hsBankId(), st = await freshStats(env, bank);
-    const pw = await pendingWork(env, bank), busy = pw.work > 0 || Number(st.pending_consolidation || 0) > 0;   // refreshes wait for their interval, so they are not work to wait for
-    if (Number(st.failed_operations || 0) > 0) {   // run each failed operation again once
-      const failed = (await listOperations(env, bank, { status: "failed", limit: 50 }).catch(() => null))?.operations || [];
-      for (const op of failed) if (!s.retried_ops.includes(op.id) && s.retried_ops.length < 200) { s.retried_ops.push(op.id); await retryOperation(env, bank, op.id).catch(() => {}); }
-      this.hsRbSave(s);
-    }
-    if (busy) {
-      if (!s.waited_since) { s.waited_since = now(); this.hsRbSave(s); }
-      if (now() - s.waited_since > WAIT_MAX_MS) throw new Error(`the server was still busy after ${Math.round(WAIT_MAX_MS / 3600e3)} hours (pending work ${pw.work}, pending consolidation ${st.pending_consolidation})`);
-      s.retry_at = now() + 15e3; this.hsRbSave(s); return "wait";
-    }
-    s.retry_at = 0; s.waited_since = 0;
-    if (s.phase === "wait") s.phase = "flush"; else s.phase = "models";
-    this.hsRbSave(s); return "go";
   },
   async hsRbFlush(s) {
     // The outbox, oldest first. The rebuilding mark is cleared in the same step in which the outbox is seen empty (no await between), so a write can never slip past it.
     const n = await this.hsFlush({ max: 40, paid: false }); s.outbox_flushed += n.sent || 0;
     if (this.hsOutboxCount() > 0) { if (!n.sent) s.retry_at = now() + 5e3; this.hsRbSave(s); return n.sent ? "go" : "wait"; }
-    s.retry_at = 0;
-    s.phase = "settle"; s.waited_since = now(); this.hsRbSave(s); return "go";
-  },
-  async hsRbModels(s) {
-    const env = this.env, bank = this.hsBankId();
-    if (!s.models.started) {
-      const list = (await listMentalModels(env, bank))?.items || [];
-      s.models = { started: now(), ids: list.map((m) => m.id), state: {} };
-      for (const m of list) { try { await refreshMentalModel(env, bank, m.id); s.models.state[m.id] = "refreshing"; } catch (e) { s.models.state[m.id] = `failed: ${String(e.message || e).slice(0, 80)}`; } }
-      this.hsRbSave(s);
-    }
-    const list = (await listMentalModels(env, bank))?.items || []; let pending = 0;
-    for (const m of list) {
-      if (s.models.state[m.id]?.startsWith("failed")) continue;
-      const done = m.last_refreshed_at && Date.parse(m.last_refreshed_at) >= s.models.started - 5000;
-      if (done) s.models.state[m.id] = "refreshed"; else if (m.last_refresh_failed_at && Date.parse(m.last_refresh_failed_at) >= s.models.started - 5000) s.models.state[m.id] = "failed: refresh error"; else pending++;
-    }
-    if (pending && now() - s.models.started < MODEL_WAIT_MS) { s.retry_at = now() + 15e3; this.hsRbSave(s); return "wait"; }
-    for (const id of s.models.ids) if (s.models.state[id] === "refreshing") s.models.state[id] = "not finished in time";
-    s.retry_at = 0; s.phase = "repair"; this.hsRbSave(s); return "go";
-  },
-  // Repair (before verify): the server can fail an operation under load (e.g. PostgreSQL "out of shared memory"), and the extraction model can return no facts
-  // for a document that has some. A failed operation is retried (a parent only: its child operations run again with it), and a long document with no facts
-  // is reprocessed by Hindsight (same document id and stored content, nothing of ours changes). Up to REPAIR_ROUNDS rounds, each followed by a wait for the
-  // server to go quiet. A document that still has no facts after the last round has nothing to extract (small talk, media playback) and is left as it is.
-  async hsRbRepair(s) {
-    const env = this.env, bank = this.hsBankId(), r = (s.repair ||= { round: 0, step: "start", waited: 0, retried: 0, reprocessed: 0 });
-    if (r.step === "wait") {
-      const pw = await pendingWork(env, bank);
-      if (pw.work > 0 && now() - r.waited < REPAIR_WAIT_MS) { s.retry_at = now() + 15e3; this.hsRbSave(s); return "wait"; }
-      r.step = "start"; s.retry_at = 0; this.hsRbSave(s); return "go";
-    }
-    const failed = ((await listOperations(env, bank, { status: "failed", limit: 100 }).catch(() => null))?.operations || []).filter((op) => (op.operation_type || op.task_type) !== "retain");
-    const zero = await zeroFactDocs(env, bank);
-    if ((!failed.length && !zero.ids.length) || r.round >= REPAIR_ROUNDS) { s.retry_at = 0; s.phase = "verify"; this.hsRbSave(s); return "go"; }
-    r.round++;
-    for (const op of failed) { await retryOperation(env, bank, op.id).then(() => r.retried++, () => {}); }
-    for (const id of zero.ids.slice(0, REPAIR_MAX_DOCS)) { await reprocessDocument(env, bank, id).then(() => r.reprocessed++, () => {}); }
-    r.step = "wait"; r.waited = now(); s.retry_at = 0; this.hsRbSave(s); return "go";
+    s.retry_at = 0; s.phase = "verify"; this.hsRbSave(s); return "go";
   },
   async hsRbVerify(s) {
-    const env = this.env, bank = this.hsBankId(), kinds = kindsFor(this.get("channel")), counts = {};
-    let st = await freshStats(env, bank), recovered = 0;
-    if (Number(st.failed_consolidation || 0) > 0) { try { recovered = (await recoverConsolidation(env, bank)).retried; } catch {} }
-    const total = async (kind) => Number((await listDocuments(env, bank, { limit: 1, q: Q[kind] }))?.total ?? 0);
-    const beeN = kinds.includes("bee") ? await total("bee") : 0;
-    for (const k of kinds) { const actual = k === "conv" ? (await total("conv")) - beeN : await total(k); counts[k] = { sent: s.sent.docs[k] || 0, in_bank: actual }; }
-    // Documents with no facts (long ones only count, DESIGN 4.7 b), newest 2,000 documents.
-    const { count: zero, scanned, byKind: zeroByKind } = await zeroFactDocs(env, bank);
-    st = await freshStats(env, bank); const pw = await pendingWork(env, bank);
-    const slack = s.dropped + s.outbox_flushed;   // documents deleted or added while the bank rebuilt explain a difference
-    const mismatched = Object.entries(counts).filter(([, c]) => Math.abs(c.in_bank - c.sent) > slack).map(([k]) => k);
-    s.report = { ok: !mismatched.length && !Number(st.failed_consolidation || 0) && !Number(st.failed_operations || 0) && !pw.work, mismatched, counts, scanned_documents: scanned, zero_fact_long_documents: zero, zero_by_kind: zeroByKind,
-      server: { documents: st.total_documents, nodes: st.total_nodes, observations: st.total_observations, pending_work: pw.work, pending_refresh: pw.refresh, failed_operations: st.failed_operations, pending_consolidation: st.pending_consolidation, failed_consolidation: st.failed_consolidation, recovered_consolidation: recovered },
-      models: s.models.state || {}, repair: s.repair ? { rounds: s.repair.round, retried_operations: s.repair.retried, reprocessed_documents: s.repair.reprocessed } : null, sent: { items: s.sent.items, chars: s.sent.chars, batches: s.sent.batches }, duration_ms: now() - s.started };
+    const kinds = kindsFor(this.get("channel")), counts = {};
+    for (const k of kinds) counts[k] = { sent: s.sent.docs[k] || 0, in_memory: (await memoryCounts(this.env, this.hsBankId(), Q[k])).documents };
+    const slack = s.dropped + s.outbox_flushed;   // documents deleted or added while the channel rebuilt explain a difference
+    const mismatched = Object.entries(counts).filter(([, c]) => Math.abs(c.in_memory - c.sent) > slack).map(([k]) => k);
+    s.report = { ok: !mismatched.length, mismatched, counts, stored: await memoryCounts(this.env, this.hsBankId()), sent: { items: s.sent.items, chars: s.sent.chars, batches: s.sent.batches }, duration_ms: now() - s.started };
     s.status = "done"; s.phase = "done"; s.finished = now(); this.hsRbSave(s); return "done";
   },
   // A document was deleted while the bank rebuilds: counted, so the verify step can explain the difference.
@@ -316,14 +224,14 @@ export const rebuildMethods = {
     return { items: r.items, next: day, done: !more };
   },
   // The conversation documents of the turns in [start, end): { items }. only: a set of document ids to build (forget), exclude: turn ids left out.
-  hsConvItems({ start, end, names, tz, channel, day, only = null, exclude = null, sessionOnly = null }) {
+  hsConvItems({ start, end, names, tz, channel, day, only = null, exclude = null }) {
     const sql = this.sql, L = speakerLabels(names), docs = new Map();
-    let partial = new Map(); try { partial = new Map((sessionOnly ? sql.exec("SELECT p.turn,p.text FROM work_log_partial p JOIN turns t ON t.id=p.turn WHERE t.session=? AND t.at>=? AND t.at<?", sessionOnly, start, end) : sql.exec("SELECT turn, text FROM work_log_partial")).toArray().map((r) => [String(r.turn), r.text])); } catch {}
+    let partial = new Map(); try { partial = new Map(sql.exec("SELECT turn, text FROM work_log_partial").toArray().map((r) => [String(r.turn), r.text])); } catch {}
     // A turn (or its unfinished work) that is waiting in the outbox is left out here: it is sent from there, and sending it twice would repeat its lines.
     let queued = new Set(); try { this.hsOutboxInit(); queued = new Set((only?.size ? sql.exec(`SELECT ref FROM hs_outbox WHERE ref IS NOT NULL AND doc IN (${[...only].map(()=>"?").join(",")})`, ...only) : sql.exec("SELECT ref FROM hs_outbox WHERE ref IS NOT NULL")).toArray().map((r) => r.ref)); } catch {}
     const env = hsEnvelope(this.env); let places = new Map();
-    if (env) { try { sql.exec(TURN_PLACE); places = new Map(sql.exec("SELECT p.turn, p.place, p.lat, p.lng FROM hs_turn_place p JOIN turns t ON t.id=p.turn WHERE t.at>=? AND t.at<? AND (? IS NULL OR t.session=?)", start, end, sessionOnly, sessionOnly).toArray().map((r) => [String(r.turn), r])); } catch {} }
-    for (const t of sql.exec("SELECT id, at, kind, session, workflow_id, user_text, reply, notes, total_ms, error FROM turns WHERE at>=? AND at<? AND (? IS NULL OR session=?) AND (? IS NULL OR kind NOT IN ('helper','livenote')) ORDER BY at, id LIMIT 5000", start, end, sessionOnly, sessionOnly, sessionOnly).toArray()) {
+    if (env) { try { sql.exec(TURN_PLACE); places = new Map(sql.exec("SELECT p.turn, p.place, p.lat, p.lng FROM hs_turn_place p JOIN turns t ON t.id=p.turn WHERE t.at>=? AND t.at<?", start, end).toArray().map((r) => [String(r.turn), r])); } catch {} }
+    for (const t of sql.exec("SELECT id, at, kind, session, workflow_id, user_text, reply, notes, total_ms, error FROM turns WHERE at>=? AND at<? ORDER BY at, id LIMIT 5000", start, end).toArray()) {
       if (t.kind === "livenote" || t.kind === "helper" || exclude?.has(String(t.id)) || queued.has(String(t.id))) continue;
       const doc = DOC.conv(convSession(t.session, t.workflow_id), dayKey(Number(t.at), tz)); if (only && !only.has(doc)) continue;
       const part = queued.has(`p:${t.id}`) ? null : partial.get(String(t.id)), notes = part && t.notes === part ? null : t.notes;
@@ -352,17 +260,15 @@ export const rebuildMethods = {
   },
   // The documents of the turns that had to be taken out (forget, secrets sweep): the day's document is written again without them (a replace takes
   // the old facts out of the bank), and a document left with nothing is deleted. docs: conversation document ids. exclude: turn ids to leave out.
-  async hsConvRewrite(docs, exclude = [], { keyPrefix = null, sessionOnly = null, guard = null, bank = null, local = null, prepared = null } = {}) {
-    guard?.check();
+  async hsConvRewrite(docs, exclude = []) {
     if (!this.hsW()) return { skipped: "off" };
     const ids = [...new Set(docs.filter((d) => docKind(d) === "conv"))]; if (!ids.length) return { rewritten: 0, dropped: 0 };
-    const { names, tz, channel } = local || await this.hsLocal(), ex = new Set(exclude.map(String)); let rewritten = 0, dropped = 0;
+    const { names, tz, channel } = await this.hsLocal(), ex = new Set(exclude.map(String)); let rewritten = 0, dropped = 0;
     for (const doc of ids) {
-      guard?.check();
-      const day = doc.slice(doc.lastIndexOf(":") + 1), { start, end } = dayRange(day, tz), r = prepared ? { items: prepared.filter(i => i.document_id === doc) } : this.hsConvItems({ start: start - 86400e3, end: end + 86400e3, names, tz, channel, day, only: new Set([doc]), exclude: ex, sessionOnly });
-      if (!r.items.length) { if (guard) throw new Error("No retained conversation entries remain in the previewed document."); await this.hsDropDocs([doc]); dropped++; continue; }
+      const day = doc.slice(doc.lastIndexOf(":") + 1), { start, end } = dayRange(day, tz), r = this.hsConvItems({ start: start - 86400e3, end: end + 86400e3, names, tz, channel, day, only: new Set([doc]), exclude: ex });
+      if (!r.items.length) { await this.hsDropDocs([doc]); dropped++; continue; }
       this.hsOutboxInit(); this.sql.exec("DELETE FROM hs_outbox WHERE doc=? AND del=0", doc);
-      const out = await this.hsPut(r.items.map((i, n) => ({ ...i, key: `${keyPrefix || `fg${Date.now()}`}.${n}` })), { rebuild: false, guard, bank });
+      const out = await this.hsPut(r.items.map((i, n) => ({ ...i, key: `fg${Date.now()}.${n}` })), { rebuild: false });
       // Queued, dropped or skipped is not written: the caller deletes the document instead (forget.js rewriteOrDelete).
       if (out.queued || out.dropped || out.skipped) { this.hsOutboxInit(); this.sql.exec("DELETE FROM hs_outbox WHERE doc=? AND del=0", doc); throw new Error(`the conversation document could not be written again (${out.skipped || (out.dropped ? "refused" : "queued")})`); }
       rewritten++;
@@ -370,123 +276,29 @@ export const rebuildMethods = {
     return { rewritten, dropped };
   },
 
-  // The manual dev repair uses the existing task queue and rewrite writer.
-  // It stores only operation receipts, so deletion can cancel a submission even
-  // after a restart. It never retries a stale replacement through the outbox.
-  async hsConversationRefresh({ session, dry = true, fingerprint = "", deadline = Date.now() + 20000 } = {}) {
-    if (this.env.ENV_NAME !== "dev") return { error: "dev only" };
-    if (typeof session !== "string" || !session || !this.session(session)) return { error: "An existing task in this channel is required." };
-    if (this.memoryMode() === "off" || !this.hsW()) return { error: "Memory is off for this channel." };
-    const busy = () => this.sessQ.has(session) || this.liveTurn(session) || this.resumingIn(session) || [...(this._hsTurnWrites?.values() || [])].includes(session) || this.sql.exec("SELECT 1 FROM turn_runs WHERE session=? LIMIT 1", session).toArray().length || this.sql.exec("SELECT 1 FROM helpers WHERE session=? AND status IN ('running','awaiting_review','waiting_input') LIMIT 1", session).toArray().length;
-    const available = () => { if (Date.now() >= deadline) throw new Error("Conversation refresh reached its request deadline."); if (!this.session(session) || this.get("hs_origin_block_all") || this.get(`hs_origin_block:${session}`) || this.memoryMode() === "off" || this.hsRebuilding()) throw new Error("The task or memory state changed. Preview it again."); };
-    available();
-    if (busy()) return { error: "Wait for this task's work and memory writes to finish before refreshing its conversation." };
-    const local = await this.hsLocal();
-    available();
-    const { names, tz, channel } = local;
-    const totals = this.sql.exec("SELECT COUNT(*) n,COALESCE(SUM(LENGTH(COALESCE(user_text,''))+LENGTH(COALESCE(reply,''))+LENGTH(COALESCE(notes,''))),0) chars FROM turns WHERE session=? AND kind NOT IN ('helper','livenote')", session).toArray()[0];
-    const partialTotals = this.sql.exec("SELECT COALESCE(SUM(LENGTH(p.text)),0) chars FROM work_log_partial p JOIN turns t ON t.id=p.turn WHERE t.session=?", session).toArray()[0];
-    const eventTotals = this.sql.exec("SELECT COUNT(*) n,COALESCE(SUM(LENGTH(COALESCE(e.text,''))+LENGTH(COALESCE(e.input,''))+LENGTH(COALESCE(e.reply,''))),0) chars FROM card_events e JOIN cards c ON c.id=e.card WHERE c.session=? AND e.type IN ('msg','handoff')", session).toArray()[0];
-    if (Number(totals.n)>5000 || Number(eventTotals.n)>20000 || Number(totals.chars)+Number(eventTotals.chars)+Number(partialTotals.chars)>2000000) return { error: "This task exceeds the refresh source limit of 5,000 turns, 20,000 message events or 2,000,000 characters." };
-    const readSource = () => ({ turns: this.sql.exec("SELECT id,at,kind,session,workflow_id,user_text,reply,notes,total_ms,error,files FROM turns WHERE session=? AND kind NOT IN ('helper','livenote') ORDER BY at,id LIMIT 5001", session).toArray(), events: this.sql.exec("SELECT e.* FROM card_events e JOIN cards c ON c.id=e.card WHERE c.session=? AND e.type IN ('msg','handoff') ORDER BY e.card,e.seq LIMIT 20001", session).toArray() });
-    const source = readSource();
-    if (!source.turns.length) return { error: "This task has no saved conversation turns." };
-    if (source.turns.length > 5000) return { error: "This task exceeds the bounded refresh limit." };
-    const docs = [...new Set(source.turns.map(t => DOC.conv(convSession(t.session,t.workflow_id),dayKey(Number(t.at),tz))))].sort();
-    if (docs.length > 12) return { error: "This task spans more than 12 conversation documents.", documents: docs, count: docs.length };
-    this.hsOutboxInit();
-    if (docs.some(d => this.sql.exec("SELECT 1 FROM hs_outbox WHERE doc=? LIMIT 1", d).toArray().length)) return { error: "Wait for this task's queued memory writes to finish." };
-    const items = [];
-    available();
-    for (const doc of docs) {
-      const day = doc.slice(doc.lastIndexOf(":") + 1), range = dayRange(day, tz);
-      items.push(...this.hsConvItems({ start: range.start, end: range.end, names, tz, channel, day, only: new Set([doc]), sessionOnly: session }).items);
-    }
-    const normalized = items.map(({ key, metadata, ...item }) => ({ ...item, ...(metadata ? { metadata: Object.fromEntries(Object.entries(metadata).filter(([name]) => name !== "ingested_at")) } : {}) }));
-    if (items.reduce((n,i)=>n+itemChars(i),0)>2000000) return { error: "The rendered conversation exceeds the 2,000,000 character refresh limit." };
-    const sourceJSON = JSON.stringify(source), sourceFingerprint = await contentHash(JSON.stringify({ source, names, tz, items: normalized }));
-    available();
-    const key = `hs_origin_refresh:${session}:${sourceFingerprint}`, previous = jp(this.get(key));
-    const origins = {};
-    for (const item of items) for (const entry of item.content || []) if (entry.origin) origins[entry.origin] = (origins[entry.origin] || 0) + 1;
-    const preview = { session, documents: docs, count: docs.length, turns: source.turns.length, fingerprint: sourceFingerprint, characters: items.reduce((n,i)=>n+itemChars(i),0), origins, extraction_calls_estimate: items.reduce((n,i)=>n+Math.ceil(itemExtractChars(i)/3000),0), retain_nano_estimate: hsRetainBatchNano(items.map(itemExtractChars)), ...(previous ? { receipt: { status: previous.status, submitted_operations: previous.operations.length, updated: previous.updated } } : {}), note: "Execution replaces only these task/day documents from saved source. Extraction and consolidation may incur charges. Historical phone services remain unknown unless saved on the original event." };
-    if (dry) return { dry: true, ...preview };
-    if (!fingerprint || fingerprint !== sourceFingerprint) return { error: "The source changed or no preview fingerprint was supplied. Preview this task again.", ...preview };
-    if (previous?.status === "submitted") return { dry: false, duplicate: true, ...preview };
-    if (busy() || sourceJSON !== JSON.stringify(readSource())) return { error: "The task changed while the refresh was prepared. Preview it again." };
-    let release;
-    const gate = new Promise(resolve => { release = resolve; });
-    this.sessQ.set(session, gate);   // new turns wait; their saved inputs make the source guard fail before any later replacement
-    const row = { session, bank: this.hsBankId(), documents: docs, operations: previous?.operations || [], status: "running", updated: Date.now() };
-    this.put(key, JSON.stringify(row));
-    const state = { cancelled: false, work: null };
-    (this._hsRefreshRuns ||= new Map()).set(key, state);
-    const guard = {
-      check: () => { available(); if (state.cancelled || jp(this.get(key))?.status === "cancelled" || sourceJSON !== JSON.stringify(readSource()) || docs.some(d=>this.sql.exec("SELECT 1 FROM hs_outbox WHERE doc=? LIMIT 1",d).toArray().length)) throw new Error("The refresh was cancelled or the task received new input. Preview it again."); },
-      submitted: id => { guard.check(); if (!row.operations.includes(id)) row.operations.push(id); row.updated = Date.now(); this.put(key, JSON.stringify(row)); },
-      timeoutMs: () => Math.max(1, Math.min(10000, deadline - Date.now()))
-    };
-    state.work = Promise.resolve().then(async () => {
-      try {
-        guard.check();
-        const existing = await hs(this.env, `${bankPath(row.bank)}/config`, { timeoutMs: guard.timeoutMs() });
-        guard.check();
-        if (existing?.bank_id !== row.bank || !existing.config?.retain_strategies?.chat || !existing.config?.retain_mission || existing.config.store_document_text !== true) throw new Error("The existing configured conversation bank could not be verified. No bank was created or changed.");
-        const result = await this.hsConvRewrite(docs, [], { keyPrefix: `origin-${sourceFingerprint}`, sessionOnly: session, guard, bank: row.bank, local, prepared: items });
-        guard.check(); row.status = "submitted"; row.updated = Date.now(); this.put(key, JSON.stringify(row));
-        return { dry: false, ...preview, ...result, operation_ids: row.operations, status: "submitted" };
-      } catch (e) {
-        if (!state.cancelled) { row.status = "interrupted"; row.updated = Date.now(); this.put(key, JSON.stringify(row)); }
-        return { error: String(e.message || e), session, documents: docs, operation_ids: row.operations, status: state.cancelled ? "cancelled" : "interrupted" };
-      } finally { release(); if (this.sessQ.get(session) === gate) this.sessQ.delete(session); this._hsRefreshRuns.delete(key); }
-    });
-    return state.work;
-  },
-  hsConversationStatus(session) {
-    if (this.env.ENV_NAME !== "dev" || typeof session !== "string" || !session || !this.session(session)) return { error: "An existing dev task in this channel is required." };
-    return { session, receipts: this.sql.exec("SELECT v FROM kv WHERE k LIKE 'hs_origin_refresh:%'").toArray().map(r => jp(r.v)).filter(r => r?.session === session).map(r => ({ status: r.status, documents: r.documents, operation_ids: r.operations, updated: r.updated })) };
-  },
-  hsCancelConversationRefresh(session = null) {
-    this.put(session == null ? "hs_origin_block_all" : `hs_origin_block:${session}`, "1");
-    const rows = this.sql.exec("SELECT k,v FROM kv WHERE k LIKE 'hs_origin_refresh:%'").toArray().map(r => ({ key: r.k, row: jp(r.v) })).filter(r => r.row && (session == null || r.row.session === String(session)));
-    // The persistent and live cancellation fences precede the first await.
-    for (const r of rows) { r.row.status = "cancelled"; r.row.updated = Date.now(); this.put(r.key, JSON.stringify(r.row)); const live = this._hsRefreshRuns?.get(r.key); if (live) live.cancelled = true; }
-    return (async () => {
-      for (const r of rows) {
-        await this._hsRefreshRuns?.get(r.key)?.work;
-        const saved = jp(this.get(r.key), r.row);
-        for (const id of saved.operations || []) await cancelOperation(this.env, saved.bank, id);
-        await this.hsDropDocs(saved.documents, { tombstone: false });
-        this.sql.exec("DELETE FROM kv WHERE k=?", r.key);
-      }
-    })();
-  },
-
-  // ---------------------------------------------------------------- the estimate (DESIGN 5.2, dry run) ----------------------------------------------------------------
-  // Counts characters per strategy over the whole source, prices the extraction with the meter in src/byok.js, and adds the consolidation and
-  // refresh calls. Changes nothing. A Bee channel with many recordings reads the first `bee_reads` and extrapolates.
+  // ---------------------------------------------------------------- the estimate (dry run) ----------------------------------------------------------------
+  // Counts characters per strategy over the whole source and prices the extraction with the meter in src/byok.js. Changes nothing. A Bee channel with many
+  // recordings reads the first `bee_reads` and extrapolates.
   async hsEstimate(o = {}) {
-    const snap = now(), kinds = kindsFor(this.get("channel")), per = {}, docs = {}, strat = { chat: 0, note: 0, ambient: 0, file: 0, reference: 0, [STRATEGY.rawTranscript]: 0 };
-    let calls = 0, refChunks = 0, items = 0, batches = 0, retainNano = 0, refreshModels = this.get("channel") === "main" ? 3 : 2, partial = false;
+    const snap = now(), kinds = kindsFor(this.get("channel")), per = {}, docs = {}, strat = { chat: 0, note: 0, ambient: 0, file: 0, reference: 0, [STRATEGY.rawTranscript]: 0, [STRATEGY.verbatim]: 0 };
+    let calls = 0, chunks = 0, items = 0, retainNano = 0, partial = false;
     for (const kind of kinds) {
       let after = ""; docs[kind] = 0;
       for (let i = 0; i < 400; i++) {
         const page = await this.hsSourcePage(kind, after, snap, { limit: kind === "conv" ? 20 : 40 });
-        const sends = rounds(page.items.filter((i) => itemChars(i) > 0), BATCH_ITEMS); batches += sends.length; for (const send of sends) retainNano += hsRetainBatchNano(send.map(itemExtractChars), refreshModels), refreshModels = 0;   // at most one refresh run per model for the whole rebuild   // one send per round, and consolidation runs again after each one lands
+        retainNano += hsRetainBatchNano(page.items.map(itemExtractChars));
         for (const it of page.items) {
           const n = itemChars(it), sname = it.strategy || STRATEGY.chat; items++; strat[sname] = (strat[sname] || 0) + n;
           if (it.update_mode !== "append") docs[kind]++;
-          if (it.strategy === STRATEGY.reference) refChunks += Math.max(1, Math.ceil(n / 800)); else if (it.strategy === STRATEGY.rawTranscript) refChunks += Math.max(1, Math.ceil(n / RAW_CHUNK_CHARS)); else calls += Math.max(1, Math.ceil(n / 3000));
+          if (itemExtractChars(it)) calls += Math.max(1, Math.ceil(n / EXTRACT_CHARS)); else chunks += Math.max(1, Math.ceil(n / (it.strategy === STRATEGY.rawTranscript ? RAW_CHUNK_CHARS : 3000)));
         }
         if (page.done || !page.next) break; after = page.next;
         if (kind === "bee" && i >= (o.bee_reads ?? 30)) { partial = true; break; }
       }
       per[kind] = docs[kind];
     }
-    const extractChars = strat.chat + strat.note + strat.ambient + strat.file, facts = Math.round(calls * 1.7), consolidationCalls = Math.ceil(facts / 8) + batches, models = this.get("channel") === "main" ? 3 : 2;
-    return { channel: this.get("channel"), documents: per, items, characters: strat, extraction_characters: extractChars, reference_chunks: refChunks, extraction_calls: calls, facts_estimate: facts, batches,
-      consolidation_calls: consolidationCalls, mental_model_refresh_calls_up_to: models * 10, extraction_nano: retainNano, extraction_usd: Number((retainNano / 1e9).toFixed(6)),
-      note: "Dollars are the retain meter in src/byok.js (hsRetainBatchNano: one cold extraction call per send then cached ones, consolidation at 8 facts per call, and one refresh run per model for the whole rebuild), before the 15% markup. The consolidation and mental model call counts above are separate estimates and are not added. Compare with GET /llm-requests/stats after a real run (the design notes).", ...(partial ? { partial: "the Bee conversations were cut short for speed" } : {}) };
+    return { channel: this.get("channel"), documents: per, items, characters: strat, extraction_calls: calls, raw_chunks: chunks, extraction_nano: retainNano, extraction_usd: Number((retainNano / 1e9).toFixed(6)),
+      note: "Dollars are the retain meter in src/byok.js (hsRetainBatchNano: one cold extraction call per send then cached ones, one call for every 12,000 characters), before the 15% markup. Compare with the AI Gateway log of mem_extract (kind memory-extract) after a real run.", ...(partial ? { partial: "the Bee conversations were cut short for speed" } : {}) };
   },
 };
 export const rebuildMix = (Cls) => Object.assign(Cls.prototype, rebuildMethods);
@@ -504,22 +316,10 @@ const raceMs = (p, ms) => { let t; return Promise.race([p, new Promise((_, rej) 
 // Every call does a bounded amount of work and answers within ADMIN_BUDGET_MS. It pages by tenant: offset and limit count accounts (at most
 // ADMIN_MAX_TENANTS per call), never banks, and the Archive of an account is asked for its channels only when that account is reached.
 // status reads D1 (hs_rebuild_runs) only, unless live=1 asks the channel's Resident for its own view (one channel, needs slug and channel).
-export async function hsRebuildAdmin(env, action, { dry = true, slug = "", channel = "", session = "", fingerprint = "", limit = 2, offset = 0, onlyTest = false, live: wantLive = false, now: clock = Date.now, budgetMs = ADMIN_BUDGET_MS } = {}) {
+export async function hsRebuildAdmin(env, action, { dry = true, slug = "", channel = "", limit = 2, offset = 0, onlyTest = false, live: wantLive = false, now: clock = Date.now, budgetMs = ADMIN_BUDGET_MS } = {}) {
   if (!hsWriters(env)) return { error: "HS_WRITERS is off" };
-  if (!["estimate", "start", "status", "pause", "resume", "conversation-refresh", "conversation-status"].includes(action)) return { error: "action must be estimate, start, status, pause or resume" };
+  if (!["estimate", "start", "status", "pause", "resume"].includes(action)) return { error: "action must be estimate, start, status, pause or resume" };
   if (env.ENV_NAME !== "dev") return { error: "dev only" };
-  if (action === "conversation-refresh" || action === "conversation-status") {
-    if (!slug || !channel || !session) return { error: "Conversation refresh requires one explicit workspace, channel and task." };
-    const until = clock() + Math.min(budgetMs, ADMIN_BUDGET_MS), remaining = () => until - clock();
-    const tenant = await raceMs(env.DB.prepare("SELECT id FROM tenants WHERE slug=?").bind(slug).first(), remaining());
-    if (!tenant) return { error: "no such workspace" };
-    const channels = await raceMs(archiveOf(env, tenant.id).channels(), remaining());
-    const c = channels.find(c => (c.slug || c.name) === channel && c.kind !== "dm");
-    if (!c) return { error: "no such channel" };
-    const R = residentOf(env, tenant.id, channel);
-    await raceMs(R.bind(tenant.id, channel, String(c.id)), remaining());
-    return raceMs(action === "conversation-status" ? R.hsConversationStatus(session) : R.hsConversationRefresh({ session, dry, fingerprint, deadline: until - 2000 }), remaining());
-  }
   const t0 = clock(), left = () => budgetMs - (clock() - t0);
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS hs_rebuild_runs (bank TEXT PRIMARY KEY, tenant TEXT, channel TEXT, status TEXT NOT NULL, phase TEXT, version INTEGER, started_at INTEGER, updated_at INTEGER NOT NULL, summary TEXT)").run().catch(() => {});
   const runs = (await env.DB.prepare("SELECT * FROM hs_rebuild_runs").all().catch(() => ({ results: [] }))).results || [], byBank = new Map(runs.map((r) => [r.bank, r]));

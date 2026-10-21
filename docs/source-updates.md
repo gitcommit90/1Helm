@@ -1,3 +1,19 @@
+# Source update: 2026-10-21 (memory on Mem0, turn traces, gateway log tags)
+
+## Memory runs in the Worker
+
+The Worker source is reconciled from `c73ecab11b89f94b863441d2e39fb7ddb2fcb65d` to `e73cc06f4eb088d8789083aba06667cfeb79f583`. Memory now runs on the Mem0 library inside the Worker (`src/mem0.js` and `src/mem0-store.js`), with facts, their history and a keyword index in D1 (migration `0063`) and vectors in a Vectorize index bound as `MEMORY_INDEX`. The Hindsight server, its bank templates, mental model refreshes and health check are no longer used by the Worker. The Notebook pages and the profile in the prompt are lists of facts by category, made in code with no model call. Memory makes two model calls, the jobs `mem_extract` and `mem_embed`, and a search costs one query embedding. Metering for an owner's own AI key changes to match (`src/byok-meter.js`). Memory is still off unless the `MEMORY_INDEX` binding and `MEMORY` are set, and the setup steps are in [configuration](configuration.md) and [upgrade](upgrade.md).
+
+## Turn traces and gateway log tags
+
+`src/turn-trace.js` can send one trace per helper turn, made of numbers, ids and fixed names with no message text, to the address in `APP_OTEL_URL` when the secret `APP_OTEL_TOKEN` is also set. With either one missing nothing is sent. Calls through the AI Gateway now carry their metadata through `src/aig-meta.js`, and a call with no kind is tagged `untagged`. The Models console Sandbox gains request samples for the two memory jobs.
+
+## Not in the public source
+
+The private release, evaluation and operations tools, the dev only evaluation routes, the affiliate program, the website and the private design notes are not part of this source. The web app is unchanged.
+
+Local checks are `npm run test:core`, `npm run test:sync`, `npm run test:runtime`, `npm run test:web`, `npm run check:migrations`, `npm run build` and a Worker dry run with the example configuration. Synthetic local checks do not establish live provider, Vectorize, container or device behavior in another operator's environment.
+
 # Source update: 2026-10-18 (custom MCP server host lookup fix)
 
 ## Custom MCP servers

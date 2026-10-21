@@ -12,6 +12,7 @@ import { enabled as eeEnabled, toolEnabled as eeToolEnabled } from "./ee/index.j
 import { protectedRequest } from "./approval-scope.js";
 import { tolerantEnv, codeV, isResetErr } from "./do-stub.js";
 import { resumeInit, resumeMix, guardIn, JOURNALED, runIdOf } from "./resume.js";
+import { traceMix } from "./turn-trace.js";   // Langfuse turn traces: a root, a span per model step, a TOOL per tool run (no text)
 import { runTurnPi } from "./pi-engine.js";
 import { TaskTranscript, TASK_ARCHIVE_TOOL, contextBudget, contextSize, estimateTokens, compactionPlan, transcriptGroups, prefixDigest, transcriptDelete, hasTaskTranscript } from "./task-transcript.js";
 import { ensureTaskRuntime, authorizeTaskProfile, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./ee/index.js";
@@ -27,7 +28,7 @@ import { replyRef, replyIn, withReply } from "./reply-to.js";   // Reply on a ch
 import { workingSet, bringBack, sameAsShown, BRING_BACK_TOOL } from "./workmem.js";
 import { linkCreatePurchase, linkGetPurchase } from "./ee/index.js";
 import { normSite, hostMatchesSite, loginForHost, loginSites, loginAccountsForHost } from "./logins.js";
-import { useOpenRouter, jevNote, OR_RESERVE_PRICE, prefixPrint, runPrint, CACHE_WRITE_MULT } from "./model.js";
+import { useOpenRouter, jevNote, OR_RESERVE_PRICE, prefixPrint, runPrint, CACHE_WRITE_MULT, cacheKey } from "./model.js";
 import { S, structuredFormat, parseStructuredResponse } from "./structured-output.js";
 export const HANDOFF_SCHEMA = S.object({ completed: S.array(S.string), changed_files: S.array(S.string), working_commands: S.array(S.string), decisions: S.array(S.string), key_facts: S.array(S.string), unfinished: S.array(S.string) });
 export const HANDOFF_PROMPT = "(Turn finished; the person has your reply. Don't call tools. Write hand-off notes for your future self, since the raw work log above will be dropped from context. Return JSON: completed (work completed), changed_files (paths), working_commands (commands/scripts that worked), decisions (decisions and why), key_facts (exact key facts/numbers), unfinished (open work). Each field is an array of strings; use empty arrays when absent. Under 200 words total.)";
@@ -70,7 +71,7 @@ import { privacyOf, PRIVACY_EXHAUSTED } from "./privacy.js";   // AI data privac
 import { jobModel, modelSettingsEnv, dispatch, CHAT_JOB, plannedChatMaxOutput, plannedChatHoldNano, plannedHold, holdOutNano } from "./ee/index.js";
 import { limitsFor } from "./ee/index.js";
 import { DEFAULT_RUNTIME_LIMITS } from "./limits.js";
-import { METER as BYOK_METER, BYOK_MARKUP, hsRetainBatchNano, hsRecallNano, HS_REFRESH_WINDOW_MS } from "./byok-meter.js";
+import { METER as BYOK_METER, BYOK_MARKUP, hsRetainBatchNano, hsRecallNano } from "./byok-meter.js";
 import { loadByok, byokEnv, byokChat, isByokError, BYOK_CREDITS_REPLY, fallbackNotice, creditsLine, CREDITS_TOOL_ERR } from "./byok.js";   // own AI key: their endpoint for AI, our parts metered
 import { checkRule, nextRun, describe, validTz, DEFAULT_TZ } from "./schedule.js";
 import { laterInit, laterNext, laterMix } from "./send-later.js";
@@ -104,11 +105,11 @@ import { Memory, PACK_HEADER } from "./memory.js";
 import { MEMORY_UNAVAILABLE, MEMORY_UNAVAILABLE_NOTE } from "./memory-unavailable.js";   // what the helper is told when Hindsight does not answer (there is no local copy to search)
 import { questionScope, localDay } from "./dates.js";
 import { opsResident } from "./internal-shim.js";
-import { hs as hsCall, bankPath as hsBankPath, hsOn, bankId, ensureBank, setupBank, importTemplate, testBankManifest, syncMentalModelTriggers, recall as hsRecall, packHs } from "./hindsight.js";
+import { hsOn, bankId, recall as hsRecall, packHs } from "./mem0.js";
 import { isTestTenant } from "./test-tenant.js";
-import { hsFoundations, templateKind, templateKey, templateModelCount, fillTemplate, speakerLabels, contextFor } from "./hindsight-template.js";
+import { hsFoundations } from "./hindsight-template.js";
 import { hsUse } from "./hs-flag.js";   // HS_USE: Memory Overhaul phase 4A (using memory)
-import { useMix, recallArgs, rangeRecords, entityNames } from "./memory-use.js";   // phase 4A: profile, arms, recall arguments
+import { useMix, recallArgs, rangeRecords } from "./memory-use.js";   // phase 4A: profile, arms, recall arguments
 import { stripInjectedMemory } from "./memory-block.js";   // memory added to a turn is never retained
 import { hsWriters, writersMix, hsContactNotify, DOC as HS_DOC, noteItem as hsNoteItem } from "./hindsight-writers.js";   // HS_WRITERS: Memory Overhaul phase 3 (everything into the channel's bank)
 import { rebuildMix } from "./hindsight-rebuild.js";
@@ -252,7 +253,7 @@ const TOOLS = () => (toolDefs ??= [
   { type: "function", function: { name: "save_run_notes", description: "Unattended workflow runs only: save notes that the NEXT run of this workflow receives verbatim (replacing the old notes). Include the exact command/script to run, where state/dedup data lives, and lessons learned. Call once at the end of every run.", parameters: { type: "object", properties: { notes: { type: "string" } }, required: ["notes"] } } },
   { type: "function", function: { name: "set_workflow_gate", description: "Recurring workflows only: set a shell command (run on this channel's computer, cwd /workspace) that the scheduler runs by itself BEFORE waking you. Exit 0 = nothing to do (you are not woken, the run costs no AI). Exit 3 = something needs you (you're woken with its output). Any other exit = the check broke (you're woken to fix it). Use this for monitors that are quiet most runs. Pass an empty command to remove the gate.", parameters: { type: "object", properties: { id: { type: "integer" }, command: { type: "string" } }, required: ["id", "command"] } } },
   { type: "function", function: { name: "recall_history", description: "Search this channel's full past conversation, including the raw work logs (commands, tool output) of earlier turns that are no longer in your context. Use when you need an exact detail from earlier work. For earlier email, calendar, app or web lookups, use work_log first.", parameters: { type: "object", properties: { query: { type: "string", description: "Words to look for" }, limit: { type: "integer" } }, required: ["query"] } } },
-  { type: "function", function: { name: "remember", description: "Save a lasting fact to memory. It stays in this channel's notes (from General you can also save into another channel's notes with channel). Use it when the person tells you something lasting about a person in their life or about themselves. about = the person's name, or \"me\". For a thing (a gate code, a car, a project) that is not a person or organization, about = what it is; it is saved as a note only and never becomes a contact. For a new person also give relation (e.g. \"Your sister\"), other names they use, phone/email/birthday: those go in the shared Contacts address book so every channel knows WHO they are, but the fact itself stays here.", parameters: { type: "object", properties: { about: { type: "string" }, fact: { type: "string" }, relation: { type: "string" }, also_called: { type: "array", items: { type: "string" } }, phone: { type: "string" }, email: { type: "string" }, birthday: { type: "string" }, channel: { type: "string", description: "From General only: the channel slug whose notes to save into (default: this channel)" }, section: { type: "string", enum: ["about", "how", "people", "places", "now"], description: "Where it shows in the person's Notebook: about = basics about them, how = how they like things done (preferences, rules, sign-offs, formats), people = someone in their life, places = a place, now = current goals/projects. Default: about for them, people for someone else." } }, required: ["about", "fact"] } } },
+  { type: "function", function: { name: "remember", description: "Save a lasting fact to memory. It stays in this channel's notes (from General you can also save into another channel's notes with channel). Use it when the person tells you something lasting about a person in their life or about themselves. about = the person's name, or \"me\". For a thing (a gate code, a car, a project) that is not a person or organization, about = what it is; it is saved as a note only and never becomes a contact. For a new person also give relation (e.g. \"Your sister\"), other names they use, phone/email/birthday: those go in the shared Contacts address book so every channel knows WHO they are, but the fact itself stays here. Save only what is new: if recalled memory already holds the same fact, do not save it again, and if the fact changed, say in the saved fact that it replaces the old one.", parameters: { type: "object", properties: { about: { type: "string" }, fact: { type: "string" }, relation: { type: "string" }, also_called: { type: "array", items: { type: "string" } }, phone: { type: "string" }, email: { type: "string" }, birthday: { type: "string" }, channel: { type: "string", description: "From General only: the channel slug whose notes to save into (default: this channel)" }, section: { type: "string", enum: ["about", "how", "people", "places", "now"], description: "Where it shows in the person's Notebook: about = basics about them, how = how they like things done (preferences, rules, sign-offs, formats), people = someone in their life, places = a place, now = current goals/projects. Default: about for them, people for someone else." } }, required: ["about", "fact"] } } },
   MEMORY_EXPLAIN_TOOL,
   READ_DOC_TOOL,
   READ_SKILL_TOOL,
@@ -629,33 +630,19 @@ export class Resident extends DurableObject {
   }
   // A turn that ended without a reply (Stop, a budget or step cap, a restart): keep what its lookups found (worklog.js). Once per turn.
   async retainPartial(session, turn, why = "stopped") { return retainPartial(this, session, turn, why); }
-  async memoryStats() { return { mode: this.memoryMode(), backend: hsOn(this.env) ? "hindsight" : "none", bank: hsOn(this.env) ? this.hsBankId() : null, ...this.mem.stats() }; }
+  async memoryStats() { return { mode: this.memoryMode(), backend: hsOn(this.env) ? "mem0" : "none", bank: hsOn(this.env) ? this.hsBankId() : null, ...this.mem.stats() }; }
   // ---- Hindsight (the memory, Captain 2026-10-04): one bank per person per channel. There is no local copy to fall back on; when the box is
   // unreachable the helper is told memory is unavailable (memory-unavailable.js). ----
   hsBankId(channel = this.get("channel")) { return bankId(this.env, this.get("tenant"), channel); }
-  // The bank exists and has its template (DESIGN.md 4.1). With HS_FOUNDATIONS off it is the plain empty PUT it always was.
-  // With it on, the template is imported again whenever its version, the person's first name, the helper's name, the channel name
-  // or the channel purpose changes (the key is kept in hs_tpl). For a bank that already exists, the mental model triggers are PATCHed to the template's first (syncMentalModelTriggers),
-  // because an import that changes a trigger also queues a full refresh of that model. A failed import is retried at most every 5 minutes and never blocks a retain.
-  async hsBank() {
-    const b = this.hsBankId();
-    if (!hsFoundations(this.env)) { if (this.get("hs_bank") !== b) { await ensureBank(this.env, b); this.put("hs_bank", b); } return b; }
-    const n = await this.hsNames(), kind = templateKind(this.get("channel")), manual = await this.hsTestOwner(), key = templateKey(kind, n) + (manual ? "|manual" : "");   // the key changes for a test account, so an old bank gets its triggers removed on the next saved turn
-    if (this.get("hs_bank") === b && this.get("hs_tpl") === key) return b;
-    if (this._hsTplFail && Date.now() - this._hsTplFail < 300e3) { if (this.get("hs_bank") !== b) { await ensureBank(this.env, b); this.put("hs_bank", b); } return b; }
-    try { const tpl = (x) => manual ? testBankManifest(x) : x;   // a test account's models have no automatic trigger (test-tenant.js)
-      if (this.get("hs_bank") === b) { const manifest = tpl(fillTemplate(kind, n)); await syncMentalModelTriggers(this.env, b, manifest, { manual }); await importTemplate(this.env, b, manifest, { manual }); } else await setupBank(this.env, b, tpl(fillTemplate(kind, n)), { manual }); this.put("hs_bank", b); this.put("hs_tpl", key); this._hsTplFail = 0; }
-    catch (e) { this._hsTplFail = Date.now(); console.log("hindsight template", e.message); if (this.get("hs_bank") !== b) { await ensureBank(this.env, b); this.put("hs_bank", b); } }
-    return b;
-  }
+  // The channel's memory needs no setup: a namespace exists once it holds a fact (mem0.js). Kept as the one place a writer asks for the bank id.
+  async hsBank() { return this.hsBankId(); }
   // True when this workspace's owner has an @example.com email (a test account): its mental models refresh only on request, and no scheduled run or repair
   // spends in the background (Captain, 2026-10-18). Kept for 10 minutes. A lookup error means "not a test account".
   async hsTestOwner() {
     if (this._hsTest && Date.now() - this._hsTest.at < 600e3) return this._hsTest.v;
     const v = await isTestTenant(this.env, this.get("tenant")); this._hsTest = { at: Date.now(), v }; return v;
   }
-  // Forget that this channel's bank was created, so the next saved turn creates it again with its template (the dev bank cleanup deletes test banks). Additive RPC.
-  hsBankReset() { this.put("hs_bank", ""); this.put("hs_tpl", ""); this._hsTplFail = 0; return true; }
+  hsBankReset() { return true; }   // kept so a Durable Object from the last deploy can still be called while it winds down (the bank needs no setup now)
   // Names the bank template and the speaker labels use: the person's first name, the helper's name, this channel's name and purpose.
   // Read from the account row and the Archive, and kept for a minute (hsBank runs on every saved turn). Null with HS_FOUNDATIONS off.
   async hsNames() {
@@ -823,51 +810,11 @@ export class Resident extends DurableObject {
     const nano = Math.ceil(costNano * MARKUP), rid = `${kind}:${crypto.randomUUID()}`;
     try { const led = this.ledger(); if ((await led.reserve(rid, nano)).ok) { await led.settle(rid, nano); if (tc) tc.extraCharge = (tc.extraCharge || 0) + nano; } } catch (e) { console.log("charge", kind, String(e?.message || e).slice(0, 120)); }
   }
-  // Mental model refresh runs a send can start (src/byok.js hs_refresh_run): the bank templates refresh each model on a cron twice a day
-  // (every 12 hours, HS_REFRESH_WINDOW_MS), so only a send that comes after the last charged window ended can start them. This
-  // Resident (one channel, one bank) records when it last charged a window: 3 models in General (channel "main"), 2 in a project channel
-  // (the counts come from the templates, hindsight-template.js). 0 while a window is still open.
-  hsRefreshModels(now = Date.now()) {
-    const at = Number(this.get("hs_refresh_at")) || 0;
-    return at > now - HS_REFRESH_WINDOW_MS ? 0 : templateModelCount(templateKind(this.get("channel")));
-  }
-  // Take the charge window if none is open: → { models, mark } (models 0 and mark null while one is open). The clock is set in the same
-  // step that decides, before any await, so two sends that run at the same time (a chat turn and a note, the outbox and a page edit)
-  // cannot both see it closed and both pay for it. hsRefreshGive puts the clock back if the send never happened.
-  hsRefreshTake() {
-    const models = this.hsRefreshModels(); if (!models) return { models: 0, mark: null };
-    const prev = this.get("hs_refresh_at") ?? null, mark = Date.now(); this.put("hs_refresh_at", mark);
-    return { models, mark, prev };
-  }
-  hsRefreshGive(t) { if (t?.mark && Number(this.get("hs_refresh_at")) === t.mark) this.put("hs_refresh_at", t.prev ?? 0); }
-  // RPC (added only): Bee conversations are kept by BeeSync, which charges its own retain, but General's bank has one refresh window, so it takes
-  // and gives it back here instead of keeping a second clock (two clocks charged the same hour twice). → { models, mark, prev }
-  async hsRefreshWindow(op = "take", t = null) { if (op === "give") { this.hsRefreshGive(t); return { ok: true }; } return this.hsRefreshTake(); }
-  // The hold for one send to Hindsight: extraction, consolidation and, when a window opens, the refresh runs. `lens` is the characters of each item.
-  // The window is recorded when the hold is made and given back if the send fails (done(0)), so two sends in a row do not both pay for it.
-  async hsRetainHold(lens, tc = null) {
-    const t = this.env.BYOK && hsRetainBatchNano(lens, 0) > 0 ? this.hsRefreshTake() : { models: 0, mark: null };
-    const nano = hsRetainBatchNano(lens, t.models);
-    let h = null; try { h = await this.byokHold("hs-retain", nano, tc); } catch (e) { this.hsRefreshGive(t); throw e; }
-    if (!h) { this.hsRefreshGive(t); return null; }
-    return { skipped: h.skipped, done: async (...a) => { const r = await h.done(...a); if (a[0] === 0) this.hsRefreshGive(t); return r; } };
-  }
-  // What one recall on this bank costs (src/byok.js HS_RECALL_TIERS), from the bank's node count. The count is kept per bank in the kv table and read
-  // at most once a day: first from the daily health check's row in D1 (hs_health), then from the bank's stats (one Hindsight call a day, never one per
-  // recall). A failed read is retried at most hourly and the last known count is used meanwhile; with none, the top tier applies.
-  async hsRecallPrice(bank = this.hsBankId()) {
-    const key = `hsn:${bank}`; let n = null, at = 0, tried = 0;
-    try { [n, at, tried] = String(this.get(key) || "").split(",").map((x, i) => x === "" || x === undefined ? (i === 0 ? null : 0) : Number(x)); } catch {}
-    const now = Date.now();
-    if (!(at > now - 86400e3) && !(tried > now - 3600e3)) {
-      let nodes = null;
-      try { const row = await this.env.DB.prepare("SELECT checked_at, stats FROM hs_health WHERE bank=?").bind(bank).first(); if (row && Number(row.checked_at) > now - 36 * 3600e3) nodes = Number(JSON.parse(row.stats)?.nodes); } catch {}
-      if (!Number.isFinite(nodes)) { try { nodes = Number((await hsCall(this.env, `${hsBankPath(bank)}/stats`, { timeoutMs: 4000 }))?.total_nodes); } catch {} }
-      if (Number.isFinite(nodes) && nodes >= 0) { n = nodes; at = now; } else tried = now;
-      try { this.put(key, `${n ?? ""},${at || 0},${tried || 0}`); } catch {}
-    }
-    return hsRecallNano(Number.isFinite(n) ? n : null);
-  }
+  // The hold for one send to memory: extraction (src/byok.js hsRetainBatchNano). `lens` is the characters of each item.
+  async hsRetainHold(lens, tc = null) { return this.byokHold("hs-retain", hsRetainBatchNano(lens), tc); }
+  // What one search costs (the query embedding, src/byok.js). Kept as a method so every search site asks the same way.
+  hsRecallPrice() { return hsRecallNano(); }
+  hsRefreshWindow() { return { models: 0, mark: null }; }   // kept so a Bee object from the last deploy can still be called while it winds down (mental model refreshes are gone)
   async byokMeter(kind, costNano, tc = null) {
     if (!this.env.BYOK || !(costNano > 0)) return 0;
     const h = await this.byokHold(kind, costNano, tc); return h ? h.done(costNano) : null;
@@ -1097,7 +1044,7 @@ export class Resident extends DurableObject {
     noteRepeat(tc, r.repeat); console.log("model step repeating, retrying once", JSON.stringify({ ...r.repeat, unit: r.repeat.unit.slice(0, 40) }));
     let r2;
     try { const note = { role: "user", content: stepNote(r.repeat) }; if (tc?.appendRuntime) { messages.push(note); this.save(tc.turn, note); }
-      r2 = await this.callModelOnce(tc?.appendRuntime ? messages : [...messages, note], onComputerTool, onText, noTools, tc); }
+      if (tc) tc.otelRetry = true; r2 = await this.callModelOnce(tc?.appendRuntime ? messages : [...messages, note], onComputerTool, onText, noTools, tc); }
     catch (e) { retainModelUsage(this, tc, r); throw e; }
     const sum = { inTok: r.inTok + r2.inTok, cached: r.cached + r2.cached, cacheWrite: (r.cacheWrite || 0) + (r2.cacheWrite || 0), outTok: r.outTok + r2.outTok, charge: r.charge + r2.charge };
     if (!r2.repeat) return { ...r2, ...sum, repeated: r.repeat };
@@ -1166,6 +1113,10 @@ export class Resident extends DurableObject {
     } catch { return false; }
   }
   async callModelOnce(messages, onComputerTool, onText = null, noTools = false, tc = null) {
+    const inner = () => (this.callModelOnceInner || Resident.prototype.callModelOnceInner).call(this, messages, onComputerTool, onText, noTools, tc);
+    return tc?.otel ? this.otelModel(tc, noTools ? "tools_off" : null, inner) : inner();   // turn-trace.js: a span per model step
+  }
+  async callModelOnceInner(messages, onComputerTool, onText = null, noTools = false, tc = null) {
     if (tc?.abort === "hard") throw stopError();   // stopped: no further model calls
     if (tc?.modelFailure) throw modelFault(tc.modelFailure.code, tc.modelFailure.phase);
     // A frozen chain is authorized separately for every attempted source by
@@ -1227,7 +1178,7 @@ export class Resident extends DurableObject {
     const deadline = byok ? null : modelDeadline(ac, { ...MODEL_LIMITS, ...tc?.limits?.modelSaved });   // the saved waits (limits.js); none: the starting values
     const aborted = () => signal.reason?.modelFailure ? signal.reason : stopError();
     const waitModel = (p, late = r => r?.body?.cancel?.()) => deadline ? deadline.wait(p, late) : p;
-    let onAbort = null, reader = null, modelResponding = false;
+    let onAbort = null, reader = null, modelResponding = false, firstTokenAt = null;
     tc?.emit?.({ t: "model_wait", phase: "waiting", started_at: Date.now() });
     try {
       // Transient provider errors (capacity/overload) are retried a bounded number of times before the stream starts;
@@ -1244,15 +1195,15 @@ export class Resident extends DurableObject {
         const px = `${prefixPrint(messages, tools)}.${runPrint(tc)}`;   // gateway log: which cached prefix this call used, and which task/run it belongs to (model.js)
         const prov = this.provenance(messages, tc);   // what this payload carries
         try {
-          stream = (await waitModel(dispatch(this.env, CHAT_JOB, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat", px, _prov: prov }, signal, session: sess, route }))).body;
+          stream = (await waitModel(dispatch(this.env, CHAT_JOB, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat", px, _prov: prov, ...this.otelMeta(tc) }, signal, session: sess, route }))).body;
           provider = "openrouter"; thinkDone = true;   // OpenRouter streams reasoning separately; content is the answer
         } catch (e) {
           // 400 = our request is wrong: surface it. Anything else (402/429/5xx/network): retry once after 1.5 s, then Workers AI.
           if (e.taskAffinity || e.contextOverflow || e.orStatus === 400 || e.privacy || signal.aborted) throw signal.aborted ? aborted() : e;
           fellBack = String(e.message || e).slice(0, 160);
           try { await waitModel(new Promise((z) => setTimeout(z, 1500))); if (signal.aborted) throw aborted();
-            stream = (await waitModel(dispatch(this.env, CHAT_JOB, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-retry", px, _prov: prov }, signal, session: sess, route }))).body;
-            provider = "openrouter"; thinkDone = true; fellBack = null;
+            stream = (await waitModel(dispatch(this.env, CHAT_JOB, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-retry", px, _prov: prov, ...this.otelMeta(tc) }, signal, session: sess, route }))).body;
+            provider = "openrouter"; thinkDone = true; fellBack = null;   if (tc?.otelStep) tc.otelStep.retry = true;   // turn-trace.js: this step is named "chat-retry" like the gateway kind
           } catch (e2) { if (e2.orStatus === 400 || e2.privacy || signal.aborted) throw signal.aborted ? aborted() : e2; fellBack = String(e2.message || e2).slice(0, 160); console.log("openrouter unavailable twice, using workers ai", fellBack); }
         }
       }
@@ -1302,7 +1253,7 @@ export class Resident extends DurableObject {
           if (delta.refusal) refusal = (refusal || "") + delta.refusal;
           if (meaningfulDelta(delta)) {
             deadline?.progress();
-            if (!modelResponding) { modelResponding = true; tc?.emit?.({ t: "model_wait", phase: "responding" }); }
+            if (!modelResponding) { modelResponding = true; firstTokenAt = Date.now(); tc?.emit?.({ t: "model_wait", phase: "responding" }); }
           }
           // Opaque reasoning blocks (OpenRouter reasoning_details): kept as-is for replay to the same model (model.js replayFor), never read or shown.
           if (Array.isArray(delta.reasoning_details)) for (const d of delta.reasoning_details) { const last = rdet.at(-1);
@@ -1382,7 +1333,7 @@ export class Resident extends DurableObject {
     }
     if (content.includes("</think>")) content = content.split("</think>").pop();
     calls = calls.filter(Boolean);
-    if (rep) return { content: "", calls: [], inTok, cached, cacheWrite, outTok, charge, finish: "repeat", repeat: rep, model: served, routing, fellBack: null };   // nothing of a looping step is kept
+    if (rep) return { content: "", calls: [], inTok, cached, cacheWrite, outTok, charge, finish: "repeat", repeat: rep, model: served, routing, fellBack: null, firstTokenAt, providerCost: usage.cost };   // nothing of a looping step is kept
     if (!thinkDone && !calls.length) emit(content);
     calls = calls.map((c, i) => {
       let args = c.function.arguments || "{}", bad = null;
@@ -1390,7 +1341,7 @@ export class Resident extends DurableObject {
       return { ...c, id: c.id || `call_${i}_${Date.now()}`, function: { ...c.function, arguments: args }, ...(bad != null ? { bad_args: bad } : {}) };
     });
     const reasoning = provider === "openrouter" && rdet.length && (tc?.appendRuntime || route?.replayReasoning) ? { reasoning_details: rdet, _rmodel: tc?.taskProfile?.requestedModel || served || route?.served } : null;
-    return { content: content.trim(), calls, inTok, cached, cacheWrite, outTok, charge, finish, ...(refusal ? { refusal } : {}), model: served || (provider === "workers-ai" ? await jobModel(this.env, "workers_ai_chat") : provider === "byok" ? (byokFast ? byok.fast : byok.model) : null), routing, fellBack: provider === "workers-ai" ? fellBack : null, ...(reasoning ? { reasoning } : {}) };
+    return { content: content.trim(), calls, inTok, cached, cacheWrite, outTok, charge, finish, ...(refusal ? { refusal } : {}), model: served || (provider === "workers-ai" ? await jobModel(this.env, "workers_ai_chat") : provider === "byok" ? (byokFast ? byok.fast : byok.model) : null), routing, fellBack: provider === "workers-ai" ? fellBack : null, firstTokenAt, providerCost: provider === "openrouter" ? usage.cost : null, ...(reasoning ? { reasoning } : {}) };
   }
 
   // Computer tool → shell command on this channel's computer. Returns the raw { code, out }.
@@ -1639,6 +1590,10 @@ export class Resident extends DurableObject {
   }
   async runTool(call, ctx = {}) {
     if (!eeToolEnabled(this.env, call.function?.name)) return `error: ${call.function.name} is unavailable on this deployment.`;
+    const inner = () => (this.runToolInner || Resident.prototype.runToolInner).call(this, call, ctx);   // (tests call runTool on plain objects)
+    return ctx?.otel ? this.otelTool(ctx, call?.function?.name, inner) : inner();   // turn-trace.js: a TOOL observation (name, duration, ok, size; never arguments or results)
+  }
+  async runToolInner(call, ctx = {}) {
     if (!routingToolsAllowed(ctx, call.function?.name)) {
       const controls = new Set(["start_helper", "message_subagent", "approve_subagent", "ask_user", "interview", "send_poll", "done", "request_input", "read_log", "search_agent_bank", "file_text", "read_lines", "read_pages", "read_sheet", "search_file"]);
       const allowed = this.modelTools(ctx).filter(t => controls.has(t.function.name));
@@ -1920,7 +1875,7 @@ export class Resident extends DurableObject {
         if (!ctx.context) return "error: context v2 is not enabled for this turn";
         if (typeof a.query !== "string" || !a.query.trim() || a.query.length > 2000) return "error: provide a nonempty query up to 2000 characters";
         const oc = a.other_channels === true;   // HS_WALLS: General searches other channels only when asked (and allowed); recallContext ignores it when the flag is off
-        if (hsUse(this.env)) { const p = recallArgs(a, this.tz()); if (p.error) return `error: ${p.error}`; return this.recallContext(a.query, ctx, { types: p.types, range: p.range, otherChannels: oc }); }   // HS_USE: optional types, from and to
+        if (hsUse(this.env)) { const p = recallArgs(a, this.tz()); if (p.error) return `error: ${p.error}`; return this.recallContext(a.query, ctx, { range: p.range, otherChannels: oc }); }   // HS_USE: optional from and to
         return this.recallContext(a.query, ctx, { otherChannels: oc });
       }
       case "read_doc": return readDoc(a, { ...this.docFlags(), context_v2: ctx.context?.version === 2 });   // no computer
@@ -1969,7 +1924,7 @@ export class Resident extends DurableObject {
     const r0 = wt == null ? ht : ht == null ? wt : Math.min(wt, ht);   // + helper deadlines and owed results
     const lt0 = laterNext(this.sql), jt0 = this.journalNext(), bt = this.textBatchNext(), jt = jt0 == null ? bt : bt == null ? jt0 : Math.min(jt0, bt), lt = lt0 == null ? jt : jt == null ? lt0 : Math.min(lt0, jt);   // + running turns' heartbeat / due resumes (resume.js)
     const r1 = lt == null ? r0 : r0 == null ? lt : Math.min(r0, lt);   // + scheduled messages (send-later.js)
-    const hn = hsWriters(this.env) ? [this.hsRebuildNext(), this.hsOutboxNext(), this.hsImportNext(), this.hsPageNext()].filter((x) => x != null) : [];   // + the Hindsight rebuild step and the retry outbox (hindsight-rebuild.js, hindsight-writers.js)
+    const hn = hsWriters(this.env) ? [this.hsRebuildNext(), this.hsOutboxNext(), this.hsImportNext()].filter((x) => x != null) : [];   // + the Hindsight rebuild step and the retry outbox (hindsight-rebuild.js, hindsight-writers.js)
     const agentWake = agentMemoryNextWake(this); if (agentWake != null) hn.push(agentWake);
     const pollWake = nativeVoteNext(this.sql); if (pollWake != null) hn.push(pollWake);
     const fileWake = phoneFilesNext(this.sql); if (fileWake != null) hn.push(fileWake);
@@ -2075,7 +2030,7 @@ export class Resident extends DurableObject {
     try { this.textBatchRecover(); } catch (e) { console.log("text batch recover", e.message); }   // texts a deploy caught mid-gather (not awaited)
     await this.laterFireDue().catch((e) => console.log("send later alarm", e.message));   // the person's scheduled messages, before any long workflow run
     await this.pomoAlarm().catch((e) => console.log("pomodoro alarm", e.message));   // focus timer phase ends, before any long workflow run
-    if (hsWriters(this.env)) { await this.hsRebuildAlarm().catch((e) => console.log("hindsight rebuild alarm", e.message)); await this.hsOutboxAlarm().catch((e) => console.log("hindsight outbox alarm", e.message)); await this.hsImportAlarm().catch((e) => console.log("memory import alarm", e.message)); await this.hsPageAlarm().catch((e) => console.log("page refresh alarm", e.message)); }   // one rebuild step (saved before it runs), then queued retries
+    if (hsWriters(this.env)) { await this.hsRebuildAlarm().catch((e) => console.log("hindsight rebuild alarm", e.message)); await this.hsOutboxAlarm().catch((e) => console.log("hindsight outbox alarm", e.message)); await this.hsImportAlarm().catch((e) => console.log("memory import alarm", e.message)); }   // one rebuild step (saved before it runs), then queued retries
     await this.appEventsDue().catch((e) => console.log("app event run", e.message));   // one waiting app event runs its workflow (app-events.js)
     const busy = this.journaledWorkflows();   // resume.js: a run being carried on after a deploy is never started again
     const due = this.sql.exec("SELECT * FROM workflows WHERE status='active' AND on_event IS NULL AND next_run<=? AND lease_until<? ORDER BY next_run LIMIT 5", Date.now() + 1000, Date.now()).toArray().find((x) => !busy.has(x.id));
@@ -3468,6 +3423,7 @@ export class Resident extends DurableObject {
       // runTurnInner, unknown resumed parts remain readable, never guessed away.
       try { const said = JSON.parse(opts.resume.said || "[]"); if (Array.isArray(said) && said.every(x => typeof x === "string")) tc.replyState = resumedReplyState(said, Array.isArray(extra.saidMeta) ? extra.saidMeta : [], Number(extra.progressOmitted) || 0); } catch {}
     }
+    tc.otel = this.otelStart(tc, tenant, channel, opts);   // turn-trace.js: the trace id is made here, or read back for a resumed turn
     tc.stopped = new Promise((z) => { tc.stopWake = z; });   // resolves on the person's Stop (stop.js hardStop)
     if (send) tc.subs.add(send);
     if (opts.handoff) { tc.handoff = true; tc.handoffFrom = opts.handoff?.type || null; tc.handoffInfo = typeof opts.handoff === "object" ? opts.handoff : null; }   // its first message is a handed-back result, not the person's words (person-asked.js); "connect": connect-offer.js connectWriteBlock
@@ -3531,6 +3487,7 @@ export class Resident extends DurableObject {
       if(!r.fixture)this.ctx.waitUntil?.(this.notifyAfterTurn(tc, r).catch((e) => console.log("notify", e.message)));
       return r;
     } catch (e) {
+      tc.traceErr = e;
       // This object was reset (a deploy) and can't touch its storage any more: the turn isn't failing, it's being carried on by the new
       // object (resume.js). So nothing here may tell the person otherwise: no "Something went wrong" reply on the stream, no texted
       // "snag" reply, no notification. The stream just ends, and the app re-attaches to the resumed turn (chaos check 10-08: the old
@@ -3549,6 +3506,7 @@ export class Resident extends DurableObject {
       } catch (e2) { console.log("failed card", e2.message); }
       tc.finished = true; tc.emit({ t: "done", reply: visibleError, error: e.payRequired ? "payment_required" : e.message }); throw e;
     } finally {
+      this.otelEnd(tc, r, tc.traceErr);   // turn-trace.js: the root span and one send (a parked turn sends only what is finished)
       if (!tc.objectReset) this.commitTurn(tc, true);   // a parked turn keeps its card open for messages (they join the resumed turn)
       clearInterval(keep); if (limT) clearTimeout(limT); this.busy--; tc.finished = true; this.active.delete(tc.key); this._appendTurns?.delete(tc.turn); this.spendDone(tc);
       if (JOURNALED.has(kind) && !tc.objectReset) { this.journalDone(tc); this.beatDone(); }   // its heartbeat alarm goes back to what's really due (a parked turn keeps its journal)
@@ -3604,14 +3562,14 @@ export class Resident extends DurableObject {
     const additions = tc.turn ? this.sql.exec("SELECT text FROM card_events WHERE card=? AND type='msg' AND seq>1 AND consumed IS NOT NULL ORDER BY seq DESC LIMIT 8", String(tc.turn)).toArray().reverse() : [];
     return [original, ...additions.map((m) => String(m.text || "").slice(0, 2000)), query].filter(Boolean).join("\n");
   }
-  async recallContext(text, tc, { onDemand = true, at = Date.now(), otherChannels = false, types = null, range = null } = {}) {
-    const kind = "chat", turn = tc.turn, t0 = at, mmode = this.memoryMode(), useOn = hsUse(this.env);   // HS_USE (phase 4A): types, a date range, observations preferred, entities
+  async recallContext(text, tc, { onDemand = true, at = Date.now(), otherChannels = false, range = null } = {}) {
+    const kind = "chat", turn = tc.turn, t0 = at, mmode = this.memoryMode(), useOn = hsUse(this.env);   // HS_USE (phase 4A): a date range
     if (mmode === "off") return onDemand ? "Memory is disabled for this channel." : "";
     let recallNote = "", recallFailed = false, recallDown = false;
     // Own AI key: the memory search costs credits. If the balance can't cover this message's search, recall is
     // skipped for the turn (byokSkipped: its notes + the Add credits line); every part below is still reserved before it runs.
     const recallPaid = mmode === "off" || !this.env.BYOK || !(kind === "chat" || kind === "followup") || tc.abort === "hard" || await this.byokCanPay(
-      Math.ceil(hsOn(this.env) ? await this.hsRecallPrice() : 0));
+      Math.ceil(hsOn(this.env) ? this.hsRecallPrice() : 0));
     if (!recallPaid) this.byokSkipped("recall", tc);
     if (recallPaid && mmode !== "off" && (kind === "chat" || kind === "followup") && tc.abort !== "hard") {   // a resume reuses the input it built
       // The search is the person's words as they wrote them (or the query the helper chose for the recall_memory tool).
@@ -3620,22 +3578,22 @@ export class Resident extends DurableObject {
         const skipper = this.get("channel") === SKIPPER_SLUG;
         // Contacts answer from the address book (Contacts alias match: "my sister" is Dana), the same for every channel that may see the person.
         const ws = await this.archive().wsRecall(onDemand ? this.recallEntityQuery(q, tc) : q, { channel: this.get("channel"), general: skipper }).catch((e) => ({ error: e.message, pack: "", ids: [], people: [] }));
-        const tz = this.tz(), scope = (useOn && range) || questionScope(String(text), t0, tz);
-        const rangeP = useOn && range && hsOn(this.env) ? rangeRecords(this.env, this.hsBankId(), range, { types, tz }).catch(() => ({ text: "" })) : null;   // exact list: recall only ranks by date
-        // Hindsight is the memory (its own 4 arms + reranker over this channel's bank). If the box can't be reached, the helper says so: there is no local copy to search.
+        const tz = this.tz(), asked = (useOn && range) || null, scope = asked || questionScope(String(text), t0, tz);   // asked: the dates the helper chose, an exact filter; scope also holds the time words of the question, a hint in the note only
+        const rangeP = asked && hsOn(this.env) ? rangeRecords(this.env, this.hsBankId(), asked, { tz }).catch(() => ({ text: "" })) : null;   // the exact list of that period
+        // Memory (Mem0 over this channel's namespace) is the only store. If it does not answer, the helper says so: there is no local copy to search.
         let hsr = null, hsErr = null;
         const [r, xc] = await Promise.all([
-          hsOn(this.env) ? this.hsRecallPrice().then((p) => this.byokHold("hs-recall", p, tc)).then((h) => !h ? { topSim: 0 } : hsRecall(this.env, this.hsBankId(), q, { scope, now: t0, ...(useOn ? { types: types || ["observation", "world", "experience"], preferObservations: true, entities: true } : {}) }).then(async (x) => { await h.done(); hsr = x; return { topSim: x.results[0]?.scores?.final ?? 0 }; }, async (e) => { await h.done(0); hsErr = String(e.message || e).slice(0, 200); return { topSim: 0 }; }))
+          hsOn(this.env) ? this.byokHold("hs-recall", this.hsRecallPrice(), tc).then((h) => !h ? { topSim: 0 } : hsRecall(this.env, this.hsBankId(), q, { scope: asked }).then(async (x) => { await h.done(); hsr = x; return { topSim: x.results[0]?.scores?.final ?? 0 }; }, async (e) => { await h.done(0); hsErr = String(e.message || e).slice(0, 200); return { topSim: 0 }; }))
             : { topSim: 0 },   // no Hindsight configured: only Contacts and the work log can answer
-          skipper ? this.crossChannelFor(q, scope, tc, { onDemand, otherChannels }) : null]);
+          skipper ? this.crossChannelFor(q, asked, tc, { onDemand, otherChannels }) : null]);
         if (hsErr) { recallFailed = true; recallDown = true; }   // no local fallback: say so
         const pk = hsr ? packHs(hsr.results, { tz, localDay }) : "", wpk = ws.pack || "", xpk = xc?.pack || "";
-        const rangePk = rangeP ? (await rangeP).text || "" : "", ents = hsr?.entities ? entityNames(hsr.entities) : [];
+        const rangePk = rangeP ? (await rangeP).text || "" : "";
         const checks = [scope ? `Time asked about: ${scope.label} (${tz}). Prefer records from then.` : "",
           !pk && !wpk && !xpk && !rangePk ? "Memory found nothing related to this message." : ""].filter(Boolean).join(" ");
-        this.mem.receipt({ turn, session: tc.session, mode: hsr ? `${mmode}:hindsight` : hsErr ? `${mmode}:hindsight-unavailable` : mmode, query: q, ids: [...(hsr ? hsr.results.map((x) => `hs:${x.id}`) : []), ...(ws.people || []).map((p) => `person:${p.id}`), ...(xc?.ids || []).map((x) => `ch:${x}`), ...(scope ? [`scope:${scope.label}`] : [])], topSim: r.topSim, ms: Date.now() - m0, chars: pk.length + wpk.length + xpk.length, error: hsErr || ws.error || xc?.error });
+        this.mem.receipt({ turn, session: tc.session, mode: hsr ? `${mmode}:memory` : hsErr ? `${mmode}:memory-unavailable` : mmode, query: q, ids: [...(hsr ? hsr.results.map((x) => `hs:${x.id}`) : []), ...(ws.people || []).map((p) => `person:${p.id}`), ...(xc?.ids || []).map((x) => `ch:${x}`), ...(scope ? [`scope:${scope.label}`] : [])], topSim: r.topSim, ms: Date.now() - m0, chars: pk.length + wpk.length + xpk.length, error: hsErr || ws.error || xc?.error });
         const lk = relevantLookups(this.sql, String(text), { now: t0, tz });   // worklog.js: up to 3 related earlier lookups, one line each
-        if (mmode === "on" && (pk || wpk || xpk || rangePk || checks || lk || xc?.note)) recallNote = `\n\n${PACK_HEADER}${checks ? `\n(Memory check: ${checks})` : ""}${wpk ? `\n${WS_HEADER}\n${wpk}` : ""}${lk ? `\n${LOOKUPS_HEADER}\n${lk}` : ""}${pk ? `\n(This channel:)\n${pk}` : ""}${rangePk ? `\n(Records in the date range you asked for, the exact list from memory:)\n${rangePk}` : ""}${ents.length ? `\n(Names in these records: ${ents.join(", ")})` : ""}${xpk ? `\n(From their other channels. Here in General you can see across all their channels. Say which channel a fact came from:)\n${xpk}` : ""}${xc?.note ? `\n(Other channels: ${xc.note})` : ""}`;
+        if (mmode === "on" && (pk || wpk || xpk || rangePk || checks || lk || xc?.note)) recallNote = `\n\n${PACK_HEADER}${checks ? `\n(Memory check: ${checks})` : ""}${wpk ? `\n${WS_HEADER}\n${wpk}` : ""}${lk ? `\n${LOOKUPS_HEADER}\n${lk}` : ""}${pk ? `\n(This channel:)\n${pk}` : ""}${rangePk ? `\n(Records in the date range you asked for, the exact list from memory:)\n${rangePk}` : ""}${xpk ? `\n(From their other channels. Here in General you can see across all their channels. Say which channel a fact came from:)\n${xpk}` : ""}${xc?.note ? `\n(Other channels: ${xc.note})` : ""}`;
         if (recallDown) recallNote = `\n\n${MEMORY_UNAVAILABLE_NOTE}${wpk ? `\n${WS_HEADER}\n${wpk}` : ""}`;   // Contacts still answer, they are not memory
         tc.memNote = recallNote;   // the ask-first guard reads it ("memory says which account")
       } catch (e) { recallFailed = true; recallDown = true; this.mem.receipt({ turn, session: tc.session, mode: mmode, query: q, error: String(e.message || e).slice(0, 300) }); }
@@ -3655,6 +3613,7 @@ export class Resident extends DurableObject {
     tc.limits = this._limits = await limitsFor(this.env);
     const maxSteps = opts.max_steps || (kind === "chat" && compact ? tc.limits.chatSteps : tc.limits.otherTurnSteps);
     this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId);
+    if (kind === "chat") this.ctx.waitUntil?.(this.hsHydrate().catch((e) => console.log("memory hydrate", String(e?.message || e).slice(0, 120))));   // the first use of a channel makes its memory from its records (hindsight-rebuild.js)
     if(kind==="chat"&&tc.inputReply&&!this.session(tc.session))throw Object.assign(new Error("The original task was deleted before this answer could run."),{status:410});
     // HS_USE (phase 4A, DESIGN 6.2, dev test arms A, B and B2): the automatic memory lookup starts as soon as the channel is known, before the settings reads, the
     // attachments and the routing decision, so its time overlaps theirs. The turn waits for it (memUseJoin) where its context is built, at most ARM_DEADLINE_MS after this start.
@@ -3861,6 +3820,7 @@ export class Resident extends DurableObject {
       });
     }
     if (rs?.stats) Object.assign(stats, rs.stats, { models: [...(rs.stats.models || [])] });
+    if (tc.otel && rs?.stats) tc.otel.stepSeq = Math.max(tc.otel.stepSeq, Number(rs.stats.steps) || 0);
     if (rs) { said.push(...rs.said); saidMeta.push(...(rs.saidMeta || rs.said.map(() => null)));   // old metadata remains unknown (keep)
       if (rs.phase === "tools") stats.tool_calls += rs.lastCalls || 0; }
     await this.spendRefresh(tc, opts); // resumeState restored counters/old pause; apply the current preference last
@@ -4021,7 +3981,7 @@ export class Resident extends DurableObject {
           if (batch && call.function.name !== "app_run") await settle();
           // A new message arrived: the calls not started yet are skipped (recorded), so the helper reads it first.
           if (this.hasSteers(tc) || this.helperQueued(tc)) {
-            stepSkipped(this.sql, tc, { tool: call.function.name, args: sp.args, title: sp.title, call_id: call.id });
+            stepSkipped(this.sql, tc, { tool: call.function.name, args: sp.args, title: sp.title, call_id: call.id }); tc.otel?.tool(call.function.name, Date.now(), { ok: false }, undefined, true);
             const toolMsg = { role: "tool", tool_call_id: call.id, content: SKIP_TEXT }; if (wm) wmFull.set(call.id, SKIP_TEXT);
             messages.push(toolMsg); this.save(turn, toolMsg); continue;
           }
@@ -4375,9 +4335,7 @@ export class Resident extends DurableObject {
   async removeSession(id) {
     if (!this.session(id) || id === this.getRaw("default_session") || this.textsSessions().includes(id)) return { error: "That task can't be removed." };
     const phoneFiles = dropPhoneFiles(this,id);
-    const memoryRefresh = this.hsCancelConversationRefresh?.(id);
     for(const tc of this.active.values())if(tc.session===id)tc.abort="hard";
-    await memoryRefresh;
     await phoneFiles;
     await dropNativePolls(this,id);
     for(const h of this.sql.exec("SELECT id FROM helpers WHERE session=? AND dynamic_routing=1 AND status IN ('running','awaiting_review','waiting_input')",String(id)).toArray())await this.helperStop(id,h.id);
@@ -4903,9 +4861,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
   async reset(session = null) {
     const id = session || this.defaultSession();
     const phoneFiles = dropPhoneFiles(this,id);
-    const memoryRefresh = this.hsCancelConversationRefresh?.(id);
     for(const tc of this.active.values())if(tc.session===id)tc.abort="hard";
-    await memoryRefresh;
     await phoneFiles;
     await dropNativePolls(this,id);
     for(const h of this.sql.exec("SELECT id FROM helpers WHERE session=? AND dynamic_routing=1 AND status IN ('running','awaiting_review','waiting_input')",String(id)).toArray())await this.helperStop(id,h.id);
@@ -4942,6 +4898,7 @@ rebuildMix(Resident);   // hindsight-rebuild.js: hsRebuild(cmd), the resumable r
 importMix(Resident);   // memory-import.js: hsImport(cmd), the resumable import from a registered, consented source (HS_ENVELOPE)
 stopMix(Resident);
 spendMix(Resident);
+traceMix(Resident, cacheKey);   // turn-trace.js: span building and sending (never changes a turn)
 resumeMix(Resident);   // resume.js: resumable chat turns (the journal, recovery, resume)
 installSnapshotRpc(Resident, "Resident", (self) => self.active?.size > 0);
 nativeMix(Resident);

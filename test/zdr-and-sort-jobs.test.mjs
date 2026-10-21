@@ -22,7 +22,7 @@ const sendFor = async (settings, jobId, kind, max_tokens = 100) => {
 
 test("only chat and Cloudflare-only kinds may leave zdr off", () => {
   // chat and recovery follow the account's privacy setting instead. The others run only on Cloudflare (no OpenRouter request exists).
-  const exempt = new Set(["chat", "recovery", "speech_cloudflare", "speech_live", "workers_ai", "look", "search"]);
+  const exempt = new Set(["chat", "recovery", "speech_cloudflare", "speech_live", "workers_ai", "look", "search", "embedding_memory"]);
   for (const [name, kind] of Object.entries(JOB_KINDS)) assert.equal(!!kind.zdr, !exempt.has(name), `job kind ${name}: zdr is ${!!kind.zdr}`);
   for (const kind of ["vision", "embedding_files"]) assert.equal(JOB_KINDS[kind].zdr, true, kind);
 });

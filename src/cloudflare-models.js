@@ -1,5 +1,6 @@
 // Native Workers AI discovery and transport. IDs never become provider URLs.
 import { cappedResponseJson } from "./bounded-response.js";
+import { aigMeta } from "./aig-meta.js";
 import { normalizePrivacy, privacyOf, PrivacyBlocked, ENDPOINTS, endpointOk } from "./privacy.js";
 export const isCloudflareModel = (id) => typeof id === "string" && /^@(cf|hf)\/[a-zA-Z0-9][a-zA-Z0-9._-]*\/[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(id);
 const CF_JSON_BYTES = 8 * 1024 * 1024;   // the most one non streamed model answer may hold
@@ -21,7 +22,7 @@ export function assessCloudflareModels(models) {
     const context = Number(p.context_window) || 0, tools = yes(p.function_calling), vision = yes(p.vision), speech = task === "Automatic Speech Recognition" && /\/whisper-large-v3-turbo$/.test(m.name);
     const embedding = task === "Text Embeddings", decision = /^@cf\/cloudflare\/clef(?:-flash)?$/.test(m.name);
     const chat = task === "Text Generation" && !decision && tools && context > 0 && Number.isFinite(prompt) && Number.isFinite(completion) && prompt <= 3 && completion <= 15;
-    const kinds = decision ? ["workers_decider", "decider"] : [...(chat ? ["chat", "chore", "workers_ai", ...(vision ? ["vision"] : [])] : []), ...(speech ? ["speech", "speech_cloudflare"] : []), ...(embedding ? ["embedding_files"] : [])];
+    const kinds = decision ? ["workers_decider", "decider"] : [...(chat ? ["chat", "chore", "workers_ai", ...(vision ? ["vision"] : [])] : []), ...(speech ? ["speech", "speech_cloudflare"] : []), ...(embedding ? ["embedding_files", "embedding_memory"] : [])];
     const reasons = []; if (!kinds.length) reasons.push("No supported request adapter with verified capabilities"); if (!levels.length) reasons.push("Partner data policy has not been verified");
     return { id: m.name, name: m.name, source: "CF", kinds, eligible: !reasons.length, reasons, efforts: ["default"], default_effort: "default", levels, hosts: ["cloudflare"], context_length: context || 8192,
       max_output: Math.min(Number(p.max_output_tokens) || 4096, context || 8192), input_modalities: ["text", ...(vision ? ["image", "video"] : [])],
@@ -59,7 +60,7 @@ export function cloudflarePrivacyNote(model, level, catalog = null) {
   if (levels.includes(normalizePrivacy(level))) return null;
   return levels.length ? "Cloudflare promises no training, not zero retention. It runs at this level as it does today." : "Cloudflare has no privacy promise for this model.";
 }
-export const cfOptions = (env, meta = {}) => ({ ...(env.AIG_ID ? { gateway: { id: env.AIG_ID, collectLog: false, skipCache: true } } : {}),
+export const cfOptions = (env, meta = {}) => ({ ...(env.AIG_ID ? { gateway: { id: env.AIG_ID, collectLog: false, skipCache: true, metadata: aigMeta(env, meta) } } : {}),
   extraHeaders: { "cf-aig-no-wholesale": "true", "cf-aig-collect-log": "false", "cf-aig-collect-log-payload": "false", "cf-aig-skip-cache": "true" } });
 export async function abortable(promise, signal) {
   if (!signal) return promise;

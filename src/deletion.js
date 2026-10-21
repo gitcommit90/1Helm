@@ -11,8 +11,8 @@
 //     land after we deleted it; each is deleted now and re-checked at +2 min, +10 min, +30 min and +2 h.
 // Exported for the billing agent (cancel at period end → delete): deleteAccount(env, tenantId, { reason }), deleteChannel(env,
 // tenantId, slug), deleteSession(env, tenantId, slug, sessionId).
-import { hsOn, bankId, forgetChannel, forgetTenant, forgetDocument } from "./hindsight.js";
-import { forgetAgentBank, forgetAgentTenant, agentSessionDocuments, cancelAgentOperations } from "./ee/index.js";
+import { hsOn, bankId, forgetChannel, forgetTenant, forgetDocument } from "./mem0.js";
+import { forgetAgentBank, agentSessionDocuments } from "./ee/index.js";
 import { disconnectAllManaged } from "./ee/index.js";
 import { selfSignOut } from "./ee/index.js";
 import { linkDisconnect } from "./ee/index.js";
@@ -165,21 +165,20 @@ export async function deleteSession(env, tenantId, slug, sessionId, { reason = "
     const inv = await R.sessionInventory(sid);
     for (let i = 1; i <= Math.min(lnFloor, 2000); i++) if (!inv.hsDocs.includes(`live:${sid}:s${i}`)) inv.hsDocs.push(`live:${sid}:s${i}`);
     job.meta.counts ||= {};
-    job.meta.counts.hindsight_docs = (job.meta.counts.hindsight_docs || 0) + inv.hsDocs.length;
+    job.meta.counts.memory_docs = (job.meta.counts.memory_docs || 0) + inv.hsDocs.length;
     await forgetMemoryDocs(env, tenantId, slug, inv.hsDocs);
     if (hsOn(env)) {
-      const saved=inv.agentMemory||{documents:[],operation_ids:[]};
-      const agent=await cancelAgentOperations(env,tenantId,slug,saved.operation_ids);
+      const saved=inv.agentMemory||{documents:[]};
       const remote=await agentSessionDocuments(env,tenantId,slug,sid);
-      await hsForgetDocs(env,agent.bank,[...new Set([...(saved.documents||[]),...remote.documents])]);
+      await hsForgetDocs(env,remote.bank,[...new Set([...(saved.documents||[]),...remote.documents])]);
     }
     const d1 = await deleteSessionD1(env, tenantId, slug, sid, inv);
     // 2. The chat itself, inside the channel's object (files out of R2 first).
     const r = await R.deleteSessionData(sid);
-    if (r.hsFileDocs?.length) { job.meta.counts.hindsight_docs += r.hsFileDocs.length; await forgetMemoryDocs(env, tenantId, slug, r.hsFileDocs); }   // HS_WRITERS: files that went with the chat
+    if (r.hsFileDocs?.length) { job.meta.counts.memory_docs += r.hsFileDocs.length; await forgetMemoryDocs(env, tenantId, slug, r.hsFileDocs); }   // HS_WRITERS: files that went with the chat
     // 3. A task started from a plan in this chat, in another channel, loses its excerpt and its link back here.
     try { for (const c of await archive(env, tenantId).channels()) { const s = c.slug || c.name; if (s !== slug) await resident(env, tenantId, s).forgetOriginOf(sid); } } catch (e) { console.log("forget origin", e.message); }
-    const counts = { ...numbersOnly(r.counts), ...d1, hindsight_docs: job.meta.counts.hindsight_docs, kept_files: r.kept.length, removed_from_computer: r.removed_from_computer };
+    const counts = { ...numbersOnly(r.counts), ...d1, memory_docs: job.meta.counts.memory_docs, kept_files: r.kept.length, removed_from_computer: r.removed_from_computer };
     if (r.live) { job.meta.counts = counts; await jobSave(env, job, "a turn is still finishing"); return { ok: true, pending: true, kept: r.kept, counts }; }
     await jobDone(env, job, "session", tenantId, `${slug}/${sid}`, counts);
     return { ok: true, existed: r.existed || inv.exists, kept: r.kept, counts };
@@ -306,7 +305,7 @@ export async function deleteAccount(env, tenantId, { reason = "person" } = {}) {
       m.channels = [...list].map(([slug, cid]) => ({ slug, cid })); await jobSave(env, job);
     }
     for (const c of m.channels) await wipeChannelEverywhere(env, job, tenantId, c.slug, null, `ch:${c.slug}:`);   // Archive rows go with the Archive below
-    await step(env, job, "hindsight", async () => { if(!hsOn(env))return 0;const human=await forgetTenant(env,tenantId),agent=await forgetAgentTenant(env,tenantId);return human.deleted+agent.deleted; });
+    await step(env, job, "hindsight", async () => { if(!hsOn(env))return 0;return (await forgetTenant(env,tenantId)).deleted; });   // one prefix: the channels and the raw agent records
     await step(env, job, "archive", () => archive(env, tenantId).wipeArchive());
     await step(env, job, "ledger", () => env.LEDGER.get(env.LEDGER.idFromName(`tenant:${tenantId}`)).wipe());
     await step(env, job, "computer", () => env.COMPUTER ? env.COMPUTER.get(env.COMPUTER.idFromName(`computer:${tenantId}`)).wipe() : 0);

@@ -13,7 +13,7 @@
 import { hsEnvelope } from "./hs-flag.js";
 import { withEnvelope, makeEnvelope, checkItems, resolvePeople } from "./memory-envelope.js";
 import { sourceRow, consented, sourceImported, setSourceStatus, dedupeSeenAll, dedupeForgetSource, geocodeCached, tombstoned, clearTombstones } from "./memory-sources.js";
-import { listDocuments, forgetDocument } from "./hindsight.js";
+import { listDocuments } from "./mem0.js";
 import { itemsNano } from "./hindsight-writers.js";
 import { BYOK_MARKUP } from "./byok-meter.js";
 import { offsetMin } from "./adapters/media.js";
@@ -165,12 +165,7 @@ export const importMethods = {
   },
   // Delete and forget a whole source in this channel's bank.
   async hsForgetSource(source) {
-    const bank = this.hsBankId(), prefix = `imp:${source}:`, docs = [];
-    for (let off = 0; off < 100000; off += 100) {
-      const r = await listDocuments(this.env, bank, { limit: 100, offset: off, q: prefix }).catch((e) => (e.status === 404 ? { items: [] } : Promise.reject(e)));
-      const page = (r?.items || []).map((d) => d.id).filter((id) => String(id).startsWith(prefix)); docs.push(...page);
-      if ((r?.items || []).length < 100) break;
-    }
+    const docs = (await listDocuments(this.env, this.hsBankId(), { limit: 100000, q: `imp:${source}:` })).map((d) => d.id);
     const s = this.hsImp(source); if (s.status === "running") { s.status = "paused"; this.hsImpSave(s); }
     const dropped = await this.hsDropDocs(docs, { tombstone: false });   // deletes now and queues the delayed re-deletes (hs_forget), and drops queued writes. No tombstones: a new consented import of the source may bring it back.
     await dedupeForgetSource(this.env, this.get("tenant"), source); await setSourceStatus(this.env, this.get("tenant"), source, "forgotten");

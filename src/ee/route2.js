@@ -118,13 +118,14 @@ export function categoryOf(a) {
 }
 
 // One decider call, three questions. Never throws: { p, category, unmet, cost, ms, model, error }.
-export async function jevAsk(env, state, { fetchImpl = globalThis.fetch, timeoutMs, meta = {} } = {}) {
+// questionDefs: replaces the saved routing questions (the dev decider evaluation, decider-eval.js, tries other wording through the same call).
+export async function jevAsk(env, state, { fetchImpl = globalThis.fetch, timeoutMs, meta = {}, questionDefs = null } = {}) {
   const t0 = Date.now(), ac = new AbortController(); let timer = null;
   try {
     env = await modelSettingsEnv(env);
     if (timeoutMs === undefined) timeoutMs = jobTimeoutMs(env.MODEL_SETTINGS, "decider");   // the saved timeout of the decider job; null means none
     if (timeoutMs) timer = setTimeout(() => ac.abort(Object.assign(new Error("timeout"), { name: "TimeoutError" })), timeoutMs);
-    const { questions, localAnswers } = splitChoiceQuestions(routingQuestions(env, state));
+    const { questions, localAnswers } = splitChoiceQuestions(questionDefs || routingQuestions(env, state));
     if (!Object.keys(questions).length) return { p: null, category: routedCategory(localAnswers.category, env), steer: localAnswers.steer?.choice || "none", answers: localAnswers,
       modelAnswers: null, localAnswers, unmet: null, cost: 0, ms: Date.now() - t0, model: null };
     if (!usesSystemone(env.MODEL_SETTINGS, "decider") || jobSetting(env.MODEL_SETTINGS, "decider").fallbacks?.length) {   // any other chat model answers the same questions as strict JSON (text-decision.js)
@@ -132,16 +133,16 @@ export async function jevAsk(env, state, { fetchImpl = globalThis.fetch, timeout
       if (a.error && !a.answers) return { p: null, cost: Number(a.nano || 0) / 1e9, ms: a.ms, error: `decider: ${a.error}` };
       const answers = resolveChoiceAnswers(a.answers, localAnswers), category = routedCategory(answers?.category, env);
       return { p: answers?.is_task?.noul ?? null, category, steer: answers?.steer?.choice || "none", answers, modelAnswers: a.answers, localAnswers,
-        unmet: answers?.unmet?.noul ?? null, cost: Number(a.nano || 0) / 1e9, ms: a.ms, model: a.model || null, ...(category ? {} : { error: "decider: no category" }) };
+        unmet: answers?.unmet?.noul ?? null, cost: Number(a.nano || 0) / 1e9, ms: a.ms, model: a.model || null, provider: a.provider || null, ...(category ? {} : { error: "decider: no category" }) };
     }
-    const r = await dispatch(env, "decider", jevBody(state, env), { signal: ac.signal, meta });
+    const r = await dispatch(env, "decider", { state, questions }, { signal: ac.signal, meta });
     const j = await r.json().catch(() => null);
     if (!r.ok || !j) return { p: null, cost: 0, ms: Date.now() - t0, error: `decider ${r.status}: ${JSON.stringify(j?.error || j || "").slice(0, 160)}` };
     const answers = resolveChoiceAnswers(j.answers, localAnswers), p = answers?.is_task?.noul, u = answers?.unmet?.noul, category = routedCategory(answers?.category, env);
     // Resolving a category locally must not hide an empty provider answer.
     const noAnswers = Object.keys(localAnswers).length && !Object.keys(questions).some(name => j.answers?.[name] !== undefined);
     return { p: typeof p === "number" ? p : null, category, steer: answers?.steer?.choice || "none", answers, modelAnswers: j.answers, localAnswers,
-      unmet: typeof u === "number" ? u : null, cost: Number(j.usage?.cost) || 0, ms: Date.now() - t0, model: j.model || null,
+      unmet: typeof u === "number" ? u : null, cost: Number(j.usage?.cost) || 0, ms: Date.now() - t0, model: j.model || null, provider: typeof j.provider === "string" ? j.provider : null, usage: j.usage || null,
       ...(noAnswers ? { error: "decider: no answers" } : category ? {} : { error: "decider: no category" }) };
   } catch (e) { return { p: null, cost: 0, ms: Date.now() - t0, error: `decider: ${String(e?.name === "TimeoutError" || ac.signal.aborted ? "timeout" : e?.message || e).slice(0, 160)}` }; }
   finally { clearTimeout(timer); }
@@ -203,7 +204,7 @@ export function setTurnRoute(R, tc, route) { R._route = route; if (tc) tc.route 
 const BROWSER_BACK_RE = /^I'm done in the browser\b/i;
 // Returns the decision for turn stats; never throws (any failure → the task's category, else general).
 export async function routeTwoTurn(R, tc, { kind, text, hist, stats, audioContext = tc }) {
-  let d;
+  let d; const otelStart = Date.now();
   const env = await modelSettingsEnv(R.env);   // unreadable settings stop the turn here, with a clear error, before anything is sent
   const tenant = R.get?.("tenant"), level = await privacyOf(env, tenant), prevCategory = sessionCategory(R, tc?.session);
   if (audioContext?.audioSources?.length && audioContext.abort === "hard") throw Object.assign(new Error("The recording's task was stopped."), { code: "audio_source_removed", audioReason: "The recording's task was stopped." });
@@ -219,6 +220,7 @@ export async function routeTwoTurn(R, tc, { kind, text, hist, stats, audioContex
       if (w) d.route.steer = w.id;
     }
   } catch {}
+  try { R.otelRouting?.(tc, d.jev, otelStart); } catch {}   // turn-trace.js: the decider as a generation with its model and cost (never text)
   setTurnRoute(R, tc, d.route);
   saveSessionCategory(R, tc?.session, d.route.category);
   if (stats) stats.route = { label: d.route.label, category: d.route.category, level, p: d.jev?.p ?? null, unmet: d.jev?.unmet ?? null, ms: d.jev?.ms ?? null, error: d.jev?.error || null, ...(dynamicRoutingOn(env) ? { answers: d.jev?.answers || null, steer: d.route.steer || null, categoryTitle: d.route.categoryTitle, settingsRevision: env.MODEL_SETTINGS_REVISION || 0, primaryChain: d.route.chain, workerChain: d.route.workerChain } : {}) };

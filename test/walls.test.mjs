@@ -138,29 +138,29 @@ env.HS_WALLS = "on";
   assert.equal(calls.cross, 1); assert.match(no, /NOT ALLOWED/); assert.doesNotMatch(no, /Kyoto hotel is booked/);
   ok("recall_memory in General: without other_channels it says it searched General only; with it the card comes first and a refusal returns no other channel's text");
 }
-{ // phase 4A and 4B together: HS_USE (types, range) and HS_WALLS (other_channels gated) each keep their own behavior, on or off
+{ // phase 4A and 4B together: HS_USE (range) and HS_WALLS (other_channels gated) each keep their own behavior, on or off
   const rc = RG.recallContext.bind(RG), seenOpts = []; RG.recallContext = (q, t, o) => { seenOpts.push(o); return rc(q, t, o); };
   const tools = () => RG.availableTools({ context: { version: 2 } }).find((x) => x.function.name === "recall_memory").function.parameters.properties;
   const had = { u: env.HS_USE, f: env.HS_FOUNDATIONS }; env.HS_FOUNDATIONS = "on";
   try {
     env.HS_WALLS = "on"; env.HS_USE = "on"; reset(); seenOpts.length = 0;
-    assert.ok(tools().other_channels && tools().types && tools().from, "both flags on: the tool has other_channels, types and from");
+    assert.ok(tools().other_channels && tools().from, "both flags on: the tool has other_channels and from");
   assert.ok(!RG.availableTools({ context: { version: 2 } }).some((x) => x.function.name === "correct_memory"), "correct_memory is gone");
-    const tc = turn(); const p = RG.localTool("recall_memory", { query: "the Kyoto hotel", types: ["observation"], from: "2026-10-01", to: "2026-10-09", other_channels: true }, tc);
+    const tc = turn(); const p = RG.localTool("recall_memory", { query: "the Kyoto hotel", from: "2026-10-01", to: "2026-10-09", other_channels: true }, tc);
     await until(() => asked(tc)); assert.equal(calls.cross, 0, "both on: nothing in other channels is read before the answer"); await answer(tc, "once"); const out = await p;
     assert.equal(calls.cross, 1); assert.match(out, /Kyoto hotel is booked/);
-    assert.deepEqual(seenOpts[0].types, ["observation"]); assert.equal(seenOpts[0].otherChannels, true); assert.ok(seenOpts[0].range, "the date range reached recallContext");
-    const tc1 = turn(); seenOpts.length = 0; reset(); const own = await RG.localTool("recall_memory", { query: "the Kyoto hotel", types: ["world"] }, tc1);
-    noCard(tc1); assert.equal(calls.cross, 0); assert.deepEqual(seenOpts[0].types, ["world"]); assert.equal(seenOpts[0].otherChannels, false); assert.match(own, /General's own memory only/);
-    env.HS_USE = "off"; assert.ok(tools().other_channels && !tools().types, "HS_USE off, HS_WALLS on: other_channels only");
+    assert.equal(seenOpts[0].otherChannels, true); assert.ok(seenOpts[0].range, "the date range reached recallContext");
+    const tc1 = turn(); seenOpts.length = 0; reset(); const own = await RG.localTool("recall_memory", { query: "the Kyoto hotel" }, tc1);
+    noCard(tc1); assert.equal(calls.cross, 0); assert.equal(seenOpts[0].otherChannels, false); assert.match(own, /General's own memory only/);
+    env.HS_USE = "off"; assert.ok(tools().other_channels && !tools().from, "HS_USE off, HS_WALLS on: other_channels only");
     assert.ok(!RG.availableTools({ context: { version: 2 } }).some((x) => x.function.name === "correct_memory"));
-    seenOpts.length = 0; reset(); const tc2 = turn(); await RG.localTool("recall_memory", { query: "the Kyoto hotel" }, tc2); noCard(tc2); assert.equal(calls.cross, 0); assert.equal(seenOpts[0].types, undefined);
-    env.HS_USE = "on"; env.HS_WALLS = "off"; assert.ok(!tools().other_channels && tools().types, "HS_WALLS off, HS_USE on: types only");
-    reset(); seenOpts.length = 0; const tc3 = turn(); const all = await RG.localTool("recall_memory", { query: "the Kyoto hotel", types: ["world"] }, tc3);
-    noCard(tc3); assert.equal(calls.cross, 1, "HS_WALLS off: General searches every channel as before"); assert.match(all, /Kyoto hotel is booked/); assert.deepEqual(seenOpts[0].types, ["world"]);
-    env.HS_USE = "off"; assert.ok(!tools().other_channels && !tools().types, "both off: the plain tool");
+    seenOpts.length = 0; reset(); const tc2 = turn(); await RG.localTool("recall_memory", { query: "the Kyoto hotel" }, tc2); noCard(tc2); assert.equal(calls.cross, 0); assert.equal(seenOpts[0].range, undefined);
+    env.HS_USE = "on"; env.HS_WALLS = "off"; assert.ok(!tools().other_channels && tools().from, "HS_WALLS off, HS_USE on: from only");
+    reset(); seenOpts.length = 0; const tc3 = turn(); const all = await RG.localTool("recall_memory", { query: "the Kyoto hotel" }, tc3);
+    noCard(tc3); assert.equal(calls.cross, 1, "HS_WALLS off: General searches every channel as before"); assert.match(all, /Kyoto hotel is booked/);
+    env.HS_USE = "off"; assert.ok(!tools().other_channels && !tools().from, "both off: the plain tool");
   } finally { RG.recallContext = rc; env.HS_WALLS = "on"; if (had.u === undefined) delete env.HS_USE; else env.HS_USE = had.u; if (had.f === undefined) delete env.HS_FOUNDATIONS; else env.HS_FOUNDATIONS = had.f; }
-  ok("recall_memory with HS_USE and HS_WALLS: types and range pass through and other_channels is gated by the card; each flag alone keeps its own behavior");
+  ok("recall_memory with HS_USE and HS_WALLS: the date range passes through and other_channels is gated by the card; each flag alone keeps its own behavior");
 }
 { // writes into another channel need no card
   reset(); const tc = turn(); const out = await RG.localTool("remember", { about: "me", fact: "Sam wants a quiet Kyoto hotel near the station.", channel: "trip" }, tc); await settle();

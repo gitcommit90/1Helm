@@ -1,31 +1,30 @@
 import { boundedJson } from "./bounded-body.js";
-// The Notebook as pages (Memory Overhaul phase 6, the design notes). Each page is a Hindsight mental model of the
-// channel's own bank (a template model that refreshes itself after consolidation and at most once per 1,800 seconds). 1HC only reads it, and
-// saves the person's edits as Notebook notes (retained as note:<id>), so the edit is a memory that every later refresh reads.
+// The Notebook as pages (Memory Overhaul phase 6, the design notes). Each page is the facts of one or more categories of the channel's own
+// Mem0 memory, newest first, written as a list with no model call (the extraction gives each fact its category). 1HC saves the person's edits as Notebook notes (retained
+// as note:<id>), so the edit is a memory that every later search reads.
 // Routes (Worker, current channel only, same sign-in as /api/notebook/<channel>):
 //   GET  /api/notebook/<channel>/pages            the tree, the person, the facts box and every page ({ markdown, updated_at, sources, state }; state is ready, building or empty)
 //   GET  /api/notebook/<channel>/pages/<id>       one page as Hindsight wrote it (a page never built asks for one refresh, at most every 1,800 seconds)
 //   GET  /api/notebook/<channel>/photo            the person's own photo, original bytes (any channel: it is the account's, kept with General); POST (raw image body) sets or replaces it, POST .../photo/delete removes it
 //   POST /api/notebook/<channel>/pages/<id>/edit  { section: heading|null, text } -> { ok, note_id }
-import { bankId, mentalModelPage, mentalModelsMeta, freshStats } from "./hindsight.js";
+import { bankId, factsOf as memoryFacts } from "./mem0.js";
 import { hasSecret, SECRET_NOTE } from "./secrets-scrub.js";
 import { templateKind } from "./hindsight-template.js";
 import { placeOf, tzName } from "./interview.js";
 
-// page id -> the Hindsight mental model that answers it, and the Notebook section its edits are filed under.
-// about, routines and what's going on (and brief and open items) reuse the models the prompt already reads, so no model is duplicated.
+// page id -> the fact categories that answer it, and the Notebook section its edits are filed under.
 export const PAGES = {
   general: [
-    { id: "about", title: (f) => `About ${f}`, model: "profile", sec: "about" },
-    { id: "people", title: () => "People", model: "people", sec: "people" },
-    { id: "places", title: () => "Places", model: "places", sec: "places" },
-    { id: "routines", title: () => "Routines", model: "routines", sec: "how" },
-    { id: "whats-going-on", title: () => "What's going on", model: "active-tasks", sec: "now" },
+    { id: "about", title: (f) => `About ${f}`, categories: ["identity", "preference", "rule", "other"], sec: "about" },
+    { id: "people", title: () => "People", categories: ["person"], sec: "people" },
+    { id: "places", title: () => "Places", categories: ["place"], sec: "places" },
+    { id: "routines", title: () => "Routines", categories: ["routine"], sec: "how" },
+    { id: "whats-going-on", title: () => "What's going on", categories: ["project"], sec: "now" },
   ],
   channel: [
-    { id: "brief", title: () => "Brief", model: "brief", sec: "ov" },
-    { id: "decisions", title: () => "Decisions", model: "decisions", sec: "ov" },
-    { id: "open-items", title: () => "Open items", model: "active-tasks", sec: "now" },
+    { id: "brief", title: () => "Brief", categories: ["identity", "preference", "rule", "other"], sec: "ov" },
+    { id: "decisions", title: () => "Decisions", categories: ["decision"], sec: "ov" },
+    { id: "open-items", title: () => "Open items", categories: ["project"], sec: "now" },
   ],
 };
 // The photo upload: the types a browser shows as an image, checked by the bytes themselves (not the name or the header), and the size limit.
@@ -41,9 +40,9 @@ export const pagesFor = (slug) => PAGES[templateKind(slug)];
 const ms = (iso) => { const t = Date.parse(iso || ""); return Number.isFinite(t) ? t : null; };
 const J = (b, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
-export function treeOf(slug, first, meta, notesAt) {
-  const by = new Map((meta || []).map((m) => [m.id, m]));
-  return [...pagesFor(slug).map((p) => { const m = by.get(p.model); return { id: p.id, title: p.title(first || "you"), group: "pages", kind: "page", updated_at: m?.last_refreshed_at && m.content !== "" ? ms(m.last_refreshed_at) : null }; }),
+// updated: { pageId: ms of its newest fact }.
+export function treeOf(slug, first, updated, notesAt) {
+  return [...pagesFor(slug).map((p) => ({ id: p.id, title: p.title(first || "you"), group: "pages", kind: "page", updated_at: updated?.[p.id] || null })),
     { id: NOTES_PAGE.id, title: NOTES_PAGE.title, group: "more", kind: "notes", updated_at: notesAt || null }];
 }
 
@@ -62,52 +61,28 @@ export function factsOf({ interview, people = [] }) {
 }
 const jp = (s, d) => { try { return typeof s === "string" ? JSON.parse(s) : s ?? d; } catch { return d; } };
 
-// What the page was built from, as Hindsight 1.0.0 stores it: reflect_response.based_on is an object keyed by fact type ("world", "experience",
-// "opinion", "observation"), each a list of { id, text, type, context }. "mental-models" and "directives" are not facts, so they are left out.
-// The stored facts carry no document id, so a source is an observation or a memory, never a named note.
-const FACT_TYPES = ["observation", "world", "experience", "opinion"];
-export function sourcesOf(model) {
-  const based = model?.reflect_response?.based_on, seen = new Set(), out = [];
-  if (!based || typeof based !== "object") return out;
-  for (const type of FACT_TYPES) for (const m of Array.isArray(based[type]) ? based[type] : []) {
-    const id = String(m?.id || ""); if (!id || seen.has(id)) continue; seen.add(id);
-    const text = String(m.text ?? "").replace(/\s+/g, " ").trim();
-    out.push({ kind: type === "observation" ? "observation" : "memory", id, title: text.length > 90 ? `${text.slice(0, 89)}…` : text, at: null });
-  }
-  return out;
+// A page: the facts of its categories, newest first, as the Markdown list the app shows, with the facts as its sources.
+export function pageOf(page, facts) {
+  const mine = facts.filter((f) => page.categories.includes(f.type)).sort((a, b) => String(b.mentioned_at).localeCompare(String(a.mentioned_at)));
+  const oneLine = (t) => String(t ?? "").replace(/\s+/g, " ").trim();
+  // One heading per category: the app gives each heading its own edit pencil.
+  const section = (c) => `## ${c[0].toUpperCase()}${c.slice(1)}\n${mine.filter((f) => f.type === c).map((f) => `- ${oneLine(f.text)}`).join("\n")}`;
+  return { markdown: page.categories.filter((c) => mine.some((f) => f.type === c)).map(section).join("\n\n"), updated_at: mine.length ? ms(mine[0].mentioned_at) : null,
+    sources: mine.map((f) => ({ kind: "memory", id: f.id, title: oneLine(f.text).length > 90 ? `${oneLine(f.text).slice(0, 89)}…` : oneLine(f.text), at: ms(f.mentioned_at) })), state: mine.length ? "ready" : "empty" };
 }
 
 // deps: { archive (the tenant's Archive stub), channel (its row), resident (stub to the channel's Resident), interview (D1 row), slug (workspace), first, look }
 export async function pagesRoute(req, env, t, chSlug, rest, deps) {
-  const { A, ch, look } = deps, prefetch = new URL(req.url).searchParams.get("prefetch") === "1", bank = bankId(env, t.id, chSlug), first = t.first_name || "", pages = pagesFor(chSlug);
+  const { A, ch, look } = deps, bank = bankId(env, t.id, chSlug), first = t.first_name || "", pages = pagesFor(chSlug);
   if (rest === "" || rest === "/") {
     if (req.method !== "GET") return J({ error: "not found" }, 404);
-    const main = chSlug === "main", realOpen = !look && !prefetch;
-    // Every read below is independent, so they all run at once: the notes, the model list, the Contacts, and each page's model.
-    const readAll = (ids) => Promise.all(ids.map((id) => mentalModelPage(env, bank, id).catch(() => null)));
-    const [chan, meta0, people, mms0, photo] = await Promise.all([A.channel(ch.id, 1), mentalModelsMeta(env, bank).catch(() => []), main ? A.peopleList().catch(() => []) : [], readAll(pages.map((p) => p.model)), deps.photo ? deps.photo().catch(() => null) : null]);
-    let meta = meta0, mms = mms0;
-    // A real open of a bank whose template predates a page's model (the model does not exist, so the page stays blank): import the current template, then read again.
-    if (realOpen && deps.resident && pages.some((p, i) => !mms[i])) {
-      try { await (await deps.resident()).nbPagesEnsure(); [meta, mms] = await Promise.all([mentalModelsMeta(env, bank).catch(() => []), readAll(pages.map((p) => p.model))]); }
-      catch (e) { console.log("pages ensure", String(e?.message || e).slice(0, 120)); }
-    }
+    const main = chSlug === "main";
+    // Every read below is independent, so they all run at once: the notes, the facts, the Contacts and the photo.
+    const [chan, facts, people, photo] = await Promise.all([A.channel(ch.id, 1), memoryFacts(env, bank, [...new Set(pages.flatMap((p) => p.categories))]).catch(() => []), main ? A.peopleList().catch(() => []) : [], deps.photo ? deps.photo().catch(() => null) : null]);
     const notes = (chan.memory || []).filter((m) => m.status !== "superseded"), notesAt = notes.reduce((a, m) => Math.max(a, Number(m.edited || m.created) || 0), 0) || null;
-    const own = people.find((p) => OWN.test(String(p.rel || "").trim()));
-    const byModel = new Map(pages.map((p, i) => [p.model, mms[i]]));
-    // Pages with no text yet: building or empty. A model that still does not exist is building (the template import queues its first refresh) unless the bank holds nothing.
-    const todo = pages.filter((p) => !String(byModel.get(p.model)?.content ?? "")), states = {};
-    if (todo.length) {
-      const refreshed = (p) => !!byModel.get(p.model)?.last_refreshed_at, input = [...new Map(todo.map((p) => [p.model, { model: p.model, refreshed: refreshed(p) }])).values()];
-      let got = null;
-      if (deps.resident && !look) { try { got = await (await deps.resident()).nbPagesBuild({ models: input, build: realOpen }); } catch (e) { console.log("pages build", String(e?.message || e).slice(0, 120)); } }
-      if (!got) { const docs = await freshStats(env, bank).then((s) => Number(s?.total_documents) || 0).catch(() => null); got = Object.fromEntries(input.map((x) => [x.model, docs === 0 ? "empty" : x.refreshed ? "empty" : "building"])); }
-      for (const p of todo) states[p.model] = got[p.model] === "building" ? "building" : "empty";
-    }
-    const out = {};
-    for (const p of pages) { const mm = byModel.get(p.model), content = String(mm?.content ?? ""); out[p.id] = { markdown: content, updated_at: content && mm?.last_refreshed_at ? ms(mm.last_refreshed_at) : null, sources: content ? sourcesOf(mm) : [], state: content ? "ready" : states[p.model] || "empty" }; }
+    const own = people.find((p) => OWN.test(String(p.rel || "").trim())), out = Object.fromEntries(pages.map((p) => [p.id, pageOf(p, facts)]));
     return J({ person: { first, name: own?.name || first, photo: photo ? `/w/${t.slug}/api/notebook/${chSlug}/photo?v=${photo.at}` : own?.photo ? `/w/${t.slug}/api/contacts/photo/${own.id}` : null },
-      facts: main ? factsOf({ interview: deps.interview, people }) : [], tree: treeOf(chSlug, first, meta, notesAt), pages: out });
+      facts: main ? factsOf({ interview: deps.interview, people }) : [], tree: treeOf(chSlug, first, Object.fromEntries(pages.map((p) => [p.id, out[p.id].updated_at])), notesAt), pages: out });
   }
   const m = rest.match(/^\/([a-z0-9-]{1,40})(\/edit)?$/); if (!m) return J({ error: "not found" }, 404);
   const page = pages.find((p) => p.id === m[1]), isNotes = m[1] === NOTES_PAGE.id;
@@ -116,13 +91,7 @@ export async function pagesRoute(req, env, t, chSlug, rest, deps) {
   if (!m[2]) {
     if (req.method !== "GET") return J({ error: "not found" }, 404);
     if (isNotes) return J({ id: NOTES_PAGE.id, title: NOTES_PAGE.title, markdown: "", updated_at: notes.reduce((a, n) => Math.max(a, Number(n.edited || n.created) || 0), 0) || null, sources: [] });
-    let mm = await mentalModelPage(env, bank, page.model).catch(() => null);
-    if (!mm && deps.resident && !look && !prefetch) { try { await (await deps.resident()).nbPagesEnsure(); mm = await mentalModelPage(env, bank, page.model).catch(() => null); } catch (e) { console.log("page ensure", String(e?.message || e).slice(0, 120)); } }   // a bank imported before this page's model existed
-    const content = String(mm?.content ?? "");
-    // Never built (the first refresh ran on an empty bank and the interval parks the rest): ask once for a refresh (notebook-pages-do.js nbPageBuild).
-    // Only a real open asks: view-as and the app's background prefetch (?prefetch=1, read before the person opens the Notebook) never do.
-    if (mm && !content && deps.resident && !look && !prefetch) { try { await (await deps.resident()).nbPageBuild({ model: page.model }); } catch (e) { console.log("page build", String(e?.message || e).slice(0, 120)); } }
-    return J({ id: page.id, title: page.title(first || "you"), markdown: content, updated_at: content && mm?.last_refreshed_at ? ms(mm.last_refreshed_at) : null, sources: content ? sourcesOf(mm) : [] });
+    return J({ id: page.id, title: page.title(first || "you"), ...pageOf(page, await memoryFacts(env, bank, page.categories).catch(() => [])) });
   }
   if (req.method !== "POST") return J({ error: "not found" }, 404);
   if (look) return J({ error: "view_as_read_only", message: "This is a read-only view." }, 403);
@@ -130,6 +99,6 @@ export async function pagesRoute(req, env, t, chSlug, rest, deps) {
   const b = await boundedJson(req), text = String(b.text ?? "").trim(), section = b.section == null ? null : String(b.section).trim() || null;
   if (!text) return J({ error: "text required" }, 400);
   if (hasSecret(text)) return J({ error: SECRET_NOTE, secret: true }, 400);
-  const r = await deps.R.nbPageEdit({ page: page.id, title: page.title(first || "you"), model: page.model, sec: page.sec, section, text });
+  const r = await deps.R.nbPageEdit({ page: page.id, title: page.title(first || "you"), sec: page.sec, section, text });
   return J(r, r?.error ? 400 : 200);
 }

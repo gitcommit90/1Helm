@@ -29,12 +29,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { tolerantEnv, codeV } from "../do-stub.js";
 import { openSecret } from "../sentinel.js";
-import { hsOn, bankId, contentHash } from "../hindsight.js";
+import { hsOn, bankId, contentHash } from "../mem0.js";
 import { forgetMemoryDocs, ensureDeletionTables, deleteNote } from "../deletion.js";
 import { hsNoteNotify, hsWriters, inboxEligible, DOC as HS_DOC } from "../hindsight-writers.js";   // HS_WRITERS: Bee facts saved as Notebook notes reach General's bank (note:<id>)
 import { stPut, stDelete, stDeleteListed, StorageFull } from "../storage.js";
-import { templateModelCount } from "../hindsight-template.js";
-import { METER, hsRetainNano, hsRawNano, HS_REFRESH_WINDOW_MS } from "../byok-meter.js";
+import { hsRetainNano, hsRawNano } from "../byok-meter.js";
 import { scrubSecrets } from "../secrets-scrub.js";
 import { beeSyncJob, beeFactsJob, beeEvent, JOB_IDLE_MS, SYNC_KILL_MS } from "./bee.js";
 import { AmbientStore, ambientLines, ambientLocation } from "./ambient.js";
@@ -483,17 +482,14 @@ export class BeeSync extends DurableObject {
     // 2. the summary → General's memory, reserved first
     const item = { content: beeContentOf(env, conv) }; let retainedAt = row?.retained_at || null;
     if (item.content && st.hsOk) {
-      // The refresh runs of a new window (3 models in General) are charged only when the last charged window ended (src/byok.js hs_refresh_run), as for any retained text.
-      // Bee option A: the words go in as chunks with no model call, so the rest of the price is the chunk facts' consolidation (hsRawNano, about 60 characters of time and
-      // speaker per line on top of the words).
-      const win = await this.hsRefreshTake(), models = win.models;
-      const cost = Math.ceil((hsRawNano(item.content.length + 60 * item.content.split("\n").length) + models * METER.hs_refresh_run) * RETAIN_MARKUP), rid = `bee-retain:${crypto.randomUUID()}`;
+      // Bee option A: the words go in as chunks with no model call, so the price is their embeddings (hsRawNano, about 60 characters of time and speaker per line on top of the words).
+      const cost = Math.ceil(hsRawNano(item.content.length + 60 * item.content.split("\n").length) * RETAIN_MARKUP), rid = `bee-retain:${crypto.randomUUID()}`;
       let h = null; try { h = await st.L.reserve(rid, cost); } catch (e) { h = { ok: false, reason: "ledger" }; }
-      if (!h?.ok) { await this.hsRefreshGive(win); st.creditsOut = h?.reason || "out_of_credits"; this.pend(id, "waiting for credits"); return "waiting"; }
+      if (!h?.ok) { st.creditsOut = h?.reason || "out_of_credits"; this.pend(id, "waiting for credits"); return "waiting"; }
       try {
         await ensureDeletionTables(env); await env.DB.prepare("DELETE FROM hs_forget WHERE bank=? AND doc=?").bind(st.bank, docId(id)).run();   // an old removal mustn't delete it again
         await this.hsBeePut(conv);   // the transcript as raw text chunks (bee:conv:<id>, strategy raw-transcript), through General's Resident
-      } catch (e) { await st.L.settle(rid, 0).catch(() => {}); await this.hsRefreshGive(win); this.pend(id, "memory not saved"); console.log("bee retain", String(e?.message || e).slice(0, 160)); return "failed"; }
+      } catch (e) { await st.L.settle(rid, 0).catch(() => {}); this.pend(id, "memory not saved"); console.log("bee retain", String(e?.message || e).slice(0, 160)); return "failed"; }
       await st.L.settle(rid, cost).catch(() => {}); st.retainNano += cost; st.retainChars += item.content.length; retainedAt = now();
       this.bump({ retain_n: 1, retain_nano: cost });
     }
@@ -763,19 +759,6 @@ export class BeeSync extends DurableObject {
   // document, and an item that is gone (its conversation was deleted, or a newer one replaced it) loses its document. The table hs_inbox holds
   // what was sent (a hash per item), so only the difference is sent, and a pass that stops half way finishes at the next one.
   hsInboxReady() { this.sql.exec("CREATE TABLE IF NOT EXISTS hs_inbox (id TEXT PRIMARY KEY, hash TEXT NOT NULL, source_id TEXT)"); }
-  // General's bank has one mental model refresh window, kept by its Resident (resident.js hsRefreshTake), so a chat turn and a Bee conversation in
-  // the same window are charged once between them. If the Resident can't answer (an old object during a deploy), this object's own clock is used.
-  async hsRefreshTake() {
-    try { const t = await (await this.hsGeneral()).hsRefreshWindow("take"); if (t && Number.isFinite(t.models)) return { ...t, via: "resident" }; } catch (e) { console.log("refresh window", String(e?.message || e).slice(0, 120)); }
-    const prev = this.get("hs_refresh_at") ?? null, models = Number(prev) > now() - HS_REFRESH_WINDOW_MS ? 0 : templateModelCount("general"), mark = models ? now() : null;
-    if (mark) this.put("hs_refresh_at", mark);
-    return { models, mark, prev, via: "local" };
-  }
-  async hsRefreshGive(w) {
-    if (!w?.mark) return;
-    if (w.via === "resident") { try { await (await this.hsGeneral()).hsRefreshWindow("give", { mark: w.mark, prev: w.prev }); } catch (e) { console.log("refresh window give back", String(e?.message || e).slice(0, 120)); } }
-    else if (Number(this.get("hs_refresh_at")) === w.mark) this.put("hs_refresh_at", w.prev ?? null);
-  }
   async hsGeneral() { const tid = this.tid(), cid = await this.generalCid(); const R = this.env.RESIDENT.get(this.env.RESIDENT.idFromName(`res:${tid}:${GENERAL}`)); await R.bind(tid, GENERAL, String(cid)); return R; }
   async hsInboxSync({ force = false } = {}) {
     if (!hsWriters(this.env) || !hsOn(this.env) || !this.tid() || this.get("account_deleted")) return null;

@@ -34,7 +34,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 // It is marked by two extra tags that change nothing in a request body: sandbox: true and tenant "sandbox" (the tenant also makes the privacy lookup answer "unrestricted").
 // A sample can name its kind with a `meta: { kind }` field next to `via`; otherwise this table (the kind each job's real call site sends) is used.
 const KIND = { label: "card-label", chat_title: "chat-title", sidecar_card: "sidecar-card", notes: "live-notes-note", notes_refine: "live-notes-refine", notes_final: "live-notes-final", ambient_extract: "ambient-extract", ambient_review: "ambient-review",
-  browser: "browser-oss", vision_files: "sidecar-vision-image", hs_retain: "memory-retain", hs_consolidation: "memory-consolidation", hs_reflect: "memory-reflect", hs_refresh: "memory-refresh", hs_rerank: "memory-rerank",
+  browser: "browser-oss", vision_files: "sidecar-vision-image", hs_retain: "memory-retain", mem_extract: "memory-extract", mem_embed: "memory-embed", hs_consolidation: "memory-consolidation", hs_reflect: "memory-reflect", hs_refresh: "memory-refresh", hs_rerank: "memory-rerank",
   decider: "decider", web_search: "web-search", "chat": "chat" };
 export const metaFor = (job, sample = {}) => { const kind = sample?.meta?.kind || KIND[job] || null; return { ...(kind ? { kind } : {}), tenant: "sandbox", sandbox: true }; };
 export const VIAS = {
@@ -58,7 +58,7 @@ export function jobRows(settings, { categories = true } = {}) {
 }
 const chainOf = (cat) => cat?.chains?.unrestricted || Object.values(cat?.chains || {})[0] || [];
 const firstOfChain = (cat) => chainOf(cat)[0] || null;
-const parseJob = (id, settings) => {
+export const parseJob = (id, settings) => {
   id = String(id || "");
   if (id.startsWith("chat:")) { const category = routingCategories(settings).find((c) => c.id === id.slice(5)); if (!category) throw fail(404, "That chat category does not exist."); return { id, category, def: { kind: "chat" } }; }
   const def = jobDef(id); if (!def) throw fail(404, "That job does not exist."); return { id, category: null, def };
@@ -125,7 +125,7 @@ function shownBody(v, files) {
   for (const f of files.values()) { const b64 = toBase64(f.bytes), sh = `<${f.name}, ${f.bytes.length} bytes>`; t = t.split(`data:${f.type};base64,${b64}`).join(sh).split(b64).join(sh); }
   try { return JSON.parse(t); } catch { return t; }
 }
-function makeRecorder(env, files) {
+export function makeRecorder(env, files) {
   const sent = [];
   const hdrs = (h) => { const out = {}; const it = h instanceof Headers ? [...h.entries()] : Object.entries(h || {}); for (const [k, v] of it) if (!SECRET.test(k)) out[String(k).toLowerCase()] = String(v); return out; };
   const wrapped = async (input, init = {}) => {
@@ -146,7 +146,7 @@ export function sandboxDb() {
   const stmt = (q) => { const s = { bind() { return s; }, async first() { return /ai_privacy/.test(q) ? { ai_privacy: "unrestricted" } : null; }, async all() { return { results: [] }; }, async run() { return { meta: { changes: 0 } }; } }; return s; };
   return { prepare: stmt };
 }
-function sandboxEnv(env, settings, ai) {
+export function sandboxEnv(env, settings, ai) {
   return Object.assign(Object.create(env), { DB: sandboxDb(), MODEL_SETTINGS: settings, MODEL_SETTINGS_REVISION: 0, waitUntil() {}, ...(ai ? { AI: ai } : {}) });
 }
 // The saved settings with the one model of this send in place of the job's models. Returns { settings, route }.

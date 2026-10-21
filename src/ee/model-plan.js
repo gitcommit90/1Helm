@@ -50,7 +50,7 @@ const priceFor = (facts) => { const up = (v, d) => Number.isFinite(v) && v > d ?
 const SORTS = ["price", "throughput", "latency"];
 
 const KIND_ADAPTER = { chat: "chat", chore: "chat", memory: "chat", rerank: "decide_systemone", vision: "chat", workers_ai: "chat", classic: "chat",
-  embedding_files: "embeddings", speech: "transcribe", speech_cloudflare: "transcribe", speech_live: "transcribe_live", look: "look" };
+  embedding_files: "embeddings", embedding_memory: "embeddings", speech: "transcribe", speech_cloudflare: "transcribe", speech_live: "transcribe_live", look: "look" };
 function adapterOf(jobId, kindId, source, facts) {
   if (jobId === "web_search" || kindId === "search") return "search";
   if (kindId === "speech_live") return source === "CF" ? "transcribe_live" : "transcribe";   // a Workers AI streaming model is a WebSocket; any other model takes the recording in chunks

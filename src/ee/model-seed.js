@@ -42,13 +42,16 @@ export const jobFieldDefaults = (id) => ({ max_output: MAX_OUTPUT[id] ?? null, s
 export const JOB_FIELDS = ["max_output", "sort", "max_price", "results", "timeout_ms"];
 // Jobs a later release added that an older saved version doesn't carry. They are filled in with this value
 // when read or checked, and nothing is written for it.
-export const OPTIONAL_JOB_IDS = ["look", "web_search", "browser_decider", "chat_title", "hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank"];
-const OPTIONAL_MODEL = { look: MOONDREAM, web_search: SEARCH_LINKUP, hs_retain: HS_RETAIN, hs_consolidation: HS_FLASH, hs_reflect: HS_FLASH, hs_refresh: HS_FLASH, hs_rerank: HS_RERANK };
+export const OPTIONAL_JOB_IDS = ["look", "web_search", "browser_decider", "chat_title", "hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank", "mem_extract", "mem_embed"];
+const MEM_EMBED = "@cf/baai/bge-m3";   // Workers AI, multilingual, 1024 numbers per text, $0.012 per million tokens: the dimension of both Vectorize indexes (mem0-store.js DIMS)
+const OPTIONAL_MODEL = { mem_embed: MEM_EMBED, look: MOONDREAM, web_search: SEARCH_LINKUP, hs_retain: HS_RETAIN, hs_consolidation: HS_FLASH, hs_reflect: HS_FLASH, hs_refresh: HS_FLASH, hs_rerank: HS_RERANK };
 // The reasoning level each memory job started with (the server's own setting).
 const OPTIONAL_EFFORT = { hs_retain: "low", hs_consolidation: "none", hs_reflect: "low", hs_refresh: "low" };
 // browser_decider starts as a copy of the request sorter job (model, reasoning level and fallbacks), so `jobs` (the settings' jobs) says which; it adds no model facts.
 // chat_title starts as a copy of the task summaries job (label): model, reasoning level and fallbacks.
-export const optionalJobDefault = (id, jobs = null) => id === "chat_title" ? { job: (({ model, effort, strict, fallbacks }) => clone({ model, effort: effort ?? null, ...(strict ? { strict } : {}), fallbacks: fallbacks || [] }))(jobs?.label || inEffectChore("label")), facts: null } : id === "browser_decider" ? { job: (({ model, effort, strict, fallbacks }) => clone({ model, effort: effort ?? null, ...(strict ? { strict } : {}), fallbacks: fallbacks || [] }))(jobs?.decider || { model: PPLX_DECIDER, fallbacks: [] }), facts: null } : OPTIONAL_MODEL[id] ? { job: { model: OPTIONAL_MODEL[id], effort: OPTIONAL_EFFORT[id] ?? null, fallbacks: [] }, facts: { id: OPTIONAL_MODEL[id], ...clone(SEED_FACTS[OPTIONAL_MODEL[id]]) } } : null;
+// mem_extract starts as a copy of the memory retain job, so extraction runs on the model that retain was saved with.
+const copyJob = ({ model, effort, strict, fallbacks }) => clone({ model, effort: effort ?? null, ...(strict ? { strict } : {}), fallbacks: fallbacks || [] });
+export const optionalJobDefault = (id, jobs = null) => id === "mem_extract" ? { job: copyJob(jobs?.hs_retain || { model: HS_RETAIN, effort: OPTIONAL_EFFORT.hs_retain }), facts: jobs?.hs_retain ? null : { id: HS_RETAIN, ...clone(SEED_FACTS[HS_RETAIN]) } } : id === "chat_title" ? { job: (({ model, effort, strict, fallbacks }) => clone({ model, effort: effort ?? null, ...(strict ? { strict } : {}), fallbacks: fallbacks || [] }))(jobs?.label || inEffectChore("label")), facts: null } : id === "browser_decider" ? { job: (({ model, effort, strict, fallbacks }) => clone({ model, effort: effort ?? null, ...(strict ? { strict } : {}), fallbacks: fallbacks || [] }))(jobs?.decider || { model: PPLX_DECIDER, fallbacks: [] }), facts: null } : OPTIONAL_MODEL[id] ? { job: { model: OPTIONAL_MODEL[id], effort: OPTIONAL_EFFORT[id] ?? null, fallbacks: [] }, facts: { id: OPTIONAL_MODEL[id], ...clone(SEED_FACTS[OPTIONAL_MODEL[id]]) } } : null;
 
 // The third zero-data-retention model of a General list, used only when an older saved version (without categories) is converted to routing categories.
 export const ROUTING_ZDR_THIRD_MODEL = DEEPSEEK;
@@ -95,6 +98,7 @@ export const SEED_FACTS = {
   // $0.0000611 a second, so $0.52 per million tokens. The charge is the container's own measured running time.
   [EMBED_FILES]: { name: "Perplexity Embed 0.6B", kinds: ["embedding_files"], efforts: [], embedding_equivalents: [EMBED_SELF] },
   [EMBED_SELF]: { name: "Perplexity Embed 0.6B (1Helm container)", kinds: ["embedding_files"], efforts: [], pricing: { prompt: 0.6, completion: 0 }, embedding_equivalents: [EMBED_FILES] },
+  [MEM_EMBED]: { name: "BGE M3 (Cloudflare)", kinds: ["embedding_memory"], efforts: [], in_nano: 12 },
   [VISION]: { name: "Gemma 4 26B (Cloudflare)", kinds: ["vision"], efforts: VISION_EFFORTS },
   [WAI_CHAT]: { name: "GLM 5.3 Flash (Cloudflare)", kinds: ["workers_ai"], efforts: [] },
 };
@@ -178,6 +182,7 @@ function otherJobs() {
     workers_ai_chat: { model: WAI_CHAT, effort: null, fallbacks: [] },
     look: optionalJobDefault("look").job,
     web_search: optionalJobDefault("web_search").job,
+    mem_embed: optionalJobDefault("mem_embed").job,
     ...Object.fromEntries(["hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank"].map((id) => [id, optionalJobDefault(id).job])),
   };
 }
@@ -213,6 +218,7 @@ export function seedFromLegacy(env = {}, legacy = null) {
   Object.assign(jobs, otherJobs());
   jobs.browser_decider = optionalJobDefault("browser_decider", jobs).job;
   jobs.chat_title = optionalJobDefault("chat_title", jobs).job;
+  jobs.mem_extract = optionalJobDefault("mem_extract", jobs).job;
   // The chat list becomes the General category (its models are in the catalog because the list is a job while the catalog is made), then the job goes.
   return withRoutingConfig(finish(jobs, legacy?.catalog || {}), { zdrThirdModel: ROUTING_ZDR_THIRD_MODEL });
 }

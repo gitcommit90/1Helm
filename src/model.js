@@ -4,6 +4,7 @@ import { privacyOf, enforceRequest, PrivacyBlocked, PRIVACY_EXHAUSTED } from "./
 import { boundedText } from "./bounded-body.js";
 import { knownModel } from "./model-quirks.js";
 import { MAX_ATTEMPTS, modelSettingsEnv, readModelSettings, categoryLimits, CHAT_JOB, quirkOf, effortBody, effortFor, reasoningMandatory, authorizeTaskProfile, TaskAffinityBlocked } from "./ee/index.js";
+import { aigMeta, AIG_META_FIRST } from "./aig-meta.js";
 import { cloudflareChat, cloudflareEmbeddings, isCloudflareModel } from "./cloudflare-models.js";
 export { effortBody, effortFor, reasoningMandatory };
 // Model transport. The dispatcher (model-dispatch.js) is the only caller of orFetch, orFetchPath, routedChat and the Workers AI functions in cloudflare-models.js.
@@ -287,12 +288,7 @@ export const aigOn = (env) => !!(env.AIG_ID && env.AIG_TOKEN && env.CF_ACCOUNT_I
 // channel, kind, px (the main chat's cache-prefix label, which e2e/dev/cache-check.mjs reads back), job, then any other key. The main chat call carries all
 // six, so `job` is the key dropped there (its kind, "chat" or "chat-retry", already says the same thing, and the job is always "chat"). Every other caller has
 // fewer than five keys and keeps all of them, including job.
-export const AIG_META_FIRST = ["tenant", "session", "channel", "kind", "px", "job"];
-export const aigMeta = (env, meta = {}) => {
-  const ok = Object.entries(meta).filter(([k, v]) => v != null && v !== "" && !k.startsWith("_"));
-  const first = AIG_META_FIRST.flatMap((k) => ok.filter(([key]) => key === k)), rest = ok.filter(([k]) => !AIG_META_FIRST.includes(k));
-  return Object.fromEntries([...first, ...rest].slice(0, 5).map(([k, v]) => [k, typeof v === "number" || typeof v === "boolean" ? v : String(v).slice(0, 64)]));
-};
+export { AIG_META_FIRST, aigMeta };
 // Options for env.AI.run (Workers AI / Clef / Jev): adds the gateway when on, keeps any extraHeaders.
 export const aiOpts = (env, meta = {}, opts = {}) => !env.AIG_ID ? opts
   : { ...opts, gateway: { id: env.AIG_ID, collectLog: true, metadata: aigMeta(env, meta) }, extraHeaders: { ...(opts.extraHeaders || {}), "cf-aig-collect-log-payload": aigPayload(env) } };
@@ -340,6 +336,8 @@ export async function orFetchPath(env, path, body, meta = {}, extraHeaders = {},
   const make = typeof body === "function" ? body : (() => { const s = JSON.stringify(body); return () => s; })();
   return orSend(env, path, make, meta, extraHeaders, signal, fetchImpl);
 }
+// Turn traces (turn-trace.js): a model step passes its trace id and its own span id, so the gateway's generation nests under the step in Langfuse. Sent to the gateway only.
+const otelHeaders = (meta) => { const o = meta?._otel; return /^[0-9a-f]{32}$/.test(o?.trace || "") && /^[0-9a-f]{16}$/.test(o?.parent || "") ? { "cf-aig-otel-trace-id": o.trace, "cf-aig-otel-parent-span-id": o.parent } : {}; };
 async function orSend(env, path, make, meta, extraHeaders, signal, fetchImpl = globalThis.fetch) {
   const headers = { authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "content-type": "application/json", ...(env.APP_HOST ? { "http-referer": `https://${env.APP_HOST}` } : {}), "x-title": "1Helm", ...extraHeaders };
   const bodyOf = () => { const b = make(); return typeof b === "string" || b instanceof Uint8Array || !b?.body ? b : b.body; };
@@ -348,7 +346,7 @@ async function orSend(env, path, make, meta, extraHeaders, signal, fetchImpl = g
     try {
       const gb = bodyOf();
       const r = await fetchImpl(`https://gateway.ai.cloudflare.com/v1/${env.CF_ACCOUNT_ID}/${env.AIG_ID}/openrouter/v1/${path}`, { method: "POST", body: gb, ...streamed(gb), ...(signal ? { signal } : {}),
-        headers: { ...headers, "cf-aig-authorization": `Bearer ${env.AIG_TOKEN}`, "cf-aig-collect-log-payload": aigPayload(env), "cf-aig-no-wholesale": "true", "cf-aig-metadata": JSON.stringify(aigMeta(env, meta)) } });
+        headers: { ...headers, "cf-aig-authorization": `Bearer ${env.AIG_TOKEN}`, "cf-aig-collect-log-payload": aigPayload(env), "cf-aig-no-wholesale": "true", "cf-aig-metadata": JSON.stringify(aigMeta(env, meta)), ...otelHeaders(meta) } });
       if (r.ok || r.status === 429 || (r.status < 500 && r.status !== 401 && !(path === "systemone" && r.status === 404))) return r;
       const t = await boundedText(r.clone(), 64 * 1024).catch(() => "");
       if (!/AiGatewayError/.test(t) && !(path === "systemone" && r.status === 404)) return r;   // OpenRouter's own error, passed through (the gateway answers 404 for the decision endpoint)

@@ -12,6 +12,7 @@ import { JOBS, JOB_IDS, JOB_KINDS, choreRouteOf, jobRoute } from "../src/ee/mode
 import { validateModelSettings, jobModel, jobCost, modelSettingsEnv, readModelSettings, ModelSettingsError } from "../src/ee/model-settings.js";
 import { SEED, ID, setGeneral } from "./helpers/seed-settings.mjs";
 import { policyRoute, dispatchOrder, jevAsk, choreRouteFor, HANDOFF_PREFIX } from "../src/ee/route2.js";
+import { dispatch } from "../src/ee/model-dispatch.js";
 import { deciderModel } from "../src/ee/decider.js";
 import { askDecider } from "../src/ee/text-decision.js";
 import { openRouterChat } from "./helpers/or-chat.mjs";
@@ -55,7 +56,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
   console.log("  ok guard: only", Object.keys(ALLOWED).join(", "), "name models"); }
 
 // ---- 2) every job reads its own saved model ----
-const sentinelOf = (id) => ["look", "stt_cloudflare", "live_dictation"].includes(id) ? `@cf/sentinel/${id.replace(/_/g, "-")}` : `sentinel/${id.replace(/[^a-z0-9]+/g, "-")}`;
+const sentinelOf = (id) => ["look", "stt_cloudflare", "live_dictation", "mem_embed"].includes(id) ? `@cf/sentinel/${id.replace(/_/g, "-")}` : `sentinel/${id.replace(/[^a-z0-9]+/g, "-")}`;
 const record = (id) => ({ id, name: id, eligible: true, reasons: [], efforts: ["default", "none", "low", "medium", "high"], default_effort: "low", levels: ["unrestricted", "no_training", "zdr"], hosts: ["sentinel-host"],
   context_length: 100000, max_output: 8000, input_modalities: ["text", "image"], pricing: { prompt: 1, completion: 1 }, json: true, tool_choice: ["auto", "none", "required", "function"] });
 function settingsFor(jobId) {
@@ -111,6 +112,9 @@ const hsChat = (path) => async (S) => { await hsCall(S, new Request(`https://x.t
 probes.hs_retain = hsChat("retain"); probes.hs_consolidation = hsChat("consolidation"); probes.hs_reflect = hsChat("reflect"); probes.hs_refresh = hsChat("refresh");
 probes.hs_rerank = async (S) => { await hsCall(S, new Request("https://x.test/_hs/rerank/v1/systemone", { method: "POST", headers: { authorization: "Bearer secret-key", "content-type": "application/json", "x-hindsight-bank-id": "dev-11111111-2222-3333-4444-555555555555-main" },
   body: JSON.stringify({ model: "decoy/memory-ranker", state: "Question: x", questions: { rank: { type: "choice", instructions: "pick", criteria: { c0: "a", c1: "b" } } } }) })); return [lastWire("/systemone").model]; };
+// Mem0 memory (mem0.js) calls dispatch() for its two jobs.
+probes.mem_extract = async (S) => { wire = []; await dispatch(envFor(S), "mem_extract", { messages: [{ role: "user", content: "hi" }] }, { meta: { tenant: "t" } }); return [lastWire("/chat/completions").model]; };
+probes.mem_embed = async (S) => { const calls = [], env = envFor(S, { AI: { run: async (m) => { calls.push(m); return { data: [[0.1]] }; } } }); await dispatch(env, "mem_embed", { input: ["hi"] }, { meta: { tenant: "t" } }); return [calls[0]]; };
 probes.look = async (S, model) => { const calls = [], env = envFor(S, { AI: { run: async (m) => { calls.push(m); return { caption: "a page", metrics: {} }; } } });
   await lookMoondream(env, { tenant: "t" }, { data: new Uint8Array([1, 2, 3]), mime: "image/png" }, {}); return [calls[0]]; };
 

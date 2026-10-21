@@ -15,7 +15,6 @@
 // General (slug "main") reads across channels, and it finds new channels because it lists the Archive's channel rows.
 // A deleted channel (deletion.js) is wiped everywhere (DO storage, bank, computer, R2) before its row goes, so a slug used again
 // later starts empty: it can't inherit an old channel's bank, DO or computer.
-import { hsOn } from "./hindsight.js";
 
 export const MAX_CHANNELS = 100;   // per workspace, General included (Captain 2026-10-17: 25 -> 100; no plan defines a channel limit)
 export const NAME_MAX = 40, PURPOSE_MAX = 200;
@@ -67,7 +66,6 @@ export function insertChannel(sql, { name, purpose, by, max = MAX_CHANNELS }) {
   return { channel: row };
 }
 
-const withTimeout = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(`timed out after ${ms} ms`)), ms))]);
 
 // createChannel(env, tenant, { name, purpose, by: "person" | "helper" }) → { id, slug, name, purpose }
 // tenant: the tenants row (or its id). Throws ChannelError {code, status, message}: bad_request / name_required / name_too_long /
@@ -85,6 +83,5 @@ export async function createChannel(env, tenant, { name, purpose, by = "person" 
   if (!r.channel) throw new ChannelError("failed", "Couldn't create the channel. Try again.", 500);
   const c = r.channel, R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${tid}:${c.slug}`));
   await R.bind(tid, c.slug, String(c.id));
-  if (hsOn(env)) await withTimeout(R.hsBank(), 4000).catch((e) => console.log("channel bank", c.slug, e.message));
   return { id: c.id, slug: c.slug, name: c.name, purpose: c.purpose };
 }

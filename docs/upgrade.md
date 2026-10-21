@@ -6,6 +6,12 @@ After reviewing new migration files and changes to `wrangler.example.jsonc`, bri
 
 When changing the channel computer Dockerfile, Wrangler builds a new container image at deploy time; a working Docker daemon is required. Existing D1 and R2 data stay in Cloudflare. Do not import a legacy v1.x Linux database into this Worker: the schema and runtime are different, so use a fresh installation.
 
+## October 21 source update, memory on Mem0
+
+Apply ordered D1 migration `0063` using the normal migration runner. It only adds the tables `mem`, `mem_history` and `mem_fts` (with three triggers that keep the keyword index in step), so an install that never turned memory on is unaffected. Run `npm ci` again, because `mem0ai` 3.3.1 is a new dependency and the repository now has a `.npmrc` that sets `legacy-peer-deps`. Copy the `alias` list and the `MEM0_TELEMETRY` variable from `wrangler.example.jsonc` into your private `wrangler.jsonc`, since the Worker does not bundle without the list.
+
+Memory no longer uses a Hindsight server. If you ran memory on Hindsight, the `HINDSIGHT` binding, the secret `HINDSIGHT_API_KEY` and the variable `MEMORY_BACKEND` are no longer read, and your Hindsight banks are not read or deleted. To keep memory on, follow the Memory paragraph of [configuration](configuration.md) to create the Vectorize index and add the `MEMORY_INDEX` binding. The first time a channel is used, the Worker writes that channel's own records (notes, files, conversations and so on) into its new memory once. Without the `MEMORY_INDEX` binding memory stays off and nothing else changes.
+
 ## October 17 source update, model calls and limits
 
 Apply ordered D1 migrations `0058` through `0060` using the normal migration runner. Migration `0058` adds the `model_served` table, which records what answered each saved model job and is only written by the Cloud-only Models page code. Migrations `0059` and `0060` use `DROP TABLE IF EXISTS` for the tables of the removed router experiments and the removed memory use shadow (`router_pool`, `router_shadow`, `decision_shadow`, the `router_lab_*` tables and `memory_shadow`). Only a Cloud (`ONEHELM_EE`) development deployment ever wrote those tables, so a self-hosted install loses no data. No new binding, variable or Durable Object migration is required.

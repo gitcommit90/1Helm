@@ -157,6 +157,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
       // resume closes it by its type (re-run a read, re-attach a command, "check first" for a send). The turn is parked right after.
       if (tc.objectReset) return { content: [{ type: "text", text: "(interrupted by an update)" }], details: {} };
       trace.push({ tool: t.function.name, args: JSON.stringify(params).slice(0, 300), ms: Date.now() - x0, out: String(text).slice(0, 300) });
+      res.otelToolDone?.(tc, t.function.name, x0, text);   // turn-trace.js: the TOOL observation (name, duration, ok, size)
       guardTools(tc, [[t.function.name, params]]);   // spendguard.js: runaway signs → pause
       stallCheck(tc, t.function.name, params, String(text), tc.limits || res.lim?.());   // stall-guard.js: the same call and result again and again → soft stop
       stepEnd(sql, tc, sv?.seq, { out: String(text), ms: Date.now() - x0, ...(tc.lastCmd ? { cmd: tc.lastCmd } : {}) });

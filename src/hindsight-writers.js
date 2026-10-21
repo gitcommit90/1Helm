@@ -6,7 +6,7 @@
 //      and the writers the Resident owns (turns, unfinished work, Notebook notes, files, skills, task cards).
 // Everything here runs only when HS_WRITERS is "on" (and HS_FOUNDATIONS, because the strategies live in the bank template). With the flag
 // off, every call site keeps the phase 2 code path, so a rollback is a flag change and a redeploy.
-import { retainV2, hsOn, forgetDocument, contentHash } from "./hindsight.js";
+import { retainV2, hsOn, forgetDocument, contentHash } from "./mem0.js";
 import { contextFor, speakerLabels } from "./hindsight-template.js";
 import { scrubSecrets } from "./secrets-scrub.js";
 import { hsRetainBatchNano } from "./byok-meter.js";
@@ -25,6 +25,7 @@ import { geocodeCached, placeLabel, dedupeSeen } from "./memory-sources.js";
 const forgetMemoryDocs = async (...args) => (await import("./deletion.js")).forgetMemoryDocs(...args);   // loaded on use: deletion.js reaches the whole EE seam, which would make an import cycle
 
 // ---- document ids (DESIGN 3.3). Stable, and rebuildable from 1HC's own records. ----
+export const REBUILD_VERSION = 2;   // the hydrate job (hindsight-rebuild.js); 1 was the Hindsight rebuild, whose saved state means nothing to Mem0
 export const DOC = {
   conv: (sid, day) => `conv:${sid}:${day}`, note: (id) => `note:${id}`, file: (id) => `file:${id}`, live: (task, n) => `live:${task}:s${n}`,
   bee: (id) => `bee:conv:${id}`, skill: (slug) => `skill:${slug}`, task: (sid) => `task:${sid}`, contact: (id) => `contact:${id}`, inbox: (id) => `inbox:${id}`,
@@ -33,7 +34,7 @@ export const DOC = {
 export const docKind = (id) => { const s = String(id || ""); if (s.startsWith("bee:conv:")) return "bee"; const m = s.match(/^(conv|note|file|live|skill|task|contact|inbox):/); return m ? m[1] : null; };
 // The constant tag of each kind (DESIGN 3.6). A document's tag set never changes between appends (Hindsight issues #5415 and #5267).
 export const TAG = { chat: "source:chat", note: "source:note", file: "source:file", live: "source:live", bee: "source:bee", skill: "source:skill", task: "source:task", contact: "source:contact", inbox: "source:bee" };
-export const STRATEGY = { chat: "chat", note: "note", ambient: "ambient", file: "file", reference: "reference", rawTranscript: "raw-transcript" };
+export const STRATEGY = { chat: "chat", note: "note", ambient: "ambient", file: "file", reference: "reference", rawTranscript: "raw-transcript", verbatim: "verbatim" };   // reference, raw-transcript and verbatim make no extraction call (mem0.js)
 // Extra tag of a Bee recording's chunks (it marks a hit as the recording's own words): the source:bee tag stays the constant tag, so one strict recall over source:bee finds it.
 export const TAG_RAW = "kind:raw";
 export const FILE_MD_MAX = 60000;      // Markdown above this many characters (and every spreadsheet) is retained as "reference": chunks, no model call (DESIGN 3.5)
@@ -77,6 +78,7 @@ export function ctxFor(kind, v = {}) {
   if (kind === "inbox") return `A voice inbox item found in ${f}'s Bee recordings and kept with its status. The wearer is ${f}.`;
   return contextFor(kind, { ...v, first: f, helper: h, channel: c });
 }
+const SECTION_CATEGORY = { about: "identity", how: "preference", people: "person", places: "place", now: "project" };   // Notebook section to fact category
 const SECTION_NAMES = { ov: "overview", about: "about", how: "how to work together", people: "people", places: "places", now: "right now" };
 export const sectionName = (sec) => SECTION_NAMES[sec] || one(sec) || "notes";
 // A speaker in ambient audio: the wearer is the user, everyone else is another person (DESIGN 3.4).
@@ -117,9 +119,10 @@ export function turnItem({ doc, entries, at, context, channel, session, day, key
 }
 export function noteItem({ row, names, channel }) {
   const human = row.author_type === "human", at = Number(row.edited || row.created) || Date.now();
-  return itemOf(DOC.note(row.id), "note", STRATEGY.note, { content: scrubSecrets(String(row.content || "")), at, update_mode: "replace",
+  // What the helper saved with remember is already one clear fact, so it is kept as written with the category of its section. The person's own notes are extracted.
+  return itemOf(DOC.note(row.id), "note", human || row.page ? STRATEGY.note : STRATEGY.verbatim, { content: scrubSecrets(String(row.content || "")), at, update_mode: "replace",
     context: row.page ? ctxFor("page-edit", { ...names, page: row.page.title, heading: row.page.section }) : ctxFor(human ? "note" : "helper-note", { ...names, section: sectionName(row.sec) }),
-    metadata: { kind: "note", note: row.id, section: row.sec || "", author: human ? "person" : "helper", channel, ...(row.page ? { page: String(row.page.id), page_section: row.page.section || "" } : {}) } });
+    metadata: { kind: "note", note: row.id, section: row.sec || "", author: human ? "person" : "helper", channel, ...(human || row.page ? {} : { category: SECTION_CATEGORY[row.sec] || "other" }), ...(row.page ? { page: String(row.page.id), page_section: row.page.section || "" } : {}) } });
 }
 // kind: sidecar kind ("sheet", "pdf", ...). Spreadsheets and long files become "reference" (chunks, no model call).
 export function fileItem({ id, name, md, kind, at, names, mime, channel }) {
@@ -193,13 +196,11 @@ export const inboxEligible = (it) => !!it && (it.confirmed === true || (it.confi
 
 // Characters this item will cost to extract (the strategy "reference" runs no model, so it has none).
 export const itemChars = (i) => typeof i.content === "string" ? i.content.length : JSON.stringify(i.content ?? "").length;
-export const itemExtractChars = (i) => i.strategy === STRATEGY.reference || i.strategy === STRATEGY.rawTranscript ? 0 : itemChars(i);   // chunks mode makes no model call
-// A send costs what a normal retain costs: hsRetainBatchNano() in src/byok.js (extraction calls, characters, consolidation), and the refresh runs
-// of a new window when the Resident's hsRetainHold finds one open. `models` is the runs to add (0 for none).
-export const itemsNano = (items, models = 0) => hsRetainBatchNano(items.map(itemExtractChars), models);
+export const itemExtractChars = (i) => i.strategy === STRATEGY.reference || i.strategy === STRATEGY.rawTranscript || i.strategy === STRATEGY.verbatim ? 0 : itemChars(i);   // no model call
+// A send costs what a normal retain costs: hsRetainBatchNano() in src/byok.js (extraction calls and characters).
+export const itemsNano = (items) => hsRetainBatchNano(items.map(itemExtractChars));
 
-// Rounds of one send: an append goes alone (Hindsight serializes appends only for a request with exactly one document), and a replace
-// goes with up to `max` other replaces that have different document ids (an async request with a repeated id is refused).
+// Rounds of one send: an append goes alone, in order, and a replace goes with up to `max` other replaces that have different document ids.
 export function rounds(items, max = 20) {
   const out = []; let cur = null;
   for (const i of items) {
@@ -236,41 +237,37 @@ export const writerMethods = {
   hsW() { return hsWriters(this.env) && hsOn(this.env); },
   hsOutboxInit() { if (!this._hsOb) { this.sql.exec(OUTBOX); this._hsOb = true; } },
   // Is this bank being rebuilt right now? Writers then queue instead of sending (DESIGN 5.2, step 1).
-  hsRebuilding() { const s = jp(this.get("hs_rb")); return !!s && ["running", "paused", "failed"].includes(s.status); },
+  hsRebuilding() { const s = jp(this.get("hs_rb")); return s?.v === REBUILD_VERSION && ["running", "paused", "failed"].includes(s.status); },
   hsOutboxCount() { try { this.hsOutboxInit(); return Number(this.sql.exec("SELECT COUNT(*) n FROM hs_outbox").one().n); } catch { return 0; } },
   async hsLocal() { const n = (await this.hsNames()) || {}, tz = this.tz(); return { names: { first: n.first, helper: n.helper, channel: this.get("channel") }, tz, channel: this.get("channel") }; },
   // The one place an item is sent or queued. items: retainV2 items. Returns { sent, queued, skipped }.
   async hsPut(items, o = {}) {
-    o.guard?.check();
     if (!this.hsW() || !items?.length) return { skipped: "off" };
     if (this.memoryMode() === "off") return { skipped: "memory off" };
     items = items.filter((i) => itemChars(i) > 0); if (!items.length) return { skipped: "empty" };
+    await this.hsHydrate();   // the first write of a channel makes its memory from its records first, and this write queues meanwhile
     if (this.hsRebuilding() && !o.rebuild) {
-      o.guard?.check();
       // The bank is being rebuilt: queue, and pay now (a normal write keeps its hold; the rebuild itself is 1HC's cost).
       const h = o.paid === false ? { done: async () => 0 } : await this.hsRetainHold(items.map(itemExtractChars));
       if (!h) { this.byokRetainSkipped(items); return { skipped: "credits" }; }
-      await h.done(); o.guard?.check(); this.hsOutboxInit();
+      await h.done(); this.hsOutboxInit();
       for (const i of items) this.sql.exec("INSERT INTO hs_outbox (doc, item, del, paid, at, ref) VALUES (?,?,0,1,?,?)", i.document_id, JSON.stringify(i), Date.now(), i.key ? String(i.key) : null);   // ref: the turn the entry came from, so the rebuild's source leaves that turn out
       return { queued: items.length };
     }
-    return this.hsSend(items, { paid: o.paid !== false, rebuild: !!o.rebuild, guard: o.guard, bank: o.bank });
+    return this.hsSend(items, { paid: o.paid !== false, rebuild: !!o.rebuild });
   },
   // Send rounds. paid: reserve the metered cost first (own AI key accounts). A failed round goes to the outbox and is tried again by the
   // alarm (a client error, HTTP 400 to 499, is dropped: sending it again cannot help).
-  async hsSend(items, { paid = true, rebuild = false, guard = null, bank: fixedBank = null } = {}) {
-    guard?.check();
-    let bank; try { bank = fixedBank || await this.hsBank(); } catch (e) { if (guard) throw e; return this.hsRetryLater(items, e, paid); }
+  async hsSend(items, { paid = true, rebuild = false } = {}) {
+    let bank; try { bank = await this.hsBank(); } catch (e) { return this.hsRetryLater(items, e, paid); }
     const res = { sent: 0, queued: 0, skipped: 0, dropped: 0 };
     for (const r of rounds(items)) {
-      guard?.check();
       const h = paid ? await this.hsRetainHold(r.map(itemExtractChars)) : { done: async () => 0 };
       if (!h) { this.byokRetainSkipped(r); res.skipped += r.length; continue; }
-      try { guard?.check(); await retainV2(this.env, bank, r, guard ? { beforeSend: id => { guard.check(); guard.submitted(id); }, timeoutMs: guard.timeoutMs() } : {}); await h.done(); res.sent += r.length; }
+      try { await retainV2(this.env, bank, r); await h.done(); res.sent += r.length; }
       catch (e) {
         await h.done(0);
-        if (guard) throw e;   // manual repair keeps its stable operation receipt; it never schedules a detached stale retry
-        if (e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 409 && e.status !== 429) { console.log("hindsight retain dropped", e.message); this.mem.receipt({ mode: "hs-retain", query: r[0]?.document_id, error: String(e.message || e).slice(0, 300) }); res.dropped += r.length; }
+        if (e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 409 && e.status !== 429) { console.log("memory retain dropped", e.message); this.mem.receipt({ mode: "hs-retain", query: r[0]?.document_id, error: String(e.message || e).slice(0, 300) }); res.dropped += r.length; }
         else if (rebuild) throw e;
         else { this.hsRetryLater(r, e, paid); res.queued += r.length; }
       }
@@ -278,7 +275,7 @@ export const writerMethods = {
     return res;
   },
   hsRetryLater(items, e, paid = true) {
-    console.log("hindsight retain queued for retry", String(e?.message || e).slice(0, 160));
+    console.log("memory retain queued for retry", String(e?.message || e).slice(0, 160));
     try { this.mem.receipt({ mode: "hs-retain", query: items[0]?.document_id, error: `queued for retry: ${String(e?.message || e).slice(0, 200)}` }); } catch {}
     this.hsOutboxInit(); for (const i of items) this.sql.exec("INSERT INTO hs_outbox (doc, item, del, paid, at, tries, ref) VALUES (?,?,0,?,?,1,?)", i.document_id, JSON.stringify(i), paid ? 0 : 1, Date.now(), i.key ? String(i.key) : null);
     return { queued: items.length };

@@ -40,6 +40,9 @@ export const JOB_KINDS = {
   // The memory server (Hindsight). Its language model calls come through the Worker (ee/hindsight-llm.js), always on zero-data-retention endpoints and always with
   // require_parameters, because Hindsight's structured answers and tool calls need an endpoint that honours every parameter.
   memory: { fallbacks: 3, effort: true, zdr: true, pick: "chore" },
+  // Mem0 memory (mem0.js). Its vectors must match the Vectorize index (1024 numbers), so a model change means every channel hydrates again: no fallbacks, and the
+  // model runs at every privacy level like any Cloudflare model.
+  embedding_memory: { fallbacks: 0, effort: false, noOutput: true, cloudflare: true, pick: "embedding_memory", needs: "Needs a text embedding model that makes 1024 numbers per text." },
   // Its reranker: a ranking model answers Hindsight's own /systemone request (a choice among the candidates) and writes no text.
   rerank: { fallbacks: 2, effort: false, zdr: true, pick: "decider", latest: true, noOutput: true, needs: "Needs a ranking model (Perplexity or Jev style)." },
 };
@@ -89,6 +92,8 @@ export const JOBS = [
   { id: "hs_reflect", kind: "memory", group: "memory", label: "Memory: reflect", description: "Answers a question by searching the memory for facts, in several steps." },
   { id: "hs_refresh", kind: "memory", group: "memory", label: "Memory: page refresh", description: "Rewrites the Notebook pages (profile, people, places and the others) from the memory." },
   { id: "hs_rerank", kind: "rerank", group: "memory", label: "Memory: recall ranking", description: "Puts the facts found by a memory search in order of how well they answer the question. If it fails, the order the search found them in is used." },
+  { id: "mem_extract", kind: "memory", group: "mem", label: "Memory: extract", description: "Reads each saved conversation, note and file and writes down the facts in it, with a category for each. One call for every 12,000 characters saved." },
+  { id: "mem_embed", kind: "embedding_memory", group: "mem", label: "Memory: embed", description: "Makes the numbers that memory search compares, for every fact saved and every question asked. It must make 1024 numbers per text. Changing the model means every channel's memory is made again from its saved records." },
   { id: "web_search", kind: "search", group: "search", label: "Web search", description: "Finds web pages for a question when DuckDuckGo has no answer. The model is the search provider, and max output is the number of results it asks for." },
   { id: "browser_decider", kind: "decider", group: "browser", label: "Browser next step", description: "Reads each page and decides the browser's next action, such as clicking, typing, scrolling or stopping." },
   { id: "look", kind: "look", group: "browser", label: "Browser screen reading", description: "Looks at a picture of a page in the browser and answers questions about it, or points at something on it." },
@@ -105,6 +110,7 @@ export const GROUPS = [
   { id: "browser", title: "Browser", note: "The models the browser uses: one decides each next step, one writes what to type and summarizes the result, and one reads the screen as a picture." },
   { id: "background", title: "Background jobs", note: "Work that runs behind the scenes. These always use zero-data-retention providers." },
   { id: "memory", title: "Memory (Hindsight)", note: "On the Cloud service the memory server asks the Worker for each of these calls, so they are set and shown here like every other job. They use zero-data-retention providers. The memory server's own embeddings run on that server and are listed read only." },
+  { id: "mem", title: "Memory", note: "Memory (Mem0) stores and searches the facts of each channel in 1Helm's own database. These two jobs are the only model calls it makes. They use zero-data-retention providers for extraction and run on Cloudflare for embedding." },
   { id: "speech", title: "Speech", note: "" },
   { id: "search", title: "Search and pictures", note: "" },
   { id: "other", title: "Other", note: "Jobs outside the groups above. They are saved like every other job." },

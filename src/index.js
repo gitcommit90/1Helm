@@ -64,8 +64,7 @@ import { kanbanProxy } from "./internal-shim.js";
 import { AGE_VERSION, AGE_ERROR, ageOf, ageCookie, agePage, ageNext, recordAge } from "./age-gate.js";
 import { modelsRoute } from "./ee/index.js";
 import { hindsightRoute } from "./ee/index.js";   // the memory server model endpoint (Cloud only, 404 without the Cloud switch)
-import { healthCron } from "./hindsight-health.js";
-import { hindsightSelfTest, hsOn, sweepBanks, recall as hsRecall, bankId as hsBankId } from "./hindsight.js";
+import { hsOn, sweepMemory, recall as hsRecall, bankId as hsBankId } from "./mem0.js";
 import { privacyBoot, privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // AI data privacy (onboarding step, boot)
 import { askDecider, dispatch } from "./ee/index.js";
 import { parityRoute } from "./internal-shim.js";
@@ -332,7 +331,6 @@ async function fixPayment(env, t, origin) {
     metadata: { app: "1hc-proto", tenant_id: t.id }, subscription_data: { metadata: { app: "1hc-proto", tenant_id: t.id } } });
   return { url: cs.url, kind: "resubscribe" };
 }
-const hsSweep = (env, o = {}) => sweepBanks(env, { ...o, channelsOf: (tid) => archive(env, tid).channels() });
 // Hourly: heal missed or out-of-order webhooks by asking Stripe for the truth.
 async function reconcile(env) {
   const rows = (await env.DB.prepare("SELECT id, stripe_subscription, status, sub_status FROM tenants WHERE stripe_subscription<>''").all()).results;
@@ -592,12 +590,10 @@ export default {
     // Unpaid plans: first notices, reminders (start of the final 7 days, 1 day before), deletion when the 7 days are up (src/pastdue.js).
     if (ev.cron === "17 * * * *" && eeEnabled(env)) ctx.waitUntil(pastdueCron(env, { stripe }).then((r) => console.log("pastdue cron", JSON.stringify(r))).catch((e) => console.log("pastdue cron failed", e.message)));
     // Own router pool: rebuilt nightly at 2:17 AM PT (09:17 UTC) when the own router is on (dev only for now).
-    // Hindsight: delete banks whose account or channel no longer exists. Nightly at 3:17 AM PT (10:17 UTC).
-    if (ev.cron === "17 * * * *" && hsOn(env) && new Date(ev.scheduledTime).getUTCHours() === 10) ctx.waitUntil(hsSweep(env).then((r) => console.log("hindsight sweep", JSON.stringify({ ...r, skipped: r.skipped.length }))).catch((e) => console.log("hindsight sweep failed", e.message)));
+    // Memory: delete the facts of an account that no longer exists. Nightly at 3:17 AM PT (10:17 UTC).
+    if (ev.cron === "17 * * * *" && hsOn(env) && new Date(ev.scheduledTime).getUTCHours() === 10) ctx.waitUntil(sweepMemory(env).then((r) => console.log("memory sweep", JSON.stringify(r))).catch((e) => console.log("memory sweep failed", e.message)));
     // Billing flag (billing-flag.js): once a day, find price_unknown events and turns charged over 10x their list-price estimate. Read-only: no charge changes.
     if (ev.cron === "17 * * * *" && eeEnabled(env) && new Date(ev.scheduledTime).getUTCHours() === 10) ctx.waitUntil(dailyBillingFlag(env, { since: (ev.scheduledTime || Date.now()) - 864e5, residentOf: (tid, ch) => env.RESIDENT.get(env.RESIDENT.idFromName(`res:${tid}:${ch}`)), ledgerOf: (tid) => ledger(env, tid) }).catch((e) => console.log("billing flag failed", e.message)));
-    // Hindsight bank health (hindsight-health.js, HS_FOUNDATIONS): about one check per bank per day, spread over the hourly runs. Results: /_ops/hs-health.
-    if (ev.cron === "17 * * * *" && hsOn(env)) ctx.waitUntil(healthCron(env, { now: ev.scheduledTime }).then((r) => { if (r.checked || r.errors) console.log("hindsight health", JSON.stringify(r)); }).catch((e) => console.log("hindsight health failed", e.message)));
   },
   async fetch(req, env, ctx) {
     env = tolerantEnv(env);   // do-stub.js: every Durable Object call survives a deploy's skew/reset window
@@ -746,17 +742,6 @@ export default {
       // Models have their own admin gate on both environments. Writes only touch this environment's D1.
       if (p === "/models" || p.startsWith("/models/")) return modelsRoute(req, env, await currentUser(req, env));
 
-      // Hindsight private-link self-test (dev only; needs the Hindsight API key as a bearer token).
-      if (env.ENV_NAME === "dev" && p === "/_ops/hindsight-selftest") {
-        if (!env.HINDSIGHT_API_KEY || req.headers.get("authorization") !== `Bearer ${env.HINDSIGHT_API_KEY}`) return new Response("Not found", { status: 404 });
-        if (req.method !== "POST") return new Response("Method not allowed", { status: 405, headers: { allow: "POST" } });
-        try { return Response.json(await hindsightSelfTest(env)); } catch (e) { return Response.json({ error: e.message }, { status: 502 }); }
-      }
-      // Hindsight bank sweep, on demand (dev only; same bearer key). ?dry=1 reports what would be deleted.
-      if (env.ENV_NAME === "dev" && p === "/_ops/hindsight-sweep" && req.method === "POST") {
-        if (!env.HINDSIGHT_API_KEY || req.headers.get("authorization") !== `Bearer ${env.HINDSIGHT_API_KEY}`) return new Response("Not found", { status: 404 });
-        try { return Response.json(await hsSweep(env, { dry: url.searchParams.get("dry") === "1", graceMs: url.searchParams.has("grace") ? Number(url.searchParams.get("grace")) : undefined })); } catch (e) { return Response.json({ error: e.message }, { status: 502 }); }
-      }
       // Dev debugging (src/ops-read.js): read-only JSON on any dev account, and a look-only "view as". Dev + x-ops-key only; else 404.
       if (p.startsWith("/_ops/")) return opsRoute(req, env, url, { deleteChannel, archive, ledger, storageOf, storageView, textingStatus, listConnections, holdOf, hsOn, hsRecall, bankId: hsBankId, beeOps });
       // Kanban board (dev only, release admins): Kan behind Workers VPC.

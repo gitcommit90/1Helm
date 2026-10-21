@@ -5,6 +5,16 @@
   "main": "src/index.js",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
+  // Memory (src/mem0.js, npm mem0ai) imports every storage and model provider package that Mem0 supports. The ones 1Helm never uses resolve to one stub so the Worker bundles.
+  "alias": {
+    "better-sqlite3": "./src/mem0-stub.js", "@azure/identity": "./src/mem0-stub.js", "@azure/search-documents": "./src/mem0-stub.js", "cassandra-driver": "./src/mem0-stub.js",
+    "chromadb": "./src/mem0-stub.js", "cloudflare": "./src/mem0-stub.js", "cohere-ai": "./src/mem0-stub.js", "@elastic/elasticsearch": "./src/mem0-stub.js", "fastembed": "./src/mem0-stub.js",
+    "@google-cloud/aiplatform": "./src/mem0-stub.js", "groq-sdk": "./src/mem0-stub.js", "@huggingface/transformers": "./src/mem0-stub.js", "iovalkey": "./src/mem0-stub.js",
+    "@langchain/core/documents": "./src/mem0-stub.js", "@langchain/core/messages": "./src/mem0-stub.js", "@mochow/mochow-sdk-node": "./src/mem0-stub.js", "mongodb": "./src/mem0-stub.js",
+    "mysql2/promise": "./src/mem0-stub.js", "ollama": "./src/mem0-stub.js", "@opensearch-project/opensearch": "./src/mem0-stub.js", "oracledb": "./src/mem0-stub.js", "pg": "./src/mem0-stub.js",
+    "@pinecone-database/pinecone": "./src/mem0-stub.js", "@qdrant/js-client-rest": "./src/mem0-stub.js", "redis": "./src/mem0-stub.js", "@supabase/supabase-js": "./src/mem0-stub.js", "@turbopuffer/turbopuffer": "./src/mem0-stub.js",
+    "@upstash/vector": "./src/mem0-stub.js", "weaviate-client": "./src/mem0-stub.js", "zeroentropy": "./src/mem0-stub.js"
+  },
   "workers_dev": true,
   "rules": [{ "type": "Text", "globs": ["**/*.md", "**/skills/*/scripts/*"], "fallthrough": true }],
   "d1_databases": [{
@@ -39,6 +49,7 @@
     "ENV_NAME": "selfhost",
     "TEST_MODE": "0",
     "NATIVE_NETWORK": "on",
+    "MEM0_TELEMETRY": "false",
     "CONTEXT_LAYOUT": "v2",
     "APP_HOST": "REPLACE_WITH_YOUR_WORKERS_DEV_HOST",
     "GATEWAY_HOST": "REPLACE_WITH_YOUR_WORKERS_DEV_HOST",

@@ -17,6 +17,7 @@ import { contextFor, speakerLabels, fillTemplate } from "../../hindsight-templat
 import { convEntries, turnItem, DOC } from "../../hindsight-writers.js";
 import { chatEnvelope, placeEntries } from "../../adapters/chat.js";
 import { withEnvelope } from "../../memory-envelope.js";
+import { MISSION, renderConversation } from "../../mem0.js";
 import { HINDSIGHT_SNAPSHOT, FACT_ID, RETAIN, CONSOLIDATION, REFLECT, REFRESH } from "./hindsight-snapshot.js";
 
 const DIR = "/app-static/sandbox/";
@@ -83,7 +84,7 @@ const eventDate = (ms) => `${new Date(ms).toLocaleDateString("en-US", { weekday:
 const metaLines = (m) => Object.entries(m).sort((a, b) => a[0].length - b[0].length || (a[0] < b[0] ? -1 : 1)).map(([k, v]) => `  ${k}: ${v}`).join("\n");
 
 // The retain request of one finished chat turn. The item is made by the same functions the chat writer uses (entries, context, envelope metadata) from an invented turn.
-function retainBody() {
+function sampleItem() {
   const at = Date.UTC(2026, 9, 19, 9, 29, 41), endAt = Date.UTC(2026, 9, 19, 9, 29, 52), session = "5d7c3a1e-8b24-4f60-a9d1-2c4e6f8a0b13", turn = "0e8f2b6a-31c5-4d97-8a40-7b9d1c3e5f27";
   let entries = convEntries({ userText: "", reply: "Added the Maple Street Bakery invoice of $412.00 to your budget sheet. It is due Friday, and I will remind you on Thursday evening.", notes: "", at, endAt, kind: "chat",
     labels: speakerLabels(NAMES), tz: TZ, userMessages: [{ at, text: "Please add the Maple Street Bakery invoice for $412 to my budget sheet. I always pay the bakery on Fridays, and my sister Priya is allergic to walnuts, so no walnut orders.", origin: { surface: "app" } }] });
@@ -92,10 +93,19 @@ function retainBody() {
   const e = chatEnvelope({ at, endAt, tz: TZ, where: null, session: sid, turn, kind: "chat" });
   entries = placeEntries(entries, e); item = withEnvelope({ ...item, content: entries }, e, { first: FIRST });
   item.metadata.ingested_at = new Date(endAt + 1000).toISOString();   // the envelope stamps the time of the call, the sample stays the same on every build
+  return { item, day, at };
+}
+function retainBody() {
+  const { item, at } = sampleItem();
   const chunk = `Extract facts from the following chunk.\n\nChunk: 1/1\nEvent Date: ${eventDate(at)}\nContext: ${item.context}\nMetadata:\n${metaLines(item.metadata)}\n\nContent:\n${JSON.stringify(item.content)}`;
   return { messages: [system(RETAIN.system), { role: "user", content: RETAIN.userHead + chunk }], response_format: RETAIN.responseFormat };
 }
 
+// The input of the evaluation of Memory: extract (sandbox-eval.js): the text of the same invented turn as the real writer renders it (retainV2), its context line and its day.
+export const memExtractInput = () => { const { item, day } = sampleItem(); return { text: renderConversation(item.content), context: item.context, date: day }; };
+// The extraction call of Memory: extract. Mem0 adds its own long extraction prompt, so the sample is the mission and the lines of the same invented turn.
+const memExtractBody = () => ({ messages: [{ role: "system", content: `${MISSION}\nReply with only JSON: {"memory":[{"id":"0","text":"...","category":"..."}]}` },
+  { role: "user", content: `[2026-10-19T09:29:41-07:00] ${FIRST} (user) (app): Please add the Maple Street Bakery invoice for $412 to my budget sheet. I always pay the bakery on Fridays, and my sister Priya is allergic to walnuts, so no walnut orders.\n[2026-10-19T09:29:52-07:00] ${HELPER} (assistant): Added the invoice to your budget sheet. It is due Friday.` }], response_format: { type: "json_object" } });
 // The id of the one existing observation the new fact belongs to.
 const OBSERVATION_ID = "3b6f9a14-52de-4c87-b0a3-91e7d2c48f65";
 // The consolidation request: the new facts of a retain batch and the observations that may take them in.
@@ -146,6 +156,7 @@ const GOLDEN = {
   web_search: () => ({ type: "contains", field: "results", value: ["docs.python.org"] }),
   // The extraction's answer is { facts: [{ what, ... }] } (the schema is in the snapshot). The facts of the turn: the bakery, the amount, the day and the allergy. "412" fits $412 and $412.00.
   hs_retain: () => ({ type: "contains", field: null, value: ["Maple Street Bakery", "412", "Friday", "walnut"] }),
+  mem_extract: () => ({ type: "contains", field: null, value: ["Maple Street Bakery", "412", "Friday", "walnut"] }),
   // The consolidation answer is { creates: [], updates: [{ observation_id, source_fact_ids, text, reason }], deletes: [] }. The new fact (pays the bakery invoice on Fridays)
   // is the same facet as the existing observation (pays the invoice at the end of the week), so the right action is one update of that observation.
   hs_consolidation: () => ({ type: "items", list: "updates", match: ["observation_id"], value: [{ observation_id: OBSERVATION_ID }] }),
@@ -172,6 +183,8 @@ export const samples = [
   // The browser reads a screenshot and answers a question about it (the caption and point calls use the other bodies of lookBodies).
   { job: "look", golden: GOLDEN.look(), via: via("media-job.js", "dispatchMedia"), meta: { kind: "browser-look" }, build: async () => ({ request: lookBodies(file(FILES.page, "data_url"), { question: "What is the total due at check-in?" }).answer, files: [FILES.page] }) },
   { job: "web_search", golden: GOLDEN.web_search(), via: via("model-dispatch.js", "dispatch"), meta: { kind: "web-search" }, build: async () => ({ request: searchRequest(SEARCH_QUERY, 5), files: [] }) },
+  { job: "mem_extract", golden: GOLDEN.mem_extract(), via: via("model-dispatch.js", "dispatch"), meta: { kind: "memory-extract" }, build: async () => ({ request: memExtractBody(), files: [] }) },
+  { job: "mem_embed", via: via("media-job.js", "dispatchMedia"), meta: { kind: "memory-embed" }, build: async () => ({ request: embedRequest(["Sam pays the Maple Street Bakery invoice on Fridays.", "Sam's sister Priya is allergic to walnuts."]), files: [] }) },
   // The memory jobs are snapshots of what the Hindsight server sent on the capture date, with invented content. The request of a chat job is the server's body, which
 // the Worker cleans with cleanChatRequest before dispatch(); the ranking body goes to dispatch() as it is.
   { job: "hs_retain", golden: GOLDEN.hs_retain(), via: via("hindsight-llm.js", "cleanChatRequest"), meta: { kind: "memory-retain" }, build: async () => ({ request: retainBody(), files: [] }) },

@@ -113,7 +113,7 @@ export { deliverNativeFallback, dropNativePolls, nativePollDelivered, nativePoll
 export { DONE_TOOL, ORCHESTRATOR_TOOLS, REQUEST_INPUT_TOOL, WORKER_REQUEST_TOOLS, lineRange, orchestrationPolicy, routingToolsAllowed, stepLog, storedMessages } from "./orchestrator.js";
 export { deliverPhoneFiles, dropPhoneFiles, phoneFilesInit, phoneFilesNext, queuePhoneFiles } from "./phone-files.js";
 export { dropPhotonReplies, photonAnswerOptions, photonMessage, photonReplyInit, photonReplyOptions, photonReplySource, photonSourceInput, recordPhotonReplySource } from "./photon-replies.js";
-export { AGENT_MEMORY_TOOLS, agentMemoryNextWake, agentSessionDocuments, cancelAgentOperations, forgetAgentBank, forgetAgentTenant, agentSessionInventory, flushAgentMemory, purgeAgentSession, readAgentDocument, retainAgentMessage, retainAgentRound, searchAgentBank } from "./routing-agent-memory.js";
+export { AGENT_MEMORY_TOOLS, agentMemoryNextWake, agentSessionDocuments, forgetAgentBank, agentSessionInventory, flushAgentMemory, purgeAgentSession, readAgentDocument, retainAgentMessage, retainAgentRound, searchAgentBank } from "./routing-agent-memory.js";
 export { ROUTING_FILE_TOOLS, approveRoutingFiles, collectRoutingFiles, discardRoutingFiles, dropRoutingArtifacts, initRoutingArtifacts, isRoutingImageError, routingArtifactKeys, routingFileTool, routingImageFallback, stageRoutingFile } from "./routing-artifacts.js";
 export { dynamicRoutingOn } from "./routing-config.js";
 export { BeeContainer } from "./bee-container.js";
