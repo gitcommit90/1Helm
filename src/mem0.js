@@ -125,6 +125,16 @@ export function pieces(text, max) {
   }
   if (cur.trim()) out.push(cur); return out;
 }
+// The times of the lines "[ISO time] speaker: text" in each chunk of a raw transcript: { ts (first line's time, ms), ts_end (last line's time, ms) }. A chunk with no timed line gets the fallback
+// (the previous chunk's end, or the item's time), so a chunk is always dated. A line cut at the chunk size continues in the next chunk, which has no time of its own.
+const LINE_TIME = /^\[(\d{4}-\d\d-\d\dT[^\]\s]+)\]/;
+export function chunkTimes(parts, fallback) {
+  let prev = fallback;
+  return parts.map((p) => {
+    const t = p.split("\n").map((l) => Date.parse(LINE_TIME.exec(l)?.[1] ?? "")).filter(Number.isFinite), ts = t.length ? t[0] : prev, ts_end = t.length ? t.at(-1) : prev;
+    prev = ts_end; return { ts, ts_end };
+  });
+}
 // A conversation (a JSON array of { time, speaker, origin, place, reply_to, text }) as lines, other text as it is.
 export const renderConversation = (c) => Array.isArray(c) ? c.map((e) => `[${e.time || ""}] ${e.speaker || ""}${e.origin ? ` (${e.origin})` : ""}${e.place ? ` at ${e.place}` : ""}: ${e.text}${e.reply_to ? ` (quoting ${e.reply_to.speaker}: ${e.reply_to.text})` : ""}`).join("\n") : String(c);
 // items: [{ content (text, or an array of conversation entries), at (ms), context, document_id (required), metadata, strategy, tags, update_mode ("replace" | "append") }].
@@ -155,7 +165,11 @@ async function retainOne(env, bank, i) {
     const parts = i.strategy === "verbatim" ? [text] : pieces(text, chunk);
     await withMemory(env, bank, "", async (m, ns) => {
       await embedAll(parts);   // one batch for every chunk, not one embedding call each
-      return m.add(parts.map((p) => ({ role: "user", content: p })), { userId: ns, infer: false, metadata: { ...meta, ...(context ? { context } : {}), ...(i.strategy === "verbatim" ? {} : { raw: true }) } });   // chunks keep their context line (who wrote them), as no extraction reads it
+      const base = { ...meta, ...(context ? { context } : {}), ...(i.strategy === "verbatim" ? {} : { raw: true }) };   // chunks keep their context line (who wrote them), as no extraction reads it
+      if (i.strategy !== "raw-transcript") return m.add(parts.map((p) => ({ role: "user", content: p })), { userId: ns, infer: false, metadata: base });
+      const times = chunkTimes(parts, at);   // each chunk of a recording is dated by its own first line, with ts_end for the window check in recall
+      let out; for (let k = 0; k < parts.length; k++) out = await m.add([{ role: "user", content: parts[k] }], { userId: ns, infer: false, metadata: { ...base, ...times[k] } });
+      return out;
     });
   } else {
     const day = new Date(at).toISOString().slice(0, 10);
@@ -170,11 +184,14 @@ async function retainOne(env, bank, i) {
 export const SEARCH_TOPK = 20, SEARCH_THRESHOLD = 0.1;
 const iso = (ms) => (Number.isFinite(Number(ms)) && ms ? new Date(Number(ms)).toISOString() : null);
 const shape = (id, p, score) => ({ id, text: p.data, mentioned_at: iso(p.ts) || p.createdAt || null, document_id: p.doc || null, type: p.category || "other", raw: !!p.raw, metadata: p, ...(score != null ? { scores: { final: score } } : {}) });
-// Search in one channel's memory. scope: { from, to } in ms (an exact filter on the item's time, from inclusive, to exclusive). source: "bee" keeps the Bee recordings only. → { results, ms }
+// A raw chunk is dated by its first line, so a window search asks the index from RAW_LOOKBACK_MS earlier and then keeps a chunk only when it overlaps the window (its last line, ts_end, is at or after from).
+export const RAW_LOOKBACK_MS = 15 * 60 * 1000;
+// Search in one channel's memory. scope: { from, to } in ms (an exact filter on the item's time, from inclusive, to exclusive; a raw chunk counts when its lines overlap the window). source: "bee" keeps the Bee recordings only. → { results, ms }
 export async function recall(env, bank, query, o = {}) {
-  const t0 = Date.now(), ts = { ...(o.scope?.from != null ? { gte: o.scope.from } : {}), ...(o.scope?.to != null ? { lt: o.scope.to } : {}) };
+  const from = o.scope?.from, t0 = Date.now(), ts = { ...(from != null ? { gte: from - RAW_LOOKBACK_MS } : {}), ...(o.scope?.to != null ? { lt: o.scope.to } : {}) };
   const r = await withMemory(env, bank, "", (m, ns) => m.search(String(query).slice(0, 2000), { topK: o.topK || SEARCH_TOPK, threshold: SEARCH_THRESHOLD, filters: { user_id: ns, ...(o.source ? { source: o.source } : {}), ...(Object.keys(ts).length ? { ts } : {}) } }));
-  return { results: r.results.map((x) => shape(x.id, { ...x.metadata, data: x.memory, createdAt: x.createdAt }, x.score)), ms: Date.now() - t0 };
+  const inside = (x) => from == null || Number(x.metadata?.ts) >= from || (x.metadata?.raw && Number(x.metadata?.ts_end) >= from);
+  return { results: r.results.filter(inside).map((x) => shape(x.id, { ...x.metadata, data: x.memory, createdAt: x.createdAt }, x.score)), ms: Date.now() - t0 };
 }
 const store = async (env, bank) => new MemStore(env, await nsOf(bank));
 // An exact list of the facts in a time range (start inclusive, end exclusive, ms), newest first, or of one document (doc).

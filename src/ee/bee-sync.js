@@ -30,6 +30,7 @@ import { DurableObject } from "cloudflare:workers";
 import { tolerantEnv, codeV } from "../do-stub.js";
 import { openSecret } from "../sentinel.js";
 import { hsOn, bankId, contentHash } from "../mem0.js";
+import { isTestTenant } from "../test-tenant.js";
 import { forgetMemoryDocs, ensureDeletionTables, deleteNote } from "../deletion.js";
 import { hsNoteNotify, hsWriters, inboxEligible, DOC as HS_DOC } from "../hindsight-writers.js";   // HS_WRITERS: Bee facts saved as Notebook notes reach General's bank (note:<id>)
 import { stPut, stDelete, stDeleteListed, StorageFull } from "../storage.js";
@@ -130,6 +131,9 @@ export const transcriptDoc = (conv, withSummary = false) => ({ source: "bee", id
 export const FACTS_EVERY_MS = 60 * 60e3;
 // Backfill: 20 conversations per container job, the next batch 1 s after; seeds (the Captain's first sync, 10-07: 6 conversations,
 // 10,125 summary characters, $0.00142 job + retains → ~$0.00024 each at the old meter; ~0.4 s of job time each; the retain part is now priced by hsRetainNano, about $0.0008 each) until this account has its own.
+// Raw transcript chunks are dated by their own first line since version 2 (mem0.js chunkTimes). A recording kept with an older version (convs.raw_v null or lower) is put again, once, by the alarm:
+// replace mode, no extraction call, embeddings only. RESAVE_BATCH recordings per alarm, the next alarm RESAVE_GAP_MS later, so a deploy or restart goes on from the rows still marked old.
+export const BEE_RAW_VERSION = 2, RESAVE_BATCH = 3, RESAVE_GAP_MS = 5e3, RESAVE_CREDITS_WAIT_MS = 60 * 60e3, RESAVE_MAX_TRIES = 3;
 export const BF_BATCH = 20, BF_GAP_MS = 1000, BF_SEED_MS = 700, BF_BATCH_OVERHEAD_MS = 3000;
 export const BF_SEED_RETAIN_NANO = Math.ceil(hsRetainNano(1688) * RETAIN_MARKUP);
 export const FACTS_RESERVE_NANO = Math.ceil(120 * JOB_NANO_PER_SEC);
@@ -163,6 +167,7 @@ export class BeeSync extends DurableObject {
     // try_at: when an owed write is next due (null = now); stuck: why it stopped retrying (null = still retried).
     const cols = new Set(this.sql.exec("PRAGMA table_info(facts)").toArray().map((c) => c.name));
     if (!cols.has("try_at")) this.sql.exec("ALTER TABLE facts ADD COLUMN try_at INTEGER");
+    if (!new Set(this.sql.exec("PRAGMA table_info(convs)").toArray().map((c) => c.name)).has("raw_v")) this.sql.exec("ALTER TABLE convs ADD COLUMN raw_v INTEGER");
     if (!cols.has("stuck")) this.sql.exec("ALTER TABLE facts ADD COLUMN stuck TEXT");
   }
   get(k) { return this.sql.exec("SELECT v FROM kv WHERE k=?", k).toArray()[0]?.v; }
@@ -254,8 +259,35 @@ export class BeeSync extends DurableObject {
     if (this.bf()?.status === "running") await this.bfStep().catch(async (e) => { await this.ev(`backfill step failed: ${String(e?.message || e).slice(0, 160)}`); });
     if (this.ambient.running()) await this.ambientRun(false, true);   // stored speech stays immediate; the model passes run at most every 30 minutes (ambient.js sessionAt)
     await this.hsInboxSync().catch((e) => console.log("bee inbox memory", String(e?.message || e).slice(0, 120)));   // HS_WRITERS: confirmed inbox items → General's bank
+    const resaveAt = await this.rawResaveStep().catch((e) => { console.log("bee raw resave", String(e?.message || e).slice(0, 120)); return now() + 10 * 60e3; });
     const bfNext = this.bf()?.status === "running" ? now() + BF_GAP_MS : Infinity, liveNext = this.get("status") === "active" ? Math.max(now() + 1000, this.dueAt()) : Infinity;
-    const at = Math.min(bfNext, liveNext, this.writesDueAt(), this.ambient.running() ? this.ambient.dueAt() : Infinity); if (at < Infinity) await this.ctx.storage.setAlarm(Math.max(at, now() + 500));
+    const at = Math.min(bfNext, liveNext, this.writesDueAt(), this.ambient.running() ? this.ambient.dueAt() : Infinity, resaveAt ?? Infinity); if (at < Infinity) await this.ctx.storage.setAlarm(Math.max(at, now() + 500));
+  }
+  // One step of the one-time re-save (BEE_RAW_VERSION): up to RESAVE_BATCH recordings kept with an older version are read from their saved transcript and put again as the same document, newest
+  // first, each reserved and settled like a sync's retain (hsRawNano, embeddings only). The recording's raw_v row is the saved progress. → when the alarm should run again, or null when nothing is left.
+  async rawResaveStep() {
+    if (!this.tid() || this.get("account_deleted") || !hsWriters(this.env) || !hsOn(this.env)) return null;
+    const due = () => this.sql.exec("SELECT id, r2_key FROM convs WHERE retained_at IS NOT NULL AND end_time IS NOT NULL AND r2_key IS NOT NULL AND (raw_v IS NULL OR raw_v < ?) ORDER BY start_time DESC, id DESC", BEE_RAW_VERSION).toArray();
+    let rows = due(); if (!rows.length) return null;
+    if (await isTestTenant(this.env, this.tid())) return null;   // test accounts never spend on background work
+    const tries = (() => { try { return JSON.parse(this.get("resave_tries") || "{}"); } catch { return {}; } })();
+    rows = rows.filter((r) => (tries[r.id] || 0) < RESAVE_MAX_TRIES).slice(0, RESAVE_BATCH);
+    if (!rows.length) return null;
+    const L = this.ledger(), env = this.env; let done = 0;
+    for (const r of rows) {
+      const o = await env.WS.get(r.r2_key); let d = null; try { d = o ? JSON.parse(await o.text()) : null; } catch {}
+      if (!d) { tries[r.id] = RESAVE_MAX_TRIES; continue; }
+      const content = beeContentOf(env, d), cost = Math.ceil(hsRawNano(content.length + 60 * content.split("\n").length) * RETAIN_MARKUP), rid = `bee-resave:${crypto.randomUUID()}`;
+      if (!content) { this.sql.exec("UPDATE convs SET raw_v=? WHERE id=?", BEE_RAW_VERSION, r.id); continue; }
+      let h = null; try { h = await L.reserve(rid, cost); } catch { h = { ok: false }; }
+      if (!h?.ok) { this.put("resave_tries", JSON.stringify(tries)); return now() + RESAVE_CREDITS_WAIT_MS; }
+      try { await ensureDeletionTables(env); await env.DB.prepare("DELETE FROM hs_forget WHERE bank=? AND doc=?").bind(this.bank(), docId(r.id)).run(); const out = await this.hsBeePut(d); if (out?.error) throw new Error(out.error); }
+      catch (e) { await L.settle(rid, 0).catch(() => {}); tries[r.id] = (tries[r.id] || 0) + 1; console.log("bee raw resave", r.id, String(e?.message || e).slice(0, 120)); continue; }
+      await L.settle(rid, cost).catch(() => {});
+      this.sql.exec("UPDATE convs SET raw_v=? WHERE id=?", BEE_RAW_VERSION, r.id); this.bump({ raw_resaved: 1, cost_nano: cost }); done++;
+    }
+    this.put("resave_tries", JSON.stringify(tries));
+    return due().some((r) => (tries[r.id] || 0) < RESAVE_MAX_TRIES) ? now() + RESAVE_GAP_MS : null;
   }
   ambientQuery(args = {}) { return this.ambient.query(args); }
   async armAmbientRecovery() { if (this.get("ambient_recovery_arm") === "1" && this.ambient.running()) { await this.arm(now() + 1000); this.put("ambient_recovery_arm", null); } }
@@ -480,7 +512,7 @@ export class BeeSync extends DurableObject {
     if (st.creditsOut) { this.pend(id, "waiting for credits"); return "waiting"; }
     // Raw storage admission above applies to finished and ongoing recordings alike.
     // 2. the summary → General's memory, reserved first
-    const item = { content: beeContentOf(env, conv) }; let retainedAt = row?.retained_at || null;
+    const item = { content: beeContentOf(env, conv) }; let retainedAt = row?.retained_at || null, rawV = row?.raw_v ?? null;
     if (item.content && st.hsOk) {
       // Bee option A: the words go in as chunks with no model call, so the price is their embeddings (hsRawNano, about 60 characters of time and speaker per line on top of the words).
       const cost = Math.ceil(hsRawNano(item.content.length + 60 * item.content.split("\n").length) * RETAIN_MARKUP), rid = `bee-retain:${crypto.randomUUID()}`;
@@ -490,12 +522,13 @@ export class BeeSync extends DurableObject {
         await ensureDeletionTables(env); await env.DB.prepare("DELETE FROM hs_forget WHERE bank=? AND doc=?").bind(st.bank, docId(id)).run();   // an old removal mustn't delete it again
         await this.hsBeePut(conv);   // the transcript as raw text chunks (bee:conv:<id>, strategy raw-transcript), through General's Resident
       } catch (e) { await st.L.settle(rid, 0).catch(() => {}); this.pend(id, "memory not saved"); console.log("bee retain", String(e?.message || e).slice(0, 160)); return "failed"; }
-      await st.L.settle(rid, cost).catch(() => {}); st.retainNano += cost; st.retainChars += item.content.length; retainedAt = now();
+      await st.L.settle(rid, cost).catch(() => {}); st.retainNano += cost; st.retainChars += item.content.length; retainedAt = now(); rawV = BEE_RAW_VERSION;
       this.bump({ retain_n: 1, retain_nano: cost });
     }
     this.sql.exec(`INSERT INTO convs (id,start_time,end_time,updated_at,retained_at,r2_key,bytes,chars,at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
       start_time=excluded.start_time,end_time=excluded.end_time,updated_at=excluded.updated_at,retained_at=excluded.retained_at,r2_key=excluded.r2_key,bytes=excluded.bytes,chars=excluded.chars,at=excluded.at`,
       id, msOf(conv.start_time), msOf(conv.end_time), conv.updated_at ?? null, retainedAt, key, bytes, item.content.length, now());
+    this.sql.exec("UPDATE convs SET raw_v=? WHERE id=?", rawV, id);
     if (rawOk) this.unpend(id);
     return row ? "updated" : "new";
   }

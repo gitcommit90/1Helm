@@ -3,7 +3,7 @@
 // the time and source filters, the topK limit of Vectorize, deletes, and the category block. Tests check what is stored and found, never the model's wording.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { retainV2, recall, forgetDocument, forgetChannel, forgetTenant, memoriesList, listDocuments, categoryBlock, factsOf, bankId, pieces, CATEGORIES } from "../src/mem0.js";
+import { retainV2, recall, forgetDocument, forgetChannel, forgetTenant, memoriesList, listDocuments, categoryBlock, factsOf, bankId, pieces, chunkTimes, CATEGORIES } from "../src/mem0.js";
 import { vecFilter, sqlFilter, nsOf, MemStore, removeRows } from "../src/mem0-store.js";
 import { memEnv, fakeExtraction } from "./helpers/mem0-fakes.mjs";
 
@@ -71,6 +71,35 @@ test("raw kinds are stored as chunks with no model call, and a search can be lim
     const late = await recall(env, bankA, "plumber leak", { scope: { from: Date.UTC(2026, 9, 10) } });
     assert.ok(late.results.length && late.results.every((r) => r.document_id === "file:9"));
     assert.equal((await factsOf(env, bankA)).length, 0, "raw chunks are not facts of the profile");
+  } finally { x.done(); }
+});
+
+// A recording of 11:45 to 12:51 Pacific (UTC-7), one line a minute, each line about 100 characters so a chunk holds a few minutes.
+const rec = () => Array.from({ length: 67 }, (_, k) => { const m = 11 * 60 + 45 + k, t = `2026-10-20T${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}:00-07:00`; return { ms: Date.parse(t), line: `[${t}] Speaker 1: minute ${k} we talked about the GPU computer and the whiteboard ${"x".repeat(30)}` }; });
+
+test("each chunk of a recording is dated by its own first line, and a chunk with no times takes the fallback", async () => {
+  const r = rec(), parts = pieces(r.map((x) => x.line).join("\n"), 800), times = chunkTimes(parts, 123);
+  assert.ok(parts.length > 5);
+  times.forEach((t, k) => { assert.equal(t.ts, Date.parse(parts[k].match(/^\[([^\]]+)\]/)[1])); assert.ok(t.ts_end >= t.ts); });
+  assert.equal(times[0].ts, r[0].ms); assert.equal(times.at(-1).ts_end, r.at(-1).ms);
+  assert.ok(times.every((t, k) => k === 0 || t.ts > times[k - 1].ts), "the chunks run forward in time");
+  assert.deepEqual(chunkTimes(["no time here", "nor here"], 123), [{ ts: 123, ts_end: 123 }, { ts: 123, ts_end: 123 }]);
+  assert.deepEqual(chunkTimes(["[2026-10-20T11:50:00-07:00] a", "continued line"], 5).map((t) => t.ts), [Date.parse("2026-10-20T11:50:00-07:00"), Date.parse("2026-10-20T11:50:00-07:00")], "a cut line continues the earlier time");
+  const { env } = memEnv(), x = fakeExtraction(() => []);
+  try {
+    await retainV2(env, bankA, [{ document_id: "bee:conv:11459171", content: r.map((y) => y.line).join("\n"), at: r[0].ms, strategy: "raw-transcript", tags: ["source:bee", "kind:raw"] },
+      { document_id: "bee:conv:2", content: "no times in these lines\nat all, GPU", at: Date.UTC(2026, 9, 21), strategy: "raw-transcript", tags: ["source:bee"] }]);
+    const items = (await memoriesList(env, bankA, { doc: "bee:conv:11459171" })).items, stamps = new Set(items.map((i) => i.metadata.ts));
+    assert.equal(stamps.size, items.length, "no two chunks share the recording's start time"); assert.ok(items.every((i) => i.metadata.ts_end >= i.metadata.ts));
+    assert.equal((await memoriesList(env, bankA, { doc: "bee:conv:2" })).items[0].metadata.ts, Date.UTC(2026, 9, 21), "lines with no times keep the item's time");
+    const from = Date.parse("2026-10-20T11:50:00-07:00"), to = Date.parse("2026-10-20T12:40:00-07:00"), w = await recall(env, bankA, "GPU computer whiteboard", { source: "bee", topK: 100, scope: { from, to } });
+    const mine = w.results.filter((h) => h.document_id === "bee:conv:11459171");
+    assert.ok(mine.length > 5, "a window inside the recording finds its chunks");
+    assert.ok(mine.every((h) => h.metadata.ts < to && h.metadata.ts_end >= from), "every chunk overlaps the window");
+    assert.ok(mine.some((h) => h.metadata.ts < from), "the chunk that began just before the window and runs into it is kept");
+    assert.ok(w.results.every((h) => h.document_id !== "bee:conv:2"), "a recording outside the window is not returned");
+    const after = await recall(env, bankA, "GPU computer whiteboard", { source: "bee", topK: 100, scope: { from: r.at(-1).ms + 120000 } });
+    assert.ok(after.results.every((h) => h.document_id !== "bee:conv:11459171"), "a window after the recording ended finds none of its chunks");
   } finally { x.done(); }
 });
 

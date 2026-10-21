@@ -368,7 +368,7 @@ const bd = async (m, id) => { const items = (await memoriesList(m.env, m.bk, { d
   assert.equal(beeEnvelope({ id: 1, lines: [], started: null, at: 5 }).where, null, "no location from Bee: no place");
   // on the real Resident: General's Bee document gets the envelope, and with the flag off it does not
   const m = mkRes(); await m.R.hsNames(); await m.R.hsBeePut({ id: 77, lines, at: c.at, address: location.address, summary: "Lunch", started: c.started, ended: c.ended, location, timezone: conv.timezone, device: conv.device_type, start_raw: conv.start_time, end_raw: conv.end_time });
-  const b77 = await bd(m, "bee:conv:77"); assert.ok(b77); assert.equal(b77.metadata.env, "env-1"); assert.equal(b77.metadata.lat, "37.795512345"); assert.equal(b77.timestamp, new Date(c.at).toISOString());
+  const b77 = await bd(m, "bee:conv:77"); assert.ok(b77); assert.equal(b77.metadata.env, "env-1"); assert.equal(b77.metadata.lat, "37.795512345"); assert.equal(b77.timestamp, new Date(Date.parse(b77.text.match(/^\[([^\]]+)\]/)[1])).toISOString(), "a chunk is dated by its own first line (these fixture lines carry no usable time, so it is the time they were written)");
   const m2 = mkRes(); await m2.R.hsNames(); await m2.R.hsBeePut({ id: 78, lines, at: c.at, address: location.address, summary: "x", started: c.started, ended: c.ended });
   assert.equal((await bd(m2, "bee:conv:78")).metadata.env, "env-1", "an older caller without the new fields still gets the time and speakers"); assert.equal((await bd(m2, "bee:conv:78")).metadata.lat, undefined);
   const off = mkRes({ env: { HS_ENVELOPE: "off" } }); await off.R.hsNames(); await off.R.hsBeePut({ id: 79, lines, at: c.at, address: location.address, summary: "x", started: c.started, ended: c.ended, location });

@@ -45,6 +45,10 @@ console.log("PASS all four contracts: empty results, missing/extra fields, refus
   await assert.rejects(a.modelRequest(messages, null, "ambient-review", []), /every candidate/); assert.equal(attempts, 2);
   attempts = 0; a.modelAttempt = async () => { attempts++; return envelope({ items: [{ id: "candidate:0", verdict: "retain", reason: "direct_personal_intent", context: ["foreign"] }] }); };
   await assert.rejects(a.modelRequest(messages, null, "ambient-review", []), /references/); assert.equal(attempts, 2);
+  // The second review attempt carries the refusal reason, and a corrected answer is accepted.
+  { const seen = []; attempts = 0; a.modelAttempt = async request => { attempts++; seen.push(request.messages.length);
+      return envelope({ items: [{ id: "candidate:0", verdict: attempts === 1 ? "retain" : "uncertain", reason: "tentative_or_fragmentary", context: ["current:0"] }] }); };
+    const r = await a.modelRequest(messages, null, "ambient-review", []); assert.equal(r.items[0].verdict, "uncertain"); assert.equal(attempts, 2); assert.deepEqual(seen, [1, 2]); }
   console.log("PASS ambient contract retry is bounded and requires a complete response");
 }
 

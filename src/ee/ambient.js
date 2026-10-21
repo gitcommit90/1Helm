@@ -594,9 +594,12 @@ export class AmbientStore {
   }
   async modelRequest(messages, chunk, kind, privacyTexts) {
     const schema = kind === "ambient-review" ? AMBIENT_REVIEW_SCHEMA : AMBIENT_EXTRACT_SCHEMA, maxTokens = await plannedMaxOutput(this.host?.env, backgroundRole(kind)).catch(() => null);
+    let rejected = null;
     const { data } = await structuredChat(async request => {
+      // A retry with the identical request gets the identical answer, so the second review attempt says why the first was refused.
+      if (rejected) request = { ...request, messages: [...request.messages, { role: "user", content: `Your previous answer was refused: ${rejected}. Each reason belongs to exactly one verdict. retain: direct_personal_intent, explicit_personal_update, independent_personal_need. uncertain: ambiguous_speech_act, tentative_or_fragmentary, insufficient_context. drop: example_or_quotation, background_media. Answer again with the corrected JSON object only.` }] };
       const response = await this.modelAttempt(request, chunk, kind, privacyTexts);
-      if (kind === "ambient-review") assertAmbientReview(parseStructuredResponse(response, schema), JSON.parse(messages.at(-1).content));
+      if (kind === "ambient-review") try { assertAmbientReview(parseStructuredResponse(response, schema), JSON.parse(messages.at(-1).content)); } catch (e) { rejected = String(e.message).slice(0, 200); throw e; }
       return response;
     },
       ambientRequest(messages, maxTokens),
