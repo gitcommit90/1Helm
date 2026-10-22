@@ -116,4 +116,3 @@ export { dropPhotonReplies, photonAnswerOptions, photonMessage, photonReplyInit,
 export { AGENT_MEMORY_TOOLS, agentMemoryNextWake, agentSessionDocuments, forgetAgentBank, agentSessionInventory, flushAgentMemory, purgeAgentSession, readAgentDocument, retainAgentMessage, retainAgentRound, searchAgentBank } from "./routing-agent-memory.js";
 export { ROUTING_FILE_TOOLS, approveRoutingFiles, collectRoutingFiles, discardRoutingFiles, dropRoutingArtifacts, initRoutingArtifacts, isRoutingImageError, routingArtifactKeys, routingFileTool, routingImageFallback, stageRoutingFile } from "./routing-artifacts.js";
 export { dynamicRoutingOn } from "./routing-config.js";
-export { BeeContainer } from "./bee-container.js";

@@ -6,6 +6,10 @@ After reviewing new migration files and changes to `wrangler.example.jsonc`, bri
 
 When changing the channel computer Dockerfile, Wrangler builds a new container image at deploy time; a working Docker daemon is required. Existing D1 and R2 data stay in Cloudflare. Do not import a legacy v1.x Linux database into this Worker: the schema and runtime are different, so use a fresh installation.
 
+## October 22 source update, BeeContainer removed
+
+The `BeeContainer` class is no longer exported by the Worker, because the Bee calls run in the Worker and no Bee job uses a container. The example configuration never defined a `BEE_CONTAINER` binding, a Bee container definition or a `BeeContainer` migration, so an install that never added them needs no change. If you added them yourself, remove the `BEE_CONTAINER` binding and its container definition from your private `wrangler.jsonc` and add a new migration with `"deleted_classes": ["BeeContainer"]` before you deploy, because Cloudflare refuses a deploy that drops a Durable Object class that still has a migration or binding. No D1 migration is required.
+
 ## October 21 source update, memory on Mem0
 
 Apply ordered D1 migration `0063` using the normal migration runner. It only adds the tables `mem`, `mem_history` and `mem_fts` (with three triggers that keep the keyword index in step), so an install that never turned memory on is unaffected. Run `npm ci` again, because `mem0ai` 3.3.1 is a new dependency and the repository now has a `.npmrc` that sets `legacy-peer-deps`. Copy the `alias` list and the `MEM0_TELEMETRY` variable from `wrangler.example.jsonc` into your private `wrangler.jsonc`, since the Worker does not bundle without the list.
