@@ -24,7 +24,7 @@ import type { Input, Src } from "./livemic";
 export type LnView = { status: "idle" | "live" | "finalizing"; n?: number; started_at?: number | null; ended_at?: number | null; now?: number; cost_usd?: string | null; ask?: boolean; ask_deadline?: number | null;
   file?: { id: string; name: string; path: string; version?: number } | null; refine?: { n: number; state: string; added?: number; removed?: number; summary?: string | null } | null; lines?: number; waiting?: boolean;
   last?: { n: number; reason: string; stop_reason: string; started_at: number; ended_at: number; cost_usd: string } | null; sessions?: any[]; doc?: string | null; error?: string;
-  source?: "bee" | "mic"; mic?: { id: string; state: "live" | "paused" | "lost"; since?: number; chunks?: number; via?: "mic" | "tab" | "system" } | null };
+  speakers?: { id: string; name?: string | null; contact_id?: string | number | null }[]; source?: "bee" | "mic"; mic?: { id: string; state: "live" | "paused" | "lost"; since?: number; chunks?: number; via?: "mic" | "tab" | "system" } | null };
 type Deps = {
   api: (path: string, body?: any) => Promise<any>;
   phone: () => boolean;
@@ -47,6 +47,8 @@ const st = (k: string) => (S[k] ??= { v: null, doc: null, ver: -1, skew: 0, hidd
 const live = (v: LnView | null | undefined) => v?.status === "live";
 const clock = (ms: number) => { const s = Math.max(0, Math.floor(ms / 1000)), m = Math.floor(s / 60); return m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}` : `${m}:${String(s % 60).padStart(2, "0")}`; };
 const pathOf = (k: string) => `/res/${k.split("|")[0]}/sessions/${k.split("|")[1]}/livenotes`;
+// The session's speaker names changed (someone named a speaker): keep them with the session's view so every part of the app reads the same names.
+export function lnSpeakers(slug: string, sid: any, list: LnView["speakers"]) { const x = st(key(slug, sid)); if (x.v) x.v = { ...x.v, speakers: list }; }
 // The mic: is this device the one recording task k, and what is it doing?
 const here = (k: string) => { const m = micInfo(); return m.k === k && m.state !== "off" ? m : null; };
 const canStart = () => B.bee || micSupported();

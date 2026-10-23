@@ -53,7 +53,7 @@ await test("every model on the table and the inspector carries an OR or CF badge
   for (const row of html.split('class="rw"').slice(1)) {
     const cell = row.split('<div class="cm">')[1].split("</div><div>")[0];
     if (cell.trim() === "" || /None</.test(cell)) continue;
-    assert.match(cell, /<span class="badge (OR|CF)"/, cell);
+    assert.match(cell, /<span class="badge (OR|CF|SELF)"/, cell);
   }
   assert.match(page(state, ui0({ view: "speech" })), /badge CF/, "a Cloudflare model says CF");
   for (const key of ["stt", "stt_cloudflare", "web_search"]) { const d = C.drawerHtml(state, ui0({ sel: key }), C.view(state, ui0({ sel: key })), Date.now()).toString(); assert.match(d, /class="badge (OR|CF)"/, key); }

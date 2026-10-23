@@ -22,6 +22,7 @@
 //    The note-taker's cadence (first pass ~12 s, then every 40-60 s: live-notes.js noteDueAt) dominates the latency either way.
 import { AUDIO, readCapped, stt, audioFormat, sttRate } from "../transcribe.js";
 import { STT_NANO_PER_SEC, MARKUP } from "../stt-pricing.js";
+import { appendChunk } from "./speaker-labels.js";
 
 export const MIC_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 export const MIC_MAX_CHUNK_MS = 30e3, MIC_MAX_BYTES = 3 * 1024 * 1024, STT_TRY_MS = 8e3;   // one attempt ≤ 8 s (a chunk takes ~0.5 s): all three steps together stay under ~25 s
@@ -43,7 +44,9 @@ export function pickSource({ bee = null, want = null } = {}) {
 export async function micTranscribe(env, audio, { type = "audio/webm", ms = 0, prompt = "", meta = {} } = {}) {
   const t0 = Date.now();
   const out = await stt(env, { bytes: audio }, { format: audioFormat(type), meta, tryMs: STT_TRY_MS, estSec: Math.min(ms, MIC_MAX_CHUNK_MS) / 1000 || audio.byteLength / 4000, prompt });
-  return { segs: out.segs.map((x) => ({ off: Math.round(x.s * 1000), text: x.t })), nano: out.nano, model: out.model, ms: Date.now() - t0 };
+  // end and words (when the model gives them, in milliseconds from the start of the chunk) let speaker labels be matched to each line (speaker-labels.js).
+  return { segs: out.segs.map((x) => ({ off: Math.round(x.s * 1000), text: x.t, ...(Number.isFinite(x.e) && x.e != null ? { end: Math.round(x.e * 1000) } : {}) })),
+    words: (out.words || []).map((w) => ({ w: w.w, s: Math.round(w.s * 1000), e: Math.round(w.e * 1000) })), nano: out.nano, model: out.model, ms: Date.now() - t0 };
 }
 
 // POST …/livenotes/audio. o: { LN (the task's LiveNotes stub), L (the Ledger stub), meta, q (URLSearchParams) }.
@@ -77,6 +80,12 @@ export async function lnAudio(req, env, { LN, L, meta = {}, q }) {
     chunk.nano = Math.min(reserve, Math.ceil(r.nano * MARKUP)); chunk.stt_ms = r.ms;
     await L.settle(rid, chunk.nano).catch(() => {});
     chunk.segs = voiced < 600 && r.segs.length && HALLU.test(r.segs.map((s) => s.text).join(" ").trim()) ? [] : r.segs;
+    if (r.words?.length && chunk.segs.length) chunk.words = r.words;
+  }
+  // Speaker labels (speaker-labels.js): a WAV chunk with speech is also written to R2 and appended to the container's speech session. It never fails the chunk.
+  if (c.labels && audioFormat(type) === "wav" && audio.byteLength >= 200 && chunk.segs.length) {
+    try { await appendChunk(env, { tenant: meta.tenant, channel: c.channel, task: c.task, n: c.n, seq, atMs: at - c.started_at, audio }); chunk.audio = true; }
+    catch (e) { chunk.audio = false; console.log("live notes speech session", meta.tenant, String(e?.message || e).slice(0, 160)); }
   }
   const p = await LN.micPush(mic, seq, chunk);
   if (!p?.ok) return json({ error: p?.why || "Live notes aren't on.", stopped: true, status: p?.status || "idle" }, 409);

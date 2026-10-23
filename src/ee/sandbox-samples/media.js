@@ -166,6 +166,8 @@ const GOLDEN = {
   hs_refresh: () => ({ type: "items", list: "tool_calls", match: ["name"], extras_fail: false, value: [{ name: REFRESH.tools[0].function.name }] }),
   // The ranking view is { order, top }. The best candidate is c2.
   hs_rerank: () => ({ type: "choices", list: "", id: null, field: "top", value: { top: "c2" } }),
+  // The same facts as hs_rerank, as a list: the candidates are numbered from 0, so c2 is "2" (the ranking view lists each fact by its index).
+  mem_rerank: () => ({ type: "choices", list: "", id: null, field: "top", value: { top: "2" } }),
 };
 
 // The search query has one obvious site: the Python documentation of strptime is at docs.python.org.
@@ -177,6 +179,8 @@ export const samples = [
   // A chunk of live dictation is a WAV file cut at a pause, sent with the extra header that keeps the gateway from logging it. A Cloudflare streaming model
   // (Deepgram) takes a WebSocket instead of a chunk, so only a model that takes whole recordings can answer this request.
   { job: "live_dictation", golden: GOLDEN.live_dictation(), via: via("transcribe.js", "stt"), meta: { kind: "live-dictation" }, build: async () => ({ request: speechRequest("live_dictation", { headers: LIVE_CHUNK_HEADERS }), files: [FILES.speech] }) },
+  // Who spoke when in the recording. The sample file has one voice, so the answer is one speaker; no golden is checked, the view shows the turns.
+  { job: "speaker_labels", via: via("media-job.js", "dispatchMedia"), meta: { kind: "speaker-labels" }, build: async () => ({ request: { audio: file(FILES.speech, "bytes"), format: "wav" }, files: [FILES.speech] }) },
   // The index of a long file: its markdown cut into chunks, the texts of the chunks sent for their vectors. The file itself is shown for reference, only its text is sent.
   { job: "embed_files", via: via("media-job.js", "dispatchMedia"), meta: { kind: "sidecar-embed" }, build: async () => ({ request: embedRequest(chunkTexts(DOC_MD, chunksOf(DOC_MD, sectionsOf(DOC_MD)))), files: [FILES.doc] }) },
   { job: "vision_files", golden: GOLDEN.vision_files(), via: via("media-job.js", "dispatchMedia"), meta: { kind: "sidecar-vision-picture" }, build: async () => ({ request: structuredBody(visionRequest(file(FILES.photo, "data_url")), VISION_FORMAT.name, VISION_FORMAT.schema), files: [FILES.photo] }) },
@@ -185,6 +189,7 @@ export const samples = [
   { job: "web_search", golden: GOLDEN.web_search(), via: via("model-dispatch.js", "dispatch"), meta: { kind: "web-search" }, build: async () => ({ request: searchRequest(SEARCH_QUERY, 5), files: [] }) },
   { job: "mem_extract", golden: GOLDEN.mem_extract(), via: via("model-dispatch.js", "dispatch"), meta: { kind: "memory-extract" }, build: async () => ({ request: memExtractBody(), files: [] }) },
   { job: "mem_embed", via: via("media-job.js", "dispatchMedia"), meta: { kind: "memory-embed" }, build: async () => ({ request: embedRequest(["Sam pays the Maple Street Bakery invoice on Fridays.", "Sam's sister Priya is allergic to walnuts."]), files: [] }) },
+  { job: "mem_rerank", golden: GOLDEN.mem_rerank(), via: via("model-dispatch.js", "dispatch"), meta: { kind: "memory-rerank" }, build: async () => ({ request: { query: RERANK_QUESTION, contexts: Object.values(rerankBody().questions.rank.criteria).map((text) => ({ text })) }, files: [] }) },
   // The memory jobs are snapshots of what the Hindsight server sent on the capture date, with invented content. The request of a chat job is the server's body, which
 // the Worker cleans with cleanChatRequest before dispatch(); the ranking body goes to dispatch() as it is.
   { job: "hs_retain", golden: GOLDEN.hs_retain(), via: via("hindsight-llm.js", "cleanChatRequest"), meta: { kind: "memory-retain" }, build: async () => ({ request: retainBody(), files: [] }) },

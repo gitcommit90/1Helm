@@ -132,6 +132,11 @@ let noteId;
   const w = await post(`${MAIN}/routines/edit`, { section: null, text: "Mornings are for the gym." }); await settle(); assert.equal(w.status, 200);
   assert.match(extraction.calls.map((c) => JSON.stringify(c.messages)).find((m) => m.includes("Mornings are for the gym")), /\\"Routines\\" page of their 1Helm Notebook\. It is Sam's own statement/); assert.equal((await A.noteRow(String(ch.id), w.body.note_id)).sec, "how");
   assert.match((await get(`${MAIN}/routines`)).body.markdown, /gym/);
+  // The page decides the category of its own edit: a model that files the routine note as a preference (what gpt-6-luna did in release 60) still leaves it on the Routines page.
+  FACTS.push([/Monday summaries/, "Sam likes a summary on Monday mornings", "preference"]);
+  const mo = await post(`${MAIN}/routines/edit`, { section: "How you like things", text: "Monday summaries please." }); await settle(); assert.equal(mo.status, 200);
+  assert.match((await get(`${MAIN}/routines`)).body.markdown, /Monday mornings/, "the edit is on the Routines page although the model said preference");
+  assert.doesNotMatch((await get(`${MAIN}/about`)).body.markdown, /Monday mornings/);
   // The text is stored whole: no cap
   const long = "x".repeat(5000), l = await post(`${MAIN}/about/edit`, { text: long }); await settle(); assert.equal((await A.noteRow(String(ch.id), l.body.note_id)).content.length, 5000);
   ok("edit round trip: saved as a note exactly as typed, saved in memory as note:<id> with the correction context, shown on the page, stays after later notes, whole page and long text");

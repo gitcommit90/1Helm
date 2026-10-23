@@ -104,6 +104,7 @@ export { limitsFor, jobTimeoutFor } from "./limits-read.js";
 export { holdOutNano, plannedChatHoldNano, plannedChatMaxOutput, plannedHold, plannedHoldNano, plannedMaxOutput } from "./job-limits.js";
 export { dispatch, liveProviderRequest, plan } from "./model-dispatch.js";
 export { dispatchMedia, firstStep, jobReserveNano, stepsOf } from "./media-job.js";
+export { speakerJobReady, speakerRate, speakerReserve, diarize, mapSpeakerIds, speakerForSpan, defaultLabel, SPEAKER_MARKUP } from "./speaker-labels.js";   // speaker labels for audio and video files (the file prep in sidecar.js); the licensed Live notes module imports its own
 export { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, START_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput, browserPurchaseGuard } from "./browser-tasks.js";
 
 export { effectiveTaskCatalog } from "./model-catalog.js";

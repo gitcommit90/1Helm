@@ -27,8 +27,8 @@ function database() {
   return { sql, DB };
 }
 await test("the nine retired jobs are not in the registry, and only the memory server's jobs mention memory", () => {
-  for (const id of RETIRED) assert.ok(!JOB_IDS.includes(id), id); assert.equal(JOBS.length, 27);
-  assert.deepEqual(JOBS.filter((j) => /memory/i.test(`${j.label} ${j.description}`)).map((j) => j.id), ["hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank", "mem_extract", "mem_embed"], "only the memory jobs describe memory work");
+  for (const id of RETIRED) assert.ok(!JOB_IDS.includes(id), id); assert.equal(JOBS.length, 29);
+  assert.deepEqual(JOBS.filter((j) => /memory/i.test(`${j.label} ${j.description}`)).map((j) => j.id), ["hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank", "mem_extract", "mem_embed", "mem_rerank"], "only the memory jobs describe memory work");
   const seed = seedFresh({}); for (const id of RETIRED) assert.ok(!(id in seed.jobs), `${id} is not seeded`);
 });
 
@@ -52,8 +52,8 @@ await test("tolerant read: a saved version with retired or unknown jobs reads as
 
 await test("descriptions: speech jobs, group name, page lead, router jobs", async () => {
   const d = (id) => jobDef(id).description;
-  assert.match(d("stt"), /\/api\/transcribe/); assert.match(d("stt"), /Live notes/); assert.match(d("stt"), /AssemblyAI goes first for WAV/); assert.match(d("stt"), /Qwen3 ASR and then Whisper/);
-  assert.match(d("live_dictation"), /AssemblyAI/); assert.match(d("live_dictation"), /WAV chunks cut at pauses/); assert.match(d("live_dictation"), /Deepgram Nova 3 on Cloudflare streams is the fallback/);
+  assert.match(d("stt"), /\/api\/transcribe/); assert.match(d("stt"), /Live notes/); assert.match(d("stt"), /main model runs in 1Helm.s own container/); assert.match(d("stt"), /each fallback runs when the model before it fails/);
+  assert.match(d("live_dictation"), /1Helm.s own container/); assert.match(d("live_dictation"), /WAV chunks cut at pauses/); assert.match(d("live_dictation"), /A fallback runs when the model before it fails/);
   assert.match(d("stt_cloudflare"), /only for the Speech to text job/); assert.match(d("stt_cloudflare"), /under 20 MB/);
   assert.equal(GROUPS.find((g) => g.id === "search").title, "Search and pictures");
   for (const gone of ["classic_decider", "classic_router", "doors_shadow"]) assert.equal(jobDef(gone), null, `${gone} is not a job`);

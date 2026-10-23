@@ -20,16 +20,16 @@ export function assessCloudflareModels(models) {
     const p = propsOf(m), prices = Array.isArray(p.price) ? p.price : [], cost = unit => Number(prices.find(x => x.unit === unit)?.price), task = m.task?.name;
     const prompt = cost("per M input tokens"), completion = cost("per M output tokens"), levels = cloudflareLevels(m.name, p);
     const context = Number(p.context_window) || 0, tools = yes(p.function_calling), vision = yes(p.vision), speech = task === "Automatic Speech Recognition" && /\/whisper-large-v3-turbo$/.test(m.name);
-    const embedding = task === "Text Embeddings", decision = /^@cf\/cloudflare\/clef(?:-flash)?$/.test(m.name);
+    const embedding = task === "Text Embeddings", rerank = task === "Text Classification" && /reranker/.test(m.name), decision = /^@cf\/cloudflare\/clef(?:-flash)?$/.test(m.name);
     const chat = task === "Text Generation" && !decision && tools && context > 0 && Number.isFinite(prompt) && Number.isFinite(completion) && prompt <= 3 && completion <= 15;
-    const kinds = decision ? ["workers_decider", "decider"] : [...(chat ? ["chat", "chore", "workers_ai", ...(vision ? ["vision"] : [])] : []), ...(speech ? ["speech", "speech_cloudflare"] : []), ...(embedding ? ["embedding_files", "embedding_memory"] : [])];
+    const kinds = decision ? ["workers_decider", "decider"] : [...(chat ? ["chat", "chore", "workers_ai", ...(vision ? ["vision"] : [])] : []), ...(speech ? ["speech", "speech_cloudflare"] : []), ...(rerank ? ["rerank_memory"] : []), ...(embedding ? ["embedding_files", "embedding_memory"] : [])];
     const reasons = []; if (!kinds.length) reasons.push("No supported request adapter with verified capabilities"); if (!levels.length) reasons.push("Partner data policy has not been verified");
     return { id: m.name, name: m.name, source: "CF", kinds, eligible: !reasons.length, reasons, efforts: ["default"], default_effort: "default", levels, hosts: ["cloudflare"], context_length: context || 8192,
       max_output: Math.min(Number(p.max_output_tokens) || 4096, context || 8192), input_modalities: ["text", ...(vision ? ["image", "video"] : [])],
       pricing: { prompt: Number.isFinite(prompt) ? prompt : 0, completion: Number.isFinite(completion) ? completion : 0 },
       json: chat && yes(p.json_mode), tool_choice: chat ? ["auto"] : [], privacy_source: CF_PRIVACY_SOURCE,
       ...(speech ? { formats: ["wav", "mp3", "webm", "ogg", "m4a", "mp4", "flac"], sec_nano: Math.ceil((cost("per audio minute") || 0.000513) * 1e9 / 60) } : {}),
-      ...(embedding ? { in_nano: Number.isFinite(prompt) ? prompt * 1000 : 240 } : {}) };
+      ...(embedding || rerank ? { in_nano: Number.isFinite(prompt) ? prompt * 1000 : 240 } : {}) };
   });
 }
 export async function cloudflareCatalog(env, q = "") {
@@ -110,6 +110,13 @@ export async function cloudflareChat(env, payload, meta = {}, signal = null, cat
     let value; try { value = JSON.parse(s); } catch { throw new Error("Cloudflare returned an invalid stream event."); }
     c.enqueue(encoder.encode(`data: ${JSON.stringify(eventOf(value, model, catalog, true))}\n\n`)); }
   return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+}
+// Workers AI reranker: { query, contexts: [{ text }], top_k? } in, { response: [{ id (the index of the context), score }] } out, best first, with the usage like an embedding answer.
+export async function cloudflareRerank(env, model, { query, contexts, top_k }, meta = {}, signal = null) {
+  const catalog = env.MODEL_SETTINGS?.catalog?.[model]; await authorizeCloudflare(env, model, meta, catalog);
+  const out = await abortable(env.AI.run(model, { query, contexts, ...(top_k ? { top_k } : {}) }, cfOptions(env, meta)), signal), rows = out?.response;
+  if (!Array.isArray(rows) || rows.some((r) => !Number.isInteger(r?.id) || r.id < 0 || r.id >= contexts.length || !Number.isFinite(r?.score))) throw new Error("Cloudflare returned an invalid ranking.");
+  return { model, response: rows.map((r) => ({ id: r.id, score: r.score })).sort((a, b) => b.score - a.score), usage: usageOf(out.usage, catalog) };
 }
 export async function cloudflareEmbeddings(env, model, texts, meta = {}) {
   const catalog = env.MODEL_SETTINGS?.catalog?.[model]; await authorizeCloudflare(env, model, meta, catalog);

@@ -9,9 +9,9 @@ const jp = (s) => { try { return s ? JSON.parse(s) : null; } catch { return null
 
 export const pageMethods = {
   // RPC (added only): the person's edit of one page, or of one section of it. → { ok, note_id } | { error }
-  async nbPageEdit({ page, title, sec, section = null, text }) {
+  async nbPageEdit({ page, title, sec, section = null, text, category = "" }) {
     const cid = this.get("channel_id"), body = String(text ?? ""); if (!body.trim()) return { error: "text required" };
-    const row = await this.archive().noteAdd(String(cid), String(sec || "ov"), body, "human", { page: { id: String(page), title: String(title), section: section ? String(section) : "" } });
+    const row = await this.archive().noteAdd(String(cid), String(sec || "ov"), body, "human", { page: { id: String(page), title: String(title), section: section ? String(section) : "", ...(category ? { category: String(category) } : {}) } });
     if (hsOn(this.env) && hsWriters(this.env)) { try { await this.hsNoteSync(row.id); } catch (e) { console.log("page edit retain", String(e?.message || e).slice(0, 160)); } }
     return { ok: true, note_id: String(row.id) };
   },

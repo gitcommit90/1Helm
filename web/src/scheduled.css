@@ -29,6 +29,8 @@ button.schm:hover{background:var(--abub)}button.schm:disabled{cursor:default;opa
 .schei{width:56px;height:56px;margin:0 auto 14px;border-radius:18px;display:grid;place-items:center;background:var(--abub);color:var(--ink2)}
 .schempty h2{margin:0 0 6px;font-family:var(--serif);font-weight:400;font-size:26px;color:var(--ink)}
 .schempty p{margin:0;font-size:14.5px;line-height:1.5}
+/* Past: no helper line under the heading, so the list gets its own gap; ended rows are plain and quiet. */
+.schh+.schlist{margin-top:12px}.schrow.past .schx{color:var(--ink2)}
 /* The drawer link's count, on phone. */
 .dn b[data-schn]{margin-left:auto;font-weight:400;font-size:14px;color:var(--mute);font-variant-numeric:tabular-nums}
 @media (max-width:767px){

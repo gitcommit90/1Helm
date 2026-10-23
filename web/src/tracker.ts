@@ -6,7 +6,7 @@
 // Everything stays invisible until the server sends cards for a session: with today's backend the app is exactly as before.
 // v3.ts only hooks in: the header slots, the stage wrapper, liveLoad, the stream handler, msgHtml and repaints.
 import { cardStop, cardContinue } from "./stop";
-import { orb } from "./activity-orb";
+import { orb, type ActivityState } from "./activity-orb";
 import { pauseOf } from "./spendguard";   // the working card's Stop
 import { nativeHandoffText } from "./native-approval-progress";
 import { focusHeaderAction } from "./headfit";
@@ -322,7 +322,10 @@ function closeSheet(focus = true) {
 // assistant's name. Line 2 is the status. The row never gains or loses a part; only its text changes. The same row stays after the
 // turn's reply while a helper is open, and a click on it opens that helper.
 // The orb always animates. A helper that is waiting on the person gets the still helper icon in the same slot, unless the turn itself is running.
-const helperMark = (h: HelperView, turnRunning = false) => h.status === "running" || turnRunning ? orb("working") : svg(P.helper, 15);
+// The orb's shape follows the status text: cube (solving) by default, then connecting, searching and composing. morph() only sets the state attribute, so the orb repaints and never remounts.
+export const orbState = (line: string, o: { waiting?: boolean; body?: boolean } = {}): ActivityState =>
+  o.waiting || /reconnect|connecting|retry/i.test(line) ? "connecting" : /search|brows|looking up/i.test(line) ? "searching" : /writ|compos|respond/i.test(line) || o.body ? "composing" : "solving";
+const helperMark = (h: HelperView, turnRunning = false, state: ActivityState = "solving") => h.status === "running" || turnRunning ? orb(state) : svg(P.helper, 15);
 const isOpenHelper = (h: HelperView) => ["running", "waiting_input", "awaiting_review"].includes(h.status);
 const openHelpers = (k: string) => ss(k).helpers.filter(isOpenHelper);
 // The turn's own card: the card that is working now, else the newest card (the turn that just replied).
@@ -333,11 +336,11 @@ export const turnHelpers = (k: string) => { const id = turnCardId(k);
   return openHelpers(k).filter(h => id ? h.parent_card === id || h.card === id || h.result_card === id : !h.parent_card); };
 // A paused worker says what the person can do on screen: the browser card, the Link approval, or a visible question. Otherwise Primary is deciding.
 export const progressStatus = (h: HelperView, question = false) => h.status === "waiting_input" ? (h.input_kind === "browser" ? "Waiting on you in the browser" : h.input_kind === "purchase_wait" ? "Waiting on you to approve in Link" : question ? "Needs your answer" : "Subagent working") : h.status === "awaiting_review" ? "Ready for review" : "Subagent working";
-export function tkProgress(slug: string, sid: any, name: string, primary: string, question = false) {
+export function tkProgress(slug: string, sid: any, name: string, primary: string, question = false, state: ActivityState = "solving") {
   const h = turnHelpers(key(slug, sid))[0];
   if (!h && !primary) return `<div class="turn-progress" role="status"></div>`;
   const open = h ? ` data-tkhelper="${esc(String(h.id))}" tabindex="0" aria-label="${esc(h.name || "Subagent")}. ${progressStatus(h, question)}. Open task"` : "";
-  return `<div class="turn-progress" role="status"${open}><span class="tp-orb">${h ? helperMark(h, !!primary) : orb("working")}</span><span class="tp-text"><b>${esc((h ? h.name : "") || name)}</b><span>${esc(h ? progressStatus(h) : primary)}</span></span></div>`;
+  return `<div class="turn-progress" role="status"${open}><span class="tp-orb">${h ? helperMark(h, !!primary, orbState(progressStatus(h))) : orb(state)}</span><span class="tp-text"><b>${esc((h ? h.name : "") || name)}</b><span>${esc(h ? progressStatus(h) : primary)}</span></span></div>`;
 }
 // A helper change repaints the chat once, so the row's text follows it. The repaint calls tkSync again with the same signature.
 const progressSig = new Map<string, string>();

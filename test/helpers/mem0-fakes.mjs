@@ -20,10 +20,12 @@ export function fakeIndex() {
     query: async (vec, o) => { calls.push(o); if (o.topK > 100) throw new Error("topK too large"); return { matches: [...rows.values()].filter((v) => v.namespace === o.namespace && matches(v.metadata, o.filter)).map((v) => ({ id: v.id, score: cos(vec, v.values) })).sort((a, b) => b.score - a.score).slice(0, o.topK) }; } };
 }
 export const embedding = (text) => { const v = new Array(1024).fill(0); for (const w of String(text).toLowerCase().match(/[\p{L}\p{N}]+/gu) || []) { let h = 0; for (const c of w) h = (h * 31 + c.codePointAt(0)) % 1024; v[h] += 1; } return v; };
+// The reranker fake: the score of a fact is the number of words it shares with the question.
+export const overlap = (q, t) => { const w = new Set(String(q).toLowerCase().match(/[\p{L}\p{N}]+/gu)); return (String(t).toLowerCase().match(/[\p{L}\p{N}]+/gu) || []).filter((x) => w.has(x)).length; };
 // An env with the saved model settings, the D1 fake, the index fake and an AI binding that embeds. Extraction goes through fetch (see fakeExtraction).
 export function memEnv(extra = {}) {
   const index = fakeIndex(), d1 = fakeD1();
-  const env = withSettings({ ENV_NAME: "dev", OPENROUTER_API_KEY: "k", PROMPT_CACHE: "off", CF_ACCOUNT_ID: "a", AIG_ID: "g", AIG_TOKEN: "t", DB: d1, MEMORY_INDEX: index, AI: { run: async (_m, input) => ({ data: input.text.map(embedding), usage: {} }) }, ...extra });
+  const env = withSettings({ ENV_NAME: "dev", OPENROUTER_API_KEY: "k", PROMPT_CACHE: "off", CF_ACCOUNT_ID: "a", AIG_ID: "g", AIG_TOKEN: "t", DB: d1, MEMORY_INDEX: index, AI: { run: async (m, input) => input.contexts ? { response: input.contexts.map((c, id) => ({ id, score: overlap(input.query, c.text) })) } : { data: input.text.map(embedding), usage: {} } }, ...extra });
   return { env, index, d1 };
 }
 // Replaces fetch: every extraction call answers with `facts(prompt)` as the model's JSON. Returns { calls, done }.

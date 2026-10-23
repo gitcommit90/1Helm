@@ -34,7 +34,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 // It is marked by two extra tags that change nothing in a request body: sandbox: true and tenant "sandbox" (the tenant also makes the privacy lookup answer "unrestricted").
 // A sample can name its kind with a `meta: { kind }` field next to `via`; otherwise this table (the kind each job's real call site sends) is used.
 const KIND = { label: "card-label", chat_title: "chat-title", sidecar_card: "sidecar-card", notes: "live-notes-note", notes_refine: "live-notes-refine", notes_final: "live-notes-final", ambient_extract: "ambient-extract", ambient_review: "ambient-review",
-  browser: "browser-oss", vision_files: "sidecar-vision-image", hs_retain: "memory-retain", mem_extract: "memory-extract", mem_embed: "memory-embed", hs_consolidation: "memory-consolidation", hs_reflect: "memory-reflect", hs_refresh: "memory-refresh", hs_rerank: "memory-rerank",
+  browser: "browser-oss", vision_files: "sidecar-vision-image", hs_retain: "memory-retain", mem_extract: "memory-extract", mem_embed: "memory-embed", mem_rerank: "memory-rerank", hs_consolidation: "memory-consolidation", hs_reflect: "memory-reflect", hs_refresh: "memory-refresh", hs_rerank: "memory-rerank",
   decider: "decider", web_search: "web-search", "chat": "chat" };
 export const metaFor = (job, sample = {}) => { const kind = sample?.meta?.kind || KIND[job] || null; return { ...(kind ? { kind } : {}), tenant: "sandbox", sandbox: true }; };
 export const VIAS = {
@@ -200,6 +200,7 @@ export async function readReply(r, { jobId, kind, via }) {
   if (choice) { const msg = choice.message || {}; return { ...out, view: { type: "chat", text: flat(msg.content), tool_calls: toolCalls(msg), finish_reason: choice.finish_reason ?? null } }; }
   const vec = j.data?.[0]?.embedding;
   if (Array.isArray(vec)) return { ...out, view: { type: "embedding", size: vec.length, first: vec.slice(0, 8) } };
+  if (kind === "rerank_memory" && Array.isArray(j.response)) return { ...out, view: { type: "ranking", order: j.response.map((d) => ({ id: String(d.id), score: d.score })), answers: null } };
   if (kind === "rerank" || (j.answers && jobId === "hs_rerank")) return { ...out, view: { type: "ranking", order: rankingOf(j.answers), answers: j.answers ?? null } };
   if (j.answers) return { ...out, view: { type: "answers", answers: j.answers } };
   const list = j.results || j.items || j.result?.results || j.data?.results || j.response?.results;

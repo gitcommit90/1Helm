@@ -97,7 +97,7 @@ test("the picker offers only equivalent models as fallbacks", () => {
 
 // ---- the plan and the dispatcher ----
 test("the plan sends an @1hc/ model to the container: source SELF, no OpenRouter provider fields", () => {
-  assert.equal(isSelfHostedModel(SELF), true); for (const id of [PPLX, "@cf/a/b", "@1hc/x", "@1hc/A/b", "@1hc/a/b/c", "1hc/a/b"]) assert.equal(isSelfHostedModel(id), false, id);
+  assert.equal(isSelfHostedModel(SELF), true); assert.equal(isSelfHostedModel("@1hc/Qwen/Qwen3-ASR-1.7B"), true, "Hugging Face names keep their capitals"); for (const id of [PPLX, "@cf/a/b", "@1hc/x", "@1hc/a/b/c", "@1hc/A b/c", "@1hc/-a/b", "1hc/a/b"]) assert.equal(isSelfHostedModel(id), false, id);
   const steps = plan(SEED, "embed_files", { level: "zdr" }).steps;
   assert.deepEqual(steps.map((s) => [s.model, s.source, s.adapter]), [[PPLX, "OR", "embeddings"], [SELF, "SELF", "embeddings"]]); assert.equal(steps[1].provider, null); assert.ok(steps[0].provider.zdr);
 });

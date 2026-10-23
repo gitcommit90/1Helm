@@ -21,9 +21,15 @@
 //   chat              a chat completion body (messages, tools, stream, response_format, ...). Returns the chat completion Response, streamed when body.stream is set.
 //   decide_json       the same chat body, with a response_format asking for JSON. The step's provider sets require_parameters.
 //   embeddings        { input: string[] }. Returns an OpenAI shaped embeddings Response.
+//   rerank            { query, contexts: [{ text }], top_k? }. Returns { response: [{ id (index into contexts), score }], model, usage } as JSON, best first, the shape of the Workers AI reranker.
 //   transcribe        { openrouter?: ({ model, provider }) => () => body | string, cloudflare?: () => workersAiInput, skip?: (step) => reason|null, tryMs? }.
 //                     openrouter makes the body of POST /audio/transcriptions for that model; cloudflare makes the Workers AI input. Returns the transcription Response (JSON).
-//   transcribe_live   {} . Returns the 101 Response of the live dictation WebSocket (use response.webSocket).
+//                     self makes the audio for a model of the 1Helm container (source SELF): async () => ({ audio, format, language? }). That answer is JSON with model, text, segments
+//                     ([{ start, end, text }]), words ([{ w, s, e }], empty when the model gives no word times), duration and usage ({ cost, seconds }, cost in dollars of container time).
+//                     A SELF step throws an error with warming set to true when no container is ready (it starts one in the background), so the next step answers.
+//   transcribe_live   {} . Returns the 101 Response of the live dictation WebSocket (use response.webSocket). A model of the 1Helm container is not a socket: it is planned as "transcribe".
+//   diarize           { audio, format, num_speakers? } or { session }. Says who spoke when with a model of the 1Helm container. Returns JSON { model, turns, usage }: turns are
+//                     [{ s, e, speaker }] in seconds for audio, and [{ start_ms, end_ms, speaker }] for a live session (the session key, speech container).
 //   decide_systemone  { state, questions }. Returns the /systemone Response (JSON: answers, usage, model).
 //   decide_clef       { state, questions }. Returns the Workers AI answer as a JSON Response.
 //   look              the Moondream body ({ task, image, question | target | caption_length }). The job's max_output applies to the "query" task when it is saved. Returns the answer as a JSON Response.
@@ -40,8 +46,9 @@ import { boundedText } from "../bounded-body.js";
 import { cappedResponseBytes } from "../bounded-response.js";
 import { byokChat } from "../byok.js";
 import { orFetch, orFetchPath, firstOk, replayFor, cacheKey, aiOpts, routedChat, byokFast } from "../model.js";
-import { cloudflareChat, cloudflareEmbeddings, authorizeCloudflare, cfOptions, abortable, isCloudflareModel } from "../cloudflare-models.js";
+import { cloudflareChat, cloudflareEmbeddings, cloudflareRerank, authorizeCloudflare, cfOptions, abortable, isCloudflareModel } from "../cloudflare-models.js";
 import { selfHostedEmbeddings } from "../selfhost-models.js";
+import { speechFn } from "../speech-impl.js";   // selfTranscribe, selfDiarize and selfSessionDiarize of selfhost-speech.js (a test puts fakes in their place)
 export { plan };
 
 const OR_HEADERS = { "x-openrouter-metadata": "enabled" };
@@ -103,10 +110,20 @@ const ADAPTERS = {
     if (s.source === "SELF") return Response.json(await selfHostedEmbeddings(c.env, s.model, c.request.input, c.meta));
     return okOrThrow(await orFetchPath(c.env, "embeddings", { model: s.model, input: c.request.input, provider: s.provider }, c.meta, {}, c.signal, c.fetchImpl || undefined), `embeddings ${s.model}`);
   },
+  async rerank(c, s) {
+    if (s.source !== "CF") throw new Error(`${s.model} cannot rerank here.`);   // the 1Helm container (source SELF) is added by selfhost-models.js
+    return Response.json(await cloudflareRerank(c.env, s.model, c.request, c.meta, c.signal));
+  },
   async transcribe(c, s) {
     const q = c.request || {}, why = q.skip?.(s);
     if (why) throw new Error(String(why));
     const signal = withTimeout(c.signal, q.tryMs);
+    if (s.source === "SELF") {
+      if (!q.self) throw new Error("no audio for the 1Helm container");
+      const r = await abortable(speechFn("selfTranscribe")(c.env, s.model, await q.self(), c.meta), signal);
+      signal?.throwIfAborted();
+      return Response.json({ model: r.model, text: r.segs.map((x) => x.t).join(" "), segments: r.segs.map((x) => ({ start: x.s, end: x.e, text: x.t })), words: r.words, duration: r.usage.audio_s, usage: { cost: r.usage.cost, seconds: r.usage.audio_s, container_ms: r.usage.container_ms } });
+    }
     if (s.source === "CF") {
       if (!q.cloudflare) throw new Error("no Cloudflare input for this recording");
       await authorizeCloudflare(c.env, s.model, c.meta, c.settings?.catalog?.[s.model]); signal?.throwIfAborted();
@@ -121,6 +138,7 @@ const ADAPTERS = {
     return response;
   },
   async transcribe_live(c, s) {
+    if (s.source === "SELF") throw new Error(`${s.model} takes live audio in chunks, not through a socket`);
     const spec = liveProviderRequest(c.env, s.model), controller = new AbortController();
     c.signal?.throwIfAborted();
     // The fetch signal stays tied to the upgraded WebSocket, so only the connection attempt is timed (a timer cleared on upgrade).
@@ -128,6 +146,13 @@ const ADAPTERS = {
     let r; try { r = await (c.fetchImpl || fetch)(spec.url, { headers: spec.headers, signal: controller.signal }); } finally { clearTimeout(timer); }
     if (r.status !== 101 || !r.webSocket) { try { r.webSocket?.close(); } catch {} throw new Error("upgrade"); }
     return r;
+  },
+  // Speaker labels (who spoke when) from the 1Helm container: audio in the call, or a live session whose chunks the container holds.
+  async diarize(c, s) {
+    if (s.source !== "SELF") throw new Error(`${s.model} cannot label speakers here.`);
+    const q = c.request || {}, signal = c.signal;
+    const r = await abortable(q.session ? speechFn("selfSessionDiarize")(c.env, q.session, s.model, c.meta) : speechFn("selfDiarize")(c.env, s.model, q, c.meta), signal);
+    return Response.json({ model: s.model, turns: r.turns, usage: r.usage });
   },
   // The request sorter's own endpoint on OpenRouter (Perplexity's decider, Jev): { model, provider, state, questions } -> { answers, usage, model }.
   async decide_systemone(c, s) {

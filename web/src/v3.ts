@@ -28,6 +28,7 @@ import { chatCodeHtml, initChatCodeCopy } from "./chat-code";
 import { chatMarkdown } from "./chat-markdown";
 import { settingsDestination, settingsTarget } from "./settings-links";
 import { transcriptLink, transcriptLines, transcriptText } from "./transcript";
+import { speakersOf, transcriptHtml, repaintSpeakers, speakerEditor, speakerEditorClose, type Speaker } from "./speakers";
 import seedMock from "./seed.json";
 import { planImport, type PwPlan } from "./pwimport";
 import { ciInit, ciOpen } from "./contacts-import";
@@ -48,11 +49,11 @@ import { initAcctNote, onAcctNote, acctNoteHtml, acctNoteReset, acctNoteAfter } 
 import { cmInit as amInit, cmHtml, cmClick, cmSet, cmNewTab, cmBack, cmMode } from "./ee/apps-mode";   // Settings → Connected accounts: Managed vs Self-managed (1HC composio-self.js)
 import { todoBtn, todoSet, todoSync, todoInit } from "./todos";
 import { pomoBtn, pomoGlobalBtn, pomoShortcut, pomoSet, pomoSync, pomoInit } from "./pomodoro";
-import { lnBtn, lnSet, lnSync, lnInit, lnWrap, lnDot, lnRefineCard, lnStartFor, lnCanStart } from "./ee/livenotes";
+import { lnSpeakers, lnBtn, lnSet, lnSync, lnInit, lnWrap, lnDot, lnRefineCard, lnStartFor, lnCanStart } from "./ee/livenotes";
 import { mtInit } from "./ee/meetings";   // Meeting reminders for notes: "Your 2:00 “Weekly sync” is starting. Take notes?"   // Bee Live notes: header button, split view, chip, presence
 import { streamNote } from "./clientlog";   // stream lost / re-attached lines (dev only)
 import { streamState, streamLease, streamCurrent, streamRelease, streamInvalidate, streamProgress, streamCheckDue, streamFetch, streamErrorBody, readStream, type Lease } from "./stream-recovery";
-import { tkInit, tkLoad, tkEvent, tkOn, tkLiveCard, tkBtn, tkWrap, tkSync, tkChip, tkMsgOf, tkCardView, tkHelperCount, tkProgress, type EventView } from "./tracker";
+import { tkInit, tkLoad, tkEvent, tkOn, tkLiveCard, tkBtn, tkWrap, tkSync, tkChip, tkMsgOf, tkCardView, tkHelperCount, tkProgress, orbState, type EventView } from "./tracker";
 import { dictBtn, dictInit, dictActive } from "./dictate";
 import { slBtn, slInit, slGate, slSchedule, slBubbles, slSentNote, slSet } from "./send-later";
 import { schInit, schPage, schPaint, schAfter, schRedirect, isSch, schSec } from "./scheduled";   // the one Scheduled view (repeats, follow-ups, send later)
@@ -125,15 +126,15 @@ const seed: any = BOOT ? { captured: Date.now(), channels: BOOT.channels.map((c:
 type Msg = { id: number; role: "user" | "agent"; body: string; at: number; steps: string[]; pre?: string[]; prog?: string[]; progressOmitted?: number; cards?: any[]; input_request?: InputRequest; files?: FileV[]; saved?: Saved[] };
 // Where a remember really saved, from the server (proto src/saved-to.js): the "Added to …" chips under the reply.
 type Saved = { to: "notebook" | "contact" | "memory" | "account"; channel?: string; sec?: string; text?: string; name?: string; fields?: string[] };
-type FileV = { id: string; name: string; mime: string; bytes: number; at: number; source?: string; session?: string | null; image?: boolean; tags?: string[] };
+type FileV = { id: string; name: string; mime: string; bytes: number; at: number; source?: string; session?: string | null; image?: boolean; tags?: string[]; tx?: string };
 type Session = { id: any; srv?: any; loaded?: boolean; loading?: boolean; streaming?: boolean; attached?: boolean; tmp?: string; rawLine?: string; title: string; status: string; state: string; updated: number; messages: Msg[]; line?: string; unread?: boolean; fresh?: boolean; pinned?: boolean; done?: boolean };
 type Channel = { id: number; slug: string; name: string; purpose: string; memory: string[]; notes?: any[]; jobs: any[]; sessions: Session[] };
-type Art = { name: string; kind: "doc" | "sheet" | "pdf" | "image" | "link" | "code"; sid: any; at: number; size: string; fresh?: boolean; fid?: string; you?: boolean; mime?: string; bytes?: number; tags?: string[] };
+type Art = { tx?: string; name: string; kind: "doc" | "sheet" | "pdf" | "image" | "link" | "code"; sid: any; at: number; size: string; fresh?: boolean; fid?: string; you?: boolean; mime?: string; bytes?: number; tags?: string[] };
 
 const NAMES: Record<string, string> = { main: "General", "weather-watch": "Weather", "family-schedule": "Family", "home-finances": "Finances", "trip-planning": "Japan trip", "side-project": "Side project" };
 const NOW = Date.now(), SHIFT = NOW - (seed as any).captured;
 const channels: Channel[] = (seed as any).channels.map((c: any) => ({
-  id: c.id, slug: c.slug, name: LIVE ? liveName(c) : NAMES[c.slug] ?? c.slug, purpose: c.purpose, memory: c.memory, notes: c.notes, jobs: c.jobs,
+  id: c.id, slug: c.slug, name: LIVE ? liveName(c) : NAMES[c.slug] ?? c.slug, purpose: c.purpose, memory: c.memory, notes: c.notes, jobs: (c.jobs || []).map((j: any) => j.ended ? { ...j, ended: j.ended + SHIFT } : j),   // seed ended jobs move with the clock
   sessions: c.sessions.map((s: Session) => ({ ...s, updated: s.updated + SHIFT, messages: s.messages.map(m => ({ ...m, at: m.at + SHIFT })) })),
 }));
 if (LIVE && !channels.length) {
@@ -488,7 +489,7 @@ function fkind(name: string, mime = ""): Art["kind"] {
 }
 const fileUrl = (slug: string, id: string, dl = false) => fileResUrl(LIVE!.api, slug, id, dl);
 const artHref = (ch: Channel, a: Art) => a.fid ? fileUrl(ch.slug, a.fid) : `#/${ch.slug}/s/${a.sid}`;
-const toArt = (f: FileV): Art => ({ name: f.name, kind: fkind(f.name, f.mime), sid: f.session, at: f.at, size: KB(f.bytes), fid: f.id, you: f.source === "upload", mime: f.mime, bytes: f.bytes, tags: f.tags });
+const toArt = (f: FileV): Art => ({ name: f.name, kind: fkind(f.name, f.mime), sid: f.session, at: f.at, size: KB(f.bytes), fid: f.id, you: f.source === "upload", mime: f.mime, bytes: f.bytes, tags: f.tags, tx: f.tx });
 function setFiles(ch: Channel, files: FileV[]) {
   const was = LIB[ch.slug] || [], sig = (l: Art[]) => l.map(a => a.fid).sort().join(",");
   const next = files.map(toArt); next.forEach(a => { if (was.length && !was.some(w => w.fid === a.fid)) a.fresh = true; });
@@ -823,8 +824,8 @@ if (LIVE) {
 // audio/video play. Slide decks (.pptx…) and Word documents (.docx…) show the PDF the channel computer makes of them with
 // LibreOffice (GET …/files/<id>/preview, 1HC file-preview.js; the first open makes it, later opens are instant): a deck pages
 // slide by slide, a document scrolls like a PDF. Anything else gets a clean card with Download. ← → move through the list it was opened from.
-type FV = { slug: string; id: string; name: string; mime: string; bytes: number; at: number; sid?: any; you?: boolean; transcript?: string };
-const FVS: { list: FV[]; i: number; zoom: number; gen: number; pdf?: any; slide?: (d: number, abs?: boolean) => boolean; transcript?: string } = { list: [], i: 0, zoom: 1, gen: 0 };
+type FV = { slug: string; id: string; name: string; mime: string; bytes: number; at: number; sid?: any; you?: boolean; transcript?: string; tx?: string; spk?: { slug: string; task: string; n?: number } };
+const FVS: { list: FV[]; i: number; zoom: number; gen: number; pdf?: any; slide?: (d: number, abs?: boolean) => boolean; transcript?: string; data?: any; speakers?: Speaker[] } = { list: [], i: 0, zoom: 1, gen: 0 };
 const fvExt = (n: string) => (n.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
 const fvKind = (f: FV) => { const e = (f.name.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase(), m = f.mime;
   if (/^image\/(png|jpe?g|gif|webp|avif|bmp)$/.test(m) || /^(png|jpe?g|gif|webp|avif|bmp)$/.test(e)) return "image";
@@ -837,7 +838,7 @@ const fvKind = (f: FV) => { const e = (f.name.match(/\.([a-z0-9]+)$/i)?.[1] || "
   if (e === "csv" || e === "tsv" || m === "text/csv" || m === "text/tab-separated-values") return "csv";
   if (/^text\//.test(m) || /^(txt|json|js|ts|py|sh|css|html?|xml|svg|yaml|yml|toml|ini|log|sql|ics)$/.test(e) || m === "application/json") return "text";
   return "other"; };
-const fvOf = (slug: string, a: Art): FV => ({ slug, id: a.fid!, name: a.name, mime: a.mime || "", bytes: a.bytes || 0, at: a.at, sid: a.sid, you: a.you });
+const fvOf = (slug: string, a: Art): FV => ({ slug, id: a.fid!, name: a.name, mime: a.mime || "", bytes: a.bytes || 0, at: a.at, sid: a.sid, you: a.you, tx: a.tx });
 const fvTask = (f: FV) => { const ch = channels.find(c => c.slug === f.slug); return ch?.sessions.find(x => x.id === f.sid); };
 function csvTable(t: string, tab: boolean) {
   const rows: string[][] = []; let row: string[] = [], cell = "", q = false; const d = tab ? "\t" : ",";
@@ -886,6 +887,23 @@ async function fvSheet(u: string, body: HTMLElement, gen: number) {
     show(0);
   } catch (e: any) { if (gen === FVS.gen) body.innerHTML = `<div class="fvnonebox"><b>Couldn't show this spreadsheet</b><p>${esc(String(e?.message || e).slice(0, 160))}</p><a class="fvdl" href="${u}?dl=1" download>Download</a></div>`; }
 }
+// Naming a speaker (src/speakers.ts): the server keeps the name for the whole session, and every label in the open transcript changes at once.
+// Where a name is saved: a Live notes session's own route (with its session number), or the audio/video file's own route.
+const spkCtx = (): { url: string; n?: number; slug: string; task?: string } | null => { const f = FVS.list[FVS.i]; if (!f) return null;
+  if (f.transcript) { const m = transcriptLink(f.transcript, LIVE?.api || "", location.href); return m ? { url: `/res/${m.slug}/sessions/${m.task}/livenotes/speakers`, n: m.n, slug: m.slug, task: m.task } : null; }
+  return f.tx ? { url: `${f.tx.startsWith(LIVE?.api || "\0") ? f.tx.slice(LIVE!.api.length) : f.tx}/speakers`, slug: f.slug } : null; };
+function spkEdit(btn: HTMLElement) {
+  const id = btn.dataset.spk!, c = spkCtx(), f = FVS.list[FVS.i], gen = FVS.gen; if (!c || !f) return;
+  speakerEditor({ anchor: btn, id, speakers: FVS.speakers || [], people: () => CT.list.filter(p => p.sid).map(p => ({ id: String(p.sid), name: p.name })),
+    save: async (b) => {
+      try {
+        const r = await api(c.url, { speaker: id, ...(c.n != null ? { n: c.n } : {}), ...b });
+        if (r?.error || !Array.isArray(r?.speakers)) return String(r?.error || "That didn't save. Try again.");
+        if (gen === FVS.gen) { FVS.speakers = speakersOf({ speakers: r.speakers }); const body = document.getElementById("fvbody"); if (body) repaintSpeakers(body, FVS.speakers); if (FVS.data) FVS.transcript = transcriptText(transcriptLines(FVS.data), FVS.speakers); }
+        if (c.task) lnSpeakers(c.slug, c.task, r.speakers); return null;
+      } catch { return "That didn't save. Check your connection and try again."; }
+    } });
+}
 function openFile(list: FV[], i: number) {
   FVS.list = list; FVS.i = Math.max(0, Math.min(i, list.length - 1));
   let w = document.getElementById("fv"); if (!w) { w = document.createElement("div"); w.id = "fv"; w.setAttribute("role", "dialog"); w.setAttribute("aria-modal", "true"); document.body.appendChild(w); }
@@ -894,7 +912,7 @@ function openFile(list: FV[], i: number) {
 function closeFile() { const w = document.getElementById("fv"); FVS.gen++; FVS.pdf?.destroy?.(); FVS.pdf = null; FVS.slide = undefined; document.body.classList.remove("fvopen"); if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!w.classList.contains("on")) w.remove(); }, 200); }
 function fvPaint() {
   const w = document.getElementById("fv")!, f = FVS.list[FVS.i], k = fvKind(f), u = f.transcript || fileUrl(f.slug, f.id), x = fvTask(f), n = FVS.list.length, gen = ++FVS.gen;
-  FVS.transcript = undefined;
+  FVS.transcript = undefined; FVS.data = undefined; FVS.speakers = undefined; speakerEditorClose();
   FVS.zoom = 1; FVS.pdf?.destroy?.(); FVS.pdf = null; FVS.slide = undefined;
   const [kn0, kd] = KIND[fkind(f.name, f.mime)], kn = k === "deck" ? "Slide deck" : k === "word" ? "Document" : kn0;
   w.innerHTML = `<div class="fvback" data-fvclose></div><div class="fvbox fv-${k}">
@@ -911,10 +929,14 @@ function fvPaint() {
   const body = document.getElementById("fvbody")!;
   if (f.transcript) fetch(u, { credentials: "same-origin", cache: "no-store" }).then(r => { if (!r.ok) throw new Error(r.status === 404 ? "This transcript is no longer available." : "Couldn't load the transcript. Please try again."); return r.json(); }).then(data => {
     if (gen !== FVS.gen) return;
-    const lines = transcriptLines(data); FVS.transcript = transcriptText(lines);
-    body.innerHTML = `<article class="fvmd fvtranscript">${lines.length ? lines.map(l => `<p>${l.time || l.speaker ? `<small>${esc([l.time, l.speaker].filter(Boolean).join(' · '))}</small><br>` : ''}<span style="white-space:pre-wrap">${esc(l.text)}</span></p>`).join('') : '<p>No speech was recorded in this session.</p>'}</article>`;
+    const lines = transcriptLines(data); FVS.data = data; FVS.speakers = speakersOf(data); FVS.transcript = transcriptText(lines, FVS.speakers);
+    body.innerHTML = `<article class="fvmd fvtranscript">${transcriptHtml(lines, FVS.speakers, 'No speech was recorded in this session.')}</article>`;
     w.querySelector<HTMLButtonElement>('[data-transcript-download]')!.disabled = false;
   }).catch(e => { if (gen === FVS.gen) body.innerHTML = `<div class="fvnonebox"><b>Couldn't open the transcript</b><p>${esc(e.message)}</p><button class="fvdl ghost" data-transcript-retry>Try again</button></div>`; });
+  else if ((k === "audio" || k === "video") && f.tx) fetch(f.tx, { credentials: "same-origin", cache: "no-store" }).then(r => r.ok ? r.json() : null).then(data => {
+    if (gen !== FVS.gen || !data) return; const lines = transcriptLines(data); if (!lines.length) return;
+    FVS.data = data; FVS.speakers = speakersOf(data); body.classList.add("fvwtx"); body.insertAdjacentHTML("beforeend", `<article class="fvmd fvtranscript">${transcriptHtml(lines, FVS.speakers, "")}</article>`);
+  }).catch(() => {});
   else if (k === "pdf") fvPdf(u, body, gen);
   else if (k === "deck" || k === "word") fvOffice(f, u, body, gen, k === "deck");
   else if (k === "xlsx") fvSheet(u, body, gen);
@@ -1002,6 +1024,7 @@ if (LIVE) {
     }
     if (document.getElementById("fv")?.contains(t)) {
       if (t.closest('[data-transcript-retry]')) { e.preventDefault(); fvPaint(); return; }
+      const sp = t.closest<HTMLElement>('[data-spk]'); if (sp) { e.preventDefault(); spkEdit(sp); return; }
       if (t.closest('[data-transcript-download]')) {
         e.preventDefault(); if (FVS.transcript == null) return;
         const url = URL.createObjectURL(new Blob([FVS.transcript], { type: 'text/plain;charset=utf-8' })), a = document.createElement('a');
@@ -1024,13 +1047,13 @@ if (LIVE) {
     // The list to page through: the Library list as shown, or every file in this chat, or just this file.
     let list: FV[] = [];
     if (a.hasAttribute("data-fvl")) list = [...document.querySelectorAll<HTMLElement>("#lfiles [data-fv]")].map(el => { const [s, i] = el.dataset.fv!.split("|"); const x = (LIB[s] || []).find(y => y.fid === i); return x ? fvOf(s, x) : null; }).filter(Boolean) as FV[];
-    else if (a.hasAttribute("data-fvc")) { const { s } = route(); list = (s?.messages || []).flatMap(m => [...(m.files || []), ...(m.cards || []).filter(c => c.t === "file").map(c => c.f)]).map((f: FileV) => ({ slug, id: f.id, name: f.name, mime: f.mime, bytes: f.bytes, at: f.at, sid: f.session, you: f.source === "upload" })); }
+    else if (a.hasAttribute("data-fvc")) { const { s } = route(); list = (s?.messages || []).flatMap(m => [...(m.files || []), ...(m.cards || []).filter(c => c.t === "file").map(c => c.f)]).map((f: FileV) => ({ slug, id: f.id, name: f.name, mime: f.mime, bytes: f.bytes, at: f.at, sid: f.session, you: f.source === "upload", tx: f.tx })); }
     if (!list.some(f => f.id === id)) { const x = (LIB[slug] || []).find(y => y.fid === id); if (x) list = [fvOf(slug, x)]; }
     if (!list.length) return;
     openFile(list, list.findIndex(f => f.id === id));
   }, true);
   window.addEventListener("keydown", e => {
-    if (!document.getElementById("fv")) return;
+    if (!document.getElementById("fv") || document.querySelector(".spkpop")) return;   // the speaker name box handles its own keys
     // A deck pages slide by slide; ← → past its first or last slide fall through to the previous / next file.
     if (FVS.slide && e.key !== "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey && !(e.target as HTMLElement).closest("input,textarea,video,audio")) {
       const k = e.key, moved = k === "Home" ? FVS.slide(0, true) : k === "End" ? FVS.slide(-1, true)
@@ -1326,7 +1349,7 @@ function turnProgress(s: Session, ch: Channel) {
   let primary = "";
   if (primaryWorking(s)) primary = /writ|compos|respond/i.test(line) || m?.body.trim() ? "Writing the answer" : "Working";
   else if (s.state === "working" && Number(s.srv?.helpers) > 0) primary = "Subagent working";
-  return tkProgress(ch.slug, s.id, who(ch), primary, (s.srv?.pending_inputs || []).length > 0);
+  return tkProgress(ch.slug, s.id, who(ch), primary, (s.srv?.pending_inputs || []).length > 0, orbState(line, { waiting: !!streamState(s).waiting, body: primaryWorking(s) && !!m?.body.trim() }));
 }
 const MA_PARTS = new WeakMap<Msg, Map<string, string>>();
 function partHtml(text: string, ch: Channel, s: Session | undefined, owner: object, live: boolean, reply: string | undefined, pre = false, message?: Msg, part = "body") {

@@ -1,6 +1,6 @@
 // Saved model settings for tests: the first-run data (src/model-seed.js), checked by the real validator. Tests that call code which
 // reads the settings give it an env made by withSettings(); nothing in src/ has a built-in model to fall back on.
-import { seedFresh, seedFromLegacy, SEED_FACTS } from "../../src/ee/model-seed.js";
+import { seedFresh, seedFromLegacy, SEED_FACTS, SELF_STT, SELF_LIVE } from "../../src/ee/model-seed.js";
 import { validateModelSettings } from "../../src/ee/model-settings.js";
 const clone = (x) => JSON.parse(JSON.stringify(x));
 // Models that are no longer in the first-run data (the catalog keeps only models a job uses) but that many tests use as extra choices.
@@ -12,7 +12,15 @@ export const EXTRA_FACTS = {
   "~typesafe/jev-latest": { name: "TypeSafe Jev", kinds: ["decider"], efforts: [] },
 };
 export const withExtraModels = (config) => { const c = clone(config); for (const [id, f] of Object.entries(EXTRA_FACTS)) if (!c.catalog[id]) c.catalog[id] = { id, ...clone(f) }; return c; };
-export const seedSettings = (env = {}, legacy = null) => validateModelSettings(withExtraModels(legacy ? seedFromLegacy(env, legacy) : seedFresh(env)));
+// The speech jobs the tests drive are the hosted order that was the first-run data before 2026-10-22 (AssemblyAI, Qwen3 ASR 0.6B, Whisper turbo; live dictation AssemblyAI then
+// Deepgram), so a test that fakes OpenRouter or Workers AI at fetch is not sent to the 1Helm container first. The new first-run data is tested in test/speaker-labels.test.mjs.
+export const hostedSpeech = (c) => {
+  c.jobs.stt = { model: "assemblyai/universal-3-6-pro", effort: null, fallbacks: [{ model: "qwen/qwen3-asr-0.6b", effort: null }, { model: "openai/whisper-large-v3-turbo", effort: null }] };
+  c.jobs.live_dictation = { model: "assemblyai/universal-3-6-pro", effort: null, fallbacks: [{ model: "@cf/deepgram/nova-3", effort: null }] };
+  for (const id of [SELF_STT, SELF_LIVE]) delete c.catalog[id];
+  return c;
+};
+export const seedSettings = (env = {}, legacy = null) => validateModelSettings(withExtraModels(hostedSpeech(clone(legacy ? seedFromLegacy(env, legacy) : seedFresh(env)))));
 export const SEED = seedSettings();
 // The first-run data with some saved jobs replaced (no environment variable chooses a model any more): seedWith({ browser: { model, effort, fallbacks } }).
 export const seedWith = (jobs = {}) => { const c = clone(SEED); for (const [id, over] of Object.entries(jobs)) c.jobs[id] = { ...c.jobs[id], ...over }; return validateModelSettings(withExtraModels(c)); };

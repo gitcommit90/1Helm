@@ -25,7 +25,9 @@ export const JOB_KINDS = {
   decider: { fallbacks: 3, effort: false, zdr: true, any: true, pick: "decider" },
   speech: { fallbacks: 3, effort: false, zdr: true, pick: "speech", needs: "Needs a speech-to-text model." },
   speech_cloudflare: { fallbacks: 0, effort: false, pick: "speech_cloudflare", needs: "Needs a speech-to-text model that runs on Cloudflare." },
-  speech_live: { fallbacks: 1, effort: false, pick: "speech_live", needs: "Needs a live speech-to-text model." },
+  speech_live: { fallbacks: 2, effort: false, pick: "speech_live", needs: "Needs a live speech-to-text model." },
+  // Speaker labels (who spoke when): only a model that runs in the 1Helm speech container, no fallback. Nothing leaves 1Helm's own container, at any privacy setting.
+  diarize: { fallbacks: 0, effort: false, noOutput: true, pick: "diarize", needs: "Needs a speaker labeling model." },
   embedding_files: { fallbacks: 2, equivalentOnly: true, effort: false, zdr: true, pick: "embedding_files", reindex: true, needs: "Needs a text embedding model." },
   // vision has a reasoning level (starting value "none": Gemma does not think). effortNullOk: a version saved before the level existed has null, which reads as "none" (model-settings.js).
   vision: { fallbacks: 0, effort: true, effortNullOk: true, zdr: true, pick: "vision", needs: "Needs a model that can read pictures." },
@@ -43,6 +45,8 @@ export const JOB_KINDS = {
   // Mem0 memory (mem0.js). Its vectors must match the Vectorize index (1024 numbers), so a model change means every channel hydrates again: no fallbacks, and the
   // model runs at every privacy level like any Cloudflare model.
   embedding_memory: { fallbacks: 0, effort: false, noOutput: true, cloudflare: true, pick: "embedding_memory", needs: "Needs a text embedding model that makes 1024 numbers per text." },
+  // Mem0 search reranking (mem0.js): a Workers AI reranker scores each found fact against the question, one call per search. It writes no text, and a failure leaves the search order as it was.
+  rerank_memory: { fallbacks: 0, effort: false, noOutput: true, pick: "rerank_memory", needs: "Needs a reranking model (Workers AI or the 1Helm container)." },
   // Its reranker: a ranking model answers Hindsight's own /systemone request (a choice among the candidates) and writes no text.
   rerank: { fallbacks: 2, effort: false, zdr: true, pick: "decider", latest: true, noOutput: true, needs: "Needs a ranking model (Perplexity or Jev style)." },
 };
@@ -50,7 +54,7 @@ export const JOB_KINDS = {
 for (const k of ["speech", "speech_cloudflare", "speech_live", "embedding_files"]) JOB_KINDS[k].noOutput = true;
 // What a model must be able to read for each kind of job (text, image, audio). Speech jobs send only audio, the picture and browser look jobs send a prompt and
 // an image, and web search names a provider, not a model. Every other kind reads text. The Models page shows these as small icons on each job row.
-const INPUT_MODES = { speech: ["audio"], speech_cloudflare: ["audio"], speech_live: ["audio"], vision: ["text", "image"], look: ["text", "image"], search: [] };
+const INPUT_MODES = { speech: ["audio"], speech_cloudflare: ["audio"], speech_live: ["audio"], diarize: ["audio"], vision: ["text", "image"], look: ["text", "image"], search: [] };
 for (const [k, d] of Object.entries(JOB_KINDS)) d.inputs = INPUT_MODES[k] || ["text"];
 // Picks that name a model able to chat. A kind with any: true also takes every chat model (through the JSON adapter).
 export const CHAT_PICKS = ["chat", "chore", "classic"];
@@ -81,9 +85,10 @@ export const JOBS = [
   { id: "sidecar_card", kind: "chore", group: "background", label: "File summaries", description: "Writes the summary card for each file." },
   { id: "ambient_extract", kind: "chore", group: "background", label: "Ambient pick-up", description: "Finds things worth tracking in connected apps." },
   { id: "ambient_review", kind: "chore", group: "background", label: "Ambient review", description: "Double-checks what ambient pick-up found." },
-  { id: "stt", kind: "speech", group: "speech", label: "Speech to text", description: "Transcribes dictation uploads (/api/transcribe), Live notes audio chunks and file audio. AssemblyAI goes first for WAV audio, and other formats go to Qwen3 ASR and then Whisper. The fallbacks run when a model fails." },
+  { id: "stt", kind: "speech", group: "speech", label: "Speech to text", description: "Transcribes dictation uploads (/api/transcribe), Live notes audio chunks and file audio. The main model runs in 1Helm's own container, and each fallback runs when the model before it fails." },
   { id: "stt_cloudflare", kind: "speech_cloudflare", group: "speech", label: "Speech to text on Cloudflare", description: "Runs only for the Speech to text job, and only when every model above failed and the audio is under 20 MB." },
-  { id: "live_dictation", kind: "speech_live", group: "speech", label: "Live dictation", description: "Transcribes live dictation. AssemblyAI transcribes WAV chunks cut at pauses and returns the text after each pause. Deepgram Nova 3 on Cloudflare streams is the fallback." },
+  { id: "live_dictation", kind: "speech_live", group: "speech", label: "Live dictation", description: "Transcribes live dictation. The main model runs in 1Helm's own container on WAV chunks cut at pauses and returns the text after each pause. A fallback runs when the model before it fails." },
+  { id: "speaker_labels", kind: "diarize", group: "speech", label: "Speaker labels", description: "Works out who spoke when in a recording, so Live notes from the microphone and audio and video files can name each speaker (Speaker 1, Speaker 2, or the name you give them). It runs in 1Helm's own container." },
   { id: "embed_files", kind: "embedding_files", group: "search", label: "File search index", description: "Makes the search index for your files. A fallback must be a model that the main model lists as equivalent. Changing the main model to a different one means each channel rebuilds its file indexes." },
   { id: "vision_files", kind: "vision", group: "search", label: "Picture descriptions", description: "Describes pictures and reads text in them when a file is a picture." },
   { id: "workers_ai_chat", kind: "workers_ai", group: "other", label: "Backup chat", description: "Answers when OpenRouter can't be reached, or on a self-hosted install with no OpenRouter key." },
@@ -94,6 +99,7 @@ export const JOBS = [
   { id: "hs_rerank", kind: "rerank", group: "memory", label: "Memory: recall ranking", description: "Puts the facts found by a memory search in order of how well they answer the question. If it fails, the order the search found them in is used." },
   { id: "mem_extract", kind: "memory", group: "mem", label: "Memory: extract", description: "Reads each saved conversation, note and file and writes down the facts in it, with a category for each. One call for every 12,000 characters saved." },
   { id: "mem_embed", kind: "embedding_memory", group: "mem", label: "Memory: embed", description: "Makes the numbers that memory search compares, for every fact saved and every question asked. It must make 1024 numbers per text. Changing the model means every channel's memory is made again from its saved records." },
+  { id: "mem_rerank", kind: "rerank_memory", group: "mem", label: "Memory: rerank", description: "Puts the facts found by a memory search in order of how well they answer the question, one call for every search. It reads English best. If it fails or takes too long, the order the search found them in is used." },
   { id: "web_search", kind: "search", group: "search", label: "Web search", description: "Finds web pages for a question when DuckDuckGo has no answer. The model is the search provider, and max output is the number of results it asks for." },
   { id: "browser_decider", kind: "decider", group: "browser", label: "Browser next step", description: "Reads each page and decides the browser's next action, such as clicking, typing, scrolling or stopping." },
   { id: "look", kind: "look", group: "browser", label: "Browser screen reading", description: "Looks at a picture of a page in the browser and answers questions about it, or points at something on it." },
@@ -110,7 +116,7 @@ export const GROUPS = [
   { id: "browser", title: "Browser", note: "The models the browser uses: one decides each next step, one writes what to type and summarizes the result, and one reads the screen as a picture." },
   { id: "background", title: "Background jobs", note: "Work that runs behind the scenes. These always use zero-data-retention providers." },
   { id: "memory", title: "Memory (Hindsight)", note: "On the Cloud service the memory server asks the Worker for each of these calls, so they are set and shown here like every other job. They use zero-data-retention providers. The memory server's own embeddings run on that server and are listed read only." },
-  { id: "mem", title: "Memory", note: "Memory (Mem0) stores and searches the facts of each channel in 1Helm's own database. These two jobs are the only model calls it makes. They use zero-data-retention providers for extraction and run on Cloudflare for embedding." },
+  { id: "mem", title: "Memory", note: "Memory (Mem0) stores and searches the facts of each channel in 1Helm's own database. These three jobs are the only model calls it makes. They use zero-data-retention providers for extraction and run on Cloudflare for embedding and reranking." },
   { id: "speech", title: "Speech", note: "" },
   { id: "search", title: "Search and pictures", note: "" },
   { id: "other", title: "Other", note: "Jobs outside the groups above. They are saved like every other job." },

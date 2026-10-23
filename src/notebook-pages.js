@@ -99,6 +99,7 @@ export async function pagesRoute(req, env, t, chSlug, rest, deps) {
   const b = await boundedJson(req), text = String(b.text ?? "").trim(), section = b.section == null ? null : String(b.section).trim() || null;
   if (!text) return J({ error: "text required" }, 400);
   if (hasSecret(text)) return J({ error: SECRET_NOTE, secret: true }, 400);
-  const r = await deps.R.nbPageEdit({ page: page.id, title: page.title(first || "you"), sec: page.sec, section, text });
+  // A page of one category files its edit under that category, so the extraction model cannot move the person's correction to another page.
+  const r = await deps.R.nbPageEdit({ page: page.id, title: page.title(first || "you"), sec: page.sec, section, text, category: page.categories.length === 1 ? page.categories[0] : "" });
   return J(r, r?.error ? 400 : 200);
 }

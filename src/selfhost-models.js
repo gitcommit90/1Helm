@@ -19,7 +19,7 @@
 import { UV_URL, UV_SHA, INDRA_REQS } from "./sidecar-ocr.js";
 
 export const SELF_PREFIX = "@1hc/";
-export const isSelfHostedModel = (id) => typeof id === "string" && id.length <= 160 && /^@1hc\/[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/.test(id);
+export const isSelfHostedModel = (id) => typeof id === "string" && id.length <= 160 && /^@1hc\/[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id);
 const repoOf = (id) => String(id).slice(SELF_PREFIX.length);
 
 // The weights, by Hugging Face repository. rev is the commit; each file is checked by SHA-256 after the download.

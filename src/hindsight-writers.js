@@ -118,7 +118,7 @@ export function noteItem({ row, names, channel }) {
   // What the helper saved with remember is already one clear fact, so it is kept as written with the category of its section. The person's own notes are extracted.
   return itemOf(DOC.note(row.id), "note", human || row.page ? STRATEGY.note : STRATEGY.verbatim, { content: scrubSecrets(String(row.content || "")), at, update_mode: "replace",
     context: row.page ? ctxFor("page-edit", { ...names, page: row.page.title, heading: row.page.section }) : ctxFor(human ? "note" : "helper-note", { ...names, section: sectionName(row.sec) }),
-    metadata: { kind: "note", note: row.id, section: row.sec || "", author: human ? "person" : "helper", channel, ...(human || row.page ? {} : { category: SECTION_CATEGORY[row.sec] || "other" }), ...(row.page ? { page: String(row.page.id), page_section: row.page.section || "" } : {}) } });
+    metadata: { kind: "note", note: row.id, section: row.sec || "", author: human ? "person" : "helper", channel, ...(human || row.page ? {} : { category: SECTION_CATEGORY[row.sec] || "other" }), ...(row.page?.category ? { category: String(row.page.category) } : {}), ...(row.page ? { page: String(row.page.id), page_section: row.page.section || "" } : {}) } });
 }
 // kind: sidecar kind ("sheet", "pdf", ...). Spreadsheets and long files become "reference" (chunks, no model call).
 export function fileItem({ id, name, md, kind, at, names, mime, channel }) {

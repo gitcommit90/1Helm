@@ -1,6 +1,6 @@
 // The memory client (docs/configuration.md, "Memory"). Mem0's engine (npm mem0ai) stores and searches; 1HC decides everything else. One memory per channel: a bank id
 // (`<env>-<tenant>-<channel>`, or `a2a-...` for the raw agent records) names a namespace, and a call never reads or writes another one. Two jobs on the Models page
-// make the model calls: Memory: extract (mem_extract) and Memory: embed (mem_embed). Search makes no model call except the query embedding.
+// make the model calls: Memory: extract (mem_extract), Memory: embed (mem_embed) and Memory: rerank (mem_rerank). A search makes two: the query embedding and the rerank.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { scrubSecrets } from "./secrets-scrub.js";
 import { markStatus } from "./status-notes.js";
@@ -51,6 +51,14 @@ async function embedAll(texts) {
   }
   return out;
 }
+// Mem0's reranker hook: scores the facts a search found against the question, best first. bge-reranker-base reads 512 tokens for the question and a fact together, so both are cut (about 4 characters a token).
+// A failure is thrown: Mem0 logs it and keeps the search order, so a search never fails because of this call.
+const RERANK_QUERY_CHARS = 400, RERANK_FACT_CHARS = 1200;
+async function rerank(query, facts, topK) {
+  const x = als.getStore(), r = await dispatch(plain(x.env), "mem_rerank", { query: query.slice(0, RERANK_QUERY_CHARS), contexts: facts.map((f) => ({ text: String(f).slice(0, RERANK_FACT_CHARS) })) }, { meta: { ...x.meta, kind: "memory-rerank" } }), j = await r.json().catch(() => null);
+  if (!Array.isArray(j?.response) || j.response.length !== facts.length) throw new Error(`memory rerank ${r.status}`);
+  return j.response.slice(0, topK).map((d) => ({ index: d.id, rerankScore: d.score }));
+}
 // The extraction call. Mem0 keeps only the fields its schema names, so the category of each fact is read from the answer here and put on the stored fact by MemStore.
 async function extract(messages, format) {
   const x = als.getStore();
@@ -70,6 +78,7 @@ const CAPTURE_HISTORY = { addHistory: async () => {}, getHistory: async () => []
 let engine;
 const load = () => engine ||= import("mem0ai/oss").then((m) => {
   m.EmbedderFactory.create = () => ({ embed: async (t) => { try { return (await embedAll([t]))[0]; } catch (e) { als.getStore().embedFailed?.push(String(e?.message || e)); throw e; } }, embedBatch: embedAll });   // Mem0 skips a fact whose embed() throws (and an entity too), so the failure is also recorded for withMemory
+  m.RerankerFactory.create = () => ({ rerank });
   m.LLMFactory.create = () => ({ generateResponse: extract, generateChat: async (messages) => ({ role: "assistant", content: await extract(messages) }) });
   m.VectorStoreFactory.create = (_provider, c) => { const x = als.getStore(); if (x.capture) return CAPTURE_STORE; const main = c.collectionName === x.ns, st = new MemStore(x.env, c.collectionName, x.cats, main ? [] : null); if (main) x.main = st; return st; };   // a capture finds and writes nothing; the fact store buffers its inserts (flushed in withMemory); an entity store writes at once
   m.HistoryManagerFactory.create = () => als.getStore().capture ? CAPTURE_HISTORY : new MemHistory(als.getStore().env, als.getStore().ns);
@@ -90,7 +99,7 @@ async function withMemory(env, bank, instructions, fn) {
   const ctx = { env, ns, cats: new Map(), extracted: new Set(), embedFailed: [], meta: tenant ? { tenant } : {} };
   try { const out = await als.run(ctx, () => fn(new Memory({
     embedder: { provider: "1hc", config: { embeddingDims: DIMS } }, llm: { provider: "1hc", config: {} }, vectorStore: { provider: "1hc", config: { collectionName: ns, dimension: DIMS } },
-    historyStore: { provider: "1hc", config: {} }, ...(instructions ? { customInstructions: instructions } : {}) }), ns));
+    historyStore: { provider: "1hc", config: {} }, reranker: { provider: "1hc", config: {} }, ...(instructions ? { customInstructions: instructions } : {}) }), ns));
     await lostFacts(ctx);
     await ctx.main?.flush();   // the facts of the add are written here, in one batch
     return out;
@@ -183,15 +192,15 @@ async function retainOne(env, bank, i) {
 // Passed on every search instead of relying on Mem0's defaults (20 and 0.1). Mem0 v3 takes its candidates from the semantic results alone: the keyword index only re-ranks them.
 export const SEARCH_TOPK = 20, SEARCH_THRESHOLD = 0.1;
 const iso = (ms) => (Number.isFinite(Number(ms)) && ms ? new Date(Number(ms)).toISOString() : null);
-const shape = (id, p, score) => ({ id, text: p.data, mentioned_at: iso(p.ts) || p.createdAt || null, document_id: p.doc || null, type: p.category || "other", raw: !!p.raw, metadata: p, ...(score != null ? { scores: { final: score } } : {}) });
+const shape = (id, p, score, rerank) => ({ id, text: p.data, mentioned_at: iso(p.ts) || p.createdAt || null, document_id: p.doc || null, type: p.category || "other", raw: !!p.raw, metadata: p, ...(score != null ? { scores: { final: score, ...(rerank != null ? { rerank } : {}) } } : {}) });
 // A raw chunk is dated by its first line, so a window search asks the index from RAW_LOOKBACK_MS earlier and then keeps a chunk only when it overlaps the window (its last line, ts_end, is at or after from).
 export const RAW_LOOKBACK_MS = 15 * 60 * 1000;
 // Search in one channel's memory. scope: { from, to } in ms (an exact filter on the item's time, from inclusive, to exclusive; a raw chunk counts when its lines overlap the window). source: "bee" keeps the Bee recordings only. → { results, ms }
 export async function recall(env, bank, query, o = {}) {
   const from = o.scope?.from, t0 = Date.now(), ts = { ...(from != null ? { gte: from - RAW_LOOKBACK_MS } : {}), ...(o.scope?.to != null ? { lt: o.scope.to } : {}) };
-  const r = await withMemory(env, bank, "", (m, ns) => m.search(String(query).slice(0, 2000), { topK: o.topK || SEARCH_TOPK, threshold: SEARCH_THRESHOLD, filters: { user_id: ns, ...(o.source ? { source: o.source } : {}), ...(Object.keys(ts).length ? { ts } : {}) } }));
+  const r = await withMemory(env, bank, "", (m, ns) => m.search(String(query).slice(0, 2000), { topK: o.topK || SEARCH_TOPK, threshold: SEARCH_THRESHOLD, rerank: true, filters: { user_id: ns, ...(o.source ? { source: o.source } : {}), ...(Object.keys(ts).length ? { ts } : {}) } }));
   const inside = (x) => from == null || Number(x.metadata?.ts) >= from || (x.metadata?.raw && Number(x.metadata?.ts_end) >= from);
-  return { results: r.results.filter(inside).map((x) => shape(x.id, { ...x.metadata, data: x.memory, createdAt: x.createdAt }, x.score)), ms: Date.now() - t0 };
+  return { results: r.results.filter(inside).map((x) => shape(x.id, { ...x.metadata, data: x.memory, createdAt: x.createdAt }, x.score, x.rerankScore)), ms: Date.now() - t0 };   // scores.rerank (Mem0's rerankScore, 0 to 1) is present only when the rerank was applied
 }
 const store = async (env, bank) => new MemStore(env, await nsOf(bank));
 // An exact list of the facts in a time range (start inclusive, end exclusive, ms), newest first, or of one document (doc).

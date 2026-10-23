@@ -9,13 +9,14 @@ export const METER = {
   // Mem0 memory (src/mem0.js). Every price is in nano$ before markup, and it is an ESTIMATE from the size of what is sent and the list price of the starting model, not a
   // measurement: Mem0's extraction prompt is about 25,000 characters (6,700 input tokens with the mission and the 10 nearest facts it shows the model), and the starting model
   // (~openai/gpt-luna-latest, Memory: extract) lists $0.10 in, $0.01 cached in and $0.50 out per million tokens. Compare with the AI Gateway log of the mem_extract job
-  // (kind memory-extract) after the first real saves, and recalibrate. There is no consolidation, no refresh and no reranker, so a save is one extraction call per 12,000
-  // characters plus embeddings (Workers AI bge-m3, embed_token above), and a search is one query embedding.
+  // (kind memory-extract) after the first real saves, and recalibrate. There is no consolidation and no refresh, so a save is one extraction call per 12,000
+  // characters plus embeddings (Workers AI bge-m3, embed_token above), and a search is one query embedding plus one rerank call.
   mem_extract_call: 700_000,        // one extraction call with a cold prompt cache: 6,700 input tokens at $0.10 and about 400 output tokens at $0.50 per million
   mem_extract_call_warm: 175_000,   // the same call when the prompt is cached (6,200 of the input tokens at $0.01): every call after the first of one send
   mem_extract_char: 70,             // per character of the text sent: 0.3 input tokens ($0.10), 0.07 output tokens ($0.50) and the embeddings of it, about 5 nano$ (0.4 tokens at embed_token)
   mem_raw_char: 4,                  // text kept as chunks with no extraction call: only its embeddings, 0.3 tokens per character at embed_token
-  mem_search: 1_000,                // one search: the query embedding (about 80 tokens at embed_token), no model call
+  mem_rerank_token: 3.11,           // Workers AI bge-reranker-base: $0.00311 per million input tokens
+  mem_search: 13_440,               // one search: 1,000 for the query embedding (about 80 tokens at embed_token) and 12,440 for the rerank of up to 20 facts, each read with the question as about 200 tokens at mem_rerank_token
 };
 // What one send of items to memory costs, in nano$ before markup. `lens` is the characters of each item. Mem0 reads at most EXTRACT_CHARS characters (mem0-store.js) in one extraction call,
 // and the first call of a send pays the cold prompt, every later one the cached prompt. An item with no characters costs nothing.

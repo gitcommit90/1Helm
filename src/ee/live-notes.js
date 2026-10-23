@@ -58,6 +58,8 @@ import { structuredFormat, parseStructuredResponse, validateStructured } from ".
 import { NOTE_PATCH_SCHEMA, FINAL_NOTES_SCHEMA } from "../background-schemas.js";
 import { PLAIN_STYLE } from "../plain-style.js";
 import { nameChat, applyChatTitle, CHAT_TITLE_TEXT_MAX } from "../chat-titles.js";   // the task's name after a meeting: the same chat_title job as every other chat
+import { speakerReserve, mapSpeakerIds, assignSpeakers, labelled, labelOf, speakersOf, defaultLabel, taskAudioPrefix, sessionKey, SPEAKER_EVERY_MS, SPEAKER_MIN_MS, SPEAKER_FAILS, SPEAKER_MARKUP } from "./speaker-labels-core.js";
+import { speakerJobReady, speakerRate, diarize, endSession, deleteAudio } from "./speaker-labels.js";   // the saved job, R2 and the container
 import { hsWriters } from "../hs-flag.js";   // HS_WRITERS: the transcript goes into the channel's bank as live:<task>:s<n>, the meeting notes as a file
 
 // The note-taker's cadence (noteDueAt). First pass: 12 s after the first new line (or as soon as 240 chars came in), so notes show
@@ -69,6 +71,7 @@ export function noteDueAt({ tried = 0, k = 0, chars = 0, oldest = 0 } = {}, t = 
   if (!tried) return t - oldest >= NOTE_FIRST_MS || chars >= NOTE_FIRST_CHARS;
   const since = t - tried; return since >= NOTE_GAP_MS && (chars >= NOTE_FAST_CHARS || since >= NOTE_EVERY_MS);
 }
+export const LABEL_FINAL_WAIT_MS = 10 * 60e3, LABEL_RETRY_MS = 30e3;   // the final speaker pass waits this long for the speech container; a failed periodic pass tries again after this
 export const WAKE_MS = 5000, WATCHDOG_MS = 25e3, CHUNK_MS = 3 * 60e3, POLL_MS = 5000, LIST_MS = 30e3, STALE_RETRY_MS = 15e3;
 export const SAFETY_MS = 15e3, MIN_GAP_MS = 5e3;   // with Bee's stream open: a safety read every 15 s, event-driven reads ≥ 5 s apart (never more reads than plain polling)
 export const ASK_AFTER_MS = 60 * 60e3, ASK_WAIT_MS = 5 * 60e3, AWAY_MS = 30 * 60e3, SEEN_FRESH_MS = 150e3, CLAIM_MS = 3 * 60e3, DOWN_STOP_MS = 10 * 60e3;
@@ -151,11 +154,13 @@ export function notesRequest(kind, messages, maxTokens = undefined) {
 export function noteMessages({ s, n, win, lines, depth, sec, caps = noteCaps(depth.minutes * 60e3) }) {
   const mic = s.source === "mic", sub = parseSection(sec || "").subs, kept = (k) => (sub[k]?.lines || []).filter((l) => !PLACEHOLDER.test(l.trim()));
   const limits = `Limits now: summary at most ${caps.sentences} sentences (it has ${sentencesOf(kept("summary").join(" "))}), notes at most ${caps.lines.notes} lines (it has ${kept("notes").length}), decisions at most ${caps.lines.decisions} (${kept("decisions").length}), open questions at most ${caps.lines.questions} (${kept("questions").length}), each line at most ${caps.chars} characters.${s.last_rej ? ` In your last answer these were rejected: ${s.last_rej}.` : ""}`;
-  return [{ role: "system", content: isTab(s) ? NOTE_SYSTEM_TAB : mic ? NOTE_SYSTEM_MIC : NOTE_SYSTEM }, { role: "user", content: `Transcript so far, earlier lines${win.omitted ? ` (the first ${win.omitted} lines are left out; the notes cover them)` : ""}:\n${win.lines.join("\n") || "(none)"}\n\nNEW transcript lines:\n${lines.join("\n")}\n\nCurrent session: ${n}, ${depth.minutes} minutes so far. ${limits}${s.prev ? `\n\nContext from the previous session (for the notes only):\n${s.prev}` : ""}\n\nNotes so far:\n${sec || "(none yet)"}` }];
+  const spk = !!s.labels_on;
+  return [{ role: "system", content: isTab(s) ? (spk ? NOTE_SYSTEM_TAB_SPK : NOTE_SYSTEM_TAB) : mic ? (spk ? NOTE_SYSTEM_MIC_SPK : NOTE_SYSTEM_MIC) : NOTE_SYSTEM }, { role: "user", content: `Transcript so far, earlier lines${win.omitted ? ` (the first ${win.omitted} lines are left out; the notes cover them)` : ""}:\n${win.lines.join("\n") || "(none)"}\n\nNEW transcript lines:\n${lines.join("\n")}\n\nCurrent session: ${n}, ${depth.minutes} minutes so far. ${limits}${s.prev ? `\n\nContext from the previous session (for the notes only):\n${s.prev}` : ""}\n\nNotes so far:\n${sec || "(none yet)"}` }];
 }
 // The final-notes request for one session: the system prompt for the source, then the meeting heading, the live notes, the lines a person added, the length guide and the full transcript.
 export function finalMessages({ s, title, tz, cur, human, depth, text, compact = false }) {
-  return [{ role: "system", content: isTab(s) ? FINAL_SYSTEM_TAB : s.source === "mic" ? FINAL_SYSTEM_MIC : FINAL_SYSTEM }, { role: "user", content: `Meeting: ${title || "Meeting"}, ${dayLine(s.started_at, tz)}, ${hm(s.started_at, tz)}–${hm(s.ended_at, tz)}.${s.prev ? `\n\n${s.prev}` : ""}\n\nLive notes taken during it:\n${cur || "(none)"}\n\nLines a person added (keep them exactly):\n${human.map((h) => h.line).join("\n") || "(none)"}\n\n${finalGuide(depth, compact)}\n\nFull transcript:\n${text}` }];
+  const spk = !!s.labels_on;
+  return [{ role: "system", content: isTab(s) ? (spk ? FINAL_SYSTEM_TAB_SPK : FINAL_SYSTEM_TAB) : s.source === "mic" ? (spk ? FINAL_SYSTEM_MIC_SPK : FINAL_SYSTEM_MIC) : FINAL_SYSTEM }, { role: "user", content: `Meeting: ${title || "Meeting"}, ${dayLine(s.started_at, tz)}, ${hm(s.started_at, tz)}–${hm(s.ended_at, tz)}.${s.prev ? `\n\n${s.prev}` : ""}\n\nLive notes taken during it:\n${cur || "(none)"}\n\nLines a person added (keep them exactly):\n${human.map((h) => h.line).join("\n") || "(none)"}\n\n${finalGuide(depth, compact)}\n\nFull transcript:\n${text}` }];
 }
 // The clean-up request after Bee's final transcript arrives (job notes_refine): the final-notes prompt with the cleaned-up transcript.
 export function refineMessages({ s, title, tz, cur, human, depth, text }) {
@@ -176,8 +181,9 @@ export function transcriptBody({ s, task, n, tz, utts, title = "", live = false,
   const mic = s.source === "mic", t = (ms) => fmt(ms, tz, { hour: "numeric", minute: "2-digit", second: "2-digit" }).replace(/\s+/g, " ");
   const head = { note: `Raw speech-recognition transcript of ${nameTitle(title)}, session ${n}, ${dayLine(s.started_at, tz)}, ${hm(s.started_at, tz)}${s.ended_at ? `-${hm(s.ended_at, tz)}` : ", still live (lines are added about once a minute)"}. It has errors. Times are in ${tz || "UTC"}.`,
     source: mic ? "mic" : "bee", task, session: n, started_at: s.started_at, ended_at: s.ended_at || null, live, conversations: s.convs || [],
-    ...(mic ? { microphone: { chunks: s.chunks || 0, paused: s.pauses || [], ...(transcription ? { transcription } : {}) } } : {}) };
-  const rows = utts.map((u) => JSON.stringify(mic ? { id: u.uid, at: u.at, time: t(u.at), text: u.text } : { conv: u.conv, id: u.uid, at: u.at, time: t(u.at), speaker: u.speaker, text: u.text, realtime: !!u.rt }));
+    ...(mic ? { microphone: { chunks: s.chunks || 0, paused: s.pauses || [], ...(transcription ? { transcription } : {}) } } : {}),
+    ...(utts.some((u) => u.speaker_id) ? { speakers: speakersOf(utts.map((u) => ({ sid: u.speaker_id })), s.speakers || {}).map(({ id, name, contact_id }) => ({ id, name, contact_id })) } : {}) };
+  const rows = utts.map((u) => JSON.stringify(mic ? { id: u.uid, at: u.at, time: t(u.at), ...(u.speaker_id || u.speaker ? { speaker: u.speaker_id || u.speaker } : {}), ...(u.speaker ? { label: u.speaker } : {}), text: u.text } : { conv: u.conv, id: u.uid, at: u.at, time: t(u.at), speaker: u.speaker, text: u.text, realtime: !!u.rt }));
   return `${JSON.stringify(head).slice(0, -1)},"utterances":[\n${rows.join(",\n")}\n]}\n`;
 }
 export const STOP_RE =/\b(stop|end|turn off|finish|pause)\b[^.?!\n]{0,24}\blive[ -]?notes\b/i;
@@ -355,6 +361,12 @@ export const NOTE_SYSTEM_MIC = NOTE_SYSTEM.replace(SRC_BEE, SRC_MIC), FINAL_SYST
 // A meeting tab (an online call): "You:" lines came from the person's own mic only, "Others:" from the call's sound only; the rest is either.
 const SRC_TAB = 'speech recognition of an online call: it has errors; lines marked "You:" are the person these notes are for (their own microphone), lines marked "Others:" are the other people in the call (one or more, not told apart), and unmarked lines may be either, so never guess who said what unless the words say it';
 export const NOTE_SYSTEM_TAB = NOTE_SYSTEM.replace(SRC_BEE, SRC_TAB), FINAL_SYSTEM_TAB = FINAL_SYSTEM.replace(SRC_BEE, SRC_TAB);
+// With speaker labels (speaker-labels.js) a line starts with "Speaker 1", "Speaker 2" or the name a person gave that speaker, from separating the voices by sound.
+const SPK = 'lines start with a speaker label ("Speaker 1", "Speaker 2", or a person\'s name once someone named that speaker) that comes from separating the voices by sound, so a label can be wrong; say who said what by the label or name shown, and never give a speaker a name that neither the label nor the words give';
+const SRC_MIC_SPK = `speech recognition from one microphone in the room: it has errors, and ${SPK}`;
+const SRC_TAB_SPK = SRC_TAB.replace("so never guess who said what unless the words say it", `and ${SPK.replace("lines start", "other lines start")}`);
+export const NOTE_SYSTEM_MIC_SPK = NOTE_SYSTEM.replace(SRC_BEE, SRC_MIC_SPK), FINAL_SYSTEM_MIC_SPK = FINAL_SYSTEM.replace(SRC_BEE, SRC_MIC_SPK);
+export const NOTE_SYSTEM_TAB_SPK = NOTE_SYSTEM.replace(SRC_BEE, SRC_TAB_SPK), FINAL_SYSTEM_TAB_SPK = FINAL_SYSTEM.replace(SRC_BEE, SRC_TAB_SPK);
 // A session that heard a meeting tab at any point (it may have gone on with the mic after sharing stopped): the call's instructions.
 const viasOf = (s) => [...new Set([...(s?.vias || []), s?.via || "mic"])];
 const isTab = (s) => s?.source === "mic" && viasOf(s).some((v) => v === "tab" || v === "system");
@@ -489,6 +501,8 @@ export class LiveNotes extends DurableObject {
       CREATE TABLE IF NOT EXISTS finals (conv INTEGER PRIMARY KEY, at INTEGER NOT NULL, utts TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS ours (n INTEGER NOT NULL, line TEXT NOT NULL, PRIMARY KEY (n, line));
       CREATE TABLE IF NOT EXISTS chunks (n INTEGER NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, bytes INTEGER NOT NULL, nano INTEGER NOT NULL, lines INTEGER NOT NULL, got INTEGER NOT NULL, PRIMARY KEY (n, seq));`);
+    // Speaker labels (speaker-labels.js): sid is the diarized speaker id (S1, S2, ...), tm the utterance's span and word spans on the session's clock (JSON). Added to tables made before.
+    for (const col of ["sid TEXT", "tm TEXT"]) { try { this.sql.exec(`ALTER TABLE utts ADD COLUMN ${col}`); } catch { /* already there */ } }
   }
   get(k) { return this.sql.exec("SELECT v FROM kv WHERE k=?", k).toArray()[0]?.v; }
   put(k, v) { if (this._purged) return; if (v == null) this.sql.exec("DELETE FROM kv WHERE k=?", k); else this.sql.exec("INSERT INTO kv VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", k, String(v)); }
@@ -517,8 +531,9 @@ export class LiveNotes extends DurableObject {
     const rf = this.sql.exec("SELECT n, st FROM sess ORDER BY n DESC").toArray().map((r) => ({ n: r.n, x: jp(r.st, {}) })).find((r) => ["proposed", "asked"].includes(r.x.refine?.state));
     return { status: st, n, now: t, task: this.get("task"), file: this.get("file_id") ? { id: this.get("file_id"), name: this.get("file_name"), path: this.path(), version: Number(this.get("file_v") || 0) } : null,
       ...(s && st !== "idle" ? { started_at: s.started_at, ended_at: s.ended_at || null, cost_nano: s.cost_nano || 0, cost_usd: usd(s.cost_nano), lines: Number(this.sql.exec("SELECT COUNT(*) c FROM utts WHERE n=?", n).toArray()[0]?.c || 0),
-        notes_at: s.notes_at || null, ask: !!s.ask_at, ask_deadline: s.ask_at ? s.ask_at + ASK_WAIT_MS : null, waiting: !s.heard_at, note: s.note || null, source: s.source || "bee", mic: this.micView(s, t) } : {}),
-      last: s && st === "idle" ? { n, started_at: s.started_at, ended_at: s.ended_at, stop_reason: s.stop_reason, reason: reasonText(s.stop_reason), cost_usd: usd(s.cost_nano), note: s.note || null, source: s.source || "bee" } : null,
+        notes_at: s.notes_at || null, ask: !!s.ask_at, ask_deadline: s.ask_at ? s.ask_at + ASK_WAIT_MS : null, waiting: !s.heard_at, note: s.note || null, source: s.source || "bee", mic: this.micView(s, t), ...this.speakerView(n, s) } : {}),
+      ...(s && st === "idle" ? this.speakerView(n, s) : {}),
+      last: s && st === "idle" ? { n, started_at: s.started_at, ended_at: s.ended_at, stop_reason: s.stop_reason, reason: reasonText(s.stop_reason), cost_usd: usd(s.cost_nano), note: s.note || null, source: s.source || "bee", ...this.speakerView(n, s) } : null,
       sessions: list, refine: rf ? { n: rf.n, state: rf.x.refine.state, added: (rf.x.refine.diff?.added || []).length, removed: (rf.x.refine.diff?.removed || []).length, summary: rf.x.refine.summary || null } : null };
   }
   // The recording device, as the app shows it: live, paused (it said so: a phone in the background) or lost (no word for 90 s).
@@ -532,7 +547,7 @@ export class LiveNotes extends DurableObject {
   // The last ~5 min of transcript, for the assistant's per-turn tag (§9.4). Times in the person's zone.
   async recent(ms = RECENT_MS) {
     const n = Number(this.get("n") || 0), s = this.s(n); if (!s) return { view: this.view(), lines: [] };
-    const rows = this.sql.exec("SELECT at, speaker, text FROM utts WHERE n=? AND at>=? ORDER BY at, rid LIMIT 400", n, now() - ms).toArray();
+    const rows = this.sql.exec("SELECT at, speaker, sid, text FROM utts WHERE n=? AND at>=? ORDER BY at, rid LIMIT 400", n, now() - ms).toArray().map((u) => ({ ...u, speaker: labelOf(u, this.names(n)) }));
     return { view: this.view(), lines: rows.map((u) => `[${hm(u.at, this.tz())}] ${s.source === "mic" && !u.speaker ? "" : `${speaker(u.speaker)}: `}${u.text}`) };
   }
 
@@ -661,10 +676,12 @@ export class LiveNotes extends DurableObject {
     const wait = this.micWait();   // a mic session stopped from elsewhere: the device's last chunk first
     if (this.get("status") === "finalizing" && !wait) { try { await this.finalize(); } catch (e) { await this.ev(`final pass failed: ${String(e?.message || e).slice(0, 160)}`); const s = this.s(); if (s) { this.setS(s.n, { final_tries: (s.final_tries || 0) + 1 }); this.diag(s.n, (g) => diagOutcome(g, "final", "failed", { err: e?.message })); } } }
     try { await this.refineStep(); } catch (e) { await this.ev(`refine failed: ${String(e?.message || e).slice(0, 160)}`); }
+    const audioLeft = await this.audioSweep().catch(() => 0);   // chunk audio whose deletion failed before: again
     const s2 = this.get("status");
     if (s2 === "live") await this.ctx.storage.setAlarm(now() + (this.get("replay") ? 300 : WAKE_MS));
     else if (s2 === "finalizing") await this.ctx.storage.setAlarm(wait || now() + 30e3);
     else if (this.refineDue()) await this.ctx.storage.setAlarm(now() + 1000);
+    else if (audioLeft) await this.ctx.storage.setAlarm(now() + 5 * 60e3);
   }
   micWait() { const s = this.get("status") === "finalizing" ? this.s() : null; return s?.source === "mic" && !s.flushed && !s.final_at && now() < (s.ended_at || 0) + MIC_GRACE_MS ? s.ended_at + MIC_GRACE_MS : 0; }
   // Which cap (§9.6) ends this session now, if any. Updates the in-view / away state.
@@ -704,6 +721,7 @@ export class LiveNotes extends DurableObject {
     }
     const s = this.s(n);
     if (!this.get("replay") && this.noteDue(n, s, t)) { await this.notePass(n); this._dirty = true; }
+    if (mic && this.labelDue(n, s, t)) { await this.labelPass(n); this._dirty = true; }   // speaker labels, every few minutes (speaker-labels.js)
     await this.hsLivePush(n).catch((e) => console.log("live notes memory", String(e?.message || e).slice(0, 120)));   // HS_WRITERS: new transcript lines → memory, on its own cadence
     await this.trPut(n, { minGap: 60e3 });   // the hidden transcript file, so the helper can read the whole meeting so far (no model call)
     if (this.get("status") === "live" && (this._dirty || t - Number(this.get("mirror_at") || 0) > 30e3)) { this.put("mirror_at", t); await this.mirror(); }
@@ -749,12 +767,14 @@ export class LiveNotes extends DurableObject {
     const from = Number(this.get(`hs_upto_${n}`) || 0);
     let to = Number(this.get(`hs_to_${n}`) || 0);
     if (!(to > from)) {
-      const r = this.sql.exec("SELECT COUNT(*) k, COALESCE(SUM(LENGTH(text)), 0) c, COALESCE(MAX(rid), 0) m FROM utts WHERE n=? AND rid>?", n, from).toArray()[0];
+      // Speaker labels: while a pass can still label them, lines wait (from the first line with no speaker on) so the text in memory says who said what. The end of the session sends the rest.
+      const hold = !final && s.source === "mic" && s.labels_ready && !s.labels_off && !s.labels_final && s.audio_chunks ? Number(this.sql.exec("SELECT COALESCE(MIN(rid), 0) m FROM utts WHERE n=? AND rid>? AND sid IS NULL", n, from).toArray()[0]?.m || 0) : 0;
+      const r = this.sql.exec(`SELECT COUNT(*) k, COALESCE(SUM(LENGTH(text)), 0) c, COALESCE(MAX(rid), 0) m FROM utts WHERE n=? AND rid>?${hold ? " AND rid<?" : ""}`, ...(hold ? [n, from, hold] : [n, from])).toArray()[0];
       const chars = Number(r?.c || 0), t = now(), last = Number(this.get(`hs_at_${n}`) || 0);
       if (!Number(r?.k || 0) || !(final || chars >= 1200 || (chars >= 240 && t - last >= 60e3))) return 0;
       to = Number(r.m); this.put(`hs_to_${n}`, to);   // saved before the send
     }
-    const rows = this.sql.exec("SELECT rid, at, speaker, text FROM utts WHERE n=? AND rid>? AND rid<=? ORDER BY rid LIMIT 400", n, from, to).toArray();
+    const rows = this.sql.exec("SELECT rid, at, speaker, sid, text FROM utts WHERE n=? AND rid>? AND rid<=? ORDER BY rid LIMIT 400", n, from, to).toArray().map((u) => ({ ...u, speaker: labelOf(u, this.names(n)) }));
     if (!rows.length) { this.put(`hs_upto_${n}`, to); return 0; }
     const last = rows[rows.length - 1].rid;
     const r = await this.res().hsLiveAppend({ task: this.get("task"), n, rows: rows.map((u) => ({ at: u.at, speaker: u.speaker, text: u.text })), mic: s.source === "mic", at: s.started_at, key: `${n}:${last}` });
@@ -773,12 +793,12 @@ export class LiveNotes extends DurableObject {
   // the current session's section. The front of the prompt (system, earlier lines) changes only when the window moves, and what changes every pass comes last.
   async notePass(n) {
     const s = this.s(n); this.setS(n, { notes_try_at: now() });
-    const rows = this.sql.exec("SELECT rid, at, speaker, text FROM utts WHERE n=? AND rid>? ORDER BY rid LIMIT 400", n, s.note_upto || 0).toArray();
+    const rows = this.sql.exec("SELECT rid, at, speaker, sid, text FROM utts WHERE n=? AND rid>? ORDER BY rid LIMIT 400", n, s.note_upto || 0).toArray().map((u) => ({ ...u, speaker: labelOf(u, this.names(n)) }));
     let lines = [], used = 0, upto = s.note_upto || 0, lastAt = 0;
     const mic = s.source === "mic";
     for (const u of rows) { const l = tline(u, s.started_at, mic); if (used + l.length > NOTE_LINES_CHARS && lines.length) break; lines.push(l); used += l.length; upto = u.rid; lastAt = u.at; }
     const elapsed = Math.max(0, (lastAt || now()) - s.started_at);   // meeting time at the newest line (equals the clock for a live meeting, and is right for a replay)
-    const before = this.sql.exec("SELECT rid, at, speaker, text FROM utts WHERE n=? AND rid<=? ORDER BY rid DESC LIMIT ?", n, s.note_upto || 0, NOTE_HISTORY_ROWS).toArray().reverse();
+    const before = this.sql.exec("SELECT rid, at, speaker, sid, text FROM utts WHERE n=? AND rid<=? ORDER BY rid DESC LIMIT ?", n, s.note_upto || 0, NOTE_HISTORY_ROWS).toArray().reverse().map((u) => ({ ...u, speaker: labelOf(u, this.names(n)) }));
     const total = Number(this.sql.exec("SELECT COUNT(*) c FROM utts WHERE n=? AND rid<=?", n, s.note_upto || 0).toArray()[0]?.c || 0);
     const win = noteWindow(before.map((u) => tline(u, s.started_at, mic)), total);
     const d = await this.readDoc(); const sec = d ? sectionText(d.text, n) : null, depth = noteDepth(elapsed), caps = noteCaps(elapsed);
@@ -855,16 +875,20 @@ export class LiveNotes extends DurableObject {
   }
 
   // ---- the final pass (§9.5) ----
-  transcriptOf(n) { return this.sql.exec("SELECT conv, uid, at, speaker, text, rt FROM utts WHERE n=? ORDER BY at, rid", n).toArray(); }
+  // The session's lines in order, with `speaker` the label shown (a name, "Speaker N", "You") and `speaker_id` the diarized id (S1, ...) or null.
+  transcriptOf(n) { return labelled(this.sql.exec("SELECT conv, uid, at, speaker, sid, text, rt FROM utts WHERE n=? ORDER BY at, rid", n).toArray(), this.names(n)); }
   async finalize() {
     const n = Number(this.get("n") || 0), s = this.s(n); if (!s) { this.put("status", "idle"); return; }
-    const env = this.env, tid = this.tid(), tz = this.tz(), utts = this.transcriptOf(n);
+    const env = this.env, tid = this.tid(), tz = this.tz();
+    { const w = await this.labelFinal(n); if (w?.wait) return; }   // speaker labels: the final pass over the whole session, then its audio is deleted. A container that is still starting: wait here (the alarm comes back), the notes are not written yet
+    const utts = this.transcriptOf(n);
     for (let i = 0; i < 20 && hsWriters(env); i++) { const sent = await this.hsLivePush(n, { final: true }).catch((e) => { console.log("live notes memory", String(e?.message || e).slice(0, 120)); return 0; }); if (!sent) break; }   // HS_WRITERS: every line not yet in memory
     // 1. the raw session transcript → R2 (linked in the footer)
     let tkey = s.transcript_key || null;
     if (!tkey) {
       const mic = s.source === "mic";
-      const body = transcriptBody({ s, task: this.get("task"), n, tz, utts, title: this.get("title"), transcription: mic ? `${(await sttModels(this.env))[0]} (OpenRouter, zero data retention; Whisper large-v3-turbo if it failed)` : null });
+      const body = transcriptBody({ s, task: this.get("task"), n, tz, utts, title: this.get("title"), transcription: mic ? `${(await sttModels(this.env))[0]} (the saved Speech to text job; its fallbacks run when a model fails)` : null });
+      if (mic) this.setS(n, { transcription_note: `${(await sttModels(this.env))[0]} (the saved Speech to text job; its fallbacks run when a model fails)` });
       try { const k = transcriptKey(tid, this.get("channel"), this.get("task"), n); await stPut(env, k, body, { httpMetadata: { contentType: "application/json" } }, { check: true, replace: true }); tkey = k; this.setS(n, { transcript_key: k }); }
       catch (e) { this.setS(n, { note: "Your storage is full, so the raw transcript wasn't kept." }); await this.ev(`transcript not saved: ${String(e?.message || e).slice(0, 100)}`); }
     }
@@ -932,6 +956,10 @@ export class LiveNotes extends DurableObject {
       const gone = []; let cursor; for (let i = 0; i < 50; i++) { const l = await this.env.WS.list({ prefix: `t/${tid}/bee/live/${ch}/${task}/`, cursor, limit: 1000 }); gone.push(...(l.objects || [])); if (!l.truncated) break; cursor = l.cursor; }
       if (gone.length) await stDelete(this.env, gone.map((o) => ({ key: o.key, size: o.size ?? null })));
     }
+    if (tid && ch && task) {   // the microphone chunks' audio (speaker labels) and the container's speech sessions go with the meeting notes
+      for (const r of rows) { const x = jp(r.st, {}); if (x.audio_chunks && !(x.labels_final && !x.audio_pending)) await endSession(this.env, { tenant: tid, channel: ch, task, n: r.n }).catch(() => {}); }
+      await deleteAudio(this.env, taskAudioPrefix(tid, ch, task)).catch((e) => console.log("live notes audio purge", String(e?.message || e).slice(0, 100)));
+    }
     try { await this.ctx.storage.deleteAlarm?.(); } catch {}
     try { await this.ctx.storage.deleteAll?.(); } catch (e) { console.log("live notes purge", String(e?.message || e).slice(0, 100)); }
     this.init(); for (const t of ["kv", "sess", "utts", "finals", "ours", "chunks"]) this.sql.exec(`DELETE FROM ${t}`);
@@ -943,9 +971,9 @@ export class LiveNotes extends DurableObject {
   // ---- the hidden transcript file: a Library file (hidden: never in the person's list, never retained as file:<id>, because the lines are already in memory as live:<task>:s<n>)
   // that the helper reads in its files/ folder. Live, it is rewritten when new lines came in (at most every minGap ms, no model call); finished sessions that only have the R2 copy get it on demand.
   async trUtts(n) {
-    const rows = this.transcriptOf(n); if (rows.length) return { utts: rows, sig: `${rows.length}:${this.sql.exec("SELECT COALESCE(MAX(rid),0) m FROM utts WHERE n=?", n).toArray()[0]?.m}` };
+    const rows = this.transcriptOf(n); if (rows.length) return { utts: rows, sig: `${rows.length}:${this.sql.exec("SELECT COALESCE(MAX(rid),0) m FROM utts WHERE n=?", n).toArray()[0]?.m}:${this.s(n)?.labels_v || 0}` };
     const s = this.s(n); if (!s?.transcript_key) return { utts: [], sig: "0" };
-    try { const o = await this.env.WS.get(s.transcript_key), j = o ? await o.json() : null; return { sig: "r2", utts: (j?.utterances || []).map((u) => ({ conv: u.conv || 0, uid: u.id || "", at: Number(u.at) || 0, speaker: u.speaker || null, text: String(u.text || ""), rt: u.realtime ? 1 : 0 })) }; } catch { return { utts: [], sig: "0" }; }
+    try { const o = await this.env.WS.get(s.transcript_key), j = o ? await o.json() : null; return { sig: "r2", utts: (j?.utterances || []).map((u) => ({ conv: u.conv || 0, uid: u.id || "", at: Number(u.at) || 0, speaker: u.label || u.speaker || null, speaker_id: /^S\d+$/.test(u.speaker || "") ? u.speaker : null, text: String(u.text || ""), rt: u.realtime ? 1 : 0 })) }; } catch { return { utts: [], sig: "0" }; }
   }
   // → {id, name, path} | null. Never throws.
   async trPut(n, { final = false, minGap = 0 } = {}) {
@@ -1004,7 +1032,10 @@ export class LiveNotes extends DurableObject {
     if (!open) return { go: false, why: "Live notes stopped.", status: st };
     // The end of the transcript so far: the prompt for Workers AI's Whisper (the last fallback; the OpenRouter models ignore prompts), so names carry across chunks.
     const tail = this.sql.exec("SELECT text FROM utts WHERE n=? ORDER BY at DESC, rid DESC LIMIT 8", x.n).toArray().reverse().map((r) => r.text).join(" ").slice(-MIC_PROMPT_CHARS);
-    return { go: true, n: x.n, status: st, prompt: tail || `${this.get("title") || ""}`.trim() };
+    // Speaker labels: a session that can reach the speech container and has not given up on it gets each WAV chunk appended to its speech session (live-mic.js).
+    if (x.s.labels_ready == null) this.setS(x.n, { labels_ready: await speakerJobReady(this.env) });
+    const sx = this.s(x.n);
+    return { go: true, n: x.n, status: st, prompt: tail || `${this.get("title") || ""}`.trim(), labels: !!sx.labels_ready && !sx.labels_off, channel: this.get("channel"), task: this.get("task"), started_at: sx.started_at };
   }
   // A transcribed chunk: c = {at, ms, voiced, bytes, segs: [{off, text}], nano, stt_ms}. Its lines join the session's utterances (the
   // same table as Bee's), its cost the session's. Idempotent by seq.
@@ -1014,13 +1045,21 @@ export class LiveNotes extends DurableObject {
     if (this.sql.exec("SELECT 1 FROM chunks WHERE n=? AND seq=?", n, seq).toArray().length) return { ok: true, dup: true, added: 0, status: st };
     if (!(st === "live" || (st === "finalizing" && this.micWait()))) return { ok: false, why: "Live notes stopped.", status: st };
     const t = now(), at = Math.min(t, Math.max(s.started_at - 5e3, Number(c.at) || t)), nano = Math.max(0, Math.round(Number(c.nano) || 0)); let added = 0;
-    for (const [i, g] of (Array.isArray(c.segs) ? c.segs.slice(0, 200) : []).entries()) {
+    // Each line's span and its words on the session's clock (ms from the start of the session, the clock the speech session uses), for matching speaker turns.
+    const ms0 = Math.max(0, (Number(c.at) || t) - s.started_at), segs = Array.isArray(c.segs) ? c.segs.slice(0, 200) : [], words = Array.isArray(c.words) ? c.words : [];
+    for (const [i, g] of segs.entries()) {
       const text = String(g?.text || "").trim(); if (!text) continue;
-      const r = this.sql.exec("INSERT OR IGNORE INTO utts (n, conv, uid, at, speaker, text, rt) VALUES (?,?,?,?,?,?,?) RETURNING rid", n, 0, `m${seq}:${i}`, Math.min(t, at + Math.max(0, Number(g.off) || 0)), WHO[c.who] || null, text.slice(0, 2000), 1).toArray();
+      const off = Math.max(0, Number(g.off) || 0), end = Number.isFinite(g.end) ? g.end : Number.isFinite(segs[i + 1]?.off) ? segs[i + 1].off : Math.max(off + 1, Math.round(Number(c.ms) || off + 1));
+      const w = words.filter((x) => x.s >= off - 50 && x.s < Math.max(end, off + 1)).slice(0, 400).map((x) => [ms0 + x.s, ms0 + Math.max(x.e, x.s + 1)]);
+      const tm = JSON.stringify({ s: ms0 + off, e: ms0 + Math.max(end, off + 1), ...(w.length ? { w } : {}) });
+      const r = this.sql.exec("INSERT OR IGNORE INTO utts (n, conv, uid, at, speaker, text, rt, tm) VALUES (?,?,?,?,?,?,?,?) RETURNING rid", n, 0, `m${seq}:${i}`, Math.min(t, at + off), WHO[c.who] || null, text.slice(0, 2000), 1, tm).toArray();
       if (r.length) added++;
     }
+    // The speech session: how many chunks reached the container, and a stop after SPEAKER_FAILS failures in a row (the notes go on without labels).
+    const sp = c.audio === true ? { audio_chunks: (s.audio_chunks || 0) + 1, audio_new: (s.audio_new || 0) + 1, audio_ms: (s.audio_ms || 0) + Math.round(Number(c.ms) || 0), audio_fails: 0 }
+      : c.audio === false ? { audio_fails: (s.audio_fails || 0) + 1, ...((s.audio_fails || 0) + 1 >= SPEAKER_FAILS ? { labels_off: true, labels_state: "unavailable" } : {}) } : {};
     this.sql.exec("INSERT OR IGNORE INTO chunks (n, seq, at, ms, bytes, nano, lines, got) VALUES (?,?,?,?,?,?,?,?)", n, seq, at, Math.round(Number(c.ms) || 0), Math.round(Number(c.bytes) || 0), nano, added, t);
-    this.setS(n, { chunks: (s.chunks || 0) + 1, cost_nano: (s.cost_nano || 0) + nano, stt_nano: (s.stt_nano || 0) + nano, stt_ms: (s.stt_ms || 0) + Math.round(Number(c.stt_ms) || 0), mic_at: t, mic_ping_at: t, ...(added ? { heard_at: t } : {}) });
+    this.setS(n, { chunks: (s.chunks || 0) + 1, cost_nano: (s.cost_nano || 0) + nano, stt_nano: (s.stt_nano || 0) + nano, stt_ms: (s.stt_ms || 0) + Math.round(Number(c.stt_ms) || 0), mic_at: t, mic_ping_at: t, ...(added ? { heard_at: t } : {}), ...sp });
     if (st === "live" && added && this.noteDue(n)) await this.arm(t + 200);   // the note-taker is due: now
     return { ok: true, added, status: st };
   }
@@ -1036,6 +1075,102 @@ export class LiveNotes extends DurableObject {
     this.setS(n, o);
     if (o.mic_state || o.mic_state_at || o.via) { await this.ev(o.mic_state || o.mic_state_at ? `the microphone is ${o.mic_state || "back"}` : `the device now records: ${o.via}`); await this.mirror(); }
     return this.view();
+  }
+
+  // ---- speaker labels (speaker-labels.js) ----
+  // The names a person gave the session's speakers: { S1: { name, contact_id } }.
+  names(n) { return this.s(n)?.speakers || {}; }
+  // What the view says about a session's speakers: [{ id, label, name, contact_id, lines, ms }], and where labelling stands:
+  // off (this session has no labels), waiting (audio is going to the container, no pass yet), working, ready (a pass finished), unavailable (the container did not answer).
+  speakerView(n, s) {
+    if (!s || s.source !== "mic") return {};
+    const rows = this.sql.exec("SELECT sid, tm FROM utts WHERE n=? AND sid IS NOT NULL", n).toArray();
+    const state = s.labels_off ? (s.labels_state || "unavailable") : !s.labels_ready ? "off" : s.labels_busy ? "working" : s.labels_at ? "ready" : "waiting";
+    return { speakers: speakersOf(rows, s.speakers || {}), labels: { state, at: s.labels_at || null, final: !!s.labels_final, reason: s.labels_reason || null } };
+  }
+  // Is a pass due: audio arrived since the last one (at least SPEAKER_MIN_MS of it), and SPEAKER_EVERY_MS passed.
+  labelDue(n, s, t = now()) {
+    if (!s || s.labels_off || !s.labels_ready || s.labels_final || !s.audio_new) return false;
+    return t - (s.label_try_at || s.started_at) >= SPEAKER_EVERY_MS && (s.audio_ms || 0) - (s.label_ms || 0) >= SPEAKER_MIN_MS;
+  }
+  // One pass over the whole session: reserve, ask the container, give every line its speaker (a later pass may change an earlier line), settle. A refusal to pay or a failure leaves the lines as they are.
+  // → { changed, speakers } | { skipped } ; throws only when final is set and the container failed (so the alarm tries again).
+  async labelPass(n, { final = false } = {}) {
+    const s = this.s(n); if (!s || s.source !== "mic" || s.labels_off || !s.labels_ready || !s.audio_chunks) { if (s?.source === "mic") this.setS(n, { labels_reason: s.labels_off ? "labels are off for this session" : !s.labels_ready ? "no speaker labels model is set" : "no audio reached the speech container's store" }); return { skipped: "no audio" }; }
+    this.setS(n, { label_try_at: now(), labels_busy: true });
+    const rid = `ln-labels:${crypto.randomUUID()}`, L = this.ledger(); let held = null;
+    try {
+      const reserve = speakerReserve((s.audio_ms || 0) / 1000, await speakerRate(this.env));
+      try { held = await L.reserve(rid, reserve); } catch { held = { ok: false }; }
+      if (!held?.ok) { this.setS(n, { labels_busy: false, labels_note: "not paid", labels_reason: "not enough credit to label the speakers" }); return { skipped: "not paid" }; }
+      let r;
+      try { r = await diarize(this.env, { session: sessionKey(this.tid(), this.get("channel"), this.get("task"), n) }, { meta: { tenant: this.tid(), channel: this.get("channel"), kind: "live-notes-speakers" } }); }
+      catch (e) {
+        await L.settle(rid, 0).catch(() => {});
+        // A container that is still starting (warming): the next pass comes in LABEL_RETRY_MS, not at the usual interval.
+        this.setS(n, { labels_busy: false, label_fails: (s.label_fails || 0) + 1, labels_reason: e?.warming ? "the speech container is starting" : `the speech container failed (${String(e?.message || e).slice(0, 100)})`, label_try_at: now() - SPEAKER_EVERY_MS + LABEL_RETRY_MS }); this.diag(n, (g) => diagOutcome(g, "labels", "failed", { err: e?.message }));
+        console.log("live notes speaker labels", this.tid(), String(e?.message || e).slice(0, 160));
+        if (final) throw e; return { skipped: "failed" };
+      }
+      const nano = Math.min(reserve, Math.ceil(r.nano * SPEAKER_MARKUP)); await L.settle(rid, nano).catch(() => {});
+      const raw = jp(this.get(`spk_raw_${n}`), {}), mapped = mapSpeakerIds(r.turns, raw); this.put(`spk_raw_${n}`, JSON.stringify(mapped.map));
+      const rows = this.sql.exec("SELECT rid, tm, sid FROM utts WHERE n=? AND tm IS NOT NULL", n).toArray(), want = assignSpeakers(rows, mapped.turns), had = new Map(rows.map((x) => [x.rid, x.sid]));
+      let changed = 0; for (const w of want) if (had.get(w.rid) !== w.sid) { this.sql.exec("UPDATE utts SET sid=? WHERE rid=?", w.sid, w.rid); changed++; }
+      const s1 = this.s(n); this.setS(n, { labels_busy: false, labels_at: now(), label_ms: s1.audio_ms || 0, audio_new: 0, label_fails: 0, labels_v: (s1.labels_v || 0) + (changed ? 1 : 0), labels_on: s1.labels_on || want.length > 0, labels_reason: want.length ? null : "the container found no speech turns",
+        cost_nano: (s1.cost_nano || 0) + nano, label_nano: (s1.label_nano || 0) + nano, ...(r.model ? { labels_model: r.model } : {}), labels_note: null });
+      this.diag(n, (g) => diagOutcome(g, "labels", final ? "final_ok" : "ok"));
+      return { changed, speakers: new Set(want.map((w) => w.sid)).size };
+    } finally { if (this.s(n)?.labels_busy) this.setS(n, { labels_busy: false }); }
+  }
+  // The end of a mic session: the last pass (everything the device sent), then the chunk audio and the container's session are deleted. Safe to run again.
+  // → { wait: true } while the final pass must wait for the container (finalize returns and the alarm calls again), else undefined once the audio is deleted.
+  // The wait is bounded (LABEL_FINAL_WAIT_MS from the first try, saved in the session so a deploy resumes it) with a growing pause between tries (label_retry_at); after it the lines keep the
+  // labels they have. Any failure of the pass, not only a starting container, is waited out the same way: the final pass is not in the chat path.
+  async labelFinal(n) {
+    const s = this.s(n); if (!s || s.source !== "mic" || s.labels_final) return;
+    if (s.audio_chunks && !s.labels_off && s.labels_ready && !s.labels_done) {
+      const t = now(), since = s.label_final_since || t;
+      if (!s.label_final_since) this.setS(n, { label_final_since: t });
+      if (s.label_retry_at && t < s.label_retry_at) return { wait: true };
+      try { const r = await this.labelPass(n, { final: true }); if (r?.skipped === "not paid") this.setS(n, { labels_done: true }); else this.setS(n, { labels_done: true, label_retry_at: null }); }
+      catch (e) {
+        const tries = (s.label_final_tries || 0) + 1;
+        if (t - since < LABEL_FINAL_WAIT_MS) { this.setS(n, { label_final_tries: tries, label_retry_at: t + Math.min(60e3, 5e3 * 2 ** Math.min(tries, 4)), labels_reason: e?.warming ? "the speech container is starting; the final pass will try again" : `the final pass failed (${String(e?.message || e).slice(0, 100)}); trying again` }); return { wait: true }; }
+        this.setS(n, { label_final_tries: tries, labels_done: true, labels_reason: `the final pass gave up after ${Math.round((t - since) / 60e3)} minutes (${String(e?.message || e).slice(0, 100)})` });
+        await this.ev(`session ${n}: the speaker labels' final pass failed for ${Math.round((t - since) / 60e3)} minutes; the lines keep the labels they have`);
+      }
+    }
+    await this.audioDelete(n);
+  }
+  // Deletes the session's chunk audio and ends its container session. A failure is remembered (audio_pending) and the alarm tries again (audioSweep): the audio never stays, and the notes don't wait for it.
+  async audioDelete(n) {
+    const r = await endSession(this.env, { tenant: this.tid(), channel: this.get("channel"), task: this.get("task"), n });
+    this.setS(n, r.error ? { labels_final: true, audio_pending: true, labels_note: String(r.error) } : { labels_final: true, audio_pending: false, audio_deleted_at: now(), audio_deleted: r.deleted, ...(r.end_error ? { labels_note: String(r.end_error) } : {}) });
+    return !r.error;
+  }
+  async audioSweep() {
+    const rows = this.sql.exec("SELECT n FROM sess WHERE st LIKE '%\"audio_pending\":true%'").toArray(); let left = 0;
+    for (const r of rows) if (!(await this.audioDelete(r.n).catch(() => false))) left++;
+    return left;
+  }
+  // A person named a speaker (or linked it to a Contacts person): { id: "S1", name, contact_id }. An empty name and no contact clears it. The name shows in the view, the
+  // transcript file and everything made from the transcript from now on. → the view, or { error }.
+  async speakerName(n, id, name, contactId = null) {
+    n = Number(n) || Number(this.get("n") || 0); const s = this.s(n); id = String(id || "");
+    if (!s || s.source !== "mic") return { error: "That session has no speaker labels." };
+    if (!/^S\d{1,3}$/.test(id) || !this.sql.exec("SELECT 1 FROM utts WHERE n=? AND sid=? LIMIT 1", n, id).toArray().length) return { error: "No such speaker in that session." };
+    const nm = String(name ?? "").replace(/\s+/g, " ").trim().slice(0, 80), cid = contactId ? String(contactId).slice(0, 80) : null, map = { ...(s.speakers || {}) };
+    if (!nm && !cid) delete map[id]; else map[id] = { name: nm || null, contact_id: cid };
+    this.setS(n, { speakers: map, labels_v: (s.labels_v || 0) + 1 });
+    await this.ev(`session ${n}: ${id} is now ${nm ? `"${nm}"` : "unnamed"}${cid ? ` (contact ${cid})` : ""}`);
+    await this.trPut(n, { final: true }); await this.rewriteTranscript(n); await this.mirror();
+    return { speakers: this.speakerView(n, this.s(n)).speakers };
+  }
+  // The R2 copy of a finished session's transcript, made again with the names now given.
+  async rewriteTranscript(n) {
+    const s = this.s(n); if (!s?.transcript_key) return;
+    try { await stPut(this.env, s.transcript_key, transcriptBody({ s, task: this.get("task"), n, tz: this.tz(), utts: this.transcriptOf(n), title: this.get("title"), transcription: s.source === "mic" ? s.transcription_note || null : null }), { httpMetadata: { contentType: "application/json" } }, { replace: true }); }
+    catch (e) { console.log("live notes transcript rewrite", String(e?.message || e).slice(0, 120)); }
   }
 
   // ---- auto refine (§9.5) ----

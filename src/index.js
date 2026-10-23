@@ -40,6 +40,7 @@ import { deletionRoute, deletionCron, deleteNote, deleteChannel } from "./deleti
 import { archiveDeletionMix, wipeMix } from "./deletion-do.js";
 import { pomoGlobalMethods } from "./pomodoro.js";
 export { PrepContainer } from "./prep-container.js";
+export { SpeechContainer } from "./speech-container.js";
 export { ChannelComputer, ComputerLink } from "./channel-computer.js";
 export { NativeTransport, NativeTransportState } from "./native-transport.js";
 export { Resident } from "./resident.js";
@@ -105,6 +106,7 @@ import { locationRoute, saveLocation, rawFix } from "./location.js";   // where 
 import { replyRef } from "./reply-to.js";   // Reply on a chat bubble: the quoted message rides with /stream and send-later
 const MARKUP = 1.15;
 import { isCapacityError, computerBusyError } from "./computer-capacity.js";
+import { jobsView } from "./jobs-view.js";   // the Scheduled list: active/paused jobs, follow-ups, and recently ended ones
 const RESERVED = new Set("admin api app assets auth billing blog cdn demo docs help mail provision security status support www 1helm cloudflare login signup static dev staging test internal captain root system cloud gateway portal account accounts dashboard console design models hooks onboard download downloads manual terms privacy legal pricing about home news careers jobs press email smtp imap ftp ns ns1 ns2 m mobile ios android".split(" "));
 const slugValid = (s) => /^(?=.{3,48}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])$/.test(s) && !s.includes("--") && !/^\d+$/.test(s) && !RESERVED.has(s);
 const enc = new TextEncoder();
@@ -181,7 +183,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "288";
+const APP_V = "291";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -1098,9 +1100,8 @@ export default {
             const [d, sessions, wfs, files, later] = await Promise.all([light ? null : A.channel(c.id, 1), R.listSessions(), R.listWorkflows(), R.listFiles(), R.laterList().catch(() => [])]);
             return { id: c.id, slug, name: c.name, purpose: c.purpose || c.topic || "", sessions, files, later,
               // Everything on a schedule (the app's one "Scheduled" view): repeating jobs (active or paused) and one-time follow-ups still to come.
-              jobs: wfs.filter((w) => (w.kind === "workflow" && (w.status === "active" || w.status === "paused")) || (w.kind === "followup" && w.status === "active"))
-                .map((w) => ({ id: w.id, kind: w.kind, name: w.name, every: w.interval_seconds, when: w.when || null, next: w.next_run, runs: w.run_count, status: w.status, session: w.session || null,
-                  ...(w.event ? { on: w.event.label, account: w.event.account || null } : {}) })),   // runs when an app event happens (app-events.js)
+              // Plus recently ended ones (status complete / failed, with ended + why) for its Past section (jobs-view.js).
+              jobs: jobsView(wfs),
               ...(light ? {} : { memory: (d.memory || []).filter((m) => m.status !== "superseded").map((m) => String(m.content)),
                 notes: (d.memory || []).filter((m) => m.status !== "superseded").map((m) => ({ id: String(m.id), sec: m.sec || "", text: String(m.content), at: Number(m.edited || m.created) || 0, you: m.author_type === "human", ...(m.src ? { src: m.src } : {}) })) }) };
           }));
@@ -1618,9 +1619,9 @@ export default {
         }
         // Live notes (live-notes.js, SPEC §9): /api/res/<ch>/sessions/<id>/livenotes (GET the view + the meeting doc's text; POST {action:
         //   start (source: bee | mic, mic: the device's mic id, via: mic | tab | system) | stop (flushed) | continue | presence (view: bool) | mic (mic, state: live | paused, via)
-        //   | apply | skip (n)}) · …/livenotes/transcript/<n> (GET a session's raw transcript) · …/livenotes/audio?mic=&seq=&at=&ms=&voiced=&who= (POST
+        //   | speaker (n?, id: "S1", name?, contact_id?: names a speaker of a session; an empty name and no contact clears it) | apply | skip (n)}) · …/livenotes/transcript/<n> (GET a session's raw transcript) · …/livenotes/audio?mic=&seq=&at=&ms=&voiced=&who= (POST
         //   one chunk from the device's microphone, live-mic.js).
-        const lnm = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/sessions\/([0-9a-f-]{36})\/livenotes(?:\/transcript\/(\d{1,4})|\/(audio))?$/);
+        const lnm = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/sessions\/([0-9a-f-]{36})\/livenotes(?:\/transcript\/(\d{1,4})|\/(audio|speakers))?$/);
         if (lnm) {
           if (!env.LIVE_NOTES) return json({ error: "not found" }, 404);
           const chans = await archive(env, t.id).channels(), slugOf = (c) => c.slug || c.name, ch = chans.find((c) => slugOf(c) === lnm[1]);
@@ -1628,6 +1629,13 @@ export default {
           const R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:${slugOf(ch)}`)); await R.bind(t.id, slugOf(ch), String(ch.id));
           const row = await R.session(lnm[2]); if (!row) return json({ error: "No such task in this channel." }, 404);
           const LN = env.LIVE_NOTES.get(env.LIVE_NOTES.idFromName(lnName(t.id, slugOf(ch), lnm[2])));
+          if (lnm[4] === "speakers") {   // name a speaker: { speaker: "S1", name?, contact_id?, n? } → { speakers: [{ id, name, contact_id, label, lines, ms }] } | { error }
+            if (req.method !== "POST") return json({ error: "method" }, 405);
+            if (access.mode === "read_only") return payRequired(access);
+            const b = await req.json().catch(() => ({})); let nm = typeof b.name === "string" ? b.name : "", cid = null;
+            if (b.contact_id) { const p = await archive(env, t.id).personGet(String(b.contact_id).slice(0, 80)).catch(() => null); if (!p?.id) return json({ error: "That contact isn't there anymore." }, 404); cid = String(p.id); if (!nm.trim()) nm = String(p.name || ""); }
+            const v = await LN.speakerName(Number(b.n) || 0, String(b.speaker || b.id || ""), nm, cid); return json(v, v?.error ? 409 : 200);
+          }
           if (lnm[4]) { if (access.mode === "read_only") return payRequired(access); return lnAudio(req, env, { LN, L, q: url.searchParams, meta: { tenant: t.id, kind: "live-notes-stt" } }); }
           if (lnm[3]) {
             if (req.method !== "GET") return json({ error: "method" }, 405);
@@ -1648,19 +1656,25 @@ export default {
           else if (act === "replay") { if (env.TEST_MODE !== "1" || !/@example\.com$/i.test(user.email || "") || viewAsToken(req)) return json({ error: "not found" }, 404); if (access.mode === "read_only") return payRequired(access); v = await LN.replay({ lines: b.lines }); }   // test accounts only: livenotes-depth replay (e2e/dev/replay-live-notes.mjs)
           else if (act === "stop") v = await LN.stop("person", { flushed: !!b.flushed });
           else if (act === "mic") v = await LN.micState(String(b.mic || "").slice(0, 64), b.state === "paused" ? "paused" : "live", typeof b.via === "string" ? b.via.slice(0, 8) : null);
+          else if (act === "speaker") {   // name a speaker of a session ({ n?, id: "S1", name, contact_id? }); a contact_id must be a Contacts person, whose name is used when no name is sent
+            if (access.mode === "read_only") return payRequired(access);
+            let nm = typeof b.name === "string" ? b.name : "", cid = null;
+            if (b.contact_id) { const p = await archive(env, t.id).personGet(String(b.contact_id).slice(0, 80)).catch(() => null); if (!p?.id) return json({ error: "That contact isn't there anymore." }, 404); cid = String(p.id); if (!nm.trim()) nm = String(p.name || ""); }
+            v = await LN.speakerName(Number(b.n) || 0, String(b.speaker || b.id || ""), nm, cid);
+          }
           else if (act === "continue") v = await LN.cont();
           else if (act === "presence") v = await LN.presence(!!b.view);
           else if (act === "apply" || act === "skip") v = await LN.refineAct(Number(b.n), act === "apply");
-          else return json({ error: "action must be start, stop, continue, presence, mic, apply or skip" }, 400);
+          else return json({ error: "action must be start, stop, continue, presence, mic, speaker, apply or skip" }, 400);
           return json(v, v?.error ? 409 : 200);
         }
         // Files: /api/res/<ch>/files (GET list, POST upload: raw body + x-file-name) · /files/<id> (GET bytes, ?dl=1 download) · /files/<id>/view (POST small JPEG for the model) · /files/<id>/delete
-        const fm = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/files(?:\/([0-9a-f-]{36})(?:\/(view|delete|preview))?)?$/);
+        const fm = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/files(?:\/([0-9a-f-]{36})(?:\/(view|delete|preview|transcript(?:\/speakers)?))?)?$/);
         if (fm) {
           const chans = await archive(env, t.id).channels(), slugOf = (c) => c.slug || c.name, ch = chans.find((c) => slugOf(c) === fm[1]);
           if (!ch) return json({ error: "no such channel" }, 404);
           const R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:${slugOf(ch)}`));
-          if (!fm[2] && req.method === "GET") return json({ files: await R.listFiles() });
+          if (!fm[2] && req.method === "GET") { const [files, tx] = await Promise.all([R.listFiles(), Promise.resolve(R.txIds()).catch(() => [])]), has = new Set(tx); return json({ files: files.map((f) => has.has(f.id) ? { ...f, tx: `/w/${t.slug}/api/res/${fm[1]}/files/${f.id}/transcript` } : f) }); }
           if (fm[2] && !fm[3] && req.method === "GET") {
             const row = await R.fileRow(fm[2]); if (!row) return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
             const hd = servedHeaders(row.mime, row.name, url.searchParams.get("dl") === "1"), inm = req.headers.get("if-none-match");
@@ -1670,6 +1684,14 @@ export default {
           }
           // file-preview.js: a deck or Word document as a PDF for the viewer, made on the computer on first open (then from R2).
           // View-as and read-only accounts only get one already made: nothing here wakes their computer.
+          // The transcript of an audio or video file with its speakers (sidecar.js fileTranscript), and naming a speaker ({ speaker, name?, contact_id? } → { speakers } | { error }).
+          if (fm[3] === "transcript" && req.method === "GET") { const d = await R.fileTranscript(fm[2]); return json(d, d.error ? 404 : 200); }
+          if (fm[3] === "transcript/speakers" && req.method === "POST") {
+            if (access.mode === "read_only") return payRequired(access);
+            const b = await req.json().catch(() => ({})); let nm = typeof b.name === "string" ? b.name : "", cid = null;
+            if (b.contact_id) { const p = await archive(env, t.id).personGet(String(b.contact_id).slice(0, 80)).catch(() => null); if (!p?.id) return json({ error: "That contact isn't there anymore." }, 404); cid = String(p.id); if (!nm.trim()) nm = String(p.name || ""); }
+            const d = await R.fileSpeakerName(fm[2], String(b.speaker || ""), nm, cid); return json(d, d.error ? 409 : 200);
+          }
           if (fm[3] === "preview" && req.method === "GET") {
             const d = await skewRetry(env, () => R.filePreview(fm[2], { make: !viewAsToken(req) && access.mode !== "read_only", retry: url.searchParams.get("retry") === "1" }));
             if (d.error) return json({ error: d.error }, d.status || 500);

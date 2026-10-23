@@ -4,6 +4,7 @@
 // routed to ComputerLink with this channel's DO id baked into its props, so a container can only reach its own files.
 // Layers: newest first; a session's changes are one "delta" layer (replaced on each save in that session).
 // A layer only becomes part of the workspace after its bytes are in R2 and the SHA-256 matched.
+import { SNAP_CMD } from "./files-saveback.js";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { tolerantEnv } from "./do-stub.js";
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
@@ -610,6 +611,12 @@ export class ChannelComputer extends DurableObject {
     const o = await p.output(); if (o.exitCode !== 0) return { ok: false, error: dec.decode(o.stdout).slice(0, 200) };
     this.put("dirty", "1"); this.put("save_due", Date.now() + SAVE_DEBOUNCE_MS); await this.armAlarm(Date.now() + SAVE_DEBOUNCE_MS);
     return { ok: true, bytes: obj.size };
+  }
+  // /workspace/files as the computer sees it now (files-saveback.js): { ok, out } with one "size mtime name" line per top-level file.
+  async filesSnapshot() {
+    try { await this.ensureRunning(); } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+    const r = await this.sh(SNAP_CMD, { timeoutMs: 15e3 });
+    return r.code === 0 ? { ok: true, out: r.out } : { ok: false, error: String(r.out || "").slice(0, 200) };
   }
   async rmFile(path) {
     if (!/^files\/[^/]+$/.test(path)) return { ok: false, error: "bad path" };

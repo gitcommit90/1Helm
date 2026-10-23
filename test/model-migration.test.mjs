@@ -3,7 +3,7 @@
 // behavior (the earlier code defaults, evaluated chore policies, and the CHORE_MODEL_* variables an earlier hosted deployment set), not
 // computed from the seed, so a drift in either fails here. The environment variables are a synthetic copy of those four settings.
 import assert from "node:assert/strict";
-import { seedFromLegacy, seedFresh, mergeLevels } from "../src/ee/model-seed.js";
+import { seedFromLegacy, seedFresh, mergeLevels, SELF_STT, SELF_LIVE } from "../src/ee/model-seed.js";
 import { validateModelSettings } from "../src/ee/model-settings.js";
 import { choreRouteOf, entriesOf } from "../src/ee/model-jobs.js";
 import { policyRoute, dispatchOrder } from "../src/ee/route2.js";
@@ -49,8 +49,8 @@ for (const file of ["earlier hosted variables"]) {
   // everything else
   const J = s.jobs;
   assert.deepEqual([J.decider.model, J.decider.effort], [ID.PPLX, null]);
-  assert.deepEqual([J.stt.model, J.stt.fallbacks.map((f) => f.model), J.stt_cloudflare.model, J.live_dictation.model], [ID.STT_BEST, [ID.STT, ID.STT_FALLBACK], ID.STT_WAI, ID.STT_BEST]);
-  assert.deepEqual(J.live_dictation.fallbacks.map((f) => f.model), [ID.LIVE], "Deepgram Nova 3 is the live dictation fallback");
+  assert.deepEqual([J.stt.model, J.stt.fallbacks.map((f) => f.model), J.stt_cloudflare.model, J.live_dictation.model], [SELF_STT, [ID.STT, ID.STT_FALLBACK, ID.STT_BEST], ID.STT_WAI, SELF_LIVE]);
+  assert.deepEqual(J.live_dictation.fallbacks.map((f) => f.model), [ID.LIVE, ID.STT_BEST], "Deepgram Nova 3 and then AssemblyAI are the live dictation fallbacks");
   assert.deepEqual([J.embed_files.model, J.vision_files.model], [ID.EMBED_FILES, ID.VISION]);
   assert.equal(J.workers_ai_chat.model, ID.WAI_CHAT, "the first-run Workers AI model (the MODEL variable is no longer read)");
   for (const gone of ["classic_router", "doors_shadow", "classic_decider"]) assert.ok(!(gone in J), `${gone} is no longer a job`);
@@ -59,7 +59,7 @@ for (const file of ["earlier hosted variables"]) {
 }
 
 // the first-run data for an environment with no variables set has the same shape, and the same chat lists
-{ const s = validateModelSettings(seedFresh({})); assert.equal(Object.keys(s.jobs).length, 27);
+{ const s = validateModelSettings(seedFresh({})); assert.equal(Object.keys(s.jobs).length, 29);
   assert.deepEqual(shape(choreRouteOf(s, "browser")), [O120, "low", undefined, undefined, [[DS, "low", undefined, undefined]]], "gpt-oss-120b, with DeepSeek Flash as its fallback"); }
 
 // a saved earlier configuration is carried exactly: replaced slots, custom lists, configured chores, the decider

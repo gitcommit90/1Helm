@@ -50,7 +50,7 @@
 // pplx-embed-v1-0.6b ties the best quality at a third of bge-m3's price and the lowest latency, so it indexes the sidecars.
 import { DurableObject } from "cloudflare:workers";
 import { S, structuredChat, structuredFormat } from "./structured-output.js";
-import { dispatchMedia as dispatch, jobReserveNano, stepsOf, firstStep } from "./ee/index.js";
+import { dispatchMedia as dispatch, jobReserveNano, stepsOf, firstStep, enabled as eeEnabled, speakerJobReady, speakerRate, speakerReserve, diarize, mapSpeakerIds, speakerForSpan, defaultLabel, SPEAKER_MARKUP } from "./ee/index.js";
 import { privacyOf } from "./privacy.js";
 import { tolerantEnv, isResetErr } from "./do-stub.js";
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
@@ -245,9 +245,9 @@ export async function runPrep(P, job, tries = 1) {
   const env = P.env, t0 = now();
   const s1 = await prepText(P, job);
   if (s1.status) return s1;
-  const { md, kind, notes, extra, pagesOcr } = s1;
+  const { md, kind, notes, extra, pagesOcr, tx } = s1;
   const sections = sectionsOf(md), tokens = tokensOf(md), long = tokens > INLINE_TOKENS, chunks = long ? chunksOf(md, sections) : [];
-  const doc = { v: SC_V, kind, name: job.name, mime: job.mime, src_key: job.r2key, made_at: now(), md, sections, chunks, card: null, notes, ...extra, ...(pagesOcr ? { ocr_pages: pagesOcr } : {}) };
+  const doc = { v: SC_V, kind, name: job.name, mime: job.mime, src_key: job.r2key, made_at: now(), md, sections, chunks, card: null, notes, ...extra, ...(pagesOcr ? { ocr_pages: pagesOcr } : {}), ...(tx ? { tx } : {}) };
   const w1 = await writeSidecar(P, job, doc, null); if (w1.skipped) return w1.skipped;
   const result = (o = {}) => ({ status: "ready", v: SC_V, key: sidecarKeyOf(job.r2key), vec_key: null, bytes: w1.bytes, kind, tokens, card: null,
     outline: sections.map((x) => ({ t: x.t, l: x.l, p: x.p, n: Math.ceil((x.e - x.s) / CHARS_PER_TOKEN) })).slice(0, 400),
@@ -318,7 +318,7 @@ export async function prepText(P, job) {
   const env = P.env, kind = kindOf(job.name, job.mime), notes = [];
   if (!kind) return { status: "skipped", error: "no text version for this kind of file" };
   const big = Number(job.bytes) > WORKER_MAX_BYTES || (kind === "sheet" && /\.(xlsx|xlsm|ods)$/i.test(job.name) && Number(job.bytes) > XLSX_WORKER_MAX);
-  let md = "", extra = {}, pagesOcr = null;
+  let md = "", extra = {}, pagesOcr = null, tx = null;
   const getBytes = async () => { const o = await env.WS.get(job.r2key); if (!o) throw Object.assign(new Error("the file is missing from storage"), { gone: true }); return new Uint8Array(await o.arrayBuffer()); };
   try {
     if (kind === "image") {
@@ -340,7 +340,7 @@ export async function prepText(P, job) {
       const speech = !r.error && !r.refused ? r : null;
       if (seen && !speech) notes.push(`transcript: ${r.refused ? refusedLine(r.refused) : r.error}`);
       md = [seen && `# Video: ${job.name}\n\n## What the video shows\n\n${seen.description || "(no description)"}${seen.text ? `\n\n### Text on screen\n\n${seen.text}` : ""}`, speech?.md].filter(Boolean).join("\n\n");
-      extra = speech ? { seconds: speech.seconds } : {}; if (seen) extra.video_seen = true; if (speech?.note) notes.push(speech.note);
+      extra = speech ? { seconds: speech.seconds } : {}; if (seen) extra.video_seen = true; if (speech?.note) notes.push(speech.note); tx = speech?.tx || null;
     } else {
       let conv = big ? { code: "tooBig" } : convertBytes(await getBytes(), job.name);
       if (conv.code === "tooBig") { const c = await containerConvert(P, job); if (c.refused) return { status: "skipped", error: refusedLine(c.refused) }; conv = c; if (!c.error) notes.push("converted by the container job (too big for the Worker)"); }
@@ -356,7 +356,7 @@ export async function prepText(P, job) {
   } catch (e) { if (e?.gone) return { status: "failed", error: e.message }; throw e; }
   if (md.length > MD_MAX_CHARS) { md = md.slice(0, MD_MAX_CHARS); notes.push(`only the first ${Math.round(MD_MAX_CHARS / 1e6)}M characters are kept`); }
   if (!md.replace(/\[Page \d+\]/g, "").trim()) return { status: "failed", error: kind === "pdf" ? "no text in it (a scan that couldn't be read)" : "no text in it", cost_nano: Number(P.get("cost") || 0) };
-  return { md, kind, notes, extra, pagesOcr };
+  return { md, kind, notes, extra, pagesOcr, tx };
 }
 const refusedLine = (why) => why === "day_limit" ? "today's spending limit was reached" : "out of credits";
 
@@ -571,18 +571,49 @@ async function transcribeFile(P, job, meta) {
   }
   if (conv && !capped && conv.stats().truncated) lines.push(`(The transcript stops here: only the first ${AUDIO_MAX_SEC / 3600} hours are transcribed.)`);
   if (!lines.some((l) => typeof l === "object")) return { error: "no speech in it" };
-  return { md: transcriptMd(job.name, lines, seconds), seconds: Math.round(seconds) };
+  const note = await labelLines(P, job, lines, seconds, e, meta);
+  // tx: the lines as the file viewer reads them (Resident.fileTranscript): seconds from the start, the words, the speaker id when labelled.
+  const tx = { lines: lines.filter((l) => typeof l === "object").map((l) => ({ at: Math.round(l.at * 10) / 10, t: l.t, ...(l.sid ? { sid: l.sid } : {}) })), names: {} };
+  return { md: transcriptMd(job.name, lines, seconds), seconds: Math.round(seconds), tx, ...(note ? { note } : {}) };
+}
+// Speaker labels (speaker-labels.js): the whole file goes to the saved "speaker_labels" job once, and each transcript line takes the speaker whose turns overlap it the most
+// (a line runs from its start to the next line's start). Lines get `sp` ("Speaker 1", ...). A file too big to send whole, or a failure, leaves the transcript without labels.
+// → a note for the file's report, or null.
+export const DIARIZE_MAX_BYTES = 40 * 1024 * 1024;
+async function labelLines(P, job, lines, seconds, ext, meta) {
+  const env = P.env, size = Number(job.bytes) || 0, spoken = lines.filter((l) => typeof l === "object");
+  if (!spoken.length || !(seconds > 0) || !eeEnabled(env) || !(await speakerJobReady(env))) return null;
+  if (size > DIARIZE_MAX_BYTES) return `speaker labels: the file is bigger than ${humanBytes(DIARIZE_MAX_BYTES)}, so its speakers aren't labelled`;
+  try {
+    const reserve = speakerReserve(seconds, await speakerRate(env));
+    const r = await P.paid(job, "speakers", reserve, async () => {
+      const o = await env.WS.get(job.r2key); if (!o) throw Object.assign(new Error("the file is missing from storage"), { gone: true });
+      const x = await diarize(env, { audio: new Uint8Array(await o.arrayBuffer()), format: ext }, { meta: { ...meta, kind: "sidecar-speakers" } });
+      return { value: { turns: x.turns }, nano: Math.ceil(x.nano * SPEAKER_MARKUP) };
+    });
+    if (r.refused) return `speaker labels: ${refusedLine(r.refused)}`;
+    const { turns } = mapSpeakerIds(r.value.turns);
+    if (!turns.length) return null;
+    spoken.forEach((l, i) => { const a = l.at * 1000, b = Math.max(a + 1, (spoken[i + 1]?.at ?? seconds) * 1000), sid = speakerForSpan([[a, b]], turns); if (sid) { l.sp = defaultLabel(sid); l.sid = sid; } });
+    return null;
+  } catch (err) {
+    if (err?.gone) throw err;
+    console.log("sidecar speaker labels", job.name, String(err?.message || err).slice(0, 120));
+    return `speaker labels: couldn't be made (${String(err?.message || err).slice(0, 80)})`;
+  }
 }
 
 const clock = (s) => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return `${h ? `${h}:${String(m).padStart(2, "0")}` : m}:${String(x).padStart(2, "0")}`; };
 // Lines as "[m:ss] text", a paragraph per ~minute, a section per 5 minutes (so a long recording has an outline).
 export function transcriptMd(name, lines, seconds) {
-  const out = [`# Transcript of ${name}${seconds ? ` (${clock(seconds)})` : ""}`]; let block = -1, para = [], paraAt = -60;
+  const out = [`# Transcript of ${name}${seconds ? ` (${clock(seconds)})` : ""}`]; let block = -1, para = [], paraAt = -60, sp = null;
   const flush = () => { if (para.length) out.push(para.join(" ")); para = []; };
   for (const l of lines) {
     if (typeof l === "string") { flush(); out.push(l); continue; }
     const b = Math.floor(l.at / 300); if (b !== block) { flush(); block = b; out.push(`## ${clock(b * 300)}–${clock(b * 300 + 300)}`); }
-    if (l.at - paraAt >= 60) { flush(); paraAt = l.at; para.push(`[${clock(l.at)}] ${l.t}`); } else para.push(l.t);
+    // A line with a speaker label (labelLines) starts a new paragraph whenever the speaker changes: "[m:ss] Speaker 1: words".
+    if (l.sp && l.sp !== sp) { flush(); sp = l.sp; paraAt = l.at; para.push(`[${clock(l.at)}] ${l.sp}: ${l.t}`); continue; }
+    if (l.at - paraAt >= 60) { flush(); paraAt = l.at; para.push(`[${clock(l.at)}] ${l.sp ? `${l.sp}: ` : ""}${l.t}`); } else para.push(l.t);
   }
   flush(); return out.join("\n\n");
 }
@@ -888,6 +919,28 @@ export function residentSidecar() { return {
   // Per channel: "off" | "on" | "" (env SIDECAR, default on). Dev A/B (POST /_ops/sidecar): off = Send and the tools as before sidecars.
   scOn() { const v = this.get("sidecar"); return v === "off" ? false : v === "on" ? true : sidecarOn(this.env); },
   async setSidecarMode(v) { this.put("sidecar", v === "off" || v === "on" ? v : ""); return { sidecar: this.scOn() }; },
+  // Audio and video files whose prepared text is ready: the file list gives each a `tx` URL (the transcript with speakers, below).
+  txIds() { if (!hasTable(this.sql)) return []; return this.sql.exec("SELECT file_id FROM file_sidecars WHERE status IN ('ready','text') AND kind IN ('audio','video')").toArray().map((r) => r.file_id); },
+  // The transcript of an audio or video file for the viewer: { file, name, seconds, speakers: [{ id, name, contact_id }], utterances: [{ start, speaker, label, text }] } | { error }.
+  async fileTranscript(id) {
+    const r = hasTable(this.sql) ? this.scRow(id) : null, d = r?.status === "ready" || r?.status === "text" ? await this.sidecarDoc(r) : null;
+    if (!d?.tx?.lines) return { error: "There is no transcript for that file yet." };
+    const names = d.tx.names || {}, label = (sid) => (sid ? names[sid]?.name || defaultLabel(sid) : null);
+    const ids = [...new Set(d.tx.lines.map((l) => l.sid).filter(Boolean))].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+    return { file: String(id), name: d.name, seconds: d.seconds ?? null, speakers: ids.map((x) => ({ id: x, name: names[x]?.name || null, contact_id: names[x]?.contact_id || null })),
+      utterances: d.tx.lines.map((l) => ({ start: l.at, speaker: l.sid || null, label: label(l.sid), text: l.t })) };
+  },
+  // Names a speaker of a file's transcript. The name is kept with the transcript's lines; the file's markdown text keeps "Speaker N". → { speakers } | { error }
+  async fileSpeakerName(id, speaker, name, contactId = null) {
+    const r = hasTable(this.sql) ? this.scRow(id) : null, d = r?.key ? await this.sidecarDoc(r) : null; speaker = String(speaker || "");
+    if (!d?.tx?.lines) return { error: "There is no transcript for that file yet." };
+    if (!d.tx.lines.some((l) => l.sid === speaker)) return { error: "No such speaker in that file." };
+    const nm = String(name ?? "").replace(/\s+/g, " ").trim().slice(0, 80), cid = contactId ? String(contactId).slice(0, 80) : null, names = { ...(d.tx.names || {}) };
+    if (!nm && !cid) delete names[speaker]; else names[speaker] = { name: nm || null, contact_id: cid };
+    d.tx.names = names; const body = new TextEncoder().encode(JSON.stringify(d));
+    await stPut(this.env, r.key, body, { httpMetadata: { contentType: "application/json" } }, { size: body.byteLength, replace: true });
+    return { speakers: (await this.fileTranscript(id)).speakers };
+  },
   scRow(id) { this.sql.exec(TABLE); return this.sql.exec("SELECT * FROM file_sidecars WHERE file_id=?", String(id)).toArray()[0] || null; },
   // A file arrived (or has new bytes): queue its prep. Cheap and idempotent; never blocks the caller (the job runs elsewhere).
   sidecarKick(f, { force = false } = {}) {

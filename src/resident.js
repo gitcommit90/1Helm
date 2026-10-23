@@ -99,6 +99,7 @@ import { stPut, stDelete } from "./storage.js";
 import { designToolDefs, designToolCall, prepareDesignTools, isDesignToolName } from "./design-tools.js";   // the five design MCP servers as tools
 import { betterDesignState } from "./better-design.js";   // Better Design as a design source follows the account (Settings → Advanced, AI privacy level)
 import { briefForWrite } from "./design-brief.js";   // the design brief 1Helm appends to a task's first .html write (no model choice involved)
+import { parseSnap, changedNames, saveBack, saveBackNote } from "./files-saveback.js";   // changes under /workspace/files reach the Library file
 import { fileVersionsMix } from "./file-versions.js";   // one rule for every file an agent adds: an edit of a Library file updates it in place
 import { SHARE_TOOLS, runShareTool, shareFileDeleted, republishFrom } from "./share.js";   // share links + published pages: prepare only, the person taps
 import { Memory, PACK_HEADER } from "./memory.js";
@@ -1386,8 +1387,17 @@ export class Resident extends DurableObject {
     // design_mcp.py has no account of its own, so a command that names it carries the account's Better Design switch (better-design.js); the script skips Better Design when it reads off.
     const bdOff = name === "run_command" && /design_mcp/.test(cmd) && !(await this.betterDesignOn().catch(() => false)) ? "export DESIGN_MCP_BETTER_DESIGN=off; " : "";
     const work = bdOff + (tc?.kind === "helper" && tc.helper?.id ? `mkdir -p -- ${q(helperDir(tc.helper.id))} && cd -- ${q(helperDir(tc.helper.id))} && ` : "");
+    const watch = !tc?.helper?.dynamic_routing && (name === "run_command" || name === "write_file" || name === "edit_file");   // files-saveback.js: what changes under /workspace/files is saved to the Library file
+    const snap = async () => { try { const x = await this.computer().filesSnapshot(); return x?.ok ? parseSnap(x.out) : null; } catch { return null; } };
+    const before = watch ? await snap() : null;
     const r = await this.computer().exec(work + cmd, { save: name === "read_file" || name === "search_files" ? "none" : "defer", ...(tc?.key ? { tag: tc.key } : {}), ...(tc?.turn && tc?.callId ? { run: runIdOf(tc.turn, tc.callId) } : {}), timeoutMs: commandLimitMs(name, a, tc?.limits?.timingSaved) });   // run: a deploy mid-command can re-attach to it (resume.js)   // tag: Stop can kill it
     if (r?.storage_note) r.out = `${String(r.out || "").replace(/\n*$/, "")}\n\n${r.storage_note}`;   // storage.js: a computer save was refused (storage full)
+    if (watch && r && !r.browser_busy) {
+      const after = await snap(), res = before && after ? await saveBack(this, changedNames(before, after), after, tc) : { saved: [], failed: [] };
+      const unchecked = !(before && after) && /(^|[\s"'/])files\//.test(`${a.path || ""} ${a.command || ""}`);
+      const note = saveBackNote({ ...res, unchecked });
+      if (note.text) { r.out = `${String(r.out || "").replace(/\n*$/, "")}\n\n${note.text}`; if (note.failed) r.code = r.code || 1; }
+    }
     return name === "run_command" ? commandNotes(r, tc) : r;   // spendguard.js: timed out / the same line over and over → a note (and the runaway watch counts it)
   }
   // Browser tools → the channel computer's Chrome. Page content is untrusted by definition. After any tool that can start
@@ -2119,7 +2129,7 @@ export class Resident extends DurableObject {
     return { workflow: w.id, error: err, ...(r ? { reply: r.reply, total_ms: r.total_ms, charge: r.charge, tool_calls: r.tool_calls, computer_used: r.computer_used, trace: r.trace } : {}) };
   }
   async listWorkflows() {
-    return this.sql.exec("SELECT id,kind,name,interval_seconds,cron,tz,next_run,last_run,run_count,max_runs,status,last_error,fails,lease_until,source,gate,notes,session,on_event FROM workflows ORDER BY id").toArray()
+    return this.sql.exec("SELECT id,kind,name,interval_seconds,cron,tz,next_run,last_run,run_count,max_runs,status,last_error,fails,lease_until,source,gate,notes,session,on_event,updated FROM workflows ORDER BY id").toArray()
       .map(({ on_event, ...w }) => {
         const ev = evOf({ on_event });   // app-events.js: runs when its app event happens; its recent event log (never the events themselves)
         if (ev) return { ...w, next_run: null, when: `When ${ev.label}`, event: appEventView(ev), event_log: this.sql.exec("SELECT at,verdict,note FROM event_log WHERE workflow_id=? ORDER BY id DESC LIMIT 5", w.id).toArray() };

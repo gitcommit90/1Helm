@@ -54,6 +54,7 @@ import { privacyOf } from "./privacy.js";
 import { isCloudflareModel } from "./cloudflare-models.js";
 import { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
 export { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
+import { SPEECH_MAX_BYTES } from "./selfhost-speech.js";
 
 // The models are saved settings (model-jobs.js): "stt" is the main speech to text model with its OpenRouter fallbacks, and "stt_cloudflare"
 // is the Workers AI model used only when every OpenRouter model failed. Change them on the Models page.
@@ -176,7 +177,7 @@ export function spreadSegs(list) {
   });
 }
 const segsOf = (list, text) => keepSegs(spreadSegs(Array.isArray(list) && list.length ? list : [{ start: 0, text: text || "" }]))
-  .map((x) => ({ s: Math.max(0, Number(x.start || 0)), t: String(x.text || "").replace(/\s+/g, " ").trim() })).filter((x) => x.t);
+  .map((x) => ({ s: Math.max(0, Number(x.start || 0)), ...(Number.isFinite(Number(x.end)) && x.end != null ? { e: Number(x.end) } : {}), t: String(x.text || "").replace(/\s+/g, " ").trim() })).filter((x) => x.t);   // e: where the segment ends, when the model says (speaker labels match lines to turns by it)
 
 // One recording (or one piece of one) → { segs: [{s: seconds from its start, t}], text, dur, nano (our cost, before the markup), model }.
 // src: { size, open() → ReadableStream (or a promise of one) } and/or { bytes: Uint8Array } (needed for the Workers AI step).
@@ -198,9 +199,12 @@ export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, est
     const f = facts[step.model];
     if (Array.isArray(f?.formats) && !f.formats.includes(format)) return `doesn't take ${format}`;
     if (step.source === "CF" && size > WAI_MAX_BYTES) return "The audio exceeds Cloudflare's supported size.";
+    if (step.source === "SELF" && size > SPEECH_MAX_BYTES) return "The audio exceeds the speech container's supported size.";
     return null;
   };
   const request = { tryMs, headers,
+    // A model of the 1Helm speech container takes the bytes in the call and converts any format itself. Its answer may carry word times (words), which stay with the result.
+    self: async () => { const audio = src.bytes || await readCapped(new Response(await open()), SPEECH_MAX_BYTES); if (!audio) throw new Error("The audio exceeds the speech container's supported size."); return { audio, format }; },
     openrouter: ({ model: m, provider }) => audioBody(`{"model":${JSON.stringify(m)},"provider":${JSON.stringify(provider)},"response_format":"verbose_json","input_audio":{"format":${JSON.stringify(format)},"data":"`, `"}}`, size, open).make,
     cloudflare: async () => { const audio = src.bytes || await readCapped(new Response(await open()), WAI_MAX_BYTES); if (!audio) throw new Error("The audio exceeds Cloudflare's supported size.");
       return { audio: b64(audio), task: "transcribe", vad_filter: true, ...(prompt ? { initial_prompt: prompt.slice(-400) } : {}) }; } };
@@ -226,8 +230,8 @@ export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, est
       const segs = segsOf(j?.segments, j?.text), dur = Number(j?.transcription_info?.duration) || estSec;
       return { segs, text: segs.map(x => x.t).join(" "), dur, model: m, nano: lost + (jobId === "stt_cloudflare" ? waiCost(j, src.bytes?.byteLength || 0) : Math.ceil(dur * rate)) };
     }
-    const dur = Number(j?.duration || j?.usage?.seconds) || 0, segs = segsOf(j?.segments, j?.text);
-    return { segs, text: segs.map((x) => x.t).join(" "), dur, model: m, nano: lost + (Math.ceil(Number(j?.usage?.cost || 0) * 1e9) || Math.ceil((dur || estSec) * rate)) };
+    const dur = Number(j?.duration || j?.usage?.seconds) || 0, segs = segsOf(j?.segments, j?.text), words = Array.isArray(j?.words) && j.words.length ? { words: j.words } : {};
+    return { segs, ...words, text: segs.map((x) => x.t).join(" "), dur, model: m, nano: lost + (Math.ceil(Number(j?.usage?.cost || 0) * 1e9) || Math.ceil((dur || estSec) * rate)) };
   };
   const first = await answer(job, only);
   if (first.r) return done(first.r, first.m, job);

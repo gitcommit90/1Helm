@@ -131,8 +131,10 @@ export const DEFAULT_RUNTIME_LIMITS = runtimeLimits(null);
 // (transcribe.js and transcribe-chunks) and web search's 12 seconds (websearch.js). background-policy.js named 90 seconds for the other background jobs but
 // nothing enforced it, so they start with no timeout.
 export const JOB_TIMEOUT_DEFAULTS = Object.freeze({
-  label: 30000, chat_title: 30000, ambient_extract: 90000, ambient_review: 90000, decider: 4000, browser_decider: 20000, stt: 30000, stt_cloudflare: 30000, live_dictation: 6000, web_search: 12000,
+  label: 30000, chat_title: 30000, ambient_extract: 90000, ambient_review: 90000, decider: 4000, browser_decider: 20000, stt: 30000, stt_cloudflare: 30000, live_dictation: 6000, speaker_labels: 180000, web_search: 12000,
   // The memory server's own request timeouts (Hindsight's settings on 2026-10-18): its default of 120 seconds for retain, consolidation and refresh, 60 seconds for reflect and for the reranker.
+  // A memory search waits for its rerank call, so that call gets 5 seconds, and a search that gets no answer in time keeps its own order (mem0.js).
+  mem_rerank: 5000,
   mem_extract: 120000, hs_retain: 120000, hs_consolidation: 120000, hs_reflect: 60000, hs_refresh: 120000, hs_rerank: 60000,
 });
 export const jobTimeoutDefault = (id) => JOB_TIMEOUT_DEFAULTS[id] ?? null;

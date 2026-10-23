@@ -22,6 +22,7 @@ import { embedTexts, vision, lookMoondream } from "../src/sidecar.js";
 import { transcribeLive } from "../src/transcribe-live.js";
 import { ENDPOINTS } from "../src/privacy.js";
 import { hindsightRoute } from "../src/ee/hindsight-llm.js";
+import { speakerLabels } from "../src/ee/speaker-labels.js";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 
@@ -56,7 +57,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
   console.log("  ok guard: only", Object.keys(ALLOWED).join(", "), "name models"); }
 
 // ---- 2) every job reads its own saved model ----
-const sentinelOf = (id) => ["look", "stt_cloudflare", "live_dictation", "mem_embed"].includes(id) ? `@cf/sentinel/${id.replace(/_/g, "-")}` : `sentinel/${id.replace(/[^a-z0-9]+/g, "-")}`;
+const sentinelOf = (id) => id === "speaker_labels" ? "@1hc/sentinel/speaker-labels" : ["look", "stt_cloudflare", "live_dictation", "mem_embed", "mem_rerank"].includes(id) ? `@cf/sentinel/${id.replace(/_/g, "-")}` : `sentinel/${id.replace(/[^a-z0-9]+/g, "-")}`;
 const record = (id) => ({ id, name: id, eligible: true, reasons: [], efforts: ["default", "none", "low", "medium", "high"], default_effort: "low", levels: ["unrestricted", "no_training", "zdr"], hosts: ["sentinel-host"],
   context_length: 100000, max_output: 8000, input_modalities: ["text", "image"], pricing: { prompt: 1, completion: 1 }, json: true, tool_choice: ["auto", "none", "required", "function"] });
 function settingsFor(jobId) {
@@ -99,6 +100,10 @@ probes.live_dictation = async (S, model) => {
   try { const ledger = { dictationLease: async () => ({ ok: true }), reserve: async () => ({ ok: true }), settle: async () => ({}) };
     await transcribeLive(new Request("https://x.test/live", { headers: { Upgrade: "websocket", Origin: "https://x.test" } }), envFor(S, { AIG_TOKEN: "t", AIG_ID: "g", CF_ACCOUNT_ID: "a" }), ledger, { tenant: "t" }, { fetch: async (u) => { seen.push(new URL(u).searchParams.get("model")); throw new Error("stop"); } }).catch(() => {});
   } finally { delete ENDPOINTS.transcription[model]; } return [seen[0]]; };
+probes.speaker_labels = async (S, model) => {   // the container serves only the weights it has, so the sentinel model is refused by name: the refusal shows which model the job asked for
+  const slot = { speechState: async () => ({ state: "ready", inflight: 0 }), warm: async () => ({ state: "warming" }), speechRequest: async () => ({ state: "ok", status: 200, body: JSON.stringify({ turns: [], audio_s: 1, process_ms: 1 }) }) };
+  try { return [(await speakerLabels(envFor(S, { SPEECH_CONTAINER: { idFromName: (n) => n, get: () => slot }, SPEECH_MAX_INSTANCES: "1" }), { audio: new Uint8Array([1, 2, 3]), format: "wav" }, { meta: { tenant: "t" } })).model]; }
+  catch (e) { return (e.errors || []).map((x) => x.split(": ")[0]); } };
 probes.embed_files = async (S) => { wire = []; await embedTexts(envFor(S), ["hello"], { tenant: "t" }); return [lastWire("/embeddings").model]; };
 probes.browser_decider = async (S) => { const env = envFor(S); wire = []; await askDecider(env, { task: "t" }, { done: { type: "noul", instructions: "Is it done?" } }, { job: "browser_decider" }); return [await jobModel(env, "browser_decider"), lastWire("/systemone").model]; };
 probes.vision_files = async (S) => { wire = [];   // the picture goes to the saved model's own transport; the stub's reply isn't a description, so the parse error is expected
@@ -112,9 +117,12 @@ const hsChat = (path) => async (S) => { await hsCall(S, new Request(`https://x.t
 probes.hs_retain = hsChat("retain"); probes.hs_consolidation = hsChat("consolidation"); probes.hs_reflect = hsChat("reflect"); probes.hs_refresh = hsChat("refresh");
 probes.hs_rerank = async (S) => { await hsCall(S, new Request("https://x.test/_hs/rerank/v1/systemone", { method: "POST", headers: { authorization: "Bearer secret-key", "content-type": "application/json", "x-hindsight-bank-id": "dev-11111111-2222-3333-4444-555555555555-main" },
   body: JSON.stringify({ model: "decoy/memory-ranker", state: "Question: x", questions: { rank: { type: "choice", instructions: "pick", criteria: { c0: "a", c1: "b" } } } }) })); return [lastWire("/systemone").model]; };
-// Mem0 memory (mem0.js) calls dispatch() for its two jobs.
+// Mem0 memory (mem0.js) calls dispatch() for its three jobs.
 probes.mem_extract = async (S) => { wire = []; await dispatch(envFor(S), "mem_extract", { messages: [{ role: "user", content: "hi" }] }, { meta: { tenant: "t" } }); return [lastWire("/chat/completions").model]; };
 probes.mem_embed = async (S) => { const calls = [], env = envFor(S, { AI: { run: async (m) => { calls.push(m); return { data: [[0.1]] }; } } }); await dispatch(env, "mem_embed", { input: ["hi"] }, { meta: { tenant: "t" } }); return [calls[0]]; };
+probes.mem_rerank = async (S) => { const calls = [], env = envFor(S, { AI: { run: async (m) => { calls.push(m); return { response: [{ id: 0, score: 0.5 }] }; } } }); await dispatch(env, "mem_rerank", { query: "q", contexts: [{ text: "a" }] }, { meta: { tenant: "t" } }); return [calls[0]]; };
+// Speaker labels run only in the 1Helm container, so a sentinel model is refused by the diarize step; the refusal names the model the plan chose.
+probes.speaker_labels = async (S) => { try { await dispatch(envFor(S), "speaker_labels", { audio: new Uint8Array([1, 2, 3]), format: "wav" }, { meta: { tenant: "t" } }); } catch (e) { return (e.errors || []).map((x) => x.split(": ")[0]); } return []; };
 probes.look = async (S, model) => { const calls = [], env = envFor(S, { AI: { run: async (m) => { calls.push(m); return { caption: "a page", metrics: {} }; } } });
   await lookMoondream(env, { tenant: "t" }, { data: new Uint8Array([1, 2, 3]), mime: "image/png" }, {}); return [calls[0]]; };
 

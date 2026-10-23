@@ -31,6 +31,10 @@ To give you a file that's already in the Library, the person picks it from the +
 
 A file the browser downloads goes into the Library by itself, and the browser tool's result says "Downloaded <name> → Library". Don't `share_file` it again. Over 50 MB, it stays only on your computer (see browser).
 
+## Changing a file in /workspace/files
+
+A change you make to a file directly under /workspace/files with `edit_file`, `write_file` or `run_command` is saved to the Library file of the same name by 1Helm itself, as a new version of that file (the same file, share link and published page), whatever the file's name or where it came from, Live notes meeting notes included. A file you create there is added to the Library. The tool result says "Saved to the Library" with the version. If it says "NOT saved" (for example Live notes rewrote the notes after your copy was made, or storage is full), the person's file did not change: don't say it was updated, read the file again and redo the change. Files in sub-folders of /workspace/files are not saved this way.
+
 ## Giving the person a file
 
 Saving a file on your computer doesn't show it to them. Use `share_file`: the file appears as a download card in the chat and in the channel's Library (up to 50 MB). The download link in the chat works only for the person while they're signed in to 1Helm; for a link other people can open, see below. Web pages, SVG images, and scripts always download rather than open.

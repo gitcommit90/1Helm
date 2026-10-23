@@ -1667,3 +1667,18 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 /* Notebook pages that could not be read: one quiet line and a button, in the article area (v3.ts nbWiki) */
 .wkfail{min-height:100dvh;padding:48px 4px;font-size:15px;color:var(--mute)}.wkfail p{margin:0 0 12px}
 .wkfail .sa{display:inline-flex;width:auto;margin:0}
+/* Speaker labels in transcripts: they sit in the small line beside the time, so a label that arrives or changes later moves nothing. */
+.fvtranscript small{color:var(--mute);font-size:12.5px;line-height:1.4}
+.fvtranscript button.spk{all:unset;box-sizing:border-box;cursor:pointer;color:var(--ink2);font-weight:600;border-radius:4px;padding:0 2px;margin:0 -2px}
+.fvtranscript button.spk:hover{text-decoration:underline;text-underline-offset:2px}
+.fvtranscript button.spk:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.fvtranscript span.spk{color:var(--ink2);font-weight:600}
+.fvbody.fvwtx{flex-direction:column;justify-content:flex-start;align-items:center;gap:24px;overflow:auto}
+.spkpop{position:fixed;z-index:200;width:260px;max-width:calc(100vw - 16px);background:var(--sheet);color:var(--ink);border:1px solid var(--line2);border-radius:12px;box-shadow:var(--lift);padding:8px;display:flex;flex-direction:column;gap:4px}
+.spkpop.busy{opacity:.6;pointer-events:none}
+.spkpop .spkin{font:inherit;font-size:16px;padding:8px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--page);color:var(--ink);min-width:0}
+.spkpop .spkpp{display:flex;flex-direction:column}
+.spkpop .spkp,.spkpop .spkclr{all:unset;box-sizing:border-box;cursor:pointer;padding:9px 10px;border-radius:8px;font-size:15px;min-height:40px;display:flex;align-items:center}
+.spkpop .spkclr{color:var(--mute)}
+.spkpop .spkp:hover,.spkpop .spkclr:hover,.spkpop .spkp:focus-visible,.spkpop .spkclr:focus-visible{background:var(--hover)}
+.spkpop .spkerr{margin:2px 4px;font-size:13px;color:var(--warn)}

@@ -14,7 +14,7 @@
 //   Step = {
 //     model: string,                                    // the saved model ID
 //     source: "OR" | "CF" | "SELF",
-//     adapter: "chat" | "embeddings" | "transcribe" | "transcribe_live" | "decide_systemone" | "decide_clef" | "decide_json" | "look" | "search",
+//     adapter: "chat" | "embeddings" | "transcribe" | "transcribe_live" | "diarize" | "rerank" | "decide_systemone" | "decide_clef" | "decide_json" | "look" | "search",
 //     effort: string | null,                            // the saved reasoning level, "none" already raised to "low" when the model can't turn reasoning off; null when the job has none
 //     maxOutput: number | null,                         // tokens; null when the saved job has none (no limit is sent). results: a web search step's number of results
 //     provider: Provider | null,                        // null for CF and SELF steps
@@ -50,7 +50,7 @@ const priceFor = (facts) => { const up = (v, d) => Number.isFinite(v) && v > d ?
 const SORTS = ["price", "throughput", "latency"];
 
 const KIND_ADAPTER = { chat: "chat", chore: "chat", memory: "chat", rerank: "decide_systemone", vision: "chat", workers_ai: "chat", classic: "chat",
-  embedding_files: "embeddings", embedding_memory: "embeddings", speech: "transcribe", speech_cloudflare: "transcribe", speech_live: "transcribe_live", look: "look" };
+  embedding_files: "embeddings", embedding_memory: "embeddings", rerank_memory: "rerank", speech: "transcribe", speech_cloudflare: "transcribe", speech_live: "transcribe_live", diarize: "diarize", look: "look" };
 function adapterOf(jobId, kindId, source, facts) {
   if (jobId === "web_search" || kindId === "search") return "search";
   if (kindId === "speech_live") return source === "CF" ? "transcribe_live" : "transcribe";   // a Workers AI streaming model is a WebSocket; any other model takes the recording in chunks

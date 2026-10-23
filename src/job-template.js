@@ -31,11 +31,11 @@ export async function ready(container, timeout = 60000, label = "prep") {
   }
   throw new Error(`the ${label} container didn't start`);
 }
-// Run one setup script in the container ("bash -c <script> _ <args>"). Killed after 300 s.
-export async function runSetup(container, script, args = [], { label = "prep" } = {}) {
+// Run one setup script in the container ("bash -c <script> _ <args>"). Killed after 300 s unless the caller gives a longer timeout (a template with large weights).
+export async function runSetup(container, script, args = [], { label = "prep", timeout = 300000 } = {}) {
   const p = await container.exec(["bash", "-c", script, "_", ...args], { stderr: "combined" });
-  const timer = setTimeout(() => { try { p.kill(9); } catch {} }, 300000);
-  try { const out = await bounded(p.output(), 305000, `${label} setup timed out`); if (out.exitCode !== 0) throw new Error(`${label} dependency setup failed`); }
+  const timer = setTimeout(() => { try { p.kill(9); } catch {} }, timeout);
+  try { const out = await bounded(p.output(), timeout + 5000, `${label} setup timed out`); if (out.exitCode !== 0) throw new Error(`${label} dependency setup failed`); }
   finally { clearTimeout(timer); }
 }
 // The template version: the image digest plus the full setup script (and an optional variant tag).
@@ -50,20 +50,21 @@ export const readJson = (text, fallback = null) => { try { return JSON.parse(tex
 // Build a template in the given container: start from the plain image, run the steps, verify, clean, snapshot, and always destroy.
 //   steps: [{ script, args }]   verify: { command, env } | null   name: snapshot name
 // Returns the saved record { version, image, handle, created }. The caller stores it.
-export async function buildTemplate(container, { version, name, steps, verify = null, cleanup = CLEANUP_COMMAND, instance = DEFAULT_INSTANCE, label = "prep", destroyReason = "dependency snapshot ready" }) {
+//   setupMs: longest a setup step may run (default 300 s). snapshotMs: longest the snapshot may take (default 60 s). Both only for templates that hold large weights.
+export async function buildTemplate(container, { version, name, steps, verify = null, cleanup = CLEANUP_COMMAND, instance = DEFAULT_INSTANCE, label = "prep", destroyReason = "dependency snapshot ready", setupMs = 300000, snapshotMs = 60000 }) {
   if (container.running) await container.destroy("replace dependency template");
   container.start({ image: container.images.base, instance, entrypoint: ENTRYPOINT, enableInternet: true });
   try {
     await ready(container, 60000, label);
-    for (const s of steps) await runSetup(container, s.script, s.args || [], { label });
+    for (const s of steps) await runSetup(container, s.script, s.args || [], { label, timeout: setupMs });
     if (verify) {
-      const v = await bounded(container.exec(["bash", "-c", verify.command], { stderr: "combined", ...(verify.env ? { env: verify.env } : {}) }).then(p => p.output()), 30000, "dependency verification timed out");
+      const v = await bounded(container.exec(["bash", "-c", verify.command], { stderr: "combined", ...(verify.env ? { env: verify.env } : {}) }).then(p => p.output()), verify.timeout || 30000, "dependency verification timed out");
       if (v.exitCode !== 0) throw new Error("dependency snapshot verification failed");
     }
     // Package caches are unnecessary for restores and can contain download URLs.
     const clean = await bounded(container.exec(["bash", "-c", cleanup], { stderr: "combined" }).then(p => p.output()), 30000, "dependency cleanup timed out");
     if (clean.exitCode !== 0) throw new Error("dependency snapshot cleanup failed");
-    const handle = await bounded(container.snapshotContainer({ name }), 60000, "dependency snapshot timed out");
+    const handle = await bounded(container.snapshotContainer({ name }), snapshotMs, "dependency snapshot timed out");
     if (!handle?.id || !Number.isFinite(handle.size) || handle.size > 20e9) throw new Error("invalid dependency snapshot handle");
     return { version, image: container.images.base, handle, created: Date.now() };
   } finally { await container.destroy(destroyReason); }

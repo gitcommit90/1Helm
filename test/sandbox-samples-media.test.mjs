@@ -23,7 +23,7 @@ import { compareGolden } from "../app-assets/app-static/sandbox-golden.js";
 // The public layout keeps the Cloud modules in src/ee, so a module named by its file is looked for there when it is not in src.
 const srcPath = (f) => existsSync(new URL(`../src/${f}`, import.meta.url)) ? `../src/${f}` : `../src/ee/${f}`;
 
-const ASSIGNED = ["stt", "stt_cloudflare", "live_dictation", "embed_files", "vision_files", "look", "web_search", "hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank", "mem_extract", "mem_embed"];
+const ASSIGNED = ["stt", "stt_cloudflare", "live_dictation", "embed_files", "vision_files", "look", "web_search", "hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank", "mem_extract", "mem_embed", "mem_rerank", "speaker_labels"];
 const STATIC = new URL("../app-assets/app-static/sandbox/", import.meta.url);
 const bytesOf = (name) => new Uint8Array(readFileSync(new URL(name, STATIC)));
 const byJob = (id) => samples.find((s) => s.job === id);
@@ -155,8 +155,11 @@ function fakeEdge() {
     calls.push({ url: String(url), body: text ? JSON.parse(text) : null });
     return new Response(JSON.stringify(orReply(String(url), text ? JSON.parse(text) : {})), { status: 200, headers: { "content-type": "application/json" } });
   };
-  const env = withSettings({ ENV_NAME: "dev", OPENROUTER_API_KEY: "k", PROMPT_CACHE: "off", CF_ACCOUNT_ID: "acct", AIG_ID: "gw", AIG_TOKEN: "tok",
-    AI: { run: async (model, input) => { ai.push({ model, input }); if (input.text) return { data: input.text.map(() => [0.1]) }; return { text: "ok", answer: "$545.60", caption: "c", transcription_info: { duration: 7.8 }, segments: [] }; },
+  // The speech container: one ready slot that answers a diarize request and records the request in calls, where the test looks for "reached a model".
+  const slot = { speechState: async () => ({ state: "ready", inflight: 0 }), warm: async () => ({ state: "warming" }), speechRequest: async (r) => { calls.push({ url: `speech-container:${r.path}`, body: null }); return { state: "ok", status: 200, body: JSON.stringify({ turns: [{ s: 0, e: 7.8, speaker: 0 }], audio_s: 7.8, process_ms: 300 }) }; } };
+  const SPEECH_CONTAINER = { idFromName: (n) => n, get: () => slot };
+  const env = withSettings({ ENV_NAME: "dev", SPEECH_CONTAINER, SPEECH_MAX_INSTANCES: "1", OPENROUTER_API_KEY: "k", PROMPT_CACHE: "off", CF_ACCOUNT_ID: "acct", AIG_ID: "gw", AIG_TOKEN: "tok",
+    AI: { run: async (model, input) => { ai.push({ model, input }); if (input.text) return { data: input.text.map(() => [0.1]) }; if (input.contexts) return { response: input.contexts.map((_, id) => ({ id, score: id === 2 ? 0.9 : 0.1 })) }; return { text: "ok", answer: "$545.60", caption: "c", transcription_info: { duration: 7.8 }, segments: [] }; },
       websearch: async (o) => { ai.push({ search: o }); return { ok: true, status: 200, items: [] }; } } });
   return { env, calls, ai, done: () => { globalThis.fetch = real; } };
 }
@@ -202,20 +205,21 @@ test("the chat requests of the memory jobs keep their messages, tools and respon
 test("each sample sends the gateway kind its call site sends", () => {
   const src = (f) => readFileSync(new URL(srcPath(f), import.meta.url), "utf8");
   const where = { stt: ["index.js", /kind: "transcribe"/], stt_cloudflare: ["index.js", /kind: "transcribe"/], live_dictation: ["transcribe-live.js", /kind: 'live-dictation'/],
-    embed_files: ["sidecar.js", /kind: charge \? "sidecar-embed"/], vision_files: ["sidecar.js", /kind: `sidecar-vision-\$\{mode\}`/], look: ["sidecar.js", /kind: "browser-look"/], web_search: ["websearch.js", /kind: "web-search"/] };
+    embed_files: ["sidecar.js", /kind: charge \? "sidecar-embed"/], vision_files: ["sidecar.js", /kind: `sidecar-vision-\$\{mode\}`/], look: ["sidecar.js", /kind: "browser-look"/], web_search: ["websearch.js", /kind: "web-search"/], speaker_labels: ["speaker-labels.js", /kind: "speaker-labels"/] };
   for (const [job, [file, re]] of Object.entries(where)) assert.match(src(file), re, `${job}: the call site in ${file}`);
   assert.equal(byJob("vision_files").meta.kind, "sidecar-vision-picture", "the picture mode");
   assert.match(src("sidecar.js"), /vision\(P\.env, meta, pic, "picture"\)/);
   const hs = src("hindsight-llm.js");
   assert.match(hs, /kind = `memory-\$\{rerank \? "rerank" : match\[1\] === "default" \? "check" : match\[1\]\}`/);
   const expected = { stt: "transcribe", stt_cloudflare: "transcribe", live_dictation: "live-dictation", embed_files: "sidecar-embed", vision_files: "sidecar-vision-picture", look: "browser-look", web_search: "web-search",
-    hs_retain: "memory-retain", hs_consolidation: "memory-consolidation", hs_reflect: "memory-reflect", hs_refresh: "memory-refresh", hs_rerank: "memory-rerank", mem_extract: "memory-extract", mem_embed: "memory-embed" };
+    hs_retain: "memory-retain", hs_consolidation: "memory-consolidation", hs_reflect: "memory-reflect", hs_refresh: "memory-refresh", hs_rerank: "memory-rerank", mem_extract: "memory-extract", mem_embed: "memory-embed", mem_rerank: "memory-rerank", speaker_labels: "speaker-labels" };
   for (const s of samples) assert.equal(s.meta?.kind, expected[s.job], s.job);
 });
 
 test("golden answers: well formed, only on jobs with a checkable answer, and each path or id is in the job's answer", async () => {
   for (const s of samples) {
     if (["embed_files", "mem_embed"].includes(s.job)) assert.equal(s.golden, undefined, `${s.job} has no golden: a vector has no right value`);
+    else if (s.job === "speaker_labels") assert.equal(s.golden, undefined, "speaker_labels has no golden: the sample file has one voice and the turns are shown as they are");
     else checkGoldenShape(s.job, s.golden);
   }
   const speech = ["stt", "stt_cloudflare", "live_dictation"].map((j) => byJob(j).golden);

@@ -21,6 +21,9 @@ const PPLX_DECIDER = "perplexity/pplx-decider-v1.1-27b";
 // compose file held before its calls moved behind the Worker: OpenRouter latest aliases.
 const HS_RETAIN = "~openai/gpt-luna-latest", HS_FLASH = "~deepseek/deepseek-flash-latest", HS_RERANK = "~perplexity/pplx-decider-latest";
 // Speech to text, in order (the Captain, 2026-10-15, "it is an accuracy choice"): AssemblyAI Universal-3.6 Pro first, then the earlier order.
+// The speech models 1Helm runs itself (selfhost-speech.js; a test keeps these in step with it).
+const QWEN_SELF = "@1hc/Qwen/Qwen3-ASR-1.7B", NEMO_SELF = "@1hc/nvidia/nemotron-3.5-asr-streaming-0.6b", DIAR_SELF = "@1hc/nvidia/Nemotron-3-Diarization";
+export const SELF_STT = QWEN_SELF, SELF_LIVE = NEMO_SELF, SELF_DIARIZE = DIAR_SELF;   // named in test/speaker-labels.test.mjs and scripts/apply-speech-selfhost.mjs
 const STT_BEST = "assemblyai/universal-3-6-pro", STT = "qwen/qwen3-asr-0.6b", STT_FALLBACK = "openai/whisper-large-v3-turbo", STT_WAI = "@cf/openai/whisper-large-v3-turbo", LIVE_STT = "@cf/deepgram/nova-3";
 const CLEF = "@cf/cloudflare/clef", CLEF_FLASH = "@cf/cloudflare/clef-flash";
 const EMBED_FILES = "perplexity/pplx-embed-v1-0.6b", EMBED_SELF = "@1hc/perplexity-ai/pplx-embed-v1-0.6b", VISION = "@cf/google/gemma-4-26b-a4b-it", WAI_CHAT = "@cf/zai-org/glm-5.3-flash";
@@ -42,9 +45,10 @@ export const jobFieldDefaults = (id) => ({ max_output: MAX_OUTPUT[id] ?? null, s
 export const JOB_FIELDS = ["max_output", "sort", "max_price", "results", "timeout_ms"];
 // Jobs a later release added that an older saved version doesn't carry. They are filled in with this value
 // when read or checked, and nothing is written for it.
-export const OPTIONAL_JOB_IDS = ["look", "web_search", "browser_decider", "chat_title", "hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank", "mem_extract", "mem_embed"];
+export const OPTIONAL_JOB_IDS = ["speaker_labels", "look", "web_search", "browser_decider", "chat_title", "hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank", "mem_extract", "mem_embed", "mem_rerank"];
 const MEM_EMBED = "@cf/baai/bge-m3";   // Workers AI, multilingual, 1024 numbers per text, $0.012 per million tokens: the dimension of both Vectorize indexes (mem0-store.js DIMS)
-const OPTIONAL_MODEL = { mem_embed: MEM_EMBED, look: MOONDREAM, web_search: SEARCH_LINKUP, hs_retain: HS_RETAIN, hs_consolidation: HS_FLASH, hs_reflect: HS_FLASH, hs_refresh: HS_FLASH, hs_rerank: HS_RERANK };
+const MEM_RERANK = "@cf/baai/bge-reranker-base";   // Workers AI, English, $0.00311 per million input tokens (developers.cloudflare.com/workers-ai/models/bge-reranker-base/), 512 tokens for a question and a fact together
+const OPTIONAL_MODEL = { speaker_labels: DIAR_SELF, mem_embed: MEM_EMBED, mem_rerank: MEM_RERANK, look: MOONDREAM, web_search: SEARCH_LINKUP, hs_retain: HS_RETAIN, hs_consolidation: HS_FLASH, hs_reflect: HS_FLASH, hs_refresh: HS_FLASH, hs_rerank: HS_RERANK };
 // The reasoning level each memory job started with (the server's own setting).
 const OPTIONAL_EFFORT = { hs_retain: "low", hs_consolidation: "none", hs_reflect: "low", hs_refresh: "low" };
 // browser_decider starts as a copy of the request sorter job (model, reasoning level and fallbacks), so `jobs` (the settings' jobs) says which; it adds no model facts.
@@ -85,6 +89,12 @@ export const SEED_FACTS = {
   [STT_FALLBACK]: { name: "Whisper Large v3 Turbo", kinds: ["speech"], efforts: [] },
   [STT_WAI]: { name: "Whisper Large v3 Turbo (Cloudflare)", kinds: ["speech_cloudflare"], efforts: [] },
   [LIVE_STT]: { name: "Deepgram Nova 3 (Cloudflare)", kinds: ["speech_live"], efforts: [] },
+  // Speech models in the 1Helm speech container (selfhost-speech.js), measured 2026-10-22 on Cloudflare standard-4. They take any audio format (the container converts it).
+  // sec_nano: nano-dollars per audio second for reservations, the planned real time factor (Qwen 0.7, Nemotron 0.45, diarization 0.15) times $0.0001114 a second for the instance.
+  // The charge is the measured container compute time, so it is at most the reservation.
+  [QWEN_SELF]: { name: "Qwen3 ASR 1.7B (1Helm container)", kinds: ["speech"], efforts: [], sec_nano: 77981 },
+  [NEMO_SELF]: { name: "Nemotron 3.5 ASR Streaming 0.6B (1Helm container)", kinds: ["speech", "speech_live"], efforts: [], sec_nano: 50131 },
+  [DIAR_SELF]: { name: "Nemotron 3 Diarization (1Helm container)", kinds: ["diarize"], efforts: [], sec_nano: 16711 },
   [CLEF]: { name: "Clef (Cloudflare)", kinds: ["workers_decider"], efforts: [], in_nano: 240 },
   // Clef Flash: $0.038 per million input tokens on Cloudflare (Workers AI model list, checked 2026-10-15), so 38 nano-dollars per token.
   [CLEF_FLASH]: { name: "Clef Flash (Cloudflare)", kinds: ["workers_decider"], efforts: [], in_nano: 38 },
@@ -99,6 +109,7 @@ export const SEED_FACTS = {
   [EMBED_FILES]: { name: "Perplexity Embed 0.6B", kinds: ["embedding_files"], efforts: [], embedding_equivalents: [EMBED_SELF] },
   [EMBED_SELF]: { name: "Perplexity Embed 0.6B (1Helm container)", kinds: ["embedding_files"], efforts: [], pricing: { prompt: 0.6, completion: 0 }, embedding_equivalents: [EMBED_FILES] },
   [MEM_EMBED]: { name: "BGE M3 (Cloudflare)", kinds: ["embedding_memory"], efforts: [], in_nano: 12 },
+  [MEM_RERANK]: { name: "BGE Reranker Base (Cloudflare)", kinds: ["rerank_memory"], efforts: [], in_nano: 3.11 },
   [VISION]: { name: "Gemma 4 26B (Cloudflare)", kinds: ["vision"], efforts: VISION_EFFORTS },
   [WAI_CHAT]: { name: "GLM 5.3 Flash (Cloudflare)", kinds: ["workers_ai"], efforts: [] },
 };
@@ -172,17 +183,21 @@ export const LEGACY_CHORES = ["handoff", "label", "browser", "notes", "notes_ref
 
 // The jobs that don't depend on the earlier saved format (environment variables and built-in values).
 function otherJobs() {
-  const sttList = [STT_BEST, STT, STT_FALLBACK];
+  // Since 2026-10-22 (the Captain: stop paying for outside speech to text) the models in 1Helm's own container go first, and the hosted ones stay behind them, cheapest first
+  // (Qwen3-ASR 0.6B and Whisper turbo are $0.012 an audio hour, AssemblyAI $0.30).
+  const sttList = [QWEN_SELF, STT, STT_FALLBACK, STT_BEST];
   return {
     stt: { model: sttList[0], effort: null, fallbacks: sttList.slice(1).map((m) => entry(m, null)) },
     stt_cloudflare: { model: STT_WAI, effort: null, fallbacks: [] },
-    live_dictation: { model: STT_BEST, effort: null, fallbacks: [entry(LIVE_STT, null)] },
+    speaker_labels: optionalJobDefault("speaker_labels").job,
+    live_dictation: { model: NEMO_SELF, effort: null, fallbacks: [entry(LIVE_STT, null), entry(STT_BEST, null)] },
     embed_files: { model: EMBED_FILES, effort: null, fallbacks: [entry(EMBED_SELF, null)] },
     vision_files: { model: VISION, effort: "none", fallbacks: [] },
     workers_ai_chat: { model: WAI_CHAT, effort: null, fallbacks: [] },
     look: optionalJobDefault("look").job,
     web_search: optionalJobDefault("web_search").job,
     mem_embed: optionalJobDefault("mem_embed").job,
+    mem_rerank: optionalJobDefault("mem_rerank").job,
     ...Object.fromEntries(["hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank"].map((id) => [id, optionalJobDefault(id).job])),
   };
 }
