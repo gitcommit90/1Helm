@@ -1,0 +1,84 @@
+
+
+    </div>
+
+    <div class="nav-controls">
+        <button class="nav-btn" id="prevBtn">&larr;</button>
+        <span class="slide-counter"><span id="currentSlide">1</span> / <span id="totalSlides">10</span></span>
+        <button class="nav-btn" id="nextBtn">&rarr;</button>
+    </div>
+
+    <script>
+        const slides = document.querySelectorAll('.slide');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+        const currentSlideEl = document.getElementById('currentSlide');
+        const totalSlidesEl = document.getElementById('totalSlides');
+        const progressBar = document.getElementById('progressBar');
+
+        let current = 0;
+        const total = slides.length;
+
+        totalSlidesEl.textContent = total;
+
+        function updateSlide() {
+            slides.forEach((slide, index) => {
+                slide.classList.toggle('active', index === current);
+            });
+            currentSlideEl.textContent = current + 1;
+            progressBar.style.width = ((current + 1) / total * 100) + '%';
+        }
+
+        function next() {
+            if (current < total - 1) {
+                current++;
+                updateSlide();
+            }
+        }
+
+        function prev() {
+            if (current > 0) {
+                current--;
+                updateSlide();
+            }
+        }
+
+        nextBtn.addEventListener('click', next);
+        prevBtn.addEventListener('click', prev);
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                next();
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                prev();
+            }
+        });
+
+        let touchStartX = 0;
+        let touchEndX = 0;
+
+        document.addEventListener('touchstart', (e) => {
+            touchStartX = e.changedTouches[0].screenX;
+        }, { passive: true });
+
+        document.addEventListener('touchend', (e) => {
+            touchEndX = e.changedTouches[0].screenX;
+            handleSwipe();
+        }, { passive: true });
+
+        function handleSwipe() {
+            const swipeThreshold = 50;
+            if (touchEndX < touchStartX - swipeThreshold) {
+                next();
+            } else if (touchEndX > touchStartX + swipeThreshold) {
+                prev();
+            }
+        }
+
+        updateSlide();
+    </script>
+
+</body>
+</html>

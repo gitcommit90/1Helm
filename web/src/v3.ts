@@ -56,6 +56,8 @@ import { streamState, streamLease, streamCurrent, streamRelease, streamInvalidat
 import { tkInit, tkLoad, tkEvent, tkOn, tkLiveCard, tkBtn, tkWrap, tkSync, tkChip, tkMsgOf, tkCardView, tkHelperCount, tkProgress, orbState, type EventView } from "./tracker";
 import { dictBtn, dictInit, dictActive } from "./dictate";
 import { slBtn, slInit, slGate, slSchedule, slBubbles, slSentNote, slSet } from "./send-later";
+import { zoneKind } from "./zone-doc";   // the Zone (zone.ts, loaded only when a file is opened in it): which files it can open
+import { dsAttr, dsBtn, dsCardHtml, dsInit, dsIsDeck, dsWire } from "./deck-styles";   // deck styles: Change style on a deck card, and the helper's picker card
 import { schInit, schPage, schPaint, schAfter, schRedirect, isSch, schSec } from "./scheduled";   // the one Scheduled view (repeats, follow-ups, send later)
 import { logoOver, logoChip, workDomain, appLogo, logoWarm } from "./logo";
 import { ivInit, ivSet, ivIs, ivView } from "./interview";
@@ -75,7 +77,7 @@ import { hInit, hWatch } from "./headfit";   // the tablet/desktop task header: 
 import { sidebarInit, sidebarSync, sidebarReveal, sidebarCollapseButton, sidebarRestoreButton } from "./channel-sidebar";
 import { stInit, sync as stSync, headStop, rowStop, composerStop, stopTask, stopMany, stopBusy, pausedNote, SQ } from "./stop";   // Stop / Stop all
 import { nfInit, nfHtml, nfSeen, nfPerm, nfAsk, nfElsewhere } from "./notif";   // Settings → Notifications: switches, this device (Web Push), sounds
-import { maInit, maActs, maOpenCls, maQuote, rqHtml, rqTake, refOf, copyPlain, excerpt, type Pin, type Role } from "./msgreply";   // Copy + Reply on chat bubbles, the reply pinned above the composer
+import { maInit, maActs, maOpenCls, maQuote, rqHtml, rqTake, rqPut, rqClear, refOf, copyPlain, excerpt, type Pin, type Role } from "./msgreply";   // Copy + Reply on chat bubbles, the reply pinned above the composer
 import { sgInit, pauseSet, usageSet, usageAdd, usageNote } from "./spendguard";   // core runaway guard and per-task usage
 import { sgBillingInit, monthLine, noticeShow } from "./ee/spendguard-billing";   // 1HC monthly plan meter and credit notices
 
@@ -315,7 +317,26 @@ function autoFocus(el: HTMLElement | null | undefined, opts?: FocusOptions, care
   if (caretEnd && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) el.setSelectionRange(el.value.length, el.value.length);
   return true;
 }
-function render() {
+// Whatever repaints the screen (a delete, rename, archive or list refresh finishing, a live event) must not touch what is being typed.
+// The message box is rebuilt with the screen, so its text, caret and focus are put back when it is the same composer: the same task, or
+// the same channel Home. Another task's composer starts empty, so a draft never lands in the wrong task.
+let boxOwner: object | null = null, keepDepth = 0;
+function keepDraft(paint: () => void) {
+  if (keepDepth) { paint(); return; }
+  const { ch, s } = route(), owner = s ?? ch, was = document.getElementById("box") as HTMLTextAreaElement | null;
+  const kept = was && boxOwner === owner && (was.value || document.activeElement === was)
+    ? { v: was.value, a: was.selectionStart, b: was.selectionEnd, dir: was.selectionDirection, focus: document.activeElement === was, top: was.scrollTop } : null;
+  keepDepth++; try { paint(); } finally { keepDepth--; }
+  const now = route(); boxOwner = now.s ?? now.ch;
+  const box = document.getElementById("box") as HTMLTextAreaElement | null;
+  if (!kept || !box || box === was || (box.value && box.value !== kept.v) || boxOwner !== owner) return;
+  box.value = kept.v; box.dispatchEvent(new Event("input", { bubbles: true }));   // the same size and Send button as typing
+  box.scrollTop = kept.top;
+  if (kept.focus) { box.focus({ preventScroll: true }); box.setSelectionRange(kept.a ?? kept.v.length, kept.b ?? kept.v.length, kept.dir ?? "none"); }
+}
+function render() { keepDraft(renderStage); }
+function renderStage() {
+  zoneGuard();
   if (isNb()) nbBeeVisit(route().ch);
   requestAnimationFrame(nbBeePaint);
   { const rd = schRedirect(location.hash, slug => channels.some(c => c.slug === slug), main.slug); if (rd) history.replaceState(null, "", rd); }   // old Schedules / Scheduled links → the one view
@@ -780,9 +801,32 @@ function chatCards(cards: any[], ch: Channel, reply?: string) {
   }
   return html + (group ? '</div>' : '');
 }
+// The message's cards without the file tiles its own File cards already show.
+function claimedOut(m: Msg, text: string) { const { ids } = claimFiles(m, text); return ids.size ? (m.cards || []).filter(c => !(c.t === "file" && ids.has(c.f?.id))) : m.cards || []; }
+// Open in the Zone (zone.ts): a deck, a web page or a PDF beside its task. The Zone's own code is fetched the first time this is used.
+const zoBtn = (slug: string, f: FileV) => LIVE && zoneKind(f) ? `<span class="fsh zob" role="button" tabindex="0" data-zone="${esc(slug)}|${esc(f.id)}" aria-label="Open ${esc(f.name)} in the zone" title="Open in zone">${I('<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/><rect x="9" y="9" width="6" height="6" rx="1"/>', 16)}</span>` : "";
+type ZoneMod = typeof import("./zone");
+let zoneMod: ZoneMod | null = null, zoneLoading: Promise<ZoneMod> | null = null;
+const zoneLoad = () => zoneMod ? Promise.resolve(zoneMod) : zoneLoading ||= import(/* @vite-ignore */ new URL(`./zone/zone.js?v=${encodeURIComponent(String((LIVE as any)?.v || ""))}`, import.meta.url).href).then((m: ZoneMod) => (zoneMod = m)).finally(() => { zoneLoading = null; });
+async function zoneStart(slug: string, id: string) {
+  const ch = channels.find(c => c.slug === slug), { s } = route(); if (!LIVE || !ch || !s) return;
+  let f: any = null; try { f = ((await api(`/res/${slug}/files`))?.files || []).find((x: any) => x.id === id); } catch {}
+  if (!f || !zoneKind(f)) { note(ic.clock, "Can't open that here", "The Zone opens decks, web pages, Word documents and PDF reports.", ""); return; }
+  const m = await zoneLoad().catch(() => null); if (!m) { note(ic.clock, "Couldn't open the zone", "Check your connection and try again.", ""); return; }
+  closeFile(); mState.drawer = false;
+  void m.zoneOpen({ api: LIVE.api, v: String((LIVE as any).v || ""), fileUrl, who: sl => who(channels.find(c => c.slug === sl) || ch), pinKey: rqKey, pin: (k, ref) => { if (!k) return; if (ref) rqPut(k, ref); else rqClear(k); },
+    note: (t, b) => note(ic.clock, t, b, ""), leave: () => { m.zoneClose(); render(); },
+    styleBtn: ff => dsIsDeck(ff) ? `<span class="zwide" role="button" tabindex="0" ${dsAttr(ff.slug, ff)}>${I('<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.5-.7 1.5-1.5 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.8.7-1.5 1.5-1.5H16c3.3 0 6-2.7 6-6 0-4.9-4.5-9-10-9z"/>', 16)}<span>Change style</span></span>` : "", shareAttrs: ff => ` data-shn="${esc(ff.name)}" data-shm="${esc(ff.mime || "")}"`,
+    helperWorking: () => !!route().s?.streaming }, { slug, id: f.id, name: f.name, mime: f.mime, tags: f.tags, session: f.session, version: f.version, bytes: f.bytes }, String(s.id));
+}
+// The Zone belongs to the task it was opened from: leaving that task closes it.
+function zoneGuard() { if (!zoneMod?.zoneIsOpen()) return; const sid = zoneMod.zoneSession(), { s } = route(); if (!s || String(s.id) !== sid) zoneMod.zoneClose(); }
+document.addEventListener("rq:clear", () => zoneMod?.zoneUnpinned());
+if (LIVE) { document.addEventListener("click", e => { const b = (e.target as HTMLElement).closest<HTMLElement>("[data-zone]"); if (!b) return; e.preventDefault(); e.stopPropagation(); const [slug, id] = b.dataset.zone!.split("|"); void zoneStart(slug, id); }, true);
+  document.addEventListener("keydown", e => { const t = e.target as HTMLElement; if ((e.key === "Enter" || e.key === " ") && t?.matches?.("[data-zone]")) { e.preventDefault(); t.click(); } }); }
 function fileCard(ch: Channel, f: FileV, mine: boolean) {
   const k = fkind(f.name, f.mime), u = fileUrl(ch.slug, f.id);
-  return `<div class="fcard chat-tile${mine ? " mine" : ""}" title="${esc(f.name)} · ${KIND[k][0]} · ${KB(f.bytes)}"><a class="chat-tile-open" href="${u}" data-fv="${esc(ch.slug)}|${esc(f.id)}" data-fvc aria-label="Open ${esc(f.name)}"><span class="chat-tile-preview${f.image ? " photo" : ""}">${f.image ? `<img src="${u}" alt="" loading="lazy">` : `<span class="aico k-${k}">${I(KIND[k][1], 28)}</span>`}</span><span class="chat-tile-name">${esc(f.name)}</span></a><span class="chat-tile-actions"><span class="chat-tile-kind">${KIND[k][0]}</span>${LIVE ? shFileBtn(ch.slug, f.id, f.name, f.mime, true) : ""}<a class="chat-tile-download" href="${fileUrl(ch.slug, f.id, true)}" download aria-label="Download ${esc(f.name)}" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 14)}</a></span></div>`;
+  return `<div class="fcard chat-tile${mine ? " mine" : ""}" title="${esc(f.name)} · ${KIND[k][0]} · ${KB(f.bytes)}"><a class="chat-tile-open" href="${u}" data-fv="${esc(ch.slug)}|${esc(f.id)}" data-fvc aria-label="Open ${esc(f.name)}"><span class="chat-tile-preview${f.image ? " photo" : ""}">${f.image ? `<img src="${u}" alt="" loading="lazy">` : `<span class="aico k-${k}">${I(KIND[k][1], 28)}</span>`}</span><span class="chat-tile-name">${esc(f.name)}</span></a><span class="chat-tile-actions"><span class="chat-tile-kind">${dsIsDeck(f) ? "Deck" : KIND[k][0]}</span>${LIVE ? shFileBtn(ch.slug, f.id, f.name, f.mime, true) : ""}${dsBtn(ch.slug, f)}${zoBtn(ch.slug, f)}<a class="chat-tile-download" href="${fileUrl(ch.slug, f.id, true)}" download aria-label="Download ${esc(f.name)}" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 14)}</a></span></div>`;
 }
 if (LIVE) {
   document.addEventListener("click", async e => {
@@ -833,6 +877,7 @@ const fvKind = (f: FV) => { const e = (f.name.match(/\.([a-z0-9]+)$/i)?.[1] || "
   if (/^(xlsx|xlsm|xlsb|xls|ods|numbers)$/.test(e) || /spreadsheetml|ms-excel|opendocument\.spreadsheet/.test(m)) return "xlsx";
   if (/^(pptx|ppt|pps|ppsx|pptm|odp)$/.test(e)) return "deck";   // by extension only, like the server's previewKind
   if (/^(docx|doc|docm|odt|rtf)$/.test(e)) return "word";
+  if (/^(html?|xhtml)$/.test(e) || m === "text/html") return "html";
   if (/^video\//.test(m)) return "video"; if (/^audio\//.test(m)) return "audio";
   if (e === "md" || e === "markdown" || m === "text/markdown") return "md";
   if (e === "csv" || e === "tsv" || m === "text/csv" || m === "text/tab-separated-values") return "csv";
@@ -914,9 +959,12 @@ function fvPaint() {
   const w = document.getElementById("fv")!, f = FVS.list[FVS.i], k = fvKind(f), u = f.transcript || fileUrl(f.slug, f.id), x = fvTask(f), n = FVS.list.length, gen = ++FVS.gen;
   FVS.transcript = undefined; FVS.data = undefined; FVS.speakers = undefined; speakerEditorClose();
   FVS.zoom = 1; FVS.pdf?.destroy?.(); FVS.pdf = null; FVS.slide = undefined;
-  const [kn0, kd] = KIND[fkind(f.name, f.mime)], kn = k === "deck" ? "Slide deck" : k === "word" ? "Document" : kn0;
+  const [kn0, kd] = KIND[fkind(f.name, f.mime)], kn = k === "deck" ? "Slide deck" : k === "word" ? "Document" : k === "html" ? "Web page" : kn0;
   w.innerHTML = `<div class="fvback" data-fvclose></div><div class="fvbox fv-${k}">
     <header class="fvhd"><span class="aico k-${fkind(f.name, f.mime)}">${I(kd, 18)}</span><span class="fvt"><b title="${esc(f.name)}">${esc(f.name)}</b><span>${kn}${f.bytes ? ` · ${KB(f.bytes)}` : ""}${x ? ` · <a href="#/${esc(f.slug)}/s/${esc(x.id)}" data-fvgo>From “${esc(x.title)}”</a>` : f.you ? " · You added it" : ""}</span></span>
+      ${k === "html" && n > 1 ? `<span class="fvhn" role="group" aria-label="Files"><button class="fvb" data-fvn="-1" aria-label="Previous file" title="Previous file"${FVS.i ? "" : " disabled"}>${I('<path d="m15 18-6-6 6-6"/>', 18)}</button><span class="fvhc">${FVS.i + 1} of ${n}</span><button class="fvb" data-fvn="1" aria-label="Next file" title="Next file"${FVS.i < n - 1 ? "" : " disabled"}>${I('<path d="m9 18 6-6-6-6"/>', 18)}</button></span>` : ""}
+      ${LIVE && route().s && (k === "html" || k === "pdf" || (k === "word" && zoneKind(f))) ? `<button class="fvb" data-zone="${esc(f.slug)}|${esc(f.id)}" aria-label="Open in zone" title="Open in zone">${I('<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/><rect x="9" y="9" width="6" height="6" rx="1"/>', 18)}</button>` : ""}
+      ${k === "html" ? `<button class="fvb" data-fvfs aria-label="Full screen" title="Full screen">${I('<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>', 18)}</button>` : ""}
       ${k === "image" || k === "pdf" || k === "word" ? `<span class="fvzoom"><button data-fvz="-1" aria-label="Zoom out">${I('<path d="M5 12h14"/>', 16)}</button><button data-fvz="0" class="fvzl" aria-label="Fit">100%</button><button data-fvz="1" aria-label="Zoom in">${I('<path d="M5 12h14"/><path d="M12 5v14"/>', 16)}</button></span>` : ""}
       ${f.transcript ? `<button class="fvb" data-transcript-download disabled aria-label="Download transcript" title="Download transcript as text">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 18)}</button>` : `${shViewerBtns(f.slug, f.id, f.name, f.mime)}<a class="fvb" href="${fileUrl(f.slug, f.id, true)}" download aria-label="Download" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 18)}</a>`}
       <button class="fvb" data-fvclose aria-label="Close" title="Close (Esc)">${I('<path d="M18 6 6 18M6 6l12 12"/>', 18)}</button></header>
@@ -925,7 +973,7 @@ function fvPaint() {
       : k === "other" ? `<div class="fvnonebox"><span class="aico k-${fkind(f.name, f.mime)}">${I(kd, 30)}</span><b>${esc(f.name)}</b><p>There's no preview for this kind of file yet. Download it, or ask ${esc(who(channels.find(c => c.slug === f.slug)!))} to work with it; it's on its computer at <code>files/${esc(f.name)}</code>.</p><a class="fvdl" href="${fileUrl(f.slug, f.id, true)}" download>Download</a></div>`
       : k === "deck" || k === "word" ? `<div class="fvload">${orb("working", "dark")}<p>Opening ${k === "deck" ? "the slides" : "the document"}…</p><p class="fvslow" hidden>The first time takes a few seconds.</p></div>`
       : `<div class="fvload">${orb("working", "dark")}</div>`}</div>
-    ${n > 1 ? `<button class="fvnav prev" data-fvn="-1" aria-label="Previous file"${FVS.i ? "" : " disabled"}>${I('<path d="m15 18-6-6 6-6"/>', 22)}</button><button class="fvnav next" data-fvn="1" aria-label="Next file"${FVS.i < n - 1 ? "" : " disabled"}>${I('<path d="m9 18 6-6-6-6"/>', 22)}</button><span class="fvcount">${FVS.i + 1} of ${n}</span>` : ""}</div>`;
+    ${n > 1 && k !== "html" ? `<button class="fvnav prev" data-fvn="-1" aria-label="Previous file"${FVS.i ? "" : " disabled"}>${I('<path d="m15 18-6-6 6-6"/>', 22)}</button><button class="fvnav next" data-fvn="1" aria-label="Next file"${FVS.i < n - 1 ? "" : " disabled"}>${I('<path d="m9 18 6-6-6-6"/>', 22)}</button><span class="fvcount">${FVS.i + 1} of ${n}</span>` : ""}</div>`;
   const body = document.getElementById("fvbody")!;
   if (f.transcript) fetch(u, { credentials: "same-origin", cache: "no-store" }).then(r => { if (!r.ok) throw new Error(r.status === 404 ? "This transcript is no longer available." : "Couldn't load the transcript. Please try again."); return r.json(); }).then(data => {
     if (gen !== FVS.gen) return;
@@ -939,6 +987,7 @@ function fvPaint() {
   }).catch(() => {});
   else if (k === "pdf") fvPdf(u, body, gen);
   else if (k === "deck" || k === "word") fvOffice(f, u, body, gen, k === "deck");
+  else if (k === "html") fvHtml(u, body, gen);
   else if (k === "xlsx") fvSheet(u, body, gen);
   else if (k === "md" || k === "csv" || k === "text") fetch(u, { credentials: "same-origin" }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); }).then(t => {
     if (gen !== FVS.gen) return; const big = t.length > 1_500_000; if (big) t = t.slice(0, 1_500_000);
@@ -993,6 +1042,15 @@ function fvDeckPager(body: HTMLElement, frames: HTMLElement[], n: number, dl: st
   FVS.slide = (d: number, abs = false) => { const j = abs ? Math.max(0, Math.min(n - 1, d < 0 ? n - 1 : d)) : cur + d; if (j < 0 || j >= n || (abs && j === cur)) return !abs ? false : true;
     frames[j].scrollIntoView({ block: matchMedia("(max-width: 767px)").matches ? "center" : "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); show(j); return true; };
 }
+// An HTML file (an HTML slide deck, a page): it runs in a frame with an empty origin (sandbox without allow-same-origin), so its own script
+// works (arrow keys, tap, full screen) but can't read the app's cookies, storage or page, or call the app's API. Links open in a new tab.
+function fvHtml(u: string, body: HTMLElement, gen: number) {
+  fetch(u, { credentials: "same-origin" }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); }).then(t => {
+    if (gen !== FVS.gen) return;
+    body.innerHTML = `<iframe class="fvhtml" title="Preview" sandbox="allow-scripts allow-popups" allow="fullscreen" allowfullscreen referrerpolicy="no-referrer"></iframe>`;
+    const fr = body.querySelector("iframe")!; fr.addEventListener("load", () => fr.focus()); fr.srcdoc = t;
+  }).catch(e => { if (gen === FVS.gen) body.innerHTML = `<p class="fvnone">Couldn't open it (${esc(e.message)}).</p>`; });
+}
 // A deck or Word document: its PDF preview (made on the computer the first time; a few seconds), then the PDF viewer.
 async function fvOffice(f: FV, u: string, body: HTMLElement, gen: number, deck: boolean, retry = false) {
   const noun = deck ? "deck" : "document", ext = fvExt(f.name), dl = `${u}?dl=1`;
@@ -1033,6 +1091,7 @@ if (LIVE) {
       if (t.closest("[data-fvclose]")) { e.preventDefault(); closeFile(); return; }
       if (t.closest("[data-fvgo]")) { closeFile(); return; }
       const nv = t.closest<HTMLElement>("[data-fvn]"); if (nv) { e.preventDefault(); FVS.i = Math.max(0, Math.min(FVS.list.length - 1, FVS.i + +nv.dataset.fvn!)); fvPaint(); return; }
+      if (t.closest("[data-fvfs]")) { e.preventDefault(); const fr = document.querySelector<HTMLIFrameElement>("#fv .fvhtml"); if (fr) (document.fullscreenElement ? document.exitFullscreen() : fr.requestFullscreen?.())?.catch?.(() => {}); return; }
       const z = t.closest<HTMLElement>("[data-fvz]"); if (z) { e.preventDefault(); fvZoom(+z.dataset.fvz!); return; }
       const sl = t.closest<HTMLElement>("[data-fvs]"); if (sl) { e.preventDefault(); FVS.slide?.(+sl.dataset.fvs!); return; }
       if (t.closest("[data-fvretry]")) { e.preventDefault(); const f = FVS.list[FVS.i], k = fvKind(f), body = document.getElementById("fvbody"); if (body && (k === "deck" || k === "word")) { const gen = ++FVS.gen; body.innerHTML = `<div class="fvload">${orb("working", "dark")}<p>Trying again…</p></div>`; fvOffice(f, fileUrl(f.slug, f.id), body, gen, k === "deck", true); } return; }
@@ -1061,6 +1120,7 @@ if (LIVE) {
       if (moved !== null && (moved || !(k === "ArrowRight" || k === "ArrowLeft"))) { e.preventDefault(); return; }
     }
     if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); closeFile(); }
+    else if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && fvKind(FVS.list[FVS.i]) === "html" && !(e.target as HTMLElement).closest("input,textarea,video,audio,button,a")) { document.querySelector<HTMLIFrameElement>("#fv .fvhtml")?.focus(); }   // a live page owns the arrow keys; files change from the header
     else if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && !(e.target as HTMLElement).closest("input,textarea,video,audio")) { const d = e.key === "ArrowRight" ? 1 : -1, j = FVS.i + d; if (j >= 0 && j < FVS.list.length) { e.preventDefault(); FVS.i = j; fvPaint(); } }
     else if ((e.key === "+" || e.key === "=") && !e.metaKey) fvZoom(1); else if (e.key === "-" && !e.metaKey) fvZoom(-1);
   }, true);
@@ -1214,7 +1274,7 @@ function toggleDone(id: any, fromUndo = false) {
   if (!fromUndo && x.done) note(`${ic.check}`, "Marked done", x.title, `<button class="tview" data-undo="${x.id}">Undo</button>`);
   else if (!fromUndo) hideToast();
 }
-const headDone = (s: Session) => `<span id="hdone" class="hdone-wrap">${s.done ? "" : `<span class="meta ${astate(s)}"><i class="st"></i>${statusText(s)}</span>`}${headStop(chOf(s).slug, s.id, stWorking(s))}
+const headDone = (s: Session) => `<span id="hdone" class="hdone-wrap">${s.done ? "" : `<span class="meta ${astate(s)}" title="${statusText(s)}"><i class="st"></i>${statusText(s)}</span>`}${headStop(chOf(s).slug, s.id, stWorking(s))}
   ${isTexts(s) ? "" : `<span class="ho" data-ho="2"><button class="hdone${s.done ? " on" : ""}" data-done="${s.id}" aria-pressed="${!!s.done}">${box(s, true).replace(/ data-done="[^"]+"/, "").replace('role="checkbox" tabindex="0"', 'aria-hidden="true"')}<span>${s.done ? "Done" : "Mark done"}</span></button></span>`}</span>`;
 window.addEventListener("click", e => {
   const d = (e.target as HTMLElement).closest<HTMLElement>("[data-done]"); if (d) { e.preventDefault(); e.stopImmediatePropagation(); toggleDone(d.dataset.done!); return; }
@@ -1374,19 +1434,33 @@ function partHtml(text: string, ch: Channel, s: Session | undefined, owner: obje
     const answer = (s?.messages as TkMsg[] | undefined)?.find(m => m.role === "user" && m.input_reply?.question_id === request.question_id);
     reply = answer?.body ?? (request.status === "pending" ? undefined : request.answer_text ?? reply ?? "");
   }
-  const ps = replyParts(t, live);
+  const ps = replyParts(t, live), claim = claimFiles(message, t);
   return ps.map((p, j) => {
     if (p.k === "text") return bubble(p.s, j);
     if (p.k === "pending") return "";
-    const c = renderCard(p.s, { owner: partOwner(owner, j), ref: { ch, s, source_turn: (message as TkMsg | undefined)?.rid, input_request: message?.input_request }, sid: `${s?.id ?? ""}:${(message as TkMsg | undefined)?.rid || message?.id || ""}`, streaming: live, reply, file: n => cardFile(ch, n), icon: cardIcon });
+    const c = renderCard(p.s, { owner: partOwner(owner, j), ref: { ch, s, source_turn: (message as TkMsg | undefined)?.rid, input_request: message?.input_request }, sid: `${s?.id ?? ""}:${(message as TkMsg | undefined)?.rid || message?.id || ""}`, streaming: live, reply, file: n => cardFile(ch, n, claim), icon: cardIcon });
     if (c && "html" in c) return c.html || "";
     return c ? bubble(c.text, j) : "";
   }).join("");
 }
 // File card: a file of that name in this channel's Library opens in the file viewer; otherwise it's a static card.
-function cardFile(ch: Channel, name: string) {
-  if (!LIVE) return null; const n = name.trim().replace(/^.*\//, "").toLowerCase();
-  const a = (LIB[ch.slug] || []).find(x => x.fid && x.name.toLowerCase() === n); if (!a) return null;
+// A reply that draws a File card for a file it shared is shown once: the tile the message holds for that file (m.cards, from the share event live
+// and from the saved turn after a reload) is not drawn again, and a File named a little differently from the shared one ("... (preview).html")
+// stands for the shared file of its type that no other File claimed. claimFiles returns that match for each File name and the claimed ids.
+const FILE_CALL = /\bFile\(\s*"((?:[^"\\]|\\.)*)"/g;
+function claimFiles(m: Msg | undefined, text: string) {
+  const byName = new Map<string, FileV>(), ids = new Set<string>(), tiles: FileV[] = [];
+  for (const c of m?.cards || []) if (c.t === "file" && c.f?.id && !tiles.some(x => x.id === c.f.id)) tiles.push(c.f);
+  if (!tiles.length) return { byName, ids };
+  const names = [...new Set([...String(text || "").matchAll(FILE_CALL)].map(x => x[1].replace(/\\(.)/g, "$1").trim().replace(/^.*\//, "")).filter(Boolean))];
+  const ext = (n: string) => (n.toLowerCase().match(/\.([a-z0-9]{1,8})$/) || [])[1] || "";
+  for (const n of names) { const t = tiles.find(f => !ids.has(f.id!) && f.name.toLowerCase() === n.toLowerCase()); if (t) { byName.set(n, t); ids.add(t.id!); } }
+  for (const n of names) { if (byName.has(n)) continue; const t = tiles.find(f => !ids.has(f.id!) && ext(f.name) === ext(n) && ext(n)); if (t) { byName.set(n, t); ids.add(t.id!); } }
+  return { byName, ids };
+}
+function cardFile(ch: Channel, name: string, claim?: { byName: Map<string, FileV> }) {
+  if (!LIVE) return null; const n = name.trim().replace(/^.*\//, "");
+  const t = claim?.byName.get(n), a = t ? { fid: t.id, kind: t.image ? "image" : "" } : (LIB[ch.slug] || []).find(x => x.fid && x.name.toLowerCase() === n.toLowerCase()); if (!a) return null;
   return { fv: `${ch.slug}|${a.fid}`, href: fileUrl(ch.slug, a.fid!), dl: fileUrl(ch.slug, a.fid!, true), image: a.kind === "image" ? fileUrl(ch.slug, a.fid!) : undefined };
 }
 const cardIcon = (name: string) => { const k = fkind(name); return `<span class="aico k-${k}">${I(KIND[k][1], 30)}</span>`; };
@@ -1409,26 +1483,27 @@ function rxPop(m: Msg) {
 }
 // Tracker cards (tracker.ts): a person's message knows its client id and send state (a steer: sending → joined, or failed with
 // Retry); a reply knows its card (the finished-turn chip, the live steps' "Activity" link, "Show in chat").
-type TkMsg = RxMsg & { input_reply?: InputReply; cid?: string; state?: "sending" | "joined" | "failed"; err?: string; card?: string; reply?: Pin | (Omit<Pin, "mr"> & { mr?: number }); rid?: string };
+type TkMsg = RxMsg & { input_reply?: InputReply; cid?: string; state?: "sending" | "joined" | "failed"; err?: string; card?: string; reply?: Pin | (Omit<Pin, "mr"> & { mr?: number }); rid?: string; paste?: FileV };
 // Copy + Reply target the text actually rendered in each bubble, including completed preambles during streaming.
 const rqKey = () => { const { ch, s } = route(); return s && !isLib() && !isNb() && !isCt() && !isSch() ? `${ch.slug}|${s.id}` : ""; };
 const srvId = (m: Msg): string | null => { const t = m as TkMsg; return (m.role === "user" ? t.turn : t.card || t.rid) || null; };
 const msgPlain = (m: Msg) => m.role === "user" ? String(m.body || "") : dedupeProgress([...(m.pre || []), m.body].map(x => String(x ?? ""))).map(x => copyPlain(x, { cardText, scrubCode })).filter(Boolean).join("\n\n");
 const msgRich = (m: Msg) => m.role === "user" ? esc(String(m.body || "")).replace(/\n/g, "<br>") : dedupeProgress([...(m.pre || []), m.body].map(x => String(x ?? ""))).map(x => { const y = (cardText(x) || scrubCode(x)).replace(/<small>[\s\S]*?<\/small>/gi, "").trim(); return y ? chatMarkdown(y) : ""; }).join("");
 function msgHtml(m: Msg, ch: Channel, prev?: Msg, live = false, s?: Session, reply?: string) {
+  if ((m as any).quiet && !live && !m.cards?.length) return "";   // an internal turn that ended with no reply: nothing is drawn, as after a reload
   const first = !prev || prev.role !== m.role, tm = m as TkMsg;
   MA_PARTS.set(m, new Map());
   if (m.role === "user" && (m as any).brief) return briefMsgHtml(m, ch.slug);
-  if (m.role === "user") { const rx = rxHtml(m), mf = (m.files || []).length;
+  if (m.role === "user") { const rx = rxHtml(m), fl = [...(m.files || []), ...(tm.paste ? [tm.paste] : [])], mf = fl.length;
     const tk = tm.state === "joined" ? `<span class="tk-note joined">${ic.check}Joined the task</span>`
-      : tm.state === "failed" ? `<button type="button" class="tk-retry" data-tkretry="${m.id}"${tm.err ? ` title="${esc(tm.err)}"` : ""}>Not sent${/a lot at once/i.test(tm.err || "") ? ": that's a lot at once" : ""} · <u>Retry</u></button>` : "";
-    return `<div class="m user${first ? " first" : ""}${rx ? " rxd" : ""}${tm.state ? ` tk-${tm.state}` : ""}" data-mr="${m.id}">${maQuote(tm.reply)}${mf ? `<div class="mfiles">${!m.body ? rx : ""}${m.files!.map(f => fileCard(ch, f, true)).join("")}</div>` : ""}${m.body ? `<div class="bubble${maOpenCls(m.id)}">${maActs(m.id)}${rx}${esc(m.body)}</div>` : ""}${tk}${slSentNote(tm.cid)}</div>`; }
+      : tm.state === "failed" ? `<button type="button" class="tk-retry" data-tkretry="${m.id}"${tm.err ? ` title="${esc(tm.err)}"` : ""}>Not sent${/a lot at once/i.test(tm.err || "") ? ": that's a lot at once" : tm.err && !/^HTTP \d+$/.test(tm.err) ? `: ${esc(tm.err)}` : ""} · <u>Retry</u></button>` : "";
+    return `<div class="m user${first ? " first" : ""}${rx ? " rxd" : ""}${tm.state ? ` tk-${tm.state}` : ""}" data-mr="${m.id}">${maQuote(tm.reply)}${mf ? `<div class="mfiles">${!m.body ? rx : ""}${fl.map(f => fileCard(ch, f, true)).join("")}</div>` : ""}${m.body && !tm.paste ? `<div class="bubble${maOpenCls(m.id)}">${maActs(m.id)}${rx}${esc(m.body)}</div>` : ""}${tk}${slSentNote(tm.cid)}</div>`; }
   let steps = "";   // no step list during the turn: the progress row is the only indicator
   const tkon = !!LIVE && !!s && !!tm.card && tkOn(ch.slug, s.id);
   if (tkon && !live && ["paused", "failed", "interrupted", "stopped"].includes(tkCardView(ch.slug, s!.id, tm.card)?.status || "")) steps = tkChip(ch.slug, s!.id, tm.card);
   const slot = progressSlot(m, live);
   return `<div class="m agent${first ? " first" : ""}" data-mr="${m.id}"${tkon ? ` data-card="${esc(tm.card!)}"` : ""}>
-    <div class="reply-steps">${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}</div>${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${live ? ctUsed(m) + nbSaved(m, ch) : ""}${chatCards(m.cards || [], ch, reply)}</div>`;
+    <div class="reply-steps">${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}</div>${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${live ? ctUsed(m) + nbSaved(m, ch) : ""}${chatCards(claimedOut(m, slot.text), ch, reply)}</div>`;
 }
 
 document.addEventListener("click", e => {
@@ -1474,6 +1549,7 @@ document.addEventListener("submit", e => {
   const sl = LIVE ? slGate("box") : "send"; if (sl === "stop") return;
   const files = LIVE ? upTake("box", ch) : []; if (!text && !files.length) return;
   const rp = s ? rqTake(rqKey()) : null;   // a reply pinned above the box (msgreply.ts) goes with this message; the bar clears
+  if (rp?.role === "zone") zoneMod?.zoneSent();   // the selection was sent with it
   if (sl === "schedule") {   // send later (send-later.ts): it's kept and goes out at the picked time
     const b = $("#box") as HTMLTextAreaElement; b.value = ""; b.style.height = "auto"; ($("#go") as HTMLButtonElement).disabled = true; $("#send").classList.remove("has");
     slSchedule("box", ch.slug, s ? (s.srv ? String(s.id) : null) : "new", text, files, refOf(rp)); return;
@@ -1496,6 +1572,9 @@ function sandReply(ch: Channel, s: Session, text: string, rp: Pin | null = null)
   location.hash = `/${ch.slug}/s/${s.id}`; render();
   setTimeout(() => { reply.body = `On it. Check this task off whenever you're happy with it.\n\n<small>Scripted reply · design sandbox</small>`; s.state = "complete"; s.status = "resolved"; render(); }, 800);
 }
+// Deck styles (deck-styles.ts): a tap on a style sends the person's own words into the task, through the same path as typing them.
+dsInit({ send: (slug, sid, text) => { const c = channels.find(x => x.slug === slug); if (!c) return; const s = (sid && c.sessions.find(x => String(x.id) === sid)) || route().s; if (!s) return; if (LIVE) liveReply(c, s, text, [], true); else sandReply(c, s, text); } });
+dsWire();
 // Cards in chat: a tap sends a normal message through the same path as typing it (the composer draft is left alone).
 wireCards({
   onSend: async ({ ch, s, source_turn, input_request }: { ch: Channel; s?: Session; source_turn?: string; input_request?: InputRequest }, text: string, meta?: { action?: string; response_id?: string }) => { if (!s) return;
@@ -1559,7 +1638,9 @@ function sessRows(ch: Channel, s: Session | null, q: string) {
   const rest = list.filter(x => !x.pinned);
   return list.length ? `${group("pinned", `${ic.pin}Pinned`, list.filter(x => x.pinned))}${group("texts", "Texts", rest.filter(x => !x.done && isTexts(x)))}${stateGroups(rest, group)}${group("done", "Done", rest.filter(x => x.done).sort(byDone))}` : `<div class="mempty">${ql ? "No tasks match." : "No tasks yet."}</div>`;
 }
-function renderM() {
+function renderM() { keepDraft(renderPhone); }
+function renderPhone() {
+  zoneGuard();
   requestAnimationFrame(nbBeePaint);
   const m = $("#m");
   // No channel-list page on phone: "#/" opens the last channel (its drawer header switches channels).
@@ -2974,7 +3055,7 @@ async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
       const lnr = t.kind === "livenote" && t.livenote?.refine ? t.livenote.refine : null;   // "Update your meeting notes?": a card, not text
       msgs.push({ progressOmitted: Number(t.progress_omitted) || undefined, id: nextId++, role: "agent", pre: [], prog: sp?.prog || [], body: lnr ? "" : parts.length ? parts.join("\n\n") : t.reply || (t.error === "interrupted" ? INTERRUPTED_MSG : t.error ? `Something went wrong: ${t.error}` : ""), at: t.at + (t.total_ms || 0), steps: toSteps((t.steps || []).map((x: any) => x.line)), saved: (t.steps || []).flatMap((x: any) => x.saved || []),
         note: t.kind === "livenote" ? "Live notes" : from ? (from.type === "followup" ? "Follow-up it scheduled" : from.type === "connect" ? from.title || "App connected" : from.type === "permission" ? from.title || "You allowed it" : from.type === "confirm" ? from.title || "You confirmed it" : `Done in the background${from.title ? `: ${from.title}` : ""}`) : t.kind === "followup" ? "Follow-up it scheduled" : t.kind === "workflow" ? "From a scheduled check" : undefined,
-        cards: [...(lnr ? [{ t: "lnrefine", r: lnr, slug: ch.slug, sid: s.id }] : []), ...(t.images || []).map((x: any) => ({ t: "image", id: x.id, url: x.url, caption: x.caption })), ...(t.shared || []).map((f: any) => ({ t: "file", f })), ...(t.interviews || []).map((v: any) => ({ t: "interview", v })), ...shCards(t.offers)], ...(t.card ? { card: t.card } : {}), rid: t.id, ...(t.input_request ? { input_request: t.input_request } : {}) } as TkMsg);
+        cards: [...(lnr ? [{ t: "lnrefine", r: lnr, slug: ch.slug, sid: s.id }] : []), ...(t.images || []).map((x: any) => ({ t: "image", id: x.id, url: x.url, caption: x.caption })), ...(t.shared || []).map((f: any) => ({ t: "file", f })), ...(t.deck_styles ? [{ t: "deckstyles", id: `t${t.id}` }] : []), ...(t.interviews || []).map((v: any) => ({ t: "interview", v })), ...shCards(t.offers)], ...(t.card ? { card: t.card } : {}), rid: t.id, ...(t.input_request ? { input_request: t.input_request } : {}) } as TkMsg);
     }
     // A routed worker's browser work, with no Primary turn running: the live view, or the Take control card when it handed the browser over.
     // The server keeps both, so a reload or a reopened app shows them. The reply they sit under is the one that dispatched the worker.
@@ -3020,6 +3101,7 @@ function rxTarget(s: Session, reply: Msg, turn?: string): RxMsg | undefined {
   for (let i = ms.indexOf(reply) - 1; i >= 0; i--) if (ms[i].role === "user") return ms[i];
 }
 function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
+  zoneMod?.zoneEvent(ch.slug, String(s.id), ev);   // the Zone watches the open task: the helper working, and a new version of its file
   if ((ev.t === "channel_created" || ev.t === "task_started") && ev.channel?.slug) { addStartedSessions([{ ...ev.channel, session: ev.session }]); return; }
   const holdingProgress = progressSlot(reply, true).mode === "progress";
   const replacing = ev.t === "text" && !!String(ev.s || "").trim() && holdingProgress;
@@ -3065,7 +3147,9 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
     tkEvent(ch.slug, s.id, ev);
     if (ev.t === "card_open" && ev.card?.id) {   // this reply's card; the person's message gets its server id (reactions find it)
       (reply as TkMsg).card = ev.card.id; (reply as TkMsg).rid = ev.turn || ev.card.id; const ms = s.messages as TkMsg[];
-      const u = (ev.msg?.cid && ms.find(m => m.role === "user" && m.cid === ev.msg.cid)) || rxTarget(s, reply); if (u && ev.msg?.id) { u.turn = ev.msg.id;
+      const u = (ev.msg?.cid && ms.find(m => m.role === "user" && m.cid === ev.msg.cid)) || rxTarget(s, reply); const pc = (u as TkMsg | undefined)?.paste;
+      if (pc && !pc.id) api(`/res/${ch.slug}/files`).then((d: any) => { const f = (d?.files || []).find((x: FileV) => x.bytes === pc.bytes && /^Pasted text/.test(x.name)); if (f) { Object.assign(pc, f); paintTask(ch, s); } }).catch(() => {});   // the chip opens the saved file
+      if (u && ev.msg?.id) { u.turn = ev.msg.id;
         if (ev.msg.input_reply || ev.input_reply) {
           const binding: InputReply = ev.msg.input_reply || ev.input_reply;
           if (u.input_reply?.question_id && u.input_reply.question_id !== binding.question_id) {
@@ -3078,6 +3162,7 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
     const em = tkMsgOf(ev); if (em) addSteer(s, reply, em);
   }
   else if (ev.t === "image") (reply.cards ??= []).push({ t: "image", id: ev.id, url: ev.url, caption: ev.caption });
+  else if (ev.t === "deck_styles") { if (!(reply.cards ??= []).some((c: any) => c.t === "deckstyles")) reply.cards.push({ t: "deckstyles", id: `d${nextId++}` }); }   // show_deck_styles: the picker (deck-styles.ts)
   else if (ev.t === "interview" && ev.interview?.id) { if (!(reply.cards ??= []).some(c => c.t === "interview" && c.v.id === ev.interview.id)) reply.cards.push({ t: "interview", v: ev.interview, fresh: true }); }
   else if (ev.t === "share_offer") shEvent(reply, ev.offer);   // publish_page / share_file_link: a card for the person's tap (share.ts)
   else if (ev.t === "file") {   // share_file; the same id again = the helper updated that file in place: replace its card and Library row
@@ -3097,6 +3182,8 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
     }
     // The reply is the answer the server saved (text after the last tool call); narration folded into steps stays there, and whatever the
     // server kept in the reply (a question, a card, code, a link) is not shown twice. The same split a reload makes.
+    // A turn the person did not start (a worker's result the helper only acted on) can end with nothing to say: no bubble, not even its narration.
+    if (ev.quiet === true && !ev.error && !String(ev.reply || "").trim()) { reply.body = ""; reply.pre = []; reply.prog = []; (reply as any).quiet = true; }
     finishReply(reply as any, ev.reply, ev.error);
     if (!reply.body.trim() && ev.reply && !reply.pre?.length) reply.body = ev.reply;
     if (!reply.body.trim() && reply.prog?.length) reply.body = reply.prog.pop()!;
@@ -3162,8 +3249,8 @@ async function streamTurnOwned(ch: Channel, s: Session, text: string, reply: Msg
   if (r2) { s.streaming = true; s.state = "working"; s.rawLine = s.rawLine || "reading your request"; live.add(r2); }
   const drop = () => { if (!r2) return; live.delete(r2); s.messages = s.messages.filter(m => m !== r2); r2 = null; s.streaming = live.size > 0; if (!s.streaming) s.state = "idle"; };
   try {
-    const r = await streamFetch(`${LIVE!.api}/res/${ch.slug}/stream`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: s.srv ? s.id : "new", message: text, files: files.map(f => f.id), ...(dpLoc() ? { loc: dpLoc() } : {}), ...(um?.cid ? { cid: um.cid } : {}), ...(um?.input_reply ? { input_reply: um.input_reply } : {}), ...((um as any)?.cont ? { continue: (um as any).cont } : {}), ...(um?.reply?.text ? { reply: { id: um.reply.id || null, role: um.reply.role, text: um.reply.text } } : {}) }) }, lease);
-    if (!r.ok || !r.body) { const d = await streamErrorBody(r, lease); if (d.error === "payment_required") pdSet(d.access || null); throw new Error(d.error === "payment_required" ? d.message || "Your plan needs attention before I can work." : d.error || `HTTP ${r.status}`); }
+    const r = await streamFetch(`${LIVE!.api}/res/${ch.slug}/stream`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: s.srv ? s.id : "new", message: text, files: files.map(f => f.id), ...(dpLoc() ? { loc: dpLoc() } : {}), ...(um?.cid ? { cid: um.cid } : {}), ...(um?.input_reply ? { input_reply: um.input_reply } : {}), ...((um as any)?.cont ? { continue: (um as any).cont } : {}), ...(um?.reply?.text ? { reply: { id: um.reply.id || null, role: um.reply.role, text: um.reply.text, ...((um.reply as any).zone ? { zone: (um.reply as any).zone } : {}) } } : {}) }) }, lease);
+    if (!r.ok || !r.body) { const d = await streamErrorBody(r, lease); if (d.error === "payment_required") pdSet(d.access || null); throw Object.assign(new Error(d.error === "payment_required" ? d.message || "Your plan needs attention before I can work." : d.error || `HTTP ${r.status}`), { refused: true }); }
     await readStream(r, ev => {
       got++;
       if (ev.t === "input_redirect") {
@@ -3189,7 +3276,7 @@ async function streamTurnOwned(ch: Channel, s: Session, text: string, reply: Msg
     lease.pending = false;
     if (!streamCurrent(lease)) return;
     // Nothing reached the helper: the bubble says so, with Retry (same client id, so a send that did land isn't doubled).
-    if (um && !joined && ((lazy && !r2) || (!got && tkOn(ch.slug, s.id) && /a lot at once/i.test(e.message)))) { drop(); um.state = "failed"; um.err = e.message; paintTask(ch, s); return; }
+    if (um && !joined && (e.refused || (lazy && !r2) || (!got && tkOn(ch.slug, s.id) && /a lot at once/i.test(e.message)))) { drop(); um.state = "failed"; um.err = e.message; paintTask(ch, s); return; }
     lost = String(e?.message || e || "closed");
     if (r2 && !got && !r2.body) r2.body = "I couldn't confirm this task's reply yet. Check this task before sending the request again.";
   }
@@ -3281,18 +3368,21 @@ async function reconcileStream(ch: Channel, s: Session, server: any) {
   } catch { /* keep the actual partial reply; a failed status check is not a failed task */ }
   finally { state.checking = false; }
 }
+// Over 100,000 characters the server saves the text as "Pasted text.md" and sends that file; the bubble shows the same chip at once (its id comes with the next card_open).
+const pasteChip = (text: string): FileV | undefined => text.length > 100000 ? { id: "", name: "Pasted text.md", mime: "text/markdown", bytes: new TextEncoder().encode(text).length, at: Date.now() } : undefined;
 function liveStart(ch: Channel, text: string, files: FileV[] = []) {
   const at = Date.now(), tmp = `t${nextId++}`;
   const reply: Msg = { id: nextId++, role: "agent", body: "", at, steps: [] };
+  const um: TkMsg = { id: nextId++, role: "user", body: text, at, steps: [], files, cid: newCid(), paste: pasteChip(text) };   // a refusal leaves this bubble with its error and Retry
   const x: Session = { id: tmp, tmp, title: titleOf(text || files[0]?.name || "New task"), status: "resolved", state: "working", updated: at, fresh: true, loaded: true, rawLine: "reading your request",
-    messages: [{ id: nextId++, role: "user", body: text, at, steps: [], files }, reply] };
-  ch.sessions.unshift(x); streamTurn(ch, x, text, reply, files); return x;
+    messages: [um, reply] };
+  ch.sessions.unshift(x); streamTurn(ch, x, text, reply, files, um); return x;
 }
 function liveReply(ch: Channel, s: Session, text: string, files: FileV[] = [], keepBox = false, cont?: string, rp: Pin | null = null, input?: InputReply) {
   streamProgress(s, { t: "user_input" }); // invalidates an older in-flight status snapshot
   const at = Date.now(), b = keepBox ? null : $("#box") as HTMLTextAreaElement | null;
   if (b) { b.value = ""; b.style.height = "auto"; ($("#go") as HTMLButtonElement).disabled = true; $("#send").classList.remove("has"); }
-  const rid = nextId++, um: TkMsg = { id: nextId++, role: "user", body: text, at, steps: [], files, cid: newCid() };   // ids in today's order
+  const rid = nextId++, um: TkMsg = { id: nextId++, role: "user", body: text, at, steps: [], files, cid: newCid(), paste: pasteChip(text) };   // ids in today's order
   const binding = input || (() => { const pending: InputRequest[] = s.srv?.pending_inputs || [];
     const quoted = rp?.role === "agent" ? pending.find(q => q.source_turn === rp.id && q.status === "pending") : undefined;
     const b = rp ? quoted ? replyBinding(pending, quoted.source_turn, quoted) : undefined : cont ? undefined : replyBinding(pending); return b ? { ...b, response_id: responseId() } : undefined; })();
@@ -3323,6 +3413,7 @@ if (LIVE) document.addEventListener("click", e => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-tkretry]"); if (!b) return;
   e.preventDefault(); const { ch, s } = route(); const um = s?.messages.find(m => String(m.id) === b.dataset.tkretry) as TkMsg | undefined; if (!s || !um) return;
   um.state = "sending"; um.err = undefined; s.messages = s.messages.filter(m => m !== um);
+  if (!s.srv) { const r: Msg = { id: nextId++, role: "agent", body: "", at: Date.now(), steps: [] }; um.state = undefined; s.messages.push(um, r); s.rawLine = "reading your request"; streamTurn(ch, s, um.body, r, um.files || [], um); paintChat(s); return; }   // a new task that was refused: sent again as its first message
   if (s.streaming && tkLiveCard(ch.slug, s.id)) s.messages.splice(liveReplyAt(s), 0, um); else s.messages.push(um);
   streamTurn(ch, s, um.body, null, um.files || [], um); paintChat(s);
 });
@@ -3347,6 +3438,7 @@ function cardHtml(c: any, ch: Channel) {
   if (c.t === "contact") return ctSuggest(c);
   if (c.t === "plan") return planCardHtml(c);
   if (c.t === "file") return fileCard(ch, c.f, false);
+  if (c.t === "deckstyles") return dsCardHtml(c, ch.slug, route().s ? String(route().s!.id) : null);
   // System cards (made by 1HC, never by the model): the /genui card look. Permission markup is shared with the card page inside Messages.
   // Arrival animation for a card that came in live, until it has started once (even if a repaint replaces the node).
   const ak = c.fresh ? (c.ak ??= ++akN) : 0, fr = ak && !AK_SEEN.has(ak) ? " gu-in" : "", akA = ak ? ` data-ak="${ak}"` : "";

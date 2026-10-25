@@ -1,0 +1,12 @@
+{
+ "8-bit-orbit": {"01":"cover","02":"text-with-image","03":"feature-cards","04":"line-chart","05":"bar-chart","06":"timeline","07":"stats","08":"quote","09":"pricing-cards","10":"closing"},
+ "bold-poster": {"01":"cover","02":"quote","04":"stat-grid","05":"big-number","06":"four-blocks","07":"roadmap","08":"three-columns","09":"card-grid","10":"closing"},
+ "creative-mode": {"01":"cover","02":"chapter-opener","03":"four-figures","04":"diagram-stack","05":"bar-chart","06":"four-steps","07":"comparison-table","08":"closing"},
+ "emerald-editorial": {"01":"cover","02":"agenda","03":"section-opener","04":"three-columns","05":"chart","06":"four-steps","07":"four-figures","08":"closing"},
+ "playful": {"01":"cover","02":"six-cards","03":"statement","04":"bar-chart","05":"team","06":"services","07":"process","08":"stats","09":"gallery","10":"closing"},
+ "raw-grid": {"01":"cover","02":"split-feature","03":"bar-chart","04":"card-grid","05":"image-text","06":"timeline","07":"donut-stats","08":"quote-stats","09":"comparison-table","10":"closing"},
+ "retro-windows": {"01":"cover","02":"two-panel-list","03":"two-panel-text","04":"chart","05":"list-detail","06":"donut","07":"line-chart","08":"tree-table","09":"roadmap","10":"closing"},
+ "scatterbrain": {"10":"closing"},
+ "pin-and-paper": {"04":"section"},
+ "stencil-tablet": {"03":"principles","04":"section"}
+}

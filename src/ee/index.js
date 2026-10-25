@@ -49,7 +49,7 @@ export const routeEnabled = (env, path, scope = "global") =>
 // Core-facing EE exports. Runtime admission remains gated by enabled().
 export { appDetail } from "./app-detail.js";
 export { appEventView, evOf, eventsInit, eventsMix, eventsNext } from "./app-events.js";
-export { PAUSE_FACTS, appFirstBlock, callKey, repeatBlock, repeatNote } from "./appfirst.js";
+export { PAUSE_FACTS, appFirstBlock, callKey, repeatBlock, repeatNote, taskWords } from "./appfirst.js";
 export { appLogoRoute } from "./applogo.js";
 export { APPS_USED_LINE, APPS_USED_TOOL, APP_OPTIONS, NONE, appsUsedApi, appsUsedLine, appsUsedTool, getAppsUsed, optionsView, setAppsUsed, usedSlugs } from "./apps-used.js";
 export { BeeSync };
@@ -64,7 +64,7 @@ export { ReadBatch, transportFor } from "./composio-transport.js";
 export { pacedConnect } from "./connect-pace.js";
 export { APP_EVENTS_TOOL, appEventsTool, composioWebhook, eventsReady } from "./composio-triggers.js";
 export { APP_TOOLS, GOOGLE_TOOLS, GOOGLE_TOOL_NAMES, RETIRED_APPS, RETIRED_NOTE, SUPER_COVERS, appName, disconnectAllManaged, googleDisconnect, googleStatus, listConnections, managedCount, pickAccount, runAppTool, runGoogleTool, setAccountNote, setDefaultAccount, tidyAfterConnect } from "./composio.js";
-export { CONNECT_LINES, CONNECT_TOOLS, appCatalog, catalogFile, composioSigninOffer, connectBlock, connectOfferApi, connectOfferDone, connectOfferInit, connectTool, connectWriteBlock, offerAct, offerCallbackQuery, offerConnected, offerGet, offersView } from "./connect-offer.js";
+export { CONNECT_LINES, CONNECT_TOOLS, appCatalog, catalogFile, composioSigninOffer, connectBlock, connectOfferApi, connectOfferDone, connectOfferInit, connectTool, connectWriteBlock, offerAct, offerCallbackQuery, offerConnected, offerGet, offerRow, offersFlag, offersView, statusFor } from "./connect-offer.js";
 export { deciderModel } from "./decider.js";
 export { hintNudge, integrationHint } from "./integration-hint.js";
 export { clip, leanJSON, readMail } from "./lean.js";
@@ -105,7 +105,7 @@ export { holdOutNano, plannedChatHoldNano, plannedChatMaxOutput, plannedHold, pl
 export { dispatch, liveProviderRequest, plan } from "./model-dispatch.js";
 export { dispatchMedia, firstStep, jobReserveNano, stepsOf } from "./media-job.js";
 export { speakerJobReady, speakerRate, speakerReserve, diarize, mapSpeakerIds, speakerForSpan, defaultLabel, SPEAKER_MARKUP } from "./speaker-labels.js";   // speaker labels for audio and video files (the file prep in sidecar.js); the licensed Live notes module imports its own
-export { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, START_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput, browserPurchaseGuard } from "./browser-tasks.js";
+export { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, START_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput, browserPurchaseGuard, buyControlTargeted } from "./browser-tasks.js";
 
 export { effectiveTaskCatalog } from "./model-catalog.js";
 export { authorizeTaskProfile, TaskAffinityBlocked, ensureTaskRuntime, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./task-profile.js";

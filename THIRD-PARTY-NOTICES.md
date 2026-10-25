@@ -146,3 +146,46 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+
+## HTML deck templates
+
+The 34 slide deck templates in `app-assets/deck-templates/` (HTML, styles and slide layouts) are vendored from https://github.com/zarazhangrui/beautiful-html-templates by `scripts/vendor-html-templates.mjs`. One slide of the `daisy-days` template holds an inline SVG whose comment says it was created with Arrow by QuiverAI, and it ships as part of that template.
+
+License: MIT, the same text as `app-assets/deck-templates/LICENSE`.
+
+```
+MIT License
+
+Copyright (c) 2026 Zara Zhang
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Deck template fonts and text width tables
+
+The templates embed Latin subsets of Google Fonts families (`app-assets/deck-templates/_fonts/`), all under the SIL Open Font License 1.1. The families and their copyright lines are listed with the license text in `licenses/Deck-template-fonts-OFL.txt`. The text width tables in `app-assets/deck-templates/_measure/` were measured from Liberation Sans and Liberation Sans Narrow (SIL Open Font License 1.1), and their license files are next to the tables.
+
+## Chart.js
+
+`app-assets/deck-templates/_lib/chart.umd.min.js` is Chart.js 4.4.7, (c) 2024 Chart.js Contributors, released under the MIT License. The license notice is at the top of the file.
+
+## img-fx, React and three.js (the Zone effect)
+
+`app-assets/app-static/zone/imgfx.js` is a prebuilt bundle of img-fx (https://libraries.dev/image, MIT, Copyright (c) 2026 Jakub Antalik) with React (MIT, Meta Platforms, Inc. and affiliates) and three.js (MIT, 2010 to 2026 three.js Authors). The notices are kept in the file.

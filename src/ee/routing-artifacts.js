@@ -3,6 +3,7 @@
 // Approval uses the ordinary Library version resolver. No semantic index is made.
 import { MAX_UPLOAD, MAX_VIEW, safeName, mimeOf, humanBytes, viewJpeg } from '../files.js';
 import { stPut, stDelete } from '../storage.js';
+import { identicalLibraryFile, adoptName, machineName } from '../library-dedupe.js';
 import { prepText, untrustedFile } from '../sidecar.js';
 import { kindOf, sectionsOf } from '../sidecar-convert.js';
 
@@ -84,6 +85,22 @@ async function scanFiles(R,h) {
   }
   R.sql.exec('INSERT INTO routing_artifact_rounds(helper_id,round,session,channel,manifest,state) VALUES(?,?,?,?,?,?) ON CONFLICT(helper_id,round) DO UPDATE SET manifest=excluded.manifest',s.helper,s.round,s.session,s.channel,JSON.stringify(manifest),'collecting');return manifest;
 }
+// A deck is one set of files. The last successful make_deck run lists them in <deck folder>/.src/make_deck.json ("out"), and the
+// folder holds every format the person asked for. Approval attaches all of them, so the .html never stays behind when only the
+// .pptx or .pdf is named. Returns the ids of the held files that belong to a deck.
+export async function deckOutputIds(R,rows) {
+  const ids=new Set();
+  for(const m of rows.filter(f=>['held','publishing','attached'].includes(f.state)&&f.r2key&&/\/\.src\/make_deck\.json$/.test(f.path))) {
+    let made;try{made=JSON.parse(await (await R.env.WS.get(m.r2key))?.text());}catch{continue;}
+    if(!made?.ok||typeof made.out!=='string')continue;
+    const dir=m.path.slice(0,-'/.src/make_deck.json'.length);
+    for(const path of made.out.split(' ')){
+      if(!path.startsWith(dir+'/')||path.slice(dir.length+1).includes('/')||!/\.(html|pdf|pptx)$/i.test(path))continue;
+      const f=rows.find(x=>x.path===path&&['held','publishing','attached'].includes(x.state));if(f)ids.add(f.id);
+    }
+  }
+  return ids;
+}
 function preparation(R,h,f,tc) {
   const s=scope(R,h),get=key=>R.sql.exec('SELECT value FROM routing_artifact_steps WHERE file_id=? AND step=?',f.id,key).toArray()[0]?.value??null;
   const put=(key,value)=>R.sql.exec('INSERT INTO routing_artifact_steps(file_id,step,value) VALUES(?,?,?) ON CONFLICT(file_id,step) DO UPDATE SET value=excluded.value',f.id,key,typeof value==='string'?value:JSON.stringify(value));
@@ -136,6 +153,8 @@ export async function collectRoutingFiles(R,h,tc={}) {
     if(usedPreview+preview.length>previewBudget){previews.push(`Text preview omitted for "${f.name}" because its ${preview.length} characters exceed the remaining provisional review budget. ${readCall} reads it; read_lines ${JSON.stringify({file:f.id,start:1,count:200})} reads a specific range.`);continue;}
     previews.push(preview);usedPreview+=preview.length;
   }
+  const deckIds=await deckOutputIds(R,allRows(R,h));
+  if(deckIds.size)manifestLines.push(`Deck: ${files.filter(f=>deckIds.has(f.id)).map(f=>JSON.stringify(f.name)).join(', ')} are one deck from the last make_deck run. Approving any file of the round attaches all of them, so the person always gets the .html together with any .pptx or .pdf.`);
   if(notices.length)previews.push('INCOMPLETE FILE HANDOFF. '+notices.join('\n'));
   R.sql.exec('UPDATE routing_artifact_rounds SET state=? WHERE helper_id=? AND round=?',notices.length?'incomplete':'collected',s.helper,s.round);
   return {files,preview:`All ${files.length} held files are listed below. Automatic text previews have a provisional ${previewBudget}-character budget; at most four images are attached. Omitted content is named with the exact read tool call.\n\n${manifestLines.join('\n')}\n\n${previews.join('\n\n')}`,imageParts,incomplete:notices.length>0};
@@ -145,22 +164,81 @@ export async function routingImageFallback(R,h,tc={}){const parts=[];for(const f
 async function deleteHeld(R,f){if(f.state==='attached'||f.state==='deleted')return;R.sql.exec("UPDATE routing_artifacts SET state='deleting' WHERE id=?",f.id);await stDelete(R.env,[...(f.r2key?[{key:f.r2key,size:f.state==='held'?Number(f.bytes)||0:null}]:[]),f.preview_key,...parse(f.retired_keys,[])]);R.sql.exec("UPDATE routing_artifacts SET state='deleted',retired_keys=NULL WHERE id=?",f.id);R.sql.exec('DELETE FROM routing_artifact_steps WHERE file_id=?',f.id);}
 export async function discardRoutingFiles(R,h){initRoutingArtifacts(R.sql);const removed=[];for(const f of allRows(R,h).filter(f=>f.state!=='attached'&&f.state!=='deleted')){await deleteHeld(R,f);removed.push(f.name);}return removed.length?`Deleted the earlier held files: ${removed.map(n=>JSON.stringify(n)).join(', ')}. They are no longer available for review. Files already attached to the person remain in the Library.`:'No earlier held files needed deletion.';}
 function reviewer(R,h,tc){const s=scope(R,h);if(tc?.helper||Number(tc?.routingReviewHelper)!==s.helper||String(tc.session||'')!==s.session||h.status!=='awaiting_review')throw new Error('Only the Primary review turn for this sub-agent can read or approve its held files.');return s;}
-export async function approveRoutingFiles(R,h,fileIds=[],tc={}) {
-  initRoutingArtifacts(R.sql);reviewer(R,h,tc);if(!Array.isArray(fileIds)||fileIds.some(id=>typeof id!=='string'))throw new Error('Attach files by their held Library file IDs.');
+const LIVE_STATES=['held','publishing','attached'];
+// The held file list a failed approval prints, so the next call can name the right ones: ID, name and path, the person's files before .src internals.
+const heldList=rows=>{const live=rows.filter(f=>LIVE_STATES.includes(f.state)),shown=[...live.filter(f=>!/\/\.src\//.test(f.path)),...live.filter(f=>/\/\.src\//.test(f.path))].slice(0,24);return shown.map(f=>`${f.id} "${f.name}" (${f.path})`).join('; ')+(live.length>shown.length?`; and ${live.length-shown.length} more`:'');};
+// approve_subagent names files by held file ID, but a model often passes the name or the path it saw in the worker's response. Accept an ID, a unique ID
+// prefix, an exact path, a path relative to the worker's folder, or a unique name; anything else is an error that lists the held files with their IDs.
+export function resolveSelection(rows,refs) {
+  const live=rows.filter(f=>LIVE_STATES.includes(f.state)),out=[];
+  for(const raw of refs){
+    const ref=String(raw).trim(),lower=ref.toLowerCase(),rel=ref.replace(/^\.?\/+/,'');
+    let hit=live.filter(f=>f.id===ref);
+    if(!hit.length&&ref.length>=8)hit=live.filter(f=>f.id.startsWith(ref));
+    if(!hit.length)hit=live.filter(f=>f.path===ref||f.path===`/workspace/${rel}`);
+    if(!hit.length&&rel)hit=live.filter(f=>f.path.endsWith('/'+rel));
+    if(!hit.length)hit=live.filter(f=>f.name===ref);
+    if(!hit.length)hit=live.filter(f=>f.name.toLowerCase()===lower);
+    if(hit.length!==1)throw new Error(`${hit.length?`"${ref}" matches ${hit.length} held files, so say which one by its file ID`:`"${ref}" is not one of this round's held files`}. Call approve_subagent again with files set to the file IDs of the files the person should receive. ${hit.length>1?`Matches: ${hit.map(f=>`${f.id} (${f.path})`).join('; ')}. `:''}Held files: ${heldList(rows)}. If this is a deck, any one of its files attaches the whole deck. Nothing was attached or deleted.`);
+    out.push(hit[0].id);
+  }
+  return out;
+}
+// A deck's own files are attached with any selected file. When the worker also copied a deck file under a new name and that copy is selected, the
+// original is the same bytes, so it is not attached a second time. Returns the ids of the deck files to skip.
+async function sameAsSelected(R,rows,wanted,extra) {
+  const skip=new Set();
+  for(const e of extra){
+    const ext=e.name.slice(e.name.lastIndexOf('.'));
+    for(const f of rows.filter(x=>wanted.has(x.id)&&x.bytes===e.bytes&&x.name.endsWith(ext)&&x.r2key&&e.r2key)){
+      const [a,b]=await Promise.all([R.env.WS.get(f.r2key),R.env.WS.get(e.r2key)]);if(!a||!b)continue;
+      const x=new Uint8Array(await a.arrayBuffer()),y=new Uint8Array(await b.arrayBuffer());
+      if(x.length===y.length&&x.every((v,i)=>v===y[i])){skip.add(e.id);break;}
+    }
+  }
+  return skip;
+}
+// A deck's file keeps the readable name when the worker also copied it under one ("2026 AI Impact Report.html" next to "northwind-ai-impact-2026.html")
+// and that copy was not the one selected: the copy is deleted as unused, so the person gets the build's file under the copy's name. Returns id -> name.
+async function readableTwinNames(R,rows,extra) {
+  const names=new Map();
+  for(const e of extra){
+    if(!machineName(e.name)||!e.r2key)continue;
+    const ext=e.name.slice(e.name.lastIndexOf('.')).toLowerCase();
+    for(const f of rows.filter(x=>x.id!==e.id&&['held','publishing'].includes(x.state)&&!/\/\.src\//.test(x.path)&&x.bytes===e.bytes&&x.name.toLowerCase().endsWith(ext)&&!machineName(x.name)&&x.r2key)){
+      const [a,b]=await Promise.all([R.env.WS.get(f.r2key),R.env.WS.get(e.r2key)]);if(!a||!b)continue;
+      const x=new Uint8Array(await a.arrayBuffer()),y=new Uint8Array(await b.arrayBuffer());
+      if(x.length===y.length&&x.every((v,i)=>v===y[i])){names.set(e.id,f.name);break;}
+    }
+  }
+  return names;
+}
+export async function approveRoutingFiles(R,h,fileIds,tc={}) {
+  initRoutingArtifacts(R.sql);reviewer(R,h,tc);if(fileIds!==undefined&&(!Array.isArray(fileIds)||fileIds.some(id=>typeof id!=='string')))throw new Error('Attach files by their held Library file IDs.');
   const current=scope(R,h),round=R.sql.exec('SELECT state FROM routing_artifact_rounds WHERE helper_id=? AND round=? AND session=? AND channel=?',current.helper,current.round,current.session,current.channel).toArray()[0];
   if(round?.state!=='collected')throw new Error('The file handoff is incomplete. Request a revision before approving this round.');
-  const rows=allRows(R,h),wanted=new Set(fileIds);for(const id of wanted)if(!rows.some(f=>f.id===id&&['held','publishing','attached'].includes(f.state)))throw new Error('A selected file does not belong to this sub-agent round.');
+  const rows=allRows(R,h);
+  // No "files" at all is not the same as an empty list: a round with held files and no deck attaches nothing only when the reviewer says so.
+  if(fileIds===undefined){if(!(await deckOutputIds(R,rows)).size&&rows.some(f=>f.state==='held'&&!/\/\.src\//.test(f.path)))throw new Error(`approve_subagent needs "files": the file IDs the person should receive (an empty list attaches nothing and deletes the held files). Held files: ${heldList(rows)}.`);fileIds=[];}
+  const wanted=new Set(resolveSelection(rows,fileIds));
+  const deckIds=await deckOutputIds(R,rows),extra=rows.filter(f=>deckIds.has(f.id)&&!wanted.has(f.id)),skipped=await sameAsSelected(R,rows,wanted,extra);
+  const kept=extra.filter(f=>!skipped.has(f.id)),nice=await readableTwinNames(R,rows,kept),added=kept.map(f=>nice.get(f.id)||f.name);for(const f of extra)if(!skipped.has(f.id))wanted.add(f.id);
   const attached=[],deleted=[];
   for(const f of rows){if(!wanted.has(f.id)){if(f.state!=='attached'&&f.state!=='deleted'){await deleteHeld(R,f);deleted.push(f.name);}continue;}
     if(f.state==='attached'){const visible=R.libFile?.(f.published_id);if(visible)attached.push(R.fileView(visible));continue;}
-    let target=f.published_id?R.libFile?.(f.published_id):f.copy_new?null:f.target_id?R.libFile?.(f.target_id):R.resolveFile?.({path:f.path.replace(/^\/workspace\//,''),name:f.name,session:h.session})?.file;
+    const shown=nice.get(f.id)||f.name;
+    let target=f.published_id?R.libFile?.(f.published_id):f.copy_new?null:f.target_id?R.libFile?.(f.target_id):R.resolveFile?.({path:f.path.replace(/^\/workspace\//,''),name:shown,session:h.session})?.file;
     const published=target?.id||f.id;R.sql.exec("UPDATE routing_artifacts SET state='publishing',published_id=? WHERE id=?",published,f.id);
     if(target){if(target.r2key!==f.r2key)await R.putVersion(target,{key:f.r2key,bytes:f.bytes,src_path:f.path,synced:0,session:h.session,turn:tc.turn});await R.fileUpdated?.(target,{r2key:f.r2key,bytes:f.bytes,path:f.path},tc,`Approved "${target.name}" as an update to its existing Library file.`);}
-    else {R.sql.exec('INSERT OR IGNORE INTO files(id,at,name,mime,bytes,r2key,source,session,turn,synced,src_path) VALUES(?,?,?,?,?,?,?,?,?,?,?)',f.id,Date.now(),f.copy_new?R.uniqueName(f.name):f.name,f.mime,f.bytes,f.r2key,'helper',h.session,tc.turn||null,0,f.path);}
+    else {
+      // The same deck or document may already be in the Library (shared or saved earlier under another name): that file stays the one card.
+      const twin=f.copy_new?null:await identicalLibraryFile(R,{key:f.r2key,bytes:f.bytes,name:shown});
+      if(twin){const kept=adoptName(R,twin,shown,tc.emit);R.sql.exec("UPDATE routing_artifacts SET state='attached',published_id=? WHERE id=?",kept.id,f.id);const file=R.fileView(kept);attached.push(file);tc.emit?.({t:'file',file});await stDelete(R.env,[{key:f.r2key,size:Number(f.bytes)||0},...(f.preview_key?[f.preview_key]:[])]);R.sql.exec('UPDATE routing_artifacts SET preview_key=NULL WHERE id=?',f.id);continue;}
+      R.sql.exec('INSERT OR IGNORE INTO files(id,at,name,mime,bytes,r2key,source,session,turn,synced,src_path) VALUES(?,?,?,?,?,?,?,?,?,?,?)',f.id,Date.now(),f.copy_new?R.uniqueName(f.name):shown,f.mime,f.bytes,f.r2key,'helper',h.session,tc.turn||null,0,f.path);}
     const visible=R.libFile?.(published);if(!visible)throw new Error('The approved Library file could not be registered.');R.sql.exec("UPDATE routing_artifacts SET state='attached' WHERE id=?",f.id);R.sidecarKick?.(visible);const file=R.fileView(visible);attached.push(file);tc.emit?.({t:'file',file});
     if(f.preview_key)await stDelete(R.env,[f.preview_key]);R.sql.exec('UPDATE routing_artifacts SET preview_key=NULL WHERE id=?',f.id);
   }
-  return{attached,deleted,notice:deleted.length?`Deleted unused held files: ${deleted.map(n=>JSON.stringify(n)).join(', ')}.`:'Every selected file is attached. No unused held files remain.'};
+  return{attached,deleted,added,notice:(added.length?`The deck's other files were attached with it: ${added.map(n=>JSON.stringify(n)).join(', ')}. `:'')+(deleted.length?`Deleted unused held files: ${deleted.map(n=>JSON.stringify(n)).join(', ')}.`:'Every selected file is attached. No unused held files remain.')};
 }
 export async function routingFileTool(R,name,args={},tc={}) {
   if(!['file_text','read_lines','read_pages','read_sheet','search_file'].includes(name))return null;

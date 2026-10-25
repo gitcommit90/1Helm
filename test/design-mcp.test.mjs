@@ -205,7 +205,7 @@ const BD_ON = { better_design: true };   // an account where Better Design is on
 {
   const script = "/opt/1hc/skills/artifacts/scripts/design_mcp.py";
   assert.ok(FILES["artifacts/scripts/design_mcp.py"], "the script is bundled");
-  for (const [name, t] of [["web-page", readSkill({ slug: "artifacts", ref: "web-page" }, BD_ON)], ["presentation", readSkill({ slug: "artifacts", ref: "presentation" }, BD_ON)], ["pdf-design", readSkill({ slug: "artifacts", ref: "pdf-design" }, BD_ON)]]) {
+  for (const [name, t] of [["web-page", readSkill({ slug: "artifacts", ref: "web-page" }, BD_ON)], ["pdf-design", readSkill({ slug: "artifacts", ref: "pdf-design" }, BD_ON)]]) {
     assert.match(t, /artifacts skill/, `${name} points at the list in the artifacts skill`);
     assert.match(t, /Better Design/); assert.match(t, /better_design_find_design_system/); assert.match(t, /better_design_get_review_rules/);
   }
@@ -241,7 +241,7 @@ const BD_ON = { better_design: true };   // an account where Better Design is on
   assert.match(resident, /A plain response does not end the job\. " \+ \(this\._betterDesign \? DESIGNED_WORK : DESIGNED_WORK_NO_BD\)/, "the native worker's own prompt ends with the designed-work line");
   const helpers = render(SECTIONS.find(([n]) => n === "08-background-helpers")[1], base);
   for (const t of [HELPER_PROMPT, helpers]) {
-    assert.match(t, /web page, site, deck or designed PDF, the brief tells the helper to read the artifacts skill first and follow its design-sources step/);
+    assert.match(t, /web page or site, the brief tells the helper to read the artifacts skill first and follow its design-sources step/);
     assert.match(t, /1Helm adds the design brief to the first \.html file a helper writes/);
     assert.ok(!t.includes("design_mcp") && t.includes("inspo_search_screens"), "Primary's helper rule names design tools, not the script");
   }

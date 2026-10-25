@@ -1,151 +1,118 @@
 # Slide decks
 
-A deck is one small HTML file per slide plus a shared `deck.css` and a `deck.json` listing the slides in order. Two
-commands do all the machinery: `new_deck.mjs` sets the deck up (style plan, the whole design system, one skeleton file per
-slide), and `make_deck.sh` builds, checks and exports it. Your work is the content: the plan, the photos, the words on each
-slide. This page is all a new deck needs; don't read the scripts (each prints its usage with `--help`).
+A deck is one self-contained HTML file: a fixed 1920x1080 stage scaled to the window, arrow keys, tap and swipe, a full screen
+button, a slide counter, and the speaker notes on the N key. Fonts and pictures are inside the file, so it works offline, in the
+Library and as a published page. You start from one of 34 finished templates, so the look is already designed: your work is the
+story and the words. A .pptx or a PDF is made from the same deck only when the person asks for it (see "Other formats").
+Everything a deck needs is in this reference and in what `new_deck.mjs` prints (`new_deck.mjs --show <template> <pattern>...` prints a pattern's full slide markup). Never call a design, inspiration or photo tool, never write your own PowerPoint or PDF builder, and
+never open a deck in LibreOffice (the build checks the deck and the PowerPoint itself).
 
-## Three rules for every slide
+## Steps (a deck of any length is five or six steps)
 
-1. **Sentence case everywhere**, stat labels included. No `text-transform: uppercase`, no `letter-spacing`.
-2. **No slide furniture.** Pills, subtitles, summary lines, eyebrows, kickers, badges, chips, tags and captions don't go on
-   a slide. The point of a slide goes in its heading.
-3. **The cover is the deck title over its hero photo, and nothing else.** No subtitle, date, tagline, logo row or button.
+Folder: `/workspace/workspace/<slug>/` (short kebab-case, named for the deck). `P` below is that folder. A background helper
+puts it inside its own work folder, `/workspace/workspace/helpers/<id>/<slug>/` (the only place its files are collected from).
+Use full paths; a relative one works too, from the folder you run the command in.
 
-## The build: five steps
+1. **Read** in one step: this reference and `deck-templates` (the list of templates). Plan the deck in your head: one line per
+   slide, a claim for each. Slide count: an exact number from the person is the count; a range means its midpoint, rounded down;
+   otherwise what the content needs, usually 6 to 10. A chat request that attaches a file already holds its text: never `ls`, `cat` or re-read it. A background
+   helper's job names files by path only: read each once, whole, with `file_text` (text, Word or PDF; never `cat`, `head` or a partial read, which cut it),
+   and never again, since it stays in your context. Never check which fonts or tools exist.
+2. **Pick the template** from the person's tone and occasion; never ask about taste. To show the styles, call `show_deck_styles`. Then, in one step, run
+   `node /opt/1hc/skills/artifacts/scripts/new_deck.mjs --patterns <name>`. It lists the template's patterns and numbers the pieces of
+   text of its cover and its closing slide, which is all you need to write those two slides.
+3. **Write the slides** in one `write_file`: `P/.src/slides.json` = `{"slides": [ ... ]}`, one entry for each slide, in order:
+   - the cover and the closing: `{"pattern": "<its pattern>", "text": ["one string for each numbered piece", "", ...], "notes": "..."}`.
+     "text" needs exactly as many strings as the list has pieces; `""` removes a piece. Each piece is tagged: put the deck's title in the
+     `[headline]` pieces (a title that is split over several headline pieces goes one part on each), a subtitle or one line of
+     detail in a `[text]` piece, a short label (a date, "Executive roadshow") in a `[small label]` piece, and use `""` for the
+     rest; the closing the same way (a thank-you line in the headline, a line of contact or follow-up in a text piece);
+   - one slide for each project, item or point: `{"pattern": "project", "title": "Support reply assistant", "users": "Customer
+     support, 120 agents", "problem": "one or two lines", "built": "one or two lines", "impact": [{"value": "38%", "label": "first response time"}, {"value": "9,400 hours", "label": "saved a year"}], "notes": "..."}`. Keep "users" under 40 characters,
+     "problem" and "built" under 100, "value" under 18 and "label" under 30. "impact" has one or two figures taken from the person's
+     own numbers. Each figure reads alone: the "value" is the whole figure the way a reader says it, with its unit and any before and
+     after, and the "label" says only what it measures. Never split a figure between the two: "3 days → 4 hours" with the label
+     "report time" (not "3 days" and "to 4 hours: report time cut"), "9 → 5 days" with "month-end close" (not "9 to 5" and "days: close
+     shortened"), "2.4×" with "reported hazards" (not "2.4" and "times: reported hazards up"). Write "→" between a before and an after.
+     A value may be words with no digit ("Days → seconds"); new_deck.mjs refuses a label that starts with part of the figure.
+     Use `[]` when there is none. The slide leaves a dashed
+     "Screenshot or GIF goes here" box empty for their own picture. A slide of a title and a few lines:
+     `{"pattern": "media", "title": "...", "body": "...", "drop": "label of the empty box"}`;
+   - any other pattern: `"text": [...]` as above, or `"replace": {"<sample words>": "<yours>"}` after `new_deck.mjs --patterns` showed them.
+     A `[trend: N change figures]` pattern takes `"trend": ["up", "down", "flat" or "none", one per figure]` ("down good" if the data says good); unset, the sign sets the arrow, colour neutral.
+   Titles and text shrink by themselves to fit their boxes (never write sizes); new_deck.mjs refuses only words that fit at no readable size. Every fact comes from the person's request or files. "notes" is the speaker note: who to ask, or what to say.
+4. **Start and build** in one command (one step):
+   `node /opt/1hc/skills/artifacts/scripts/new_deck.mjs P --template <name> --title "<deck title>" --data P/.src/slides.json && bash /opt/1hc/skills/artifacts/scripts/make_deck.sh P`
+   and add `--pptx` to make_deck.sh when the person asked for PowerPoint or an editable deck, `--pdf` for a PDF. new_deck.mjs copies
+   what the deck needs from the template into `P/.src/template`, so the deck never depends on a shared folder. make_deck.sh ends with
+   PASS (the files and the slide text to read back against your plan) or FAIL (the slide, what is wrong, the fix). Run it as
+   it is: never redirect its output to a file and never pipe it through `tail`, `head` or `grep`. After PASS the .html, .pdf and .pptx are built and checked: do not open, convert,
+   render or inspect them again (no python-pptx, pdftotext, image viewing or validation scripts of your own), and do not run
+   make_deck.sh again unless you changed a slide. Never copy or edit the skill's scripts or the shared template folder; they work from
+   where they are.
+5. **On FAIL**, change only what it names. A deck built from `slides.json` is changed there, then run the step 4 command again with `--redo`
+   added to the `new_deck.mjs` call (it starts the deck again from the data file and throws away any edit made to its slide files). A deck
+   you wrote or edited by hand is changed in its slide files, then run make_deck.sh again. At most three rounds; then tell the person
+   exactly which slide fails which check and ask how to go on.
+6. **Share**: `share_file` with the file names the PASS line printed, with readable names ("2026 AI impact report.html"). The .html, .pdf and .pptx of one deck always go to the person together, whichever one you name. One line: what the deck covers and how many slides. Offer a link to present
+   from (`publish_page`) and say F is full screen and N shows the speaker notes.
 
-Folder: `/workspace/workspace/<slug>/` (short kebab-case, named for the deck: `kyoto-in-three-days`). `P` below is that
-folder. Slide count: an exact number from the person is the count; a range means its midpoint, rounded down; no number:
-what the content needs, usually 6 to 10. The cover and the closing count as slides.
+The to-do list and the 👍 go next to the first call. A 33-project deck takes these steps: read the skill and the two references, `--patterns`, write slides.json, new_deck and make_deck, share.
 
-### 1. Plan, then set up (one command)
+## What goes on a slide
 
-Before the plan, call the design tools (`inspo_recommend` with a brief of what it is, who it is for and the mood for references, and the artifacts skill's other design tools for tokens and rules). Pull a few references that match the kind of thing and the audience, choose one direction (layout, palette, type pairing), and build from it. Put the direction you chose (its mood, palette and type) in the `--brief` below, and when the slides are built, compare the rendered slide images with those references. If a tool errors or returns nothing, build without it and don't mention it to the person. (1Helm also appends a design brief to the result of your first `.html` slide write.)
+- **One idea per slide**, stated in the title as a claim ("Lodging is half the budget"), not a topic ("Budget").
+- **Density**: at most 3 bullets, or 4 to 6 cards or steps, or one chart or table of at most 6 rows. Too much for one slide
+  means two slides, never smaller type. Move detail to the speaker notes.
+- **Type**: the template's own sizes; a check that reports text under the floor means shorten the words.
+- **Vary the patterns**: never the same pattern three slides in a row (except a deliberate run, such as one "project" slide per
+  project); use a cover, a section or statement slide to pace long decks, and end with a closing slide.
+- **Stay inside the template**: its fonts, colours and decorations. When the person asks for a colour change, change the colours (deck-editing). No other fonts, emoji icons, or added
+  accent lines or boxes. Don't mix patterns from two templates.
+- **One visual per slide** where the pattern has a place for one: a big number, a chart, steps, a quote, a picture. A chart is
+  inline SVG drawn from the data, coloured with the template's own CSS variables (see charts); a template that draws charts
+  with Chart.js keeps its script, so change its data in place. A table is HTML. Never a screenshot of a chart.
+- **Pictures**: only where the template's pattern has a picture box and the picture shows that slide's real subject; the
+  person's own files first (copy them into `.src/media/<name>.jpg` and reference `media/<name>.jpg`), otherwise one command
+  (deck-images). A deck about the person's own work needs none: the "project" and "media" patterns leave a dashed box empty for their own picture (an empty picture placeholder in the .pptx).
+- **Facts**: every fact, number, date and quote comes from the person or a source you read; nothing invented to fill a slide.
+  Numbers shown twice come from one place; estimates are labelled.
+- **No making-of text** on a slide: no tool names, file paths, "as requested", template names or leftover sample words (the
+  check fails on them). Sample page numbers like "04 / 12" are renumbered for you.
 
-{{#better_design}}Use Better Design for a palette and type pairing (`better_design_find_design_system`), `better_design_get_ux_principle` for how to lay out a slide's message, `better_design_get_motion_guide` for any animation and `better_design_get_review_rules` before you finish, and React Bits or Canvas UI (`reactbits_searchRegistryItems`, `canvasui_searchRegistryItems`, then the matching `getRegistryItem`) for a background or text effect to port into the slides' own HTML and CSS. All of them are tools in your tool list, as the artifacts skill's list describes.{{/better_design}}{{^better_design}}Use React Bits or Canvas UI (`reactbits_searchRegistryItems`, `canvasui_searchRegistryItems`, then the matching `getRegistryItem`) for a background or text effect to port into the slides' own HTML and CSS. They are tools in your tool list, as the artifacts skill's list describes.{{/better_design}}
+## Other formats
 
-Decide the arc first: one line per slide, its id and the claim it makes, the cover first and the closing last. Every fact
-comes from the person or a source you actually read; nothing is invented to fill a slide. Then:
-
-```sh
-node /opt/1hc/skills/artifacts/scripts/new_deck.mjs /workspace/workspace/<slug> --title "<deck title>" --brief "<their request, plus any look they asked for>" --slides cover,<id>,<id>,...,closing
-```
-
-Ids are kebab-case (`day-1`, `budget`), never `index`. It picks the style plan (theme, palette, the two fonts, a layout per
-slide, two lockups) into `.src/style_plan.json`, writes `.src/slides/deck.css` (the theme and every layout, finished: don't
-rewrite it), `.src/slides/deck.json`, and a skeleton `.src/slides/<id>.html` per slide, and prints each skeleton. Words in
-the brief steer the theme ("dark", "minimal", "playful", the topic).
-
-### 2 and 3 go in ONE step: the photo command and every slide's `write_file`, side by side
-
-The photo names are fixed by the skeletons, so the slides can be written while the photos download. If a photo can't be
-found, make_deck.sh names it in step 4: fetch it with other words, or drop that `<img>`.
-
-### 2. Photos (one command)
-
-Every deck has real photos: the cover hero and a photo on each content slide it really illustrates. Name each file after
-its slide, as the skeletons do (`media/<id>.jpg`; a gallery `media/<id>-1.jpg`, `-2`, `-3`):
-
-```sh
-python3 /opt/1hc/skills/image-search/scripts/images.py fetch --to /workspace/workspace/<slug>/.src/media "cover=<the deck's main subject>" "<id>=<exact subject>" ...
-```
-
-It searches openly licensed collections, picks the best-matching wide photo (the cover at 1600 px or more), downloads it as
-`<name>.jpg`, and records each photo's credit in `.src/media/SOURCES.md`. Photo credits go in the speaker notes, never on
-a slide: make_deck.sh puts each photo's credit in the notes of the slide that shows it. Use exact subjects ("Kiyomizu-dera Kyoto",
-not "temple"). A name it can't fill: try other words once, or drop that photo from the slide. The person's own photos
-(`/workspace/files`) come first when they fit: copy them into `.src/media/` under the slide's name (no credit needed).
-
-### 3. Write each slide (replace every FILL IN), in the same step as the photos
-
-Write every slide file in ONE step: one `write_file` per `.src/slides/<id>.html`, all in the same message, each in full, keeping
-the skeleton's head, class names and `media/` names. No credits line on any slide.
-Everything you need is in what new_deck.mjs printed: don't open deck.css, deck.json or style_plan.json.
-
-What goes on a slide:
-- One message per slide, stated in the heading as a **claim, not a topic** ("Lodging is half the budget", not "Budget").
-  Headings are short and carry no figures. The biggest thing on the slide is the proof.
-- At most about five bullets of one line each, or three or four cards or steps. More gets cut or split, never shrunk.
-- At most three headline numbers, only real ones. Never invent numbers, dates, quotes or source names.
-- Colours and fonts come only from `deck.css` (the `--slide-*` tokens). No `style=` colours, no `#` colours or `rgb(` in a
-  slide file except the cover's `--hero-scrim-color` (a dark tone from its photo). No scripts, iframes, forms or links.
-- A slide's own `<style>` (rare) has every selector start with the slide's id (`#budget .chart`); everything else is refused.
-
-The layouts (the skeleton already has the one the plan chose; switch when the content wants another, copying its markup):
-
-| Section class | Holds |
-|---|---|
-| `cover` | the title over the photo set in the cover's own `<style>` (`background-image: url('media/cover.jpg')`) |
-| `slide-steps` | `.text` → `h2` + `ol.steps` of `li` = `span.when` + `div` (`h3` + one-line `p`); a time or step order, left-aligned |
-| `slide-two-column` | `img.photo` + `.text` (`h2`, `p.lead`, `ul.points`) with a lockup class; without a photo, `.text` → `h2` + `div.cols` of two `div`s |
-| `slide-headline-bullets` | `.text` → `h2` + `ul.points` (at most five) |
-| `slide-hero-stats` | `.text` → `h2` + `div.stats` of up to three `div.stat` (`b` number, `span` label); add `has-chart` and an `img.chart` beside it |
-| `slide-comparison` | `.text` → `h2` + `div.cols` of two `div`s (`h3` + `ul.points`) |
-| `slide-statement` | `.text` → one `h2` statement + an optional `p.lead`; centred |
-| `slide-gallery` | `.text` → `h2`, then `div.photos` of two or three `img.photo` |
-| `slide-bento` | `.text` → `h2`, then `div.bento`: one `img.photo` + two to four `div.cell` (`h3` + `p`, or `b` number + `p`) |
-| `closing` | `.text` → `h2` + `p.lead` |
-
-**Lockups** put a photo beside text on any content layout: add `lockup-l1` (photo left), `lockup-l2` (photo right) or
-`lockup-l4` (a 60/40 photo panel, edge to edge) to the section, with an `<img class="photo" src="media/<id>.jpg" alt="...">`
-next to the `.text` div. Use the two the plan names. Photos go only where they show the slide's subject: no photo on a
-number, statement or money slide. Five or more slides use at least three layouts, and at most 40% are a heading plus one list.
-
-A chart: a matplotlib script in `.src/` that reads the data file and the palette from `.src/style_plan.json` and saves
-`.src/media/<id>-chart.png`, shown as `<img class="chart" src="media/<id>-chart.png" alt="...">` (see the charts reference).
-Never a CSS- or SVG-drawn chart.
-
-### 4. Build and check (one command)
-
-```sh
-bash /opt/1hc/skills/artifacts/scripts/make_deck.sh /workspace/workspace/<slug>
-```
-
-It embeds photos and fonts, assembles `.src/index.html`, renders every slide and runs the gates (overflow, fill, the
-restraint rules, the cover photo, text size, fonts), the automatic look (page_check), exports `<slug>.pptx` and reads the
-text back. It ends with **PASS** (the file, the share line, the slide text) or **FAIL** (the step, the slide, the fix).
-On FAIL change only what it names in the slide file, then run the same command again; at most three rounds, then tell the
-person exactly which slide fails which check and ask how to go on. `--pdf` or `--html` also writes a PDF or an HTML copy,
-only when the person asked for one. `--no-cover-image` only when no fitting cover photo exists (say so in your reply).
-
-On PASS, read the slide text it printed against your plan: the right count, every planned claim, headings that read as the
-argument in order, no repeated point, no invented fact.
-
-### 5. Share
-
-`share_file` with path `/workspace/workspace/<slug>/<slug>.pptx` and a readable name ("Three days in Kyoto.pptx"). One line:
-what the deck covers and how many slides. The slides are pictures of the checked render, so their text isn't editable in
-PowerPoint: say so if they expect to edit it, and offer to make changes for them. A later change edits the slide files,
-runs make_deck.sh again and shares the same path (see deck-editing). If the .pptx can't be built, say so and ask whether a
-PDF or a web page would do; don't quietly hand over another format.
+- **PowerPoint or an editable deck**: add `--pptx` to make_deck.sh. The .pptx has real text boxes, shapes and pictures you can
+  edit, and an empty picture placeholder for each "media" box. What PowerPoint can't draw (gradients, background images, blurs,
+  charts and other SVG, marks drawn by CSS) is kept as a picture; make_deck.sh lists those, and you tell the person which slides
+  have them. The .pptx names only fonts every PowerPoint has (Arial, Arial Narrow, Times New Roman, Courier New): each of the
+  template's fonts is mapped to the closest of the four, so the text keeps its place on any computer, but the letter shapes are not
+  the HTML deck's. Say so, and offer the .html (or the PDF) for the exact look. Each "Screenshot or GIF goes here" box is a dashed frame
+  with its label and an empty picture box on top, so a picture put in the box covers the label.
+- **PDF**: add `--pdf` (one page per slide, text selectable, no arrow-key hint, counter or buttons) when they ask for a PDF or to print.
+- The .html file prints only the slide on screen; for a printable copy use --pdf.
 
 ## When you need more
 
 | Task | Read |
 |---|---|
-| Change an existing deck | `read_skill("artifacts", "deck-editing")` |
+| Change an existing deck (from its slide files, never started again) | `read_skill("artifacts", "deck-editing")` |
 | A slide plots numbers | `read_skill("artifacts", "charts")` |
 | A slide shows places | `read_skill("artifacts", "maps")` |
-| A layout the table above doesn't cover (custom CSS in a slide) | `read_skill("artifacts", "deck-authoring")` and `read_skill("artifacts", "deck-design-system")` |
-| Choosing between photos with care | `read_skill("artifacts", "deck-images")` |
+| The deck needs real photos | `read_skill("artifacts", "deck-images")` |
 
-## The scripts (run them; never cat or sed them; each has `--help`)
+## Scripts (run them; never cat or sed them; each has `--help`)
 
 | Command | What it does |
 |---|---|
-| `node /opt/1hc/skills/artifacts/scripts/new_deck.mjs <P> --title "..." --slides ...` | Style plan, deck.css from /opt/1hc/skills/artifacts/scripts/deck_template.css, deck.json and skeletons from /opt/1hc/skills/artifacts/scripts/deck_layouts.html |
-| `python3 /opt/1hc/skills/image-search/scripts/images.py fetch --to <P>/.src/media "<name>=<subject>" ...` | Finds, downloads and credits the photos |
-| `bash /opt/1hc/skills/artifacts/scripts/make_deck.sh <P>` | Everything from embedding to the .pptx and the read-back, with PASS/FAIL |
+| `node /opt/1hc/skills/artifacts/scripts/new_deck.mjs P --template <name> --title "..." (--slides a,b | --data file)` | Copies the template's slides into `.src/`; `--add <pattern> [--after <id>]` adds a slide; `--patterns <name>` lists a template's patterns; `--show <name> <pattern>...` prints each pattern's full slide markup |
+| `bash /opt/1hc/skills/artifacts/scripts/make_deck.sh P [--pdf] [--pptx]` | Builds the deck file, steps through every slide at 1920x1080 checking it, exports, prints PASS or FAIL |
 
-make_deck.sh runs, in order: /opt/1hc/skills/artifacts/scripts/inline_media.py, /opt/1hc/skills/artifacts/scripts/embed_deck_fonts.mjs,
-/opt/1hc/skills/artifacts/scripts/assemble_deck.mjs, /opt/1hc/skills/artifacts/scripts/render_audit.mjs,
-/opt/1hc/skills/artifacts/scripts/page_check.py, /opt/1hc/skills/artifacts/scripts/build_pptx.py and
-/opt/1hc/skills/artifacts/scripts/readback.py. You don't run those by hand for a deck.
+make_deck.sh runs the deck's other scripts (assemble, check, repair, export); never run them by hand.
 
 ## Done means all of this holds
 
 - The slide count is the count you settled; the slides tell one story in order.
-- Every slide except an appendix has something to look at: a photo, a chart, steps, big numbers or a strong type layout.
-- Every photo is embedded and has its row in `.src/media/SOURCES.md` (its credit lands in that slide's speaker notes; none
-  is printed on a slide); unused files in `.src/media/` are deleted.
-- make_deck.sh printed PASS after your last edit, and the .pptx you share is the one it built.
+- make_deck.sh printed PASS after your last edit, and the file you share is the one it built.
+- Every found photo has its row in `.src/media/SOURCES.md` (its credit lands in that slide's speaker notes, never on a slide);
+  unused files in `.src/media/` are deleted.

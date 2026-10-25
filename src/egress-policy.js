@@ -13,7 +13,9 @@
 //          · npm / yarn audit (POST /-/npm/v1/security/… on the npm registry): the package list, read-only
 //          · a web page's own background traffic in the browser (fetch/XHR, beacons, pings): Chrome's fetch metadata says it isn't a
 //            navigation the page's user started
-//   ask    · explicit payment/API-key operation paths
+//   ask    · explicit payment/API-key operation paths, except a read (GET/HEAD/OPTIONS) the browser page makes itself in the background with no saved
+//            key, e.g. a site's own credentials-abc.js script file (a navigation or a command's key read still asks) (a page's own background payment request asks only while a purchase is in
+//            progress; Resident.egressDecision drops it quietly otherwise: nothing was bought by the person or the helper)
 //          · ANY request carrying a saved key (a stand-in was swapped in): a real key never goes out on an automatic rule
 //   deny   · 1Helm itself (the computer may never click its own approvals)
 //          · dev-tool telemetry (Next.js, Astro, Gatsby), Chrome's own background services (GCM, updates, Safe Browsing) and the
@@ -26,7 +28,7 @@
 // An upstream that receives a key can echo or transform it. Sentinel scrubs literal echoes from its response, but host binding
 // still requires trusting that upstream and is not a general guarantee that the computer can never learn the key.
 
-import { protectedRequest } from "./approval-scope.js";
+import { protectedRequest, keyRequest, moneyRequest, financeHost } from "./approval-scope.js";
 export const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // Dedicated telemetry endpoints of dev tools that run on the computer (next build, astro, gatsby). Never worth a card.
 export const TELEMETRY_HOSTS = new Set(["telemetry.nextjs.org", "telemetry.astro.build", "telemetry.gatsbyjs.com"]);
@@ -54,6 +56,21 @@ export function egressVia(headers) {
   return mode === "navigate" || mode === "nested-navigate" ? "form" : "page";
 }
 
+// The site a web page's request came from (its Origin or Referer header), as a bare host, or "". Chrome sends these on page requests.
+export function pageSiteOf(headers) {
+  for (const k of ["origin", "referer"]) { const h = hostOf(hdr(headers, k)); if (h) return h.replace(/:\d+$/, ""); }
+  return "";
+}
+const registrable = (h) => { h = String(h || "").toLowerCase().replace(/:\d+$/, ""); const p = h.split("."); return p.length > 2 ? p.slice(/^(co|com|org|net|gov|ac)$/.test(p.at(-2)) && p.at(-1).length === 2 ? -3 : -2).join(".") : h; };
+// Names a person recognizes for hosts a page often calls in the background (the Captain 10-25: a card for grok.com while editing x.com).
+const SITE_NAMES = { "grok.com": "Grok", "x.com": "X", "twitter.com": "X", "x.ai": "xAI", "stripe.com": "Stripe", "paypal.com": "PayPal" };
+// The words a permission card uses for a destination: "Grok (from x.com)" for a page's request to another site, else the host itself.
+export function approvalLabel({ host, page = "" } = {}) {
+  const h = registrable(host), from = registrable(page), name = SITE_NAMES[h];
+  const base = name ? `${name} (${h})` : String(host || "");
+  return from && from !== h ? `${base}, asked by the ${from} page` : base;
+}
+
 // → { verdict: "allow" | "deny", why, rule, quiet? } when a rule decides, or { verdict: "ask", why, via } for the person's decision.
 // lfsOp: the "operation" of a Git LFS batch request (the Sentinel reads that small JSON body only for that one path).
 export function egressRule({ host, method, path = "/", headers, keys = [], env = {}, lfsOp = null }) {
@@ -65,11 +82,25 @@ export function egressRule({ host, method, path = "/", headers, keys = [], env =
     return { verdict: 'deny', why: 'opaque network tunnels require the native connection gate', rule: 'direct-tunnel' };
   if ([env.GATEWAY_HOST, env.APP_HOST].some((h) => h && host === String(h).toLowerCase()))
     return { verdict: "deny", why: "requests to 1Helm itself are not allowed from the computer", rule: "self" };
-  const via = egressVia(headers);
+  const via = egressVia(headers), page = via === "page" ? pageSiteOf(headers) : "";
   // Vault key use retains the existing once/task/always approval scope, including GET.
   // Connector-managed authentication is not routed here and does not create a fresh key approval.
-  if (keys.length) return { verdict: "ask", why: `uses a saved key (${keys.join(", ")})`, via };
-  if (protectedRequest(method, path, host)) return { verdict: "ask", why: "payment or API-key operation", via };
+  if (keys.length) return { verdict: "ask", why: `uses a saved key (${keys.join(", ")})`, via, page };
+  // A payment-looking request that a page sends in the background is only asked about while a purchase is in progress in the channel
+  // (Resident.egressDecision decides: otherwise it is dropped quietly). Key operations and commands always ask.
+  // A third-party widget on the page calling its own service (a bot check, an upsell) with a key-looking word in its path is the page's
+  // traffic, not the person's key: no saved key rides it (that asks above), so it goes on to the page rule. A key path on the page's own
+  // site, a command's key operation, and anything that also looks like a payment keep asking.
+  // A payment company's host is never a widget: its calls (card tokenization, payment methods) are money requests from a page.
+  const finance = financeHost(host) && via === "page" && !SAFE_METHODS.has(method);
+  const widget = via === "page" && page && registrable(page) !== registrable(host) && keyRequest(path, host) && !moneyRequest(method, path, host) && !financeHost(host);
+  // A read the browser page makes itself (GET/HEAD/OPTIONS via "page" only) with no saved key is not a key
+  // operation even when its path has a key word (X's own credentials-abc.js script bundle): it is a plain read. A navigation (via "form", the helper
+  // opening a URL), a command's key read (curl .../api_keys) and anything that sends data still ask.
+  const pageRead = via === "page" && SAFE_METHODS.has(method);
+  if (finance || !widget && !pageRead && protectedRequest(method, path, host)) return { verdict: "ask", why: "payment or API-key operation", via, page };
+  if (SAFE_METHODS.has(method)) return { verdict: "allow", why: "read-only request", rule: "read" };
+  if (env.R2_ENDPOINT && host === hostOf(env.R2_ENDPOINT)) return { verdict: "allow", why: "1Helm storage (presigned)", rule: "own-storage" };
   if (TELEMETRY_HOSTS.has(host)) return { verdict: "deny", why: "dev-tool telemetry (not sent)", rule: "telemetry", quiet: true };
   // Chrome's own services: measured on dev, they DO carry fetch metadata (they showed as "web page background request"), so by host.
   if (CHROME_SERVICE_HOSTS.has(host)) return { verdict: "deny", why: "the browser's own background service (not sent)", rule: "chrome-service", quiet: true };

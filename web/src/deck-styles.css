@@ -1,0 +1,59 @@
+/* Deck style picker (deck-styles.ts): the sheet opened from a deck's file card, and the card the helper shows in the chat. */
+.dsb svg{display:block}
+.dsg{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.dst{display:flex;flex-direction:column;gap:8px;padding:8px;border-radius:14px;text-align:left;color:var(--ink);background:transparent;box-shadow:inset 0 0 0 1px var(--line2);transition:box-shadow .12s,background .12s;min-width:0}
+.dst:hover{background:var(--hover)}.dst.on{box-shadow:inset 0 0 0 2px var(--ink)}
+.dst:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.dsth{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.dsth img{display:block;width:100%;height:auto;aspect-ratio:16/9;border-radius:6px;background:var(--hover);box-shadow:0 0 0 1px var(--line)}
+.dsn{display:flex;flex-direction:column;gap:2px;min-width:0;padding:0 2px 2px}
+.dsn b{font-size:14.5px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+.dsn small{font-size:13px;color:var(--ink2);line-height:1.4;overflow-wrap:anywhere}
+.dsw0 i{display:block;aspect-ratio:16/8;border-radius:14px;background:var(--hover)}
+.dsx{margin:8px 0;color:var(--ink2);font-size:14px}.dsretry{text-decoration:underline;text-underline-offset:3px;color:var(--ink)}
+/* the sheet: a centered panel on desktop, a bottom sheet on phone */
+.dsw{position:fixed;inset:0;z-index:290;display:grid;place-items:center;padding:24px}
+.dsback{position:absolute;inset:0;background:rgba(28,27,25,.28);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);opacity:0;transition:opacity .18s}
+.dsp{position:relative;width:min(820px,100%);max-height:calc(100dvh - 48px);display:flex;flex-direction:column;background:var(--sheet);color:var(--ink);border:1px solid var(--line);border-radius:24px;box-shadow:0 30px 80px rgba(28,27,25,.18);opacity:0;transform:translateY(6px) scale(.99);transition:opacity .18s,transform .18s;outline:0}
+.dsw.on .dsback{opacity:1}.dsw.on .dsp{opacity:1;transform:none}
+.dsp:focus,.dsp:focus-visible{outline:0}
+.dsgrab{display:none}
+.dshead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:20px 22px 12px}
+.dshead h2{margin:0;font-size:18px;font-weight:600;letter-spacing:-.015em;line-height:1.3}
+.dshead p{margin:4px 0 0;color:var(--ink2);font-size:14px;line-height:1.4;overflow-wrap:anywhere}
+.dsclose{flex:none;display:grid;place-items:center;width:32px;height:32px;border-radius:50%;color:var(--mute)}.dsclose:hover{color:var(--ink);background:var(--hover)}
+.dsclose:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.dsbody{overflow:auto;overscroll-behavior:contain;padding:4px 22px 22px}
+/* the focused preview: fills the same scroller, so the sheet or card keeps its size */
+.dspv{display:flex;flex-direction:column;gap:12px;height:100%;box-sizing:border-box}
+/* the slides take all the height the box leaves: stacked, or side by side when the room is wider than two slides across */
+.dspvi{flex:1;min-height:0;container-type:size;display:grid;place-content:center}
+.dspvg{display:grid;grid-template-columns:auto;gap:12px}
+.dspvi img{display:block;width:min(100cqw,calc((100cqh - 12px) * 8 / 9));height:auto;aspect-ratio:16/9;border-radius:10px;background:var(--hover);box-shadow:0 0 0 1px var(--line)}
+@container (min-aspect-ratio:16/9){.dspvg{grid-template-columns:auto auto}.dspvi img{width:min(calc((100cqw - 12px) / 2),calc(100cqh * 16 / 9))}}
+.dspvn{display:flex;flex-direction:column;gap:3px}.dspvn b{font-size:17px;font-weight:600;line-height:1.3}.dspvn small{font-size:14px;color:var(--ink2);line-height:1.4}
+.dspva{display:flex;justify-content:space-between;gap:10px;padding-top:2px}
+.dsbk,.dsuse{height:38px;padding:0 18px;border-radius:19px;font-size:14.5px;font-weight:500}
+.dsbk{color:var(--ink);box-shadow:inset 0 0 0 1px var(--line2)}.dsbk:hover{background:var(--hover)}
+.dsuse{background:var(--ink);color:var(--sheet)}.dsuse:hover{opacity:.88}
+.dsbk:focus-visible,.dsuse:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* the card in the chat */
+.dscard{max-width:640px}
+.dsbox{max-height:min(460px,60dvh);overflow:auto;overscroll-behavior:contain;margin-top:8px;padding:2px}
+:root[data-theme=dark] .dsback{background:rgba(0,0,0,.5)}:root[data-theme=dark] .dsp{box-shadow:0 30px 80px rgba(0,0,0,.55)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .dsback{background:rgba(0,0,0,.5)}:root:not([data-theme=light]) .dsp{box-shadow:0 30px 80px rgba(0,0,0,.55)}}
+@media (max-width:767px){
+  .dsw{place-items:end stretch;padding:0}
+  .dsback{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(0,0,0,.4)}
+  .dsp{width:100%;max-height:90dvh;border:0;border-radius:28px 28px 0 0;opacity:1;transform:translateY(100%);transition:transform .3s cubic-bezier(.2,.8,.2,1)}
+  .dsw.on .dsp{transform:none}
+  .dsgrab{display:block;width:40px;height:5px;border-radius:3px;background:var(--line2);margin:10px auto 0}
+  .dshead{padding:14px 18px 10px}.dsbody{padding:2px 18px calc(18px + env(safe-area-inset-bottom))}
+  .dsg{grid-template-columns:1fr;gap:12px}
+  .dsbk,.dsuse{height:44px;border-radius:22px;flex:1}
+  .dsn b{font-size:15.5px}.dsn small{font-size:14px}
+}
+@media (prefers-reduced-motion:reduce){.dsp,.dsback{transition:none}}
+/* a deck's card holds one more button than other files: its buttons sit a little closer so the "Deck" label is not cut */
+.fcard:has(.dsb) .chat-tile-actions{padding-left:6px;gap:0}
+.fcard:has(.dsb) .chat-tile-actions .fsh,.fcard:has(.dsb) .chat-tile-download{width:24px}

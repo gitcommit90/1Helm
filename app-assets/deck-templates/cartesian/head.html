@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deck</title>
+    <script src="hc-lib:chart.umd.min.js"></script>
+    <!--hc-fonts-->
+<style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #ede8e0;
+            --bg-secondary: #e2dbd1;
+            --text-primary: #1a1a1a;
+            --text-secondary: #5a5a5a;
+            --accent: #8a8178;
+            --line: #b8b0a4;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            overflow: hidden;
+        }
+
+        .presentation {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        .slide {
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.6s ease, visibility 0.6s ease;
+            display: flex;
+            flex-direction: column;
+            padding: 4vh 4vw;
+            background: var(--bg-primary);
+            overflow: hidden;
+        }
+
+        .slide.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        /* Geometric decorations */
+        .geo-lines {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 45vw;
+            height: 45vh;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .geo-circle {
+            position: absolute;
+            border: 1px solid var(--line);
+            border-radius: 50%;
+            opacity: 0.5;
+        }
+
+        .geo-arc {
+            position: absolute;
+            border: 1px dashed var(--line);
+            border-radius: 50%;
+            opacity: 0.3;
+        }
+
+        /* Navigation */
+        .nav-dots {
+            position: fixed;
+            right: 2vw;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            z-index: 100;
+        }
+
+        .nav-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--line);
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .nav-dot.active {
+            background: var(--text-primary);
+            transform: scale(1.3);
+        }
+
+        .slide-counter {
+            position: fixed;
+            bottom: 3vh;
+            right: 3vw;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.75rem;
+            color: var(--accent);
+            letter-spacing: 2px;
+            z-index: 100;
+        }
+
+        .nav-arrows {
+            position: fixed;
+            bottom: 3vh;
+            left: 3vw;
+            display: flex;
+            gap: 16px;
+            z-index: 100;
+        }
+
+        .nav-arrow {
+            width: 40px;
+            height: 40px;
+            border: 1px solid var(--line);
+            background: transparent;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            color: var(--text-primary);
+            transition: all 0.3s ease;
+        }
+
+        .nav-arrow:hover {
+            background: var(--text-primary);
+            color: var(--bg-primary);
+        }
+
+        /* Typography */
+        h1, h2, h3 {
+            font-family: 'Playfair Display', serif;
+            font-weight: 400;
+            line-height: 1.1;
+        }
+
+        h1 {
+            font-size: clamp(2.5rem, 5vw, 4.5rem);
+        }
+
+        h2 {
+            font-size: clamp(1.8rem, 3.5vw, 3rem);
+        }
+
+        h3 {
+            font-size: clamp(1.2rem, 2vw, 1.6rem);
+        }
+
+        p, li {
+            font-family: 'Inter', sans-serif;
+            font-size: clamp(0.9rem, 1.2vw, 1.1rem);
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+
+        .label {
+            font-family: 'Inter', sans-serif;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            color: var(--accent);
+            font-weight: 500;
+        }
+
+        /* Slide 1: Title */
+        .slide-title {
+            justify-content: center;
+        }
+
+        .slide-title .content {
+            position: relative;
+            z-index: 1;
+            max-width: 65vw;
+        }
+
+        .slide-title .label {
+            margin-bottom: 3vh;
+        }
+
+        .slide-title h1 {
+            font-size: clamp(3rem, 6vw, 5.5rem);
+            margin-bottom: 2vh;
+        }
+
+        .slide-title .subtitle {
+            font-family: 'Inter', sans-serif;
+            font-size: clamp(1rem, 1.5vw, 1.3rem);
+            color: var(--text-secondary);
+            max-width: 40vw;
+        }
+
+        /* All geo-decoration instances are decorative overlays, not flex
+           items — they must be absolutely positioned in their slide. The
+           slide-statement instance uses inline left/top/width/height to
+           override the defaults below. */
+        .geo-decoration {
+            position: absolute;
+            border: 1px solid var(--line);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .slide-title .geo-decoration {
+            right: 5vw;
+            bottom: 10vh;
+            width: 30vw;
+            height: 30vw;
+            opacity: 0.4;
+        }
+
+        .slide-title .geo-decoration::before {
+            content: '';
+            position: absolute;
+            top: 10%;
+            left: 10%;
+            width: 80%;
+            height: 80%;
+            border: 1px dashed var(--line);
+            border-radius: 50%;
+        }
+
+        /* Slide 2: Agenda */
+        .slide-agenda .content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6vw;
+            align-items: center;
+            height: 100%;
+            position: relative;
+            z-index: 1;
+        }
+
+        .slide-agenda .left-col h2 {
+            margin-bottom: 3vh;
+        }
+
+        .slide-agenda .left-col p {
+            max-width: 30vw;
+        }
+
+        .slide-agenda .agenda-list {
+            list-style: none;
+        }
+
+        .slide-agenda .agenda-list li {
+            padding: 2vh 0;
+            border-bottom: 1px solid var(--line);
+            display: flex;
+            align-items: baseline;
+            gap: 2vw;
+        }
+
+        .slide-agenda .agenda-number {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.5rem;
+            color: var(--accent);
+            min-width: 3vw;
+        }
+
+        /* Slide 3: Statement */
+        .slide-statement {
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+
+        .slide-statement .content {
+            max-width: 60vw;
+            position: relative;
+            z-index: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100%;
+        }
+
+        .slide-statement .quote-mark {
+            font-family: 'Playfair Display', serif;
+            font-size: 5rem;
+            line-height: 1;
+            color: var(--line);
+            opacity: 0.5;
+            display: block;
+            margin-bottom: 2vh;
+        }
+
+        .slide-statement h2 {
+            
+            margin-bottom: 3vh;
+        }
+
+        .slide-statement .attribution {
+            font-size: 0.85rem;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        /* Slide 4: Bar Chart */
+        .slide-barchart .content {
+            display: grid;
+            grid-template-columns: 1fr 1.5fr;
+            gap: 5vw;
+            align-items: center;
+            height: 100%;
+            position: relative;
+            z-index: 1;
+        }
+
+        .slide-barchart .left-col h2 {
+            margin-bottom: 2vh;
+        }
+
+        .slide-barchart .chart-container {
+            position: relative;
+            height: 55vh;
+            width: 100%;
+        }
+
+        /* Slide 5: Two Column */
+        .slide-twocol .content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 5vw;
+            align-items: center;
+            height: 100%;
+            position: relative;
+            z-index: 1;
+        }
+
+        .slide-twocol .image-placeholder {
+            width: 100%;
+            height: 60vh;
+            background: var(--bg-secondary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid var(--line);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .slide-twocol .image-placeholder::before {
+            content: '';
+            position: absolute;
+            width: 150%;
+            height: 1px;
+            background: var(--line);
+            transform: rotate(-30deg);
+        }
+
+        .slide-twocol .image-placeholder::after {
+            content: '';
+            position: absolute;
+            width: 150%;
+            height: 1px;
+            background: var(--line);
+            transform: rotate(30deg);
+        }
+
+        .slide-twocol .image-label {
+            position: relative;
+            z-index: 1;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--accent);
+        }
+
+        .slide-twocol .right-col h2 {
+            margin-bottom: 2vh;
+        }
+
+        .slide-twocol .right-col p {
+            margin-bottom: 2vh;
+        }
+
+        .slide-twocol .stats {
+            display: flex;
+            gap: 3vw;
+            margin-top: 4vh;
+            padding-top: 3vh;
+            border-top: 1px solid var(--line);
+        }
+
+        .slide-twocol .stat-item h4 {
+            font-family: 'Playfair Display', serif;
+            font-size: 2rem;
+            margin-bottom: 0.5vh;
+        }
+
+        .slide-twocol .stat-item span {
+            font-size: 0.8rem;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* Slide 6: Three Cards */
+        .slide-cards {
+            justify-content: center;
+        }
+
+        .slide-cards .content {
+            position: relative;
+            z-index: 1;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .slide-cards .header {
+            text-align: center;
+            margin-bottom: 6vh;
+        }
+
+        .slide-cards .header h2 {
+            margin-bottom: 1vh;
+        }
+
+        .slide-cards .cards-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 3vw;
+        }
+
+        .slide-cards .card {
+            border: 1px solid var(--line);
+            padding: 4vh 2vw;
+            background: rgba(255,255,255,0.3);
+        }
+
+        .slide-cards .card-icon {
+            width: 40px;
+            height: 40px;
+            border: 1px solid var(--line);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 3vh;
+            font-size: 1rem;
+            color: var(--accent);
+        }
+
+        .slide-cards .card h3 {
+            margin-bottom: 2vh;
+            font-size: 1.3rem;
+        }
+
+        .slide-cards .card p {
+            font-size: 0.9rem;
+        }
+
+        /* Slide 7: Line Chart */
+        .slide-linechart .content {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            position: relative;
+            z-index: 1;
+        }
+
+        .slide-linechart .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 4vh;
+        }
+
+        .slide-linechart .chart-wrapper {
+            flex: 1;
+            position: relative;
+            min-height: 0;
+        }
+
+        .slide-linechart .chart-wrapper canvas {
+            max-height: 100%;
+        }
+
+        /* Slide 8: Timeline */
+        .slide-timeline .content {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            height: 100%;
+            position: relative;
+            z-index: 1;
+        }
+
+        .slide-timeline .header {
+            margin-bottom: 6vh;
+        }
+
+        .slide-timeline .timeline {
+            display: flex;
+            justify-content: space-between;
+            position: relative;
+            padding-top: 3vh;
+        }
+
+        .slide-timeline .timeline::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: var(--line);
+        }
+
+        .slide-timeline .timeline-item {
+            flex: 1;
+            padding-right: 3vw;
+            position: relative;
+        }
+
+        /* Phase markers removed — the labels alone provide enough structure
+           and the small circles were colliding with the start of each label. */
+        .slide-timeline .timeline-item::before {
+            content: none;
+        }
+
+        .slide-timeline .timeline-item h4 {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.2rem;
+            margin-bottom: 1vh;
+            margin-top: 2vh;
+        }
+
+        .slide-timeline .timeline-item .year {
+            font-size: 0.75rem;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 1vh;
+        }
+
+        .slide-timeline .timeline-item p {
+            font-size: 0.85rem;
+        }
+
+        /* Slide 9: Team */
+        .slide-team .content {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            height: 100%;
+            position: relative;
+            z-index: 1;
+        }
+
+        .slide-team .header {
+            text-align: center;
+            margin-bottom: 6vh;
+        }
+
+        .slide-team .team-grid {
+            display: flex;
+            justify-content: center;
+            gap: 4vw;
+        }
+
+        .slide-team .team-member {
+            text-align: center;
+        }
+
+        .slide-team .member-photo {
+            width: 12vw;
+            height: 12vw;
+            border-radius: 50%;
+            background: var(--bg-secondary);
+            margin: 0 auto 2vh;
+            border: 1px solid var(--line);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            color: var(--accent);
+        }
+
+        .slide-team .team-member h4 {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.2rem;
+            margin-bottom: 0.5vh;
+        }
+
+        .slide-team .team-member span {
+            font-size: 0.8rem;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* Slide 10: Closing */
+        .slide-closing {
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+
+        .slide-closing .content {
+            position: relative;
+            z-index: 1;
+        }
+
+        .slide-closing h1 {
+            margin-bottom: 3vh;
+        }
+
+        .slide-closing p {
+            margin-bottom: 4vh;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            font-size: 0.9rem;
+        }
+
+        .slide-closing .geo-ring {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 50vw;
+            height: 50vw;
+            border: 1px solid var(--line);
+            border-radius: 50%;
+            opacity: 0.3;
+            z-index: 0;
+        }
+
+        .slide-closing .geo-ring::before {
+            content: '';
+            position: absolute;
+            top: 15%;
+            left: 15%;
+            width: 70%;
+            height: 70%;
+            border: 1px dashed var(--line);
+            border-radius: 50%;
+        }
+
+        /* Vertical line decoration */
+        .vertical-line {
+            position: absolute;
+            left: 8vw;
+            top: 0;
+            width: 1px;
+            height: 100%;
+            background: var(--line);
+            opacity: 0.3;
+            z-index: 0;
+        }
+
+        /* Horizontal accent */
+        .horizontal-accent {
+            position: absolute;
+            bottom: 15vh;
+            left: 0;
+            width: 20vw;
+            height: 1px;
+            background: var(--text-primary);
+            z-index: 0;
+        }
+
+        @media (max-aspect-ratio: 4/3) {
+            .slide-agenda .content,
+            .slide-barchart .content,
+            .slide-twocol .content {
+                grid-template-columns: 1fr;
+                gap: 3vh;
+            }
+
+            .slide-cards .cards-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .slide-timeline .timeline {
+                flex-direction: column;
+                gap: 3vh;
+            }
+
+            .slide-timeline .timeline::before {
+                display: none;
+            }
+
+            .slide-team .team-grid {
+                flex-direction: column;
+                gap: 3vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="presentation">
+        <!-- Slide 1: Title -->
+        

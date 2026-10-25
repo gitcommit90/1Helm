@@ -104,8 +104,14 @@ def main():
     ap.add_argument("--json-out")
     a = ap.parse_args()
     pages, prev = [], None
-    for i, p in enumerate(pages_from(a.paths), 1):
-        r, d = check(p, a.kind)
+    paths = pages_from(a.paths)
+    if len(paths) >= 6:   # a long deck: the pages are looked at on several cores
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(min(8, os.cpu_count() or 2)) as ex:
+            looked = list(ex.map(check, paths, [a.kind] * len(paths)))
+    else:
+        looked = [check(p, a.kind) for p in paths]
+    for i, (r, d) in enumerate(looked, 1):
         r["page"] = i
         if prev is not None and d == prev:
             r["advisories"].append(f"identical to page {i - 1}: a duplicated page or slide?")

@@ -67,6 +67,7 @@ a.gu-thumb{transition:transform .12s}a.gu-thumb:hover{transform:scale(1.02)}
 .gu-pconf{padding:12px 14px;border-radius:16px;background:var(--hover)}.gu-pconf p{margin:0 0 10px;overflow-wrap:anywhere}.gu-pconf p b{font-weight:650}.gu-pconf .gu-btns{margin:0}
 .gu-pdone{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}.gu-pdone .gu-b{display:inline-flex;align-items:center;cursor:default}.gu-pdone>span:not(.gu-b){color:var(--mute);font-size:14px}
 .gu-b.nope{background:var(--hover);color:var(--ink2)}
+.gu-apraw{margin:2px 0 0;font-size:12px;color:var(--mute);overflow-wrap:anywhere}
 .gu-pgone{display:flex;gap:9px;align-items:flex-start;color:var(--mute);font-size:14px}.gu-pgone svg{flex:none;margin-top:2px}
 .gu-perr{margin:2px 0 0;color:var(--warn);font-size:14px;font-weight:550;overflow-wrap:anywhere}
 .gu-perm.locked .gu-sl{color:var(--mute)}.gu-perm.locked .gu-sl b{color:var(--ink2)}

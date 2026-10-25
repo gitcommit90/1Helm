@@ -67,14 +67,27 @@ export function findSystemChrome() {
   return null;
 }
 
+// playwright-core is found next to the scripts (a node_modules above them) and, when a script was copied somewhere else, at the one
+// place the channel computer installs it. Either way the scripts work from any folder.
+const PLAYWRIGHT_HOME = process.env.ONEHC_PLAYWRIGHT || "/opt/1hc/node_modules/playwright-core";   // the variable is for testing elsewhere
 export async function loadPlaywright() {
   try {
     return await import("playwright-core");
   } catch (err) {
-    throw new Error(
-      `playwright-core is not installed (${(err && err.message) || err}); ` +
-        "expected it at /opt/1hc/node_modules/playwright-core",
-    );
+    try {
+      const { pathToFileURL } = await import("node:url");
+      for (const entry of ["index.mjs", "index.js"]) {
+        if (!existsSync(`${PLAYWRIGHT_HOME}/${entry}`)) continue;
+        const m = await import(pathToFileURL(`${PLAYWRIGHT_HOME}/${entry}`).href);
+        return m.chromium ? m : m.default;
+      }
+      throw err;
+    } catch {
+      throw new Error(
+        `playwright-core is not installed (${(err && err.message) || err}); ` +
+          `expected it at ${PLAYWRIGHT_HOME}`,
+      );
+    }
   }
 }
 

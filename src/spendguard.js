@@ -213,9 +213,11 @@ export function repeatedLine(out) {
 }
 export function commandNotes(r, tc = null) {
   if (!r || typeof r.out !== "string") return r;
+  // A background helper has no line to the person: its note says to carry on or report, never to stop and ask.
+  const worker = tc?.kind === "helper", tell = worker ? "say what happened in your report" : "tell the person what happened";
   const notes = [], rep = repeatedLine(r.out);
-  if (r.timed_out) notes.push(`[1Helm: this command was still running after ${Math.round((r.limit_ms || TIMING.cmdMs) / 60e3)} minutes, so it was stopped, with everything it started. If the person asked for a long job, run it again with timeout_minutes (up to ${TIMING.cmdMaxMs / 60e3}). Otherwise don't retry it the same way: tell the person what happened.]`);
-  if (rep) notes.push(`[1Helm: the same line came up ${rep.n} times in this output ("${rep.line.slice(0, 120)}"). That looks like a loop that isn't getting anywhere: don't run it again the same way. Tell the person what you found and ask before trying more.]`);
+  if (r.timed_out) notes.push(`[1Helm: this command was still running after ${Math.round((r.limit_ms || TIMING.cmdMs) / 60e3)} minutes, so it was stopped, with everything it started. If the person asked for a long job, run it again with timeout_minutes (up to ${TIMING.cmdMaxMs / 60e3}). Otherwise don't retry it the same way: ${tell}.]`);
+  if (rep) notes.push(`[1Helm: the same line came up ${rep.n} times in this output ("${rep.line.slice(0, 120)}"). ${worker ? "If this is a list you asked for, carry on. If it looks like a loop that isn't getting anywhere, don't run it again the same way and say what you found in your report. Nobody can answer a question while you work." : "That looks like a loop that isn't getting anywhere: don't run it again the same way. Tell the person what you found and ask before trying more."}]`);
   if (rep && tc?.guard) tc.guard.watch.outLoops = (tc.guard.watch.outLoops || 0) + 1;
   return notes.length ? { ...r, out: `${r.out.replace(/\n*$/, "")}\n${notes.join("\n")}` } : r;
 }

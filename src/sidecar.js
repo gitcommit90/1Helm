@@ -72,6 +72,7 @@ import { embedSetup, EMBED_JOB_CHARS, EMBED_JOB_TEXTS, selfCallReserveNano } fro
 // before answering, a reasonable check when later sections are unseen; with the whole text it answers in one step. A second step costs
 // another full request (~60k tokens with the system prompt) and ~5 s, more than the extra 8k tokens inline.
 export const INLINE_TOKENS = 16000;
+export const FILE_TEXT_WHOLE_TOKENS = 32000;   // file_text answers with the whole text up to here (a 100,000-character file fits); the message inlining above stays at INLINE_TOKENS
 export const INLINE_TOTAL = 24000;                  // all files of one message together
 export const WAIT_MS = 8000;                        // the most a Send waits for prep (stage 1, the text, takes well under a second for a document when the system is idle, but several seconds when many files are prepared at once: a cold FilePrep object, its alarm and the converter all queue). A file that is ready ends the wait at once.
 export const AUDIO_WAIT_MS = 60000;                  // an attached recording must have usable text before a task model is called
@@ -1146,7 +1147,7 @@ export function residentSidecar() { return {
       const more = off + LIM < text.length ? `\n(The section goes on: file_text {"file": "${f.name}", "section": ${idx}, "offset": ${off + LIM}} reads the next part.)` : "";
       return `${head}, section ${idx} of ${secs.length}: ${sec.t}${sec.p != null ? ` (p. ${sec.p})` : ""}${off ? `, from character ${off}` : ""}:\n${untrustedFile(f.name, part)}${more}`;
     }
-    if (tokensOf(d.md) <= INLINE_TOKENS) return `${head}, the whole text:\n${untrustedFile(f.name, d.md)}`;
+    if (tokensOf(d.md) <= FILE_TEXT_WHOLE_TOKENS) return `${head}, the whole text:\n${untrustedFile(f.name, d.md)}`;
     return `${head}. Read a section with "section": N, or search with "query".\n${untrustedFile(f.name, `${card ? cardText(card) : r.status === "text" ? "(Its summary card is still being made.)" : cardText(card)}\n\nOutline:\n${outlineLines(secs, 80).join("\n")}`)}`;
   },
   // After a change of the saved search index model to one that isn't equivalent (embedding_equivalents), this channel's files that have vectors from another

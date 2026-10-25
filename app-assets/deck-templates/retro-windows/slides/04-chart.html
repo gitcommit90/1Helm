@@ -1,0 +1,48 @@
+<div class="slide" id="slide-3">
+  <div class="win-window">
+    <div class="win-titlebar">
+      <div class="win-title-left"><div class="win-icon">D</div><span>DATAVIEW.CSV</span></div>
+      <div class="win-buttons"><div class="win-btn">_</div><div class="win-btn">[]</div><div class="win-btn">X</div></div>
+    </div>
+    <div class="win-body">
+      <div class="shrink-0 flex justify-between items-center mb-1">
+        <p class="text-lg text-blue" style="font-weight: bold;">Quarterly Revenue Comparison</p>
+        <div class="flex gap-2"><button class="btn-retro text-sm">Export</button><button class="btn-retro text-sm">Print</button></div>
+      </div>
+      <hr class="retro">
+
+      <div class="grid-2 gap-5 flex-1 mt-2" style="min-height: 0;">
+        <div class="panel-raised" style="min-height: 0;">
+          <div class="chart-container"><canvas id="barChart"></canvas></div>
+        </div>
+        <div class="flex flex-col gap-4" style="min-height: 0;">
+          <div class="group-box">
+            <span class="group-box-title">Highlights</span>
+            <ul class="retro-list">
+              <li>Q3 exceeded projections by 18%</li>
+              <li>Enterprise segment grew 24% YoY</li>
+              <li>Recurring revenue now at 62% of total</li>
+            </ul>
+          </div>
+          <div class="panel-sunken flex-1" style="overflow: auto;">
+            <table class="retro-table">
+              <tr><th>Quarter</th><th>Revenue</th><th>Growth</th></tr>
+              <tr><td>Q1 2026</td><td>$1.2M</td><td data-trend="up" style="font-weight: bold;">+5%</td></tr>
+              <tr><td>Q2 2026</td><td>$1.5M</td><td data-trend="up" style="font-weight: bold;">+12%</td></tr>
+              <tr><td>Q3 2026</td><td>$1.9M</td><td data-trend="up" style="font-weight: bold;">+18%</td></tr>
+              <tr><td>Q4 2026</td><td>$2.1M</td><td data-trend="up" style="font-weight: bold;">+22%</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-raised mt-3 shrink-0">
+        <div class="flex justify-between text-sm text-gray">
+          <span>Data source: Internal reporting system</span>
+          <span>Updated: May 2026</span>
+          <span>Currency: USD (millions)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

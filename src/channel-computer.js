@@ -9,10 +9,11 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { tolerantEnv } from "./do-stub.js";
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { computerDeletionMix } from "./deletion-do.js";
-import { isCapacityError, computerBusyError, CAPACITY_RETRY_MS } from "./computer-capacity.js";
+import { isCapacityError, computerBusyError, CAPACITY_RETRY_MS, tailOutput } from "./computer-capacity.js";
 import { computerPreviewMix } from "./file-preview.js";
 import { stPut, stDelete, keyInfo, room, noteRefused, clearRefused, fullMessage, fullToolNote } from "./storage.js";
-import { SKILL_SCRIPTS, SKILLS_VERSION, SKILLS_DIR, SKILLS_INSTALL_JS, skillsPayload } from "./skills/scripts.js";
+import { SKILL_SCRIPTS, SKILLS_VERSION, SKILLS_DIR, SKILLS_INSTALL_JS, skillsPayload, TEMPLATES_DIR, TEMPLATE_INSTALL_JS, DECK_COMMAND, deckCommandRefs } from "./skills/scripts.js";
+import { deckManifest, deckTemplate } from "./deck-templates.js";
 
 const IDLE_MS = 60e3;                // wakes take 1–6 s, so sleep fast; idle time is the main compute cost
 const SAVE_DEBOUNCE_MS = 20e3;
@@ -414,7 +415,7 @@ export class ChannelComputer extends DurableObject {
     // Chrome policy + download folder, written before the browser's lazy first start; no image rebuild needed (see browserSetupCmd).
     await this.sh(browserSetupCmd(), { timeoutMs: 5e3 }).catch(() => {});
     // Skill scripts (src/skills/README.md): a fresh computer has none, so write this deploy's set before anything runs.
-    this.put("skills_v", ""); this.put("skills_fail_at", "0"); await this.installSkills();
+    this.put("skills_v", ""); this.put("skills_fail_at", "0"); this.put("templates_have", "{}"); this.put("templates_fail_at", "0"); await this.installSkills();
     this.put("ready", "1"); this.put("last_activity", Date.now());
     await this.ctx.storage.setAlarm(Date.now() + 30e3);
     // Recent cold-wake times (last 8) feed the live pane's progress estimate.
@@ -716,7 +717,7 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
   async releaseControl() { this.sql.exec("DELETE FROM kv WHERE k IN ('lease','lease_until','hold_until')"); return { ok: true }; }
   async leaseState() { const until = Number(this.get("lease_until") || 0); return { controlled: !!this.get("lease") && until > Date.now(), lease_until: until || null }; }
   // timeoutMs: this command's limit (the helper's run_command passes 4 min by default, up to 15 when the person asked for a long job).
-  async exec(cmd, { save = "defer", tag = null, timeoutMs = EXEC_TIMEOUT_MS, run = null } = {}) {
+  async exec(cmd, { save = "defer", tag = null, timeoutMs = EXEC_TIMEOUT_MS, run = null, outMax = 20000 } = {}) {   // outMax: how much of the END of the output comes back (read_file asks for more, up to the 200,000 the shell keeps)
     // A shell command can drive Chrome or send network traffic. Do not launch it while a
     // background browser job owns the shared computer, and reserve before the first await.
     if (this.#browserOwner() || this.ownerBrowserInFlight || this.#busyActive("owner_browser")) return { code: 1, out: "A background browser job is using this channel's computer. Wait for it to finish or take control of the browser.", browser_busy: true };
@@ -729,6 +730,7 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
     const boot = await this.ensureRunning();
     this.put("last_activity", Date.now());
     if (this.get("skills_v") !== SKILLS_VERSION && Date.now() - Number(this.get("skills_fail_at") || 0) > 10 * 60e3) await this.installSkills();   // deployed while this computer was up: refresh the skill scripts
+    if (DECK_COMMAND.test(cmd) && Date.now() - Number(this.get("templates_fail_at") || 0) > 60e3) await this.installTemplates(cmd);   // the template a deck command uses, only on a computer that makes a deck
     await this.loadStandins();
     if (this.#browserOwner() || this.ownerBrowserInFlight || this.#busyActive("owner_browser")) return { code: 1, out: "A background browser job took control before this command started. No command was run.", browser_busy: true };
     const t0 = Date.now();
@@ -745,7 +747,7 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
     // A refused save (storage full): the helper hears about it once every 10 minutes at most, not on every command.
     let storage_note = this.storageNote(); if (storage_note && Date.now() - Number(this.get("storage_told") || 0) < 10 * 60e3) storage_note = null;
     if (storage_note) this.put("storage_told", Date.now());
-    return { code: r.code, out: r.out.slice(-20000), ms, boot, saved, egress, ...(r.timed_out ? { timed_out: true, limit_ms: lim } : {}), ...(storage_note ? { storage_note } : {}) };
+    return { code: r.code, out: tailOutput(r.out, outMax), ms, boot, saved, egress, ...(r.timed_out ? { timed_out: true, limit_ms: lim } : {}), ...(storage_note ? { storage_note } : {}) };
     } finally { this.#busyEnd(busyId); this.commandInFlight--; }
   }
   // Skill scripts → /opt/1hc/skills/<slug>/scripts/ on the computer's own disk (outside /workspace: never saved into the channel's
@@ -762,6 +764,34 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
       this.put("skills_v", SKILLS_VERSION); return { ok: true, files: SKILL_SCRIPTS.length, version: SKILLS_VERSION };
     } catch (e) { this.put("skills_fail_at", Date.now()); this.log(`skill scripts not installed: ${String(e?.message || e).slice(0, 200)}`); return { ok: false, error: String(e?.message || e) }; }
     finally { clearTimeout(to); }
+  }
+  // The deck template a command uses (src/deck-templates.js: static assets, one template and its fonts at a time) -> TEMPLATES_DIR, only when
+  // a deck command is about to run and only when this computer doesn't hold the template's current hash. The templates come from the command
+  // itself (--template, --patterns) or from its project folder's .src/deck.json, unless the deck already has its own copy (.src/template). A failure is logged; the command then says the template is missing.
+  async installTemplates(cmd) {
+    let to;
+    try {
+      const refs = deckCommandRefs(cmd), names = new Set(refs.names);
+      for (const P of refs.projects) {
+        try {
+          const o = await Promise.race([this.ctx.container.exec(["node", "-e", 'try{const fs=require("fs"),d=process.argv[1]+"/.src/",t=JSON.parse(fs.readFileSync(d+"deck.json","utf8")).template;if(/^[a-z0-9-]+$/.test(t)&&!fs.existsSync(d+"template/LICENSE"))console.log(t)}catch{}', P]).then((r) => r.output()), new Promise((_, rej) => { to = setTimeout(() => rej(new Error("timed out")), 10e3); })]);
+          clearTimeout(to); const n = dec.decode(o.stdout).trim(); if (n) names.add(n);
+        } catch { clearTimeout(to); }
+      }
+      let have = {}; try { have = JSON.parse(this.get("templates_have") || "{}"); } catch {}
+      const mf = names.size ? await deckManifest(this.env) : null, sent = [];
+      for (const name of names) {
+        if (!mf.templates[name] || have[name] === mf.templates[name].hash) continue;
+        const t = await deckTemplate(this.env, name), payload = JSON.stringify({ name, hash: t.hash, files: t.files });
+        const run = (async () => (await this.ctx.container.exec(["node", "-e", TEMPLATE_INSTALL_JS, TEMPLATES_DIR], { stdin: new Response(payload).body, stderr: "combined" })).output())();
+        const o = await Promise.race([run, new Promise((_, rej) => { to = setTimeout(() => rej(new Error("timed out")), 30e3); })]);
+        clearTimeout(to);
+        const out = dec.decode(o.stdout).trim();
+        if (o.exitCode !== 0 || !out.startsWith("ok ")) throw new Error(out.slice(-300) || `exit ${o.exitCode}`);
+        have[name] = t.hash; this.put("templates_have", JSON.stringify(have)); sent.push(name);
+      }
+      return { ok: true, installed: sent };
+    } catch (e) { clearTimeout(to); this.put("templates_fail_at", Date.now()); this.log(`deck templates not installed: ${String(e?.message || e).slice(0, 200)}`); return { ok: false, error: String(e?.message || e) }; }
   }
   async save(reason) {
     if (!this.ctx.container.running || this.get("ready") !== "1") return { ok: true, skipped: true, reason: "asleep" };

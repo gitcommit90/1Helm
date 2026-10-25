@@ -76,12 +76,11 @@ export const laterMethods = {
   // b = { session: id | "new" | null, text, files: [ids], due (UTC ms), tz, cid, reply: { id, role, text } (Reply on a bubble, optional) }
   async laterAdd(tenant, channel, channelId, b = {}) {
     if (tenant) { this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId); }
-    const now = Date.now(), text = String(b.text ?? "").trim();
+    const now = Date.now(); let text = String(b.text ?? "").trim();
     const cid = b.cid ? String(b.cid).slice(0, 64) : null;
     if (cid) { const have = this.sql.exec("SELECT * FROM later WHERE cid=?", cid).toArray()[0]; if (have) return { item: this.laterView(have), dup: true }; }
-    if (text.length > 20000) return { error: "That message is too long (20,000 characters at most)." };
     const want = (Array.isArray(b.files) ? b.files : []).map(String).slice(0, 10);
-    const files = want.filter((id) => this.sql.exec("SELECT id FROM files WHERE id=? AND deleted=0", id).toArray().length);
+    let files = want.filter((id) => this.sql.exec("SELECT id FROM files WHERE id=? AND deleted=0", id).toArray().length);
     if (want.length !== files.length) return { error: "One of the attached files is gone. Remove it and try again." };
     if (!text && !files.length) return { error: "Write a message or attach a file first." };
     const bad = this.laterCheckDue(b.due, now); if (bad) return { error: bad, past: bad === LATER_PAST };
@@ -89,8 +88,10 @@ export const laterMethods = {
     if (session && !this.session(session)) return { error: "No such task in this channel." };
     const n = this.sql.exec("SELECT COUNT(*) n FROM later WHERE status IN ('pending','sending','failed')").one().n;
     if (n >= LATER_MAX_PENDING) return { error: `You already have ${LATER_MAX_PENDING} scheduled messages here. Send or cancel some first.` };
+    const lg = await this.splitLong(tenant || this.get("tenant"), channel || this.get("channel"), channelId || this.get("channel_id"), text, files); if (lg.error) return { error: lg.error, status: lg.status };
+    text = lg.text; files = lg.files;
     const tz = b.tz && validTz(String(b.tz)) ? String(b.tz) : this.tz();
-    const title = session ? null : titleFrom(text || this.fileTitle(files));
+    const title = session ? null : titleFrom(lg.title || text || this.fileTitle(files));
     this.sql.exec("INSERT INTO later (session,text,files,due,tz,status,cid,title,created,updated,reply) VALUES (?,?,?,?,?,'pending',?,?,?,?,?)",
       session, text, JSON.stringify(files), Math.round(Number(b.due)), tz, cid, title, now, now, session ? replyOut(b.reply) : null);
     const id = this.sql.exec("SELECT last_insert_rowid() id").one().id;

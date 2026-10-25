@@ -90,6 +90,7 @@ On PASS do the prose read-back from the printed text against `.src/OUTLINE.md`: 
 every section of the outline there. On FAIL fix the generator and run it again: at most three rounds, then tell the person
 exactly what still fails. Share with `share_file` (path = the .docx, name = the readable name). To change it later, edit the
 generator, run make_docx.sh again, and share the same path again; that updates the same Library file instead of adding a copy.
+When the message says a paragraph or page of the document is selected in the canvas, change that text in `build_doc.py`, run make_docx.sh and share the same path, and keep any hand edits a note in the message lists.
 
 Photos: `python3 /opt/1hc/skills/image-search/scripts/images.py fetch --to /workspace/workspace/<slug>/.src/media "<name>=<exact subject>" ...`
 downloads JPEGs Word can use, writes `SOURCES.md` and prints the credit for each caption.

@@ -119,7 +119,7 @@ export class Sentinel extends WorkerEntrypoint {
       }
     }
     let decision = egressRule({ host, method, path: u.pathname, headers: req.headers, keys: swapped, env: this.env, lfsOp });
-    if (decision.verdict === "ask") decision = await R.egressDecision({ host, method, path, bytes, keys: swapped, via: decision.via });
+    if (decision.verdict === "ask") decision = await R.egressDecision({ host, method, path, bytes, keys: swapped, via: decision.via, page: decision.page });
     const log = (status, extra = {}) => C.noteEgress({ at: t0, host, method, status, verdict: decision.verdict, why: decision.why, keys: swapped, refused, ms: Date.now() - t0, ...extra }).catch(() => {});
     if (decision.verdict !== "allow") {
       await log(403);

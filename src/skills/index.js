@@ -46,7 +46,7 @@ export const SKILLS = [...new Set(Object.keys(FILES).map((p) => p.split("/")[0])
   const refs = {}, scripts = [];
   for (const p of Object.keys(FILES).sort()) {
     if (p.startsWith(`${slug}/references/`)) refs[p.slice(`${slug}/references/`.length).replace(/\.md$/, "")] = FILES[p];
-    else if (p.startsWith(`${slug}/scripts/`)) scripts.push(`${SKILLS_DIR}/${p}`);
+    else if (p.startsWith(`${slug}/scripts/`) && !p.slice(slug.length + 9).includes("/")) scripts.push(`${SKILLS_DIR}/${p}`);   // the scripts themselves; a folder in scripts/ (the deck templates) is data
   }
   return { slug, description: String(meta.description ?? ""), always: meta.always === true, body, refs, scripts };
 });

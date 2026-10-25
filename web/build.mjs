@@ -13,6 +13,9 @@ await build({ external: ["/fonts/*", "/av/*", "/agent-avatars/*"],
 await build({ entryPoints: [source("src/contacts-import-worker.ts")], outfile: `${target}/contacts-import-worker.js`, bundle: true, minify: true, format: "esm", target: "es2022" });
 await build({ external: ["/av/*"], entryPoints: [source("src/card.ts")], outfile: `${target}/card.js`, bundle: true, minify: true, format: "esm", target: "es2020" });
 await build({ entryPoints: [source("src/card.css")], outfile: `${target}/card.css`, bundle: true, minify: true });
+// The Zone (src/zone.ts and zone.css), loaded by the app only when a file is opened in it. zone/imgfx.js (img-fx, react and three, MIT) is a
+// prebuilt bundle committed under app-assets/app-static/zone/; it is not built here.
+await build({ entryPoints: { zone: source("src/zone.ts"), "zone-ui": source("src/zone.css") }, outdir: `${target}/zone`, bundle: true, minify: true, format: "esm", target: "es2022" });
 mkdirSync(`${target}/pdfjs`, { recursive: true });
 mkdirSync(`${target}/sheetjs`, { recursive: true });
 for (const file of ["pdf.min.mjs", "pdf.worker.min.mjs"])

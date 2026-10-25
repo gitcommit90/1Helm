@@ -12,13 +12,17 @@ const helperChoices = [
   [5, "Shelly"], [6, "Moss"], [7, "Plum"], [9, "Pip"],
 ];
 
-function shell(title, body, { narrow = false, script = true } = {}) {
+function shell(title, body, { narrow = false, script = true, status = 200 } = {}) {
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${h(title)} · 1Helm</title><meta name="robots" content="noindex"><meta name="theme-color" content="#f3f2ef"><link rel="icon" type="image/png" href="/1helm-icon-64.png"><link rel="apple-touch-icon" href="/1helm-sailboat.png"><link rel="stylesheet" href="/onboard-static/style.css?v=${ONBOARD_STATIC_CSS_V}">${script ? `<script defer src="/onboard-static/app.js?v=${ONBOARD_STATIC_JS_V}"></script>` : ""}</head>
 <body><div class="ambient one"></div><div class="ambient two"></div><main class="shell${narrow ? " narrow" : ""}"><a class="brand" href="/" aria-label="1Helm home"><img src="/1helm-icon.png" alt=""><span>1Helm</span></a>${body}</main></body></html>`, {
-    headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" },
+    status, headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" },
   });
 }
+
+// The required attestation on the sign-in forms. The submit button stays disabled until the box is checked; the server refuses a submit without it.
+const AGE_BOX = '<label class="agebox" style="display:flex;align-items:center;gap:10px;margin:14px 0 0;font-size:14px;font-weight:500;cursor:pointer"><input type="checkbox" name="adult" value="yes" required style="width:20px;height:20px;flex:none;margin:0;padding:0;accent-color:currentColor"><span>I am 18 or older</span></label><input type="hidden" name="version" value="1">';
+const AGE_SCRIPT = "<style>form[data-age] button[type=submit]:disabled{opacity:.4;cursor:default}</style><script>(()=>{const f=document.querySelector('form[data-age]'),b=f.querySelector('input[name=adult]'),s=f.querySelector('button[type=submit]'),y=()=>s.disabled=!b.checked;b.addEventListener('change',y);addEventListener('pageshow',y);y()})();</script>";
 
 function notice(error) { return error ? `<div class="notice error" role="alert">${h(error)}</div>` : ""; }
 function progress(step) {
@@ -29,9 +33,9 @@ function progress(step) {
 export function landingPage(data = {}) {
   return shell("Your own capable helper", `<section class="landing"><div class="promise"><p class="eyebrow">Your own capable helper</p><h1>Put something down.<br>1Helm picks it up.</h1><p class="lead">Give your helper a task. It can research, create files, use a real browser, and keep working while you move on.</p><div class="proof"><span><b>1</b> You ask normally</span><span><b>2</b> Your helper does the work</span><span><b>3</b> You decide when it’s done</span></div></div>
   <div class="signup card"><div class="cardhead"><img src="/av/8.png" alt=""><div><span>Meet Skipper</span><small>Your first 1Helm helper</small></div></div><h2>Start your 1Helm</h2><p>No server to run. No AI keys to find.</p>
-  ${notice(data.error)}<form method="post" action="/auth/start"><label for="email">Email address</label><input id="email" name="email" type="email" required autocomplete="email" inputmode="email" placeholder="you@example.com" value="${attrs(data.email || "")}" autofocus><button class="primary" type="submit">Continue <span>→</span></button></form>
+  ${notice(data.error)}<form method="post" action="/auth/start" data-age><label for="email">Email address</label><input id="email" name="email" type="email" required autocomplete="email" inputmode="email" placeholder="you@example.com" value="${attrs(data.email || "")}" autofocus>${AGE_BOX}<button class="primary" type="submit">Continue <span>→</span></button></form>${AGE_SCRIPT}
   <div class="plan"><div><b>Plans from $30</b><span>Personal · Plus · Power · Max</span></div><strong>$30<small>/month</small></strong></div>
-  ${data.testMode ? '<p class="testnote"><span>Test mode</span> Nothing here can charge a real card.</p>' : ""}</div></section>`, { script: false });
+  ${data.testMode ? '<p class="testnote"><span>Test mode</span> Nothing here can charge a real card.</p>' : ""}</div></section>`, { script: false, status: data.status || 200 });
 }
 
 export function selfHostedSignInPage(data = {}) {
@@ -224,8 +228,8 @@ export function hostSignInPage(d = {}) {
        ${codeEntry({ email: d.email, wait: d.wait, codeError: d.codeError, codeKind: d.codeKind })}`
     : `<h1>Welcome back</h1><p class="sub">Sign in to <b>${host}</b>. We'll email you a code and a link, no password needed.</p>
        ${d.error ? `<p class="err" role="alert">${h(d.error)}</p>` : ""}
-       <form method="post" action="/auth/start"><label for="em">Email</label><input id="em" name="email" type="email" inputmode="email" autocomplete="email" required autofocus placeholder="you@example.com" value="${attrs(d.email || "")}">
-       <button class="btn" type="submit">Email me a sign-in code</button></form>
+       <form method="post" action="/auth/start" data-age><label for="em">Email</label><input id="em" name="email" type="email" inputmode="email" autocomplete="email" required autofocus placeholder="you@example.com" value="${attrs(d.email || "")}">${AGE_BOX}
+       <button class="btn" type="submit">Email me a sign-in code</button></form>${AGE_SCRIPT}
        <p class="fine">Not yours? <a href="https://${attrs(d.appHost || d.host)}/">Start your own 1Helm</a></p>`;
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Sign in · ${host}</title><meta name="robots" content="noindex"><meta name="theme-color" content="#f3f2ef"><link rel="icon" type="image/png" href="/1helm-icon-64.png"><link rel="apple-touch-icon" href="/1helm-icon-180.png">
@@ -244,5 +248,5 @@ input:focus{border-color:var(--ink);box-shadow:0 0 0 3px rgba(28,27,25,.08)}
 a{color:var(--mute);text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:2px}a:hover{color:var(--ink);text-decoration-color:currentColor}
 .err{margin:0 0 14px;color:#b91c1c;font-size:14px}</style></head>
 <body><main><div class="who"><img src="/av/${av}.png" alt=""><div><b>${helper}</b><span>${host}</span></div></div>${body}</main></body></html>`,
-    { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" } });
+    { status: d.status || 200, headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" } });
 }

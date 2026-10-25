@@ -28,6 +28,7 @@ import { ivCardRoute } from "./interview-chat.js";
 import { permQuestion } from "./perms.js";
 import { helperName } from "./helper-name.js";
 import { boundedText, BodyTooLargeError } from "./bounded-body.js";
+import { approvalLabel } from "./egress-policy.js";
 
 const te = new TextEncoder();
 const TOKEN = /^[A-Za-z0-9_-]{32}$/;
@@ -60,7 +61,7 @@ export async function saveCard(env, { tenant, channel, msgId, body }) {
 export async function saveApprovalCard(env, { tenant, channel, approval, channelName }) {
   const msgId = `approval:${approval.id}:${approval.at}`, token = await cardToken(env, tenant, channel, msgId);
   const r = await env.DB.prepare("INSERT OR IGNORE INTO cards (token,tenant_id,channel,msg_id,body,say,sent_at,kind,approval_id,channel_name) VALUES (?,?,?,?,?,?,?,?,?,?)")
-    .bind(token, tenant, channel, msgId, "", approval.perm === "confirm" ? String(approval.what || "Confirm this?") : approval.perm ? permQuestion(approval.perm, approval.what) : approvalQuestion(approval.host), Date.now(), "approval", approval.id, channelName || channel).run();
+    .bind(token, tenant, channel, msgId, "", approval.perm === "confirm" ? String(approval.what || "Confirm this?") : approval.perm ? permQuestion(approval.perm, approval.what) : approvalQuestion(approvalLabel(approval)), Date.now(), "approval", approval.id, channelName || channel).run();
   return { token, url: cardUrl(env, token), fresh: !!r.meta?.changes };
 }
 // A plan card (plans.js). Deterministic token per plan (tenant + channel + "plan:<id>:<created>"): a second call is a no-op (fresh: false).

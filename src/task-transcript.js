@@ -87,8 +87,8 @@ export class TaskTranscript {
   tools() { return this.readBlob("tools"); }
   // Bound only new tool data, once, before delivery; its full original is kept
   // behind a scoped archive reference rather than silently discarded.
-  bound(message) {
-    if (message.role !== "tool" || typeof message.content !== "string" || message.content.length <= TOOL_OUTPUT_BOUND) return message;
+  bound(message, limit = TOOL_OUTPUT_BOUND) {
+    if (message.role !== "tool" || typeof message.content !== "string" || message.content.length <= limit) return message;
     const ref = `tool-${crypto.randomUUID()}`; this.blob(ref, message.content);
     message.content = `${message.content.slice(0, 12000)}\n[Tool output bounded before delivery. Full output: read_task_archive ref="${ref}"; ${message.content.length} characters.]\n${message.content.slice(-2000)}`;
     return message;

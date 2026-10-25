@@ -19,6 +19,10 @@ src/skills/
 
 - `<slug>`: lowercase letters, digits and hyphens (`artifacts`, `self-awareness`, `wide-research`). The folder name is the slug.
 - Anything else in a skill folder (eval/, notes) is ignored by the loader and not bundled.
+- A folder inside `scripts/` is data, not a script: it isn't listed in the skill's "Scripts on your computer" line and isn't in the set written at every
+  start. The 34 deck templates (about 5 MB) are not in the skill folder or the
+  Worker bundle: they are static assets in `app-assets/deck-templates/` (with `manifest.json`, written by `node scripts/build-deck-templates-manifest.mjs`), and
+  the first deck command that uses a template makes ChannelComputer.installTemplates write that one template to `/opt/1hc/deck-templates` (src/deck-templates.js).
 
 ## SKILL.md
 

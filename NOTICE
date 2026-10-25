@@ -16,6 +16,9 @@ Bundled fonts:
 - Caveat: Copyright 2014 The Caveat Project Authors.
   SIL Open Font License 1.1; see licenses/Caveat-OFL.txt.
 
+The HTML deck templates in app-assets/deck-templates/ (MIT) embed Google Fonts families under the SIL Open Font License 1.1; see
+THIRD-PARTY-NOTICES.md and licenses/Deck-template-fonts-OFL.txt.
+
 The PDF viewer bundles font and codec assets with their own notices under
 app-assets/app-static/pdfjs/standard_fonts/ and app-assets/app-static/pdfjs/wasm/.
 

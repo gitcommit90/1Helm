@@ -262,18 +262,29 @@ async function loadMore(k: string) {
   try { const r = await D!.api(`/res/${slug}/sessions/${sid}/cards?n=50&before=${last.opened}`); if (Array.isArray(r?.cards)) { r.cards.forEach((c: CardView) => upsertCard(k, c)); s.more = !!r.more; } } catch {}
   BUSY[`more${k}`] = false; paintFeed(k);
 }
+// A repaint must never move what the person is scrolling. Every scrolled box under `root` (and `root` itself) is remembered by its place in the
+// tree before `paint` runs and put back after, so the Details box, "What ran", the step list, the pane and the sheet all stay where they were.
+const SHEETH = new WeakMap<Element, string>(), PARTH = new WeakMap<Element, string>(); let PAINTED = "";
+function keepScrolls(root: HTMLElement, paint: () => void) {
+  const kept: { path: number[]; top: number; left: number }[] = [], walk = (e: HTMLElement, path: number[]) => {
+    if (e.scrollTop || e.scrollLeft) kept.push({ path, top: e.scrollTop, left: e.scrollLeft });
+    [...e.children].forEach((c, i) => walk(c as HTMLElement, [...path, i]));
+  };
+  walk(root, []); paint();
+  for (const k of kept) { let e: Element | undefined = root; for (const i of k.path) e = e?.children[i]; if (e) { (e as HTMLElement).scrollTop = k.top; (e as HTMLElement).scrollLeft = k.left; } }
+}
 function paintFeed(k: string) {
   document.querySelectorAll<HTMLElement>(".tk-w").forEach(w => {
     if (w.dataset.tkw !== k) return; const on = ss(k).on;
     w.classList.toggle("tk-on", on); w.classList.toggle("tk-open", on && feedOpen());
     const a = w.querySelector<HTMLElement>(".tk-feed"); if (!a) return;
     const h = on ? feedHtml(k) : ""; if (a.dataset.h === h.replace(/animation-delay:-\d+ms/g, "")) return; a.dataset.h = h.replace(/animation-delay:-\d+ms/g, "");
-    const sc = a.querySelector(".tk-flist")?.scrollTop ?? 0, f = (document.activeElement as HTMLElement | null)?.closest?.(".tk-feed") ? (document.activeElement as HTMLElement).dataset : null;
-    a.innerHTML = h; const l = a.querySelector(".tk-flist"); if (l) l.scrollTop = sc;
+    const f = (document.activeElement as HTMLElement | null)?.closest?.(".tk-feed") ? (document.activeElement as HTMLElement).dataset : null;
+    keepScrolls(a, () => { a.innerHTML = h; });
     if (f?.tkcard) a.querySelector<HTMLElement>(`[data-tkcard="${CSS.escape(f.tkcard)}"]`)?.focus({ preventScroll: true });
   });
   const sh = document.querySelector<HTMLElement>("#tkfs .tk-sheet");
-  if (sh && F.sheet === k) { const sc = sh.querySelector(".tk-flist")?.scrollTop ?? 0; sh.innerHTML = feedHtml(k, true); const l = sh.querySelector(".tk-flist"); if (l) l.scrollTop = sc; }
+  if (sh && F.sheet === k) { const h = feedHtml(k, true); if (SHEETH.get(sh) !== h) { SHEETH.set(sh, h); keepScrolls(sh, () => { sh.innerHTML = h; }); } }
 }
 // After the open task repaints (or any data change): the slots and the wrapper follow the task's real id, everything repaints.
 export function tkSync(slug: string, sid: any) {
@@ -455,7 +466,7 @@ function resultHtml(x: StepDetail, slug: string, loaded: boolean, key2: string) 
   const items = (r.items || []).map(t => `<li>${esc(t)}</li>`).join("");
   const det = loaded ? x.result?.details || "" : "", open = !!M.det[key2];
   const dl = det && D ? `${D.base()}/res/${encodeURIComponent(slug)}/sessions/${encodeURIComponent(M.k.split("|")[1])}/cards/${encodeURIComponent(M.id)}/steps/${x.seq}?dl=1` : "";
-  return `<div class="tk-res${r.error ? " bad" : ""}">
+  return `<div class="tk-rbox${r.error ? " bad" : ""}">
     ${r.error ? `<p class="tk-rerr">${svg(P.alert, 16)}<span>${esc(r.error)}</span></p>${r.text ? `<p class="tk-rtext">${esc(r.text)}</p>` : ""}` : `<p class="tk-rtext">${esc(r.text || "Done")}</p>`}
     ${files ? `<div class="tk-files2">${files}</div>` : ""}
     ${links ? `<ul class="tk-links">${links}</ul>` : ""}
@@ -504,7 +515,7 @@ function paneHtml(d: CardDetail, k: string) {
 function paintModal(focus = false) {
   const box = document.querySelector<HTMLElement>("#tkm .tk-modal"); if (!box || !M.id) return;
   const d = DET[M.id], phone = !!D?.phone(), k = M.k;
-  const sc = { r: box.querySelector(".tk-rail")?.scrollTop ?? 0, p: box.querySelector(".tk-pane")?.scrollTop ?? 0 }, fsel = (document.activeElement as HTMLElement | null)?.closest?.("#tkm") ? (document.activeElement as HTMLElement).dataset.tksel : undefined;
+  const fsel = (document.activeElement as HTMLElement | null)?.closest?.("#tkm") ? (document.activeElement as HTMLElement).dataset.tksel : undefined;
   const st = d?.status || "working", helper = d?.kind === "helper";
   const back = M.back.length ? `<button type="button" class="tk-x tk-bk" data-tkup aria-label="Back to the task">${svg(P.back, 18)}</button>` : "";
   const head = `<div class="tk-mhead">${back}<span class="tk-badge b-${esc(st)}"><i></i>${esc(LABEL[st] || st)}</span>${helper ? `<span class="tk-tag">Background</span>` : ""}<h2 id="tkmt">${esc(d?.title || (M.err ? "Task card" : "Loading…"))}</h2><button type="button" class="tk-x" data-tkmx aria-label="Close">${svg(P.x, 18)}</button></div>`;
@@ -515,10 +526,26 @@ function paintModal(focus = false) {
     body = `<div class="tk-mbody one"><button type="button" class="tk-pback" data-tkpback>${svg(P.back, 18)}<span>${esc(d.title || "Task")}</span></button><div class="tk-pane" aria-label="${esc(lab)}">${paneHtml(d, k)}</div></div>`;
   } else body = `<div class="tk-mbody${phone ? " one" : ""}"><nav class="tk-rail" role="listbox" aria-label="Timeline">${railHtml(d, k)}</nav>${phone ? "" : `<section class="tk-pane">${paneHtml(d, k)}</section>`}</div>`;
   box.classList.toggle("phone", phone);
-  box.innerHTML = head + body;
-  const r = box.querySelector(".tk-rail"), p = box.querySelector(".tk-pane"); if (r) r.scrollTop = sc.r; if (p && !focus) p.scrollTop = sc.p;
+  // The same card, step and view repaints in place: only the parts whose markup changed are replaced (so a live event for another step leaves the open
+  // step, its Details box, a text selection and the focused button alone), and the scroll position of whatever is replaced is put back.
+  // Another card, step or view starts at the top.
+  const id = `${M.id}|${M.sel}|${M.view}|${phone}`, same = PAINTED === id && !focus; PAINTED = id;
+  keepScrolls(box, () => patchModal(box, head + body, same));
   if (focus) (box.querySelector<HTMLElement>(phone && M.view === "detail" ? "[data-tkpback]" : `[data-tksel="${M.sel}"]`) || box.querySelector<HTMLElement>("[data-tkmx]"))?.focus({ preventScroll: true });
   else if (fsel) box.querySelector<HTMLElement>(`[data-tksel="${CSS.escape(fsel)}"]`)?.focus({ preventScroll: true });
+}
+const sameEl = (x: Element, y: Element) => x.tagName === y.tagName && x.className === y.className;
+function swapPart(x: Element, y: Element) { if (PARTH.get(x) === y.outerHTML) return; PARTH.set(y, y.outerHTML); x.replaceWith(y); }
+function patchModal(box: HTMLElement, html: string, same: boolean) {
+  const t = document.createElement("template"); t.innerHTML = html;
+  const nb = [...t.content.children], na = [...box.children];
+  if (!same || na.length !== nb.length || !nb.every((y, i) => sameEl(na[i], y))) { box.innerHTML = html; box.querySelectorAll(":scope > *, :scope > .tk-mbody > *").forEach(c => PARTH.set(c, c.outerHTML)); return; }
+  nb.forEach((y, i) => {
+    const x = na[i]; if (!x.classList.contains("tk-mbody")) { swapPart(x, y); return; }
+    const xa = [...x.children], ya = [...y.children];
+    if (xa.length !== ya.length || !ya.every((c, j) => sameEl(xa[j], c))) { x.replaceWith(y); [y, ...y.children].forEach(c => PARTH.set(c, c.outerHTML)); return; }
+    ya.forEach((c, j) => swapPart(xa[j], c));
+  });
 }
 function select(sel: string, focus = true) {
   M.sel = sel; if (D?.phone()) M.view = "detail";

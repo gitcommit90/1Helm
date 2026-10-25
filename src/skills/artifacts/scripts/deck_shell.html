@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0c0c0d; overflow: hidden; }
+  #stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; background: #fff; }
+  #deck { display: block; width: 1920px; height: 1080px; border: 0; }
+  #bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; padding: 4px;
+    background: rgba(0, 0, 0, .82); color: #fff; border-radius: 999px; font: 13px/1 system-ui, sans-serif; opacity: 0; pointer-events: none;
+    transition: opacity .25s; z-index: 5; user-select: none; }
+  #bar.show { opacity: 1; pointer-events: auto; }
+  #bar button { all: unset; box-sizing: border-box; min-width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 999px; color: rgba(255, 255, 255, .8); cursor: pointer; padding: 0 8px; }
+  #bar button:hover { background: rgba(255, 255, 255, .16); color: #fff; }
+  #bar button:focus-visible { outline: 2px solid #fff; }
+  #count { min-width: 56px; text-align: center; font-variant-numeric: tabular-nums; }
+  #notes { position: fixed; left: 0; right: 0; bottom: 0; max-height: 38vh; overflow: auto; box-sizing: border-box; padding: 18px 28px 64px;
+    background: rgba(0, 0, 0, .9); color: #f2f2f2; font: 18px/1.55 system-ui, sans-serif; white-space: pre-wrap; display: none; z-index: 4; }
+  #notes.show { display: block; }
+  @page { size: 1920px 1080px; margin: 0; }
+  @media print {
+    html, body { background: none; overflow: visible; height: auto; }
+    #bar, #notes { display: none !important; }
+    #stage { position: static; transform: none !important; }
+  }
+</style>
+</head>
+<body>
+<div id="stage"><iframe id="deck" title="__TITLE__"></iframe></div>
+<div id="bar" role="toolbar" aria-label="Deck controls">
+  <button id="prev" type="button" aria-label="Previous slide" title="Previous (left arrow)">&#8249;</button>
+  <span id="count" aria-live="polite">1 / 1</span>
+  <button id="next" type="button" aria-label="Next slide" title="Next (right arrow, space)">&#8250;</button>
+  <button id="notesBtn" type="button" aria-label="Speaker notes" title="Speaker notes (N)">Notes</button>
+  <button id="full" type="button" aria-label="Full screen" title="Full screen (F)">Full screen</button>
+</div>
+<div id="notes" role="region" aria-label="Speaker notes"></div>
+<script>
+(function () {
+  var NOTES = __NOTES__;
+  var DOC = __DOC__;
+  var frame = document.getElementById("deck"), stage = document.getElementById("stage"), bar = document.getElementById("bar");
+  var notesEl = document.getElementById("notes"), countEl = document.getElementById("count");
+  var NAV = ["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End", " ", "r", "R"];
+  var current = -1, hideTimer = null;
+
+  function fit() {
+    var s = Math.min(innerWidth / 1920, innerHeight / 1080);
+    stage.style.transform = "translate(" + (innerWidth - 1920 * s) / 2 + "px," + (innerHeight - 1080 * s) / 2 + "px) scale(" + s + ")";
+  }
+  // The template's document may be in another origin, so the shell and it talk by messages (deck_bridge.js is its half).
+  function send(m) { try { frame.contentWindow.postMessage(m, "*"); } catch (e) {} }
+  function key(k) { send({ hc: "key", key: k }); }
+  function showBar() {
+    bar.classList.add("show");
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(function () { bar.classList.remove("show"); }, 2200);
+  }
+  function toggleFull() {
+    var d = document;
+    if (d.fullscreenElement || d.webkitFullscreenElement) (d.exitFullscreen || d.webkitExitFullscreen).call(d);
+    else { var el = d.documentElement; (el.requestFullscreen || el.webkitRequestFullscreen || function () {}).call(el); }
+  }
+  function toggleNotes() { notesEl.classList.toggle("show"); }
+  function onKey(e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key;
+    if (k === "f" || k === "F") { e.preventDefault(); toggleFull(); }
+    else if (k === "n" || k === "N") { e.preventDefault(); toggleNotes(); }
+    else if (NAV.indexOf(k) >= 0 || /^[0-9]$/.test(k)) { e.preventDefault(); key(k); }
+    showBar();
+  }
+  function setIndex(i, n) {
+    if (i < 0 || n < 1) return;
+    current = i;
+    countEl.textContent = (i + 1) + " / " + n;
+    notesEl.textContent = NOTES[i] || "(no notes for this slide)";
+    document.getElementById("notesBtn").style.opacity = NOTES.some(Boolean) ? "1" : ".5";
+  }
+  window.addEventListener("message", function (e) {
+    if (e.source !== frame.contentWindow || !e.data) return;
+    var d = e.data;
+    if (d.hc === "state") setIndex(d.index, d.count);
+    else if (d.hc === "key") onKey({ key: d.key, preventDefault: function () {} });
+    else if (d.hc === "activity") showBar();
+  });
+  window.addEventListener("keydown", onKey);
+  window.addEventListener("resize", fit);
+  window.addEventListener("mousemove", showBar, { passive: true });
+  window.addEventListener("focus", function () { frame.focus(); });
+  document.getElementById("prev").addEventListener("click", function () { key("ArrowLeft"); });
+  document.getElementById("next").addEventListener("click", function () { key("ArrowRight"); });
+  document.getElementById("full").addEventListener("click", toggleFull);
+  document.getElementById("notesBtn").addEventListener("click", toggleNotes);
+  document.addEventListener("fullscreenchange", fit);
+  frame.addEventListener("load", function () { frame.focus(); });
+  fit();
+  frame.srcdoc = DOC;
+})();
+</script>
+</body>
+</html>

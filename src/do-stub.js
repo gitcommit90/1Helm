@@ -15,6 +15,11 @@ export const RPC_SKEW_RE = /RPC receiver does not implement the method/i;
 export const rpcSkew = (e) => RPC_SKEW_RE.test(String(e?.message || e || ""));
 // A Durable Object (this one, or one it called) was reset by a deploy: its work is carried on (resume.js), never reported as an error.
 export const RESET_RE = /reset because its code was updated|Durable Object reset/i;
+// The platform dropped this object's connection mid-call (no deploy): Cloudflare words it "Network connection lost" or "Connection closed: this
+// Durable Object instance is no longer active". Alone it is ambiguous (a plain subrequest can say it too), so the Resident only treats it as a
+// reset when a write to its own storage fails as well (resident.js storageLost).
+export const LOST_RE = /Network connection lost|instance is no longer active|Connection closed/i;
+export const isLostErr = (e) => !!e && LOST_RE.test(String(e?.message ?? e));
 export const isResetErr = (e) => !!e && (e.objectReset === true || RESET_RE.test(String(e?.message ?? e)));
 export const doTransient = (e) => !!(e?.retryable || e?.overloaded || DO_TRANSIENT_RE.test(String(e?.message || e || "")));
 // The namespaces we wrap (wrangler durable_objects bindings).

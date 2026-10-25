@@ -1,0 +1,164 @@
+
+
+<!-- Navigation -->
+<div class="nav-dots" id="navDots"></div>
+<div class="slide-counter" id="slideCounter">1 / 10</div>
+<div class="nav-hint">&lt;-- ARROW KEYS to navigate --&gt;</div>
+
+<script>
+const slides = document.querySelectorAll('.slide');
+const totalSlides = slides.length;
+let currentSlide = 0;
+
+function showSlide(index) {
+  slides.forEach((s, i) => {
+    s.classList.toggle('active', i === index);
+  });
+  updateNavDots();
+  updateCounter();
+  if (index === 3) renderBarChart();
+  if (index === 5) renderPieChart();
+  if (index === 6) renderLineChart();
+}
+
+function nextSlide() {
+  if (currentSlide < totalSlides - 1) {
+    currentSlide++;
+    showSlide(currentSlide);
+  }
+}
+
+function prevSlide() {
+  if (currentSlide > 0) {
+    currentSlide--;
+    showSlide(currentSlide);
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') {
+    e.preventDefault();
+    nextSlide();
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    prevSlide();
+  } else if (e.key === 'Home') {
+    e.preventDefault();
+    currentSlide = 0;
+    showSlide(currentSlide);
+  } else if (e.key === 'End') {
+    e.preventDefault();
+    currentSlide = totalSlides - 1;
+    showSlide(currentSlide);
+  }
+});
+
+const dotsContainer = document.getElementById('navDots');
+for (let i = 0; i < totalSlides; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+  dot.addEventListener('click', () => { currentSlide = i; showSlide(i); });
+  dotsContainer.appendChild(dot);
+}
+
+function updateNavDots() {
+  document.querySelectorAll('.nav-dot').forEach((d, i) => {
+    d.classList.toggle('active', i === currentSlide);
+  });
+}
+
+function updateCounter() {
+  document.getElementById('slideCounter').textContent = (currentSlide + 1) + ' / ' + totalSlides;
+}
+
+let barChartInstance = null;
+let pieChartInstance = null;
+let lineChartInstance = null;
+
+function renderBarChart() {
+  const ctx = document.getElementById('barChart');
+  if (!ctx || barChartInstance) return;
+  barChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ['Q1', 'Q2', 'Q3', 'Q4'],
+      datasets: [{
+        label: 'Revenue ($M)',
+        data: [1.2, 1.5, 1.9, 2.1],
+        backgroundColor: ['#000080', '#0000a0', '#1084d0', '#000080'],
+        borderColor: '#000000',
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { font: { family: 'MS Sans Serif', size: 12 }, color: '#222' }, grid: { display: false } },
+        y: { ticks: { font: { family: 'MS Sans Serif', size: 12 }, color: '#222' }, grid: { color: '#c0c0c0', lineWidth: 1 }, beginAtZero: true }
+      }
+    }
+  });
+}
+
+function renderPieChart() {
+  const ctx = document.getElementById('pieChart');
+  if (!ctx || pieChartInstance) return;
+  pieChartInstance = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Enterprise', 'Mid-Market', 'Small Business', 'Government'],
+      datasets: [{
+        data: [42, 28, 18, 12],
+        backgroundColor: ['#000080', '#008000', '#008080', '#808000'],
+        borderColor: '#d4d0c8',
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { font: { family: 'MS Sans Serif', size: 12 }, color: '#222', padding: 14 } }
+      }
+    }
+  });
+}
+
+function renderLineChart() {
+  const ctx = document.getElementById('lineChart');
+  if (!ctx || lineChartInstance) return;
+  lineChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
+      datasets: [{
+        label: 'Active Users (K)',
+        data: [42, 48, 55, 62, 71, 78],
+        borderColor: '#000080',
+        backgroundColor: 'rgba(0,0,128,0.1)',
+        fill: true,
+        tension: 0.3,
+        pointBackgroundColor: '#000080',
+        pointBorderColor: '#ffffff',
+        pointBorderWidth: 2,
+        pointRadius: 5
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { font: { family: 'MS Sans Serif', size: 11 }, color: '#222' }, grid: { display: false } },
+        y: { ticks: { font: { family: 'MS Sans Serif', size: 11 }, color: '#222' }, grid: { color: '#d4d0c8' }, beginAtZero: false }
+      }
+    }
+  });
+}
+
+showSlide(0);
+</script>
+</body>
+</html>

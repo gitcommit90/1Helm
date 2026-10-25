@@ -33,6 +33,11 @@ export function salientLines(c, n = 3) {
 // at the end), so the start of the prompt changes only when a new batch is set aside. Batches drop to LOW of the budget, so the
 // prefix stays the same for many steps and the provider's prompt cache keeps hitting. `state` persists across steps of one request.
 export const REF_TOOLS = new Set(["read_skill", "read_doc"]), REF_USED_AFTER = 3, REF_KEEP = 12000, BOOKKEEPING = new Set(["update_todos", "work_log", "bring_back"]);
+// SOURCES (source-stays, 10-24: a helper read a 26k-char prompt.txt whole, the 20k "huge" rule cut it to head+tail at once, and half its 20 steps went to
+// bring_back and python prints to get the text back): what file_text / read_file returned is the job's source text. It is never cut and never set aside,
+// newest read first, up to SOURCE_BUDGET chars together (the caller lowers it for a small-context model) and SOURCE_MAX per result. It is not counted in the
+// working-set budget, so a big source doesn't push every other result aside. bring_back's restored copies use the same pool instead of PIN_BUDGET.
+export const SOURCE_TOOLS = new Set(["file_text", "read_file"]), SOURCE_MAX = 200000, SOURCE_BUDGET = 240000;
 export const BATCH_MARGIN = 1.1, PIN_MAX = 12000, PIN_BUDGET = 26000, MAIN_REF = /^\[1Helm skill: [\w-]+, reference: (?:presentation|pdf|document|spreadsheet|markdown|web-page)\]/;
 // Exact command lines a reference gives (node/python3/bash + a skill script + its arguments), first one per script.
 export function refCommands(c, n = 5) {
@@ -78,7 +83,10 @@ export function workingSet(messages, full, o = {}) {
   // ...until the build command first runs: from then on its PASS/FAIL report says what to fix, so they may go like any reference.
   const built = toolIdx.some((i) => nameOf(i) === "run_command" && /make_(deck|pdf|docx)\.sh|render_audit\.mjs|render_docx\.sh/.test(argsOf.get(out[i].tool_call_id) || ""));
   if (mainRef != null && !built) for (const i of toolIdx.filter((i) => REF_TOOLS.has(nameOf(i)) && i !== mainRef && skillOf(i) === skillOf(mainRef)).reverse()) pin(i);
-  for (const i of restored.reverse()) pin(i, Infinity);
+  // Source reads and restored copies: the second pool (see SOURCES above), newest first. A result that doesn't fit is an ordinary result again.
+  const srcBudget = o.sourceBudget ?? SOURCE_BUDGET, srcMax = o.sourceMax ?? SOURCE_MAX; let srcSize = 0; const srcPinned = new Set();
+  const pinSrc = (i) => { if (!pinned.has(i) && !st.aside.has(out[i].tool_call_id) && len(i) <= srcMax && srcSize + len(i) <= srcBudget) { pinned.add(i); srcPinned.add(i); srcSize += len(i); } };
+  for (const i of [...toolIdx].reverse()) if (restored.includes(i) || (SOURCE_TOOLS.has(nameOf(i)) && len(i) >= 400 && !/^\[(?:Same text|not set aside|already restored)/.test(String(out[i].content || "")))) pinSrc(i);
   st.pinned = new Set([...pinned].map((i) => out[i].tool_call_id));
   // Apply the sticky labels first (same text every step = same prefix bytes).
   for (const i of toolIdx) { const id = out[i].tool_call_id; if (st.aside.has(id) && !protectedIdx.has(i)) out[i] = { ...out[i], content: st.aside.get(id) }; }
@@ -90,7 +98,7 @@ export function workingSet(messages, full, o = {}) {
   for (const i of toolIdx) { const id = out[i].tool_call_id, c = String(out[i].content || "");
     if (c.length <= hugeAt || pinned.has(i) || (st.aside.has(id) && !protectedIdx.has(i))) continue;
     st.trimmed.add(id); out[i] = { ...out[i], content: `${c.slice(0, hugeKeep)}\n…[${c.length - 2 * hugeKeep} chars set aside, key ${id}; bring_back(key) for all]…\n${c.slice(-hugeKeep)}` }; }
-  let size = out.slice(base).reduce((a, m) => a + cost(m), 0);
+  let size = out.slice(base).reduce((a, m) => a + cost(m), 0) - srcSize;
   // References: used (REF_USED_AFTER real steps since) and still in full. Past REF_KEEP chars together → all set aside now.
   const isRef = (i) => REF_TOOLS.has(String(argsOf.get(out[i].tool_call_id) || "").match(/^\w+/)?.[0]);
   const real = toolIdx.filter((i) => !isRef(i) && !BOOKKEEPING.has(String(argsOf.get(out[i].tool_call_id) || "").match(/^\w+/)?.[0]));
@@ -128,6 +136,7 @@ export function bringBack(key, full, st) {
   if (v == null) return null;
   const m = String(v).match(/^\[restored ([^\]]+)\]\n/); if (m) { key = m[1]; v = full.get(key) ?? String(v).slice(m[0].length); }
   const by = st?.restoredBy?.get(key);
+  if (by && !st.aside?.has(by) && st.pinned && !st.pinned.has(by)) return `[already restored: ${key} was brought back once and was set aside again because the held text is over its limit. Read only the part you need (file_text with a section or query, or a command that prints those lines) instead of restoring it again.]`;
   if (by && !st.aside?.has(by)) return `[already restored: ${key} is shown in full above (the bring_back ${by}) and stays there for the rest of this request; read it there and carry on]`;
   if (st?.aside && !st.aside.has(key) && !st.trimmed?.has(key)) return `[not set aside: ${key} is still in full above; read it there and carry on]`;
   return `[restored ${key}]\n${v}`;
@@ -138,7 +147,7 @@ export function bringBack(key, full, st) {
 // fetched…", "Fetched …", "[restored …]", untrusted-content markers) and a different cut-off still match: a duplicate when 90% of the
 // new result's long lines are in the earlier one. Only results of DEDUPE_MIN chars or more, with at least 12 long lines.
 // Only for tools that return documents (a command's output can differ from the last run in one line that matters).
-export const DEDUPE_MIN = 3000, DEDUPE_EXACT = 500, DEDUPE_TOOLS = new Set(["fetch_url", "work_log", "read_skill", "read_doc", "read_file", "recall_history", "web_search", "bring_back"]);
+export const DEDUPE_MIN = 3000, DEDUPE_EXACT = 500, DEDUPE_TOOLS = new Set(["fetch_url", "work_log", "read_skill", "read_doc", "read_file", "file_text", "recall_history", "web_search", "bring_back"]);
 const longLines = (c) => new Set(String(c || "").split("\n").map((l) => l.trim()).filter((l) => l.length >= 40).slice(0, 600));
 export function sameAsShown(out, messages, st, base = 0, tool = "fetch_url") {
   const c = String(out || ""); if (!DEDUPE_TOOLS.has(tool)) return null;

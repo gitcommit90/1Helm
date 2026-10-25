@@ -1,0 +1,191 @@
+
+
+  </div>
+</div>
+
+<script>
+(function() {
+  const totalSlides = document.querySelectorAll('.slide').length;
+  let currentSlide = 0;
+  const container = document.getElementById('slidesContainer');
+  const counter = document.getElementById('slideCounter');
+  const dotsContainer = document.getElementById('navDots');
+
+  // Generate nav dots
+  for (let i = 0; i < totalSlides; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+    dot.addEventListener('click', () => goToSlide(i));
+    dotsContainer.appendChild(dot);
+  }
+
+  const dots = document.querySelectorAll('.nav-dot');
+
+  function updateUI() {
+    container.style.transform = `translateY(-${currentSlide * 100}vh)`;
+    counter.textContent = String(currentSlide + 1).padStart(2, '0') + ' / ' + totalSlides;
+    dots.forEach((d, i) => d.classList.toggle('active', i === currentSlide));
+    triggerAnimations(currentSlide);
+  }
+
+  function goToSlide(index) {
+    if (index < 0 || index >= totalSlides) return;
+    currentSlide = index;
+    updateUI();
+  }
+
+  function nextSlide() { goToSlide(currentSlide + 1); }
+  function prevSlide() { goToSlide(currentSlide - 1); }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowRight' || e.key === ' ') {
+      e.preventDefault();
+      nextSlide();
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+      e.preventDefault();
+      prevSlide();
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      goToSlide(0);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      goToSlide(totalSlides - 1);
+    }
+  });
+
+  // Touch / swipe support
+  let touchStartY = 0;
+  document.addEventListener('touchstart', (e) => { touchStartY = e.touches[0].clientY; });
+  document.addEventListener('touchend', (e) => {
+    const diff = touchStartY - e.changedTouches[0].clientY;
+    if (Math.abs(diff) > 50) {
+      diff > 0 ? nextSlide() : prevSlide();
+    }
+  });
+
+  // Wheel support with debounce
+  let wheelLock = false;
+  document.addEventListener('wheel', (e) => {
+    if (wheelLock) return;
+    wheelLock = true;
+    e.deltaY > 0 ? nextSlide() : prevSlide();
+    setTimeout(() => wheelLock = false, 800);
+  }, { passive: true });
+
+  // ===== ANIMATION TRIGGERS =====
+  function triggerAnimations(slideIndex) {
+    // Slide 4: Vertical bar chart
+    if (slideIndex === 3) {
+      document.querySelectorAll('#barChart .chart-bar').forEach((bar, i) => {
+        const h = bar.dataset.height;
+        setTimeout(() => {
+          bar.style.height = h + '%';
+        }, i * 120);
+      });
+      document.querySelectorAll('#barChart .chart-value').forEach((val, i) => {
+        const target = parseInt(val.dataset.value);
+        setTimeout(() => animateNumber(val, target, '', 800), i * 120);
+      });
+    } else {
+      document.querySelectorAll('#barChart .chart-bar').forEach(bar => bar.style.height = '0%');
+    }
+
+    // Slide 5: Horizontal bar chart
+    if (slideIndex === 4) {
+      document.querySelectorAll('#hbarChart .hbar-fill').forEach((fill, i) => {
+        const w = fill.dataset.width;
+        setTimeout(() => { fill.style.width = w + '%'; }, i * 100);
+      });
+    } else {
+      document.querySelectorAll('#hbarChart .hbar-fill').forEach(fill => fill.style.width = '0%');
+    }
+
+    // Slide 7: Stats counters
+    if (slideIndex === 6) {
+      document.querySelectorAll('#statsGrid .stat-number').forEach((el, i) => {
+        const target = parseFloat(el.dataset.target);
+        const suffix = el.dataset.suffix || '';
+        const isFloat = target % 1 !== 0;
+        setTimeout(() => animateNumber(el, target, suffix, 1200, isFloat), i * 150);
+      });
+    } else {
+      document.querySelectorAll('#statsGrid .stat-number').forEach(el => el.textContent = '0');
+    }
+  }
+
+  function animateNumber(el, target, suffix, duration, isFloat = false) {
+    const start = performance.now();
+    function tick(now) {
+      const progress = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const current = eased * target;
+      el.textContent = (isFloat ? current.toFixed(1) : Math.floor(current)) + suffix;
+      if (progress < 1) requestAnimationFrame(tick);
+      else el.textContent = (isFloat ? target.toFixed(1) : target) + suffix;
+    }
+    requestAnimationFrame(tick);
+  }
+
+  // ===== GENERATE STARFIELD =====
+  function generateStars(containerId, count = 40) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+      const star = document.createElement('div');
+      star.className = 'star';
+      star.style.left = Math.random() * 100 + '%';
+      star.style.top = Math.random() * 100 + '%';
+      star.style.animationDelay = Math.random() * 3 + 's';
+      container.appendChild(star);
+    }
+  }
+
+  generateStars('starfield1', 50);
+  generateStars('starfield4', 30);
+  generateStars('starfield7', 35);
+  generateStars('starfield10', 45);
+
+  // ===== GENERATE FLOATING PARTICLES =====
+  function generateParticles(containerId, colors, count = 12) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+      const p = document.createElement('div');
+      p.className = 'p';
+      const color = colors[i % colors.length];
+      p.style.background = color;
+      p.style.left = Math.random() * 100 + '%';
+      p.style.top = Math.random() * 100 + '%';
+      p.style.animationDelay = Math.random() * 5 + 's';
+      p.style.animationDuration = (6 + Math.random() * 6) + 's';
+      container.appendChild(p);
+    }
+  }
+
+  generateParticles('particles1', ['var(--neon-cyan)', 'var(--neon-pink)', 'var(--neon-yellow)'], 16);
+  generateParticles('particles10', ['var(--neon-cyan)', 'var(--neon-pink)', 'var(--neon-yellow)'], 20);
+
+  // ===== GENERATE PIXEL LANDSCAPE FOR CTA =====
+  function generateLandscape() {
+    const container = document.getElementById('landscape10');
+    if (!container) return;
+    const heights = [30, 50, 70, 40, 60, 35, 55, 45, 80, 25, 50, 40];
+    heights.forEach((h, i) => {
+      const mtn = document.createElement('div');
+      mtn.className = 'mountain';
+      mtn.style.height = h + 'px';
+      mtn.style.width = (60 + (i % 3) * 20) + 'px';
+      container.appendChild(mtn);
+    });
+  }
+  generateLandscape();
+
+  // Initialize
+  updateUI();
+})();
+</script>
+
+</body>
+</html>

@@ -8,8 +8,9 @@
 // v3.ts hooks in: maActs() inside each bubble, maQuote() above a sent reply, rqHtml() above the composer, rqTake() on send,
 // and maInit() once. The pure parts (copyPlain, excerpt) are tested in test/msgreply.test.mjs.
 
-export type Role = "agent" | "user";
-export type RRef = { id: string | null; role: Role; text: string };   // what the server gets (1HC reply-to.js)
+export type Role = "agent" | "user" | "zone";   // "zone": what the person has selected on the canvas (zone.ts), pinned like a reply
+export type ZoneRef = { file: string; name: string; kind: string; slide: number | null; of: number | null; slot: string | null; sel: string | null; label: string; text: string };
+export type RRef = { id: string | null; role: Role; text: string; zone?: ZoneRef };   // what the server gets (1HC reply-to.js)
 export type Pin = RRef & { mr: number };   // + the local message id (scroll target in this page)
 type Found = { mr: number; role: Role; id: string | null; plain: string; html: string };
 type Deps = {
@@ -60,6 +61,7 @@ const IC = {
   task: svg('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>', 15),
   tick: svg('<path d="M20 6 9 17l-5-5"/>', 15),
   x: svg('<path d="M18 6 6 18M6 6l12 12"/>', 15),
+  sel: svg('<path d="m5 3 14 7-6 2-2 6z"/>', 15),
 };
 const M = { open: null as string | null, copied: null as string | null, copiedT: 0 as any, top: 0 };
 const HOVER_SPACE = new Set<string>();
@@ -76,6 +78,7 @@ export const maOpenCls = (mr: number, part = "") => (M.open === actionKey(mr, pa
 // The quote above a sent reply. mr: the original's local id when this page knows it.
 export function maQuote(r: { role: Role; id?: string | null; text: string; mr?: number } | undefined) {
   if (!r?.text || !D) return "";
+  if (r.role === "zone") return `<span class="mq mqzone" aria-label="Selected on the canvas: ${esc(excerpt(r.text, 80))}">${IC.sel}<span class="mqt">${esc(excerpt(r.text, 120))}</span></span>`;
   const who = D.who(r.role);
   return `<button type="button" class="mq" data-mq="${esc(r.role)}|${esc(r.id || "")}|${r.mr ?? ""}" data-mqt="${esc(r.text.slice(0, 120))}" aria-label="Replying to ${esc(who)}: ${esc(excerpt(r.text, 80))}. Show that message">${IC.reply}<span class="mqw">${esc(who)}</span><span class="mqt">${esc(excerpt(r.text, 120))}</span></button>`;
 }
@@ -84,16 +87,17 @@ export function rqHtml(key = D?.key() || "") {
   const p = key ? PINS.get(key) : undefined;
   return `<div class="rq" id="rq-box">${p && D ? rqInner(p) : ""}</div>`;
 }
-const rqInner = (p: Pin) => { const who = D!.who(p.role);
+const rqInner = (p: Pin) => { if (p.role === "zone") return `<div class="rqin rqzone" role="group" aria-label="Selected on the canvas: ${esc(p.text)}"><div class="rqq"><span class="rqico">${IC.sel}</span><span class="rqtx"><b>Selected on the canvas</b><span>${esc(p.text)}</span></span></div><button type="button" class="rqx" data-rqx aria-label="Remove the selection" title="Remove the selection">${IC.x}</button></div>`;
+  const who = D!.who(p.role);
   return `<div class="rqin" role="group" aria-label="Replying to ${esc(who)}"><button type="button" class="rqq" data-mq="${p.role}|${esc(p.id || "")}|${p.mr}" data-mqt="${esc(p.text.slice(0, 120))}" title="Show that message"><span class="rqico">${IC.reply}</span><span class="rqtx"><b>Replying to ${esc(who)}</b><span>${esc(p.text)}</span></span></button><button type="button" class="rqx" data-rqx aria-label="Cancel reply" title="Cancel reply (Esc)">${IC.x}</button></div>`; };
 function rqPaint() { const el = document.getElementById("rq-box"); if (el) el.outerHTML = rqHtml(); }
 export const rqGet = (key = D?.key() || "") => (key ? PINS.get(key) || null : null);
-export function rqClear(key = D?.key() || "") { if (PINS.delete(key)) rqPaint(); }
+export function rqClear(key = D?.key() || "") { if (PINS.delete(key)) { rqPaint(); document.dispatchEvent(new CustomEvent("rq:clear", { detail: key })); } }
 // On send: the pin of this task (and the bar clears). The server gets { id, role, text }.
 export function rqTake(key = D?.key() || ""): Pin | null { const p = rqGet(key); if (p) { PINS.delete(key); rqPaint(); } return p; }
 // Put a taken pin back (a send that couldn't go: "still uploading" and the like never take it; this is for a send-later that failed).
 export function rqPut(key: string, p: Pin) { PINS.set(key, p); rqPaint(); }
-export const refOf = (p: Pin | null | undefined): RRef | null => (p ? { id: p.id, role: p.role, text: p.text } : null);
+export const refOf = (p: Pin | null | undefined): RRef | null => (p ? { id: p.id, role: p.role, text: p.text, ...(p.zone ? { zone: p.zone } : {}) } : null);
 
 // ---------- clipboard ----------
 export async function copyToClipboard(plain: string, html = "") {

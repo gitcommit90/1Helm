@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // render_audit.mjs: render an artifact's HTML source in headless Chrome, write
 // a PDF and/or PNGs, and print one JSON report with the render gates.
-// Shared by PDFs, slide decks and static web pages on the channel computer.
+// Shared by PDFs and static web pages on the channel computer. (A slide deck is checked by deck_check.mjs.)
 //
 // Usage (all paths absolute):
 //   node render_audit.mjs --html <src.html> [--pdf <out.pdf>] [--png-dir <dir>] [flags]
@@ -16,18 +16,9 @@
 //                              plus a page-level sideways-scroll check (page_overflow_x)
 //   --page-selector "<css>"    the page/slide elements (default ".slide-container, .page,
 //                              section.slide"); overflow and screenshots run over these
-//   --fonts "Family:wt,..."    faces that must render; without it, a deck's own
-//                              --slide-font-display / --slide-font-body are checked
+//   --fonts "Family:wt,..."    faces that must render
 //   --require-webfonts         a face must come from an @font-face in the document,
 //                              not from an installed font with the same name
-//   --structure-check          deck checks: cover image, broken images, canvas fill,
-//                              and the restraint read (furniture, uppercase, tracking)
-//   --style-plan <path>        the deck's style_plan.json: advisory plan comparison
-//   --require-fill [pct]       fail a slide whose content stops above pct (default 75)
-//                              of its canvas AND is packed against the top
-//   --require-cover-image      fail a deck whose first slide has no real image
-//   --require-restraint        fail slides with furniture classes, uppercase or tracking
-//                              (needs --structure-check)
 //   --require-geometry         compare the PDF's pages with the authored page boxes (needs --pdf)
 //   --require-text-floor       fail text under 8pt; advise when the body is mostly under 10pt
 //   --require-image-resolution fail images shown wider than their pixels (needs --pdf)
@@ -37,8 +28,7 @@
 //                              inside the artifact folder load
 //
 // Report: { ok, pdf, pages, pngs, fonts:{missing,unused,used,expected}, overflow:[{index,
-//   overflowY_px, overflowX_px}], cover_no_image?, broken_images?, fill?, restraint?, plan?,
-//   geometry?:{failures,advisories}, text_floor?, image_resolution?, page_overflow_x?,
+//   overflowY_px, overflowX_px}], geometry?:{failures,advisories}, text_floor?, image_resolution?, page_overflow_x?,
 //   browser_failures?, blocked_requests?, gate_failures?, advisories?, error? }
 // Diagnostics go to stderr. Exit 0 = ok, 1 = failed gate or render, 2 = bad arguments.
 //
@@ -63,9 +53,6 @@ if (process.argv[1] && import.meta.url.endsWith("/" + process.argv[1].split("/")
 }
 
 const DEFAULT_PAGE_SELECTOR = ".slide-container, .page, section.slide";
-// Default --require-fill: tells a deck whose slides stop half-way down from a
-// finished one, without flagging a deliberately sparse statement slide.
-const DEFAULT_REQUIRE_FILL_PCT = 75;
 const PAGE_LOAD_TIMEOUT_MS = 30_000;
 const FONTS_READY_TIMEOUT_MS = 10_000; // a face that never loads must not hang the run
 const CHART_SETTLE_MS = 600; // let canvas/rAF painting finish before screenshots
@@ -79,7 +66,6 @@ const PDF_EXPORT_OPTIONS = { preferCSSPageSize: true, printBackground: true, tag
 // Unknown flags only warn: a misspelled gate flag would otherwise pass silently.
 const KNOWN_FLAGS = new Set([
   "html", "pdf", "png-dir", "fonts", "require-webfonts", "page-selector", "viewport", "full-page",
-  "structure-check", "style-plan", "require-fill", "require-cover-image", "require-restraint",
   "require-geometry", "require-text-floor", "require-image-resolution", "gate", "report-out", "hermetic",
 ]);
 
@@ -132,21 +118,6 @@ function parseArgs(argv) {
   if (map.has("require-image-resolution") && !pdf) {
     throw new Error("render_audit: --require-image-resolution measures at the PDF's paper width and needs --pdf");
   }
-  if (map.has("require-restraint") && !map.has("structure-check")) {
-    throw new Error("render_audit: --require-restraint needs --structure-check");
-  }
-  let requireFillPct = null;
-  if (map.has("require-fill")) {
-    const raw = (map.get("require-fill") ?? "").trim();
-    if (raw === "") requireFillPct = DEFAULT_REQUIRE_FILL_PCT;
-    else {
-      const parsed = Number.parseFloat(raw);
-      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
-        throw new Error(`render_audit: --require-fill expects 0-100, got '${raw}'`);
-      }
-      requireFillPct = parsed;
-    }
-  }
   const fullPage = map.has("full-page");
   return {
     html,
@@ -157,12 +128,7 @@ function parseArgs(argv) {
     pageSelector: fullPage ? "body" : (map.get("page-selector") ?? "").trim() || DEFAULT_PAGE_SELECTOR,
     fonts: parseFonts((map.get("fonts") ?? "").trim()),
     requireWebfonts: map.has("require-webfonts"),
-    structureCheck: map.has("structure-check"),
-    stylePlan: (map.get("style-plan") ?? "").trim(),
     reportOut: (map.get("report-out") ?? "").trim(),
-    requireFillPct,
-    requireCoverImage: map.has("require-cover-image"),
-    requireRestraint: map.has("require-restraint"),
     requireGeometry: map.has("require-geometry"),
     requireTextFloor: map.has("require-text-floor"),
     requireImageResolution: map.has("require-image-resolution"),
@@ -264,16 +230,6 @@ function normalizePlatformFont(font) {
     isCustomFont: font.isCustomFont === true,
     glyphCount: Number(font.glyphCount ?? 0),
   };
-}
-
-// The deck's own theme faces (first family of each :root token), used when no --fonts is given.
-async function probeThemeFamilies(page) {
-  return page.evaluate(() => {
-    const root = getComputedStyle(document.documentElement);
-    return ["--slide-font-display", "--slide-font-body"]
-      .map((name) => root.getPropertyValue(name).split(",")[0].trim())
-      .filter(Boolean);
-  });
 }
 
 // What Chrome actually rasterized, via CDP. document.fonts.check() and computed styles
@@ -452,140 +408,6 @@ async function probeOverflow(page, selector) {
   );
 }
 
-// Deck image checks: a cover with no decoded image, and <img> tags that did not decode.
-async function probeStructure(page, selector) {
-  return page.evaluate((sel) => {
-    const slides = Array.from(document.querySelectorAll(sel));
-    const hasImage = (root) =>
-      Array.from(root.querySelectorAll("img")).some((i) => i.complete && i.naturalWidth > 0) ||
-      [root, ...root.querySelectorAll("*")].some((el) =>
-        (getComputedStyle(el).backgroundImage || "").includes("data:image"));
-    const broken_images = [];
-    slides.forEach((slide, index) => {
-      slide.querySelectorAll("img").forEach((img) => {
-        if (img.complete && img.naturalWidth === 0) {
-          broken_images.push({ index, src_head: (img.getAttribute("src") || "").slice(0, 24) });
-        }
-      });
-    });
-    return { cover_no_image: slides.length > 0 && !hasImage(slides[0]), broken_images };
-  }, selector);
-}
-
-// Deck restraint, read from computed style (so a CSS comment can't trip it): furniture
-// class names (kicker, eyebrow, pill, badge, chip, tag as the head noun), uppercase
-// transforms, and positive letter tracking over 0.5px. One finding per rule per slide.
-async function probeRestraint(page, selector) {
-  return page.evaluate((sel) => {
-    const FURNITURE = /^(kicker|eyebrow|pill|badge|chip|tag)$/i;
-    const MODIFIER =
-      /^(xs|sm|md|lg|xl|small|medium|large|alt|primary|secondary|dark|light|outline|solid|\d+)$/i;
-    const isHead = (piece) => {
-      const parts = piece.split(/[-_]/).filter(Boolean);
-      if (parts.length === 0) return false;
-      if (FURNITURE.test(parts[parts.length - 1])) return true;
-      return FURNITURE.test(parts[0]) && parts.slice(1).every((p) => MODIFIER.test(p));
-    };
-    const isFurniture = (cls) =>
-      cls.split(/\s+/).some((token) => token.split(/--|__/).filter(Boolean).some(isHead));
-    const TRACK_PX = 0.5;
-    const out = [];
-    Array.from(document.querySelectorAll(sel)).forEach((slide, index) => {
-      const findings = [];
-      const seen = new Set();
-      const add = (key, msg) => {
-        if (!seen.has(key)) { seen.add(key); findings.push(msg); }
-      };
-      for (const el of slide.querySelectorAll("*")) {
-        const style = getComputedStyle(el);
-        if (style.display === "none" || style.visibility === "hidden") continue;
-        const cls = (el.getAttribute("class") || "").trim();
-        if (cls && isFurniture(cls)) {
-          add("furniture", `furniture class "${cls.slice(0, 40)}"`);
-        }
-        const own = Array.from(el.childNodes)
-          .some((n) => n.nodeType === 3 && n.textContent.trim());
-        if (!own) continue;
-        const text = (el.textContent || "").trim().slice(0, 24);
-        if (style.textTransform === "uppercase") {
-          add("uppercase", `text-transform:uppercase on "${text}"`);
-        }
-        const spacing = Number.parseFloat(style.letterSpacing);
-        if (Number.isFinite(spacing) && spacing > TRACK_PX) {
-          add("tracking", `letter-spacing ${style.letterSpacing} on "${text}"`);
-        }
-      }
-      if (findings.length > 0) out.push({ index, findings });
-    });
-    return out;
-  }, selector);
-}
-
-// How far each page element's visible ink reaches inside its box. Ink is text, images
-// and anything with a background or border; a wrapper that only positions children is
-// not ink. A painted full-bleed surface reads as full, by design.
-async function probeFill(page, selector) {
-  return page.evaluate((sel) => {
-    const INK_TAGS = new Set(["IMG", "SVG", "CANVAS", "VIDEO"]);
-    const opaque = (color) =>
-      color !== "" && color !== "transparent"
-      && !/^rgba\(.*,\s*0(?:\.0+)?\)$/.test(color);
-    const paints = (style) =>
-      style.visibility !== "hidden" && style.display !== "none"
-      && Number.parseFloat(style.opacity || "1") > 0.01;
-    const marksInk = (node, style) =>
-      INK_TAGS.has(node.tagName.toUpperCase())
-      || style.backgroundImage !== "none"
-      || opaque(style.backgroundColor)
-      || ["Top", "Right", "Bottom", "Left"].some(
-        (side) => Number.parseFloat(style[`border${side}Width`]) > 0
-          && opaque(style[`border${side}Color`]),
-      );
-
-    const els = Array.from(document.querySelectorAll(sel));
-    return els.map((el, index) => {
-      const box = el.getBoundingClientRect();
-      if (box.height <= 0 || box.width <= 0) {
-        return { index, top_gap_pct: 0, v_fill_pct: 100, h_fill_pct: 100 };
-      }
-      let top = box.bottom;
-      let bottom = box.top;
-      let right = box.left;
-      const add = (r) => {
-        if (r.width <= 0 || r.height <= 0) return;
-        top = Math.min(top, Math.max(r.top, box.top));
-        bottom = Math.max(bottom, Math.min(r.bottom, box.bottom));
-        right = Math.max(right, Math.min(r.right, box.right));
-      };
-      const walker = document.createTreeWalker(
-        el,
-        NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
-      );
-      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-        if (node.nodeType === Node.TEXT_NODE) {
-          if (node.nodeValue.trim() === "") continue;
-          const parent = node.parentElement;
-          if (parent === null || !paints(getComputedStyle(parent))) continue;
-          const range = document.createRange();
-          range.selectNodeContents(node);
-          for (const r of range.getClientRects()) add(r);
-          continue;
-        }
-        const style = getComputedStyle(node);
-        if (paints(style) && marksInk(node, style)) add(node.getBoundingClientRect());
-      }
-      const pct = (edge, start, size) =>
-        Math.max(0, Math.min(100, Math.round(((edge - start) / size) * 100)));
-      return {
-        index,
-        top_gap_pct: pct(top, box.top, box.height),
-        v_fill_pct: pct(bottom, box.top, box.height),
-        h_fill_pct: pct(right, box.left, box.width),
-      };
-    });
-  }, selector);
-}
-
 // Text sizes as printed: per page element, visible text grouped by computed size,
 // measured under print media (the stylesheet the PDF uses). The verdict is pdf_text_floor.mjs.
 async function probeTextFloor(page, selector) {
@@ -717,34 +539,13 @@ async function probeImageResolution(page, selector, paperWidthPx) {
   }
 }
 
-// Slide ids in document order ('' when a slide has none).
-async function probeSlideIds(page, selector) {
-  return page.evaluate(
-    (sel) => Array.from(document.querySelectorAll(sel)).map((el) => el.id || ""),
-    selector,
-  );
-}
-
-// Built slides vs the style plan's layout_plan. Advisory only.
-function comparePlan(stylePlan, slideIds) {
-  const entries = Array.isArray(stylePlan?.layout_plan) ? stylePlan.layout_plan : [];
-  const planned = entries.map((entry) => (entry && entry.id) || "").filter((id) => id !== "");
-  const built = new Set(slideIds.filter((id) => id !== ""));
-  const plannedSet = new Set(planned);
-  return {
-    missing_slides: planned.filter((id) => !built.has(id)),
-    extra_slides: [...built].filter((id) => !plannedSet.has(id)),
-  };
-}
-
 // 1-based list, matching the page-NN.png names.
 function slideList(findings) {
   return findings.map((f) => f.index + 1).join(", ");
 }
 
-// "page" for documents, "slide" for decks.
-function unitWord(args) {
-  return args.requireGeometry && !args.structureCheck ? "page" : "slide";
+function unitWord() {
+  return "page";
 }
 
 function zeroPad(n, width) {
@@ -841,7 +642,7 @@ async function probePageOverflowX(page) {
 function evaluateGate(report, args) {
   const failures = [];
   const advisories = [];
-  const { fonts, overflow, broken_images: broken, fill, plan } = report;
+  const { fonts, overflow } = report;
 
   if (report.browser_failures !== undefined) {
     const shown = report.browser_failures.slice(0, 5);
@@ -850,7 +651,7 @@ function evaluateGate(report, args) {
   }
   // A missing face is reported but never fails: fix it when it's real.
   if (fonts.missing.length > 0) advisories.push(`fonts not rasterized: ${fonts.missing.join(", ")}`);
-  if (overflow.length > 0) failures.push(`content overflows its canvas on ${unitWord(args)}(s) ${slideList(overflow)}`);
+  if (overflow.length > 0) failures.push(`content overflows its canvas on ${unitWord()}(s) ${slideList(overflow)}`);
   if (report.page_overflow_x && report.page_overflow_x.overflow_px > PAGE_OVERFLOW_TOLERANCE_PX) {
     const o = report.page_overflow_x;
     failures.push(
@@ -874,31 +675,6 @@ function evaluateGate(report, args) {
   }
   if (report.image_resolution_not_measured !== undefined) {
     advisories.push(`image resolution could not be measured (${report.image_resolution_not_measured}); this check did not run`);
-  }
-  if (broken?.length > 0) failures.push(`broken image(s) on ${unitWord(args)}(s) ${slideList(broken)}`);
-  if (args.requireCoverImage && report.cover_no_image === true) failures.push("cover has no decoded image");
-  if (args.requireRestraint && Array.isArray(report.restraint) && report.restraint.length > 0) {
-    const shown = report.restraint.slice(0, 3).map((r) => `${r.index + 1}: ${r.findings.join(", ")}`);
-    const omitted = report.restraint.length - shown.length;
-    failures.push(
-      `banned slide furniture, uppercase, or letter tracking on ${unitWord(args)}(s) ${slideList(report.restraint)} ` +
-        `(${shown.join("; ")}${omitted > 0 ? `; ${omitted} more` : ""})`,
-    );
-  }
-  if (args.requireFillPct !== null && Array.isArray(fill)) {
-    // Sparse is fine when centred; the defect is content packed at the top with
-    // dead space below (bottom gap more than twice the top gap).
-    const topPacked = (f) => 100 - f.v_fill_pct > 2 * f.top_gap_pct;
-    const short = fill.filter((f) => f.v_fill_pct < args.requireFillPct && topPacked(f));
-    if (short.length > 0) {
-      failures.push(
-        `content stops short of the canvas (need >=${args.requireFillPct}% vertical fill) on slide(s) ` +
-          short.map((f) => `${f.index + 1}:${f.v_fill_pct}%`).join(", "),
-      );
-    }
-  }
-  if (plan !== undefined && plan.missing_slides.length > 0) {
-    advisories.push(`style plan slide(s) not built: ${plan.missing_slides.join(", ")}`);
   }
   report.gate_failures = failures;
   report.advisories = advisories;
@@ -995,12 +771,7 @@ async function runAudit(args) {
     // Font gate. Fails closed: if CDP can't inspect the text, the run fails.
     let fontProbe = null;
     try {
-      const requested = args.fonts.length > 0
-        ? args.fonts.map((face) => ({ family: face.family, weight: face.weight, label: `${face.family}:${face.weight}` }))
-        : (await probeThemeFamilies(page)).map((raw) => {
-            const family = raw.trim().replace(/^["']|["']$/g, "");
-            return { family, weight: null, label: family };
-          });
+      const requested = args.fonts.map((face) => ({ family: face.family, weight: face.weight, label: `${face.family}:${face.weight}` }));
       const seen = new Set();
       const gated = requested.filter((face) => {
         const familyKey = normalizeFamily(face.family);
@@ -1028,34 +799,6 @@ async function runAudit(args) {
     if (args.fullPage) report.page_overflow_x = await probePageOverflowX(page);
     else report.overflow = await probeOverflow(page, args.pageSelector);
     if (args.requireTextFloor) report.text_floor = await probeTextFloor(page, args.pageSelector);
-    if (args.structureCheck) {
-      const structure = await probeStructure(page, args.pageSelector);
-      report.cover_no_image = structure.cover_no_image;
-      report.restraint = await probeRestraint(page, args.pageSelector);
-      report.broken_images = structure.broken_images;
-      report.fill = await probeFill(page, args.pageSelector);
-    }
-    // A missing plan file is a normal state and skips the comparison; a plan that
-    // exists but doesn't parse is an error.
-    if (args.stylePlan) {
-      let raw = null;
-      try {
-        raw = await readFile(args.stylePlan, "utf8");
-      } catch (err) {
-        if (err?.code !== "ENOENT") throw new Error(`style plan unreadable at ${args.stylePlan}: ${err.message}`);
-        process.stderr.write(`render_audit: no style plan at ${args.stylePlan}; skipping the plan comparison\n`);
-      }
-      if (raw !== null) {
-        let plan;
-        try {
-          plan = JSON.parse(raw);
-        } catch (err) {
-          throw new Error(`style plan malformed at ${args.stylePlan}: ${err.message}`);
-        }
-        report.plan = comparePlan(plan, await probeSlideIds(page, args.pageSelector));
-      }
-    }
-
     if (args.pdf) {
       await page.pdf({ path: args.pdf, ...PDF_EXPORT_OPTIONS });
       process.stderr.write(`render_audit: wrote PDF ${args.pdf}\n`);

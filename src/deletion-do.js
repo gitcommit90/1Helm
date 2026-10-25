@@ -174,6 +174,8 @@ export const residentDeletion = {
     counts.user_input_receipts = delWhere(sql, "user_input_receipts", "session=?", sid);
     counts.user_questions = delWhere(sql, "user_questions", "session=?", sid);
     counts.photon_reply_sources = delWhere(sql, "photon_reply_sources", "session=?", sid);
+    counts.text_alerts = delWhere(sql, "text_alerts", "session=?", sid);   // text-alerts.js: texts sent from this task
+    try { if (JSON.parse(this.getRaw("text_focus") || "null")?.session === sid) this.put("text_focus", ""); } catch {}
     if(this.getRaw("last_text_question_session")===sid)this.put("last_text_question_session","");
     counts.pomodoro = delWhere(sql, "pomodoro", "session=?", sid) + delWhere(sql, "pomodoro_offers", "session=?", sid);
     delWhere(sql, "notif_state", "session=?", sid);   // notify.js: the last thing a push told them about this task

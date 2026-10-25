@@ -10,9 +10,9 @@ test("required-delegation and steer replies are the plain constants", () => {
   assert.ok(ack.ACK_JOB_STARTED_VARIANTS.length === 6);
   assert.equal(ack.ACK_UPDATE_SENT, "Got it.");
   const src = readFileSync(new URL("../src/resident.js", import.meta.url), "utf8");
-  assert.match(src, /tc\.orchestration\?\.requiredDelegation \? this\.nextJobAck\(\)/);
+  assert.match(src, /tc\.orchestration\?\.requiredDelegation \? this\.nextJobAck\(tc\)/);
   assert.doesNotMatch(src, /(?:\? |= )ACK_JOB_STARTED/);
-  assert.match(src, /\(tc\.orchestration\?\.steer \|\| tc\.orchestration\?\.review\) \? ACK_UPDATE_SENT/);
+  assert.match(src, /\(tc\.orchestration\?\.steer \|\| tc\.orchestration\?\.review\) \? this\.ack\(tc, ACK_UPDATE_SENT\)/);
   assert.doesNotMatch(src, /I have the work running|sent to the worker|I started the worker/);
 });
 
@@ -46,7 +46,7 @@ test("all 6 variant lines are person-facing acks", () => {
 
 test("the app and texting both get a line from the Resident counter", () => {
   const src = readFileSync(new URL("../src/resident.js", import.meta.url), "utf8");
-  assert.match(src, /nextJobAck\(\) \{[^}]*ack_job_n[^}]*put\("ack_job_n", n \+ 1\)[^}]*jobStartedReply\(n\)/);
+  assert.match(src, /nextJobAck\(tc = null\) \{[^}]*ack_job_n[^}]*put\("ack_job_n", n \+ 1\)[^}]*jobStartedReply\(n\)/);
   assert.doesNotMatch(src, /jobStartedReply\(tc\.viaText\)/);
   const p = readFileSync(new URL("../src/prompt/08-background-helpers.md", import.meta.url), "utf8");
   assert.match(p, /acknowledge a handed-off job in plain words such as "Checking this\."/);

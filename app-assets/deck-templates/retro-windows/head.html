@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Deck</title>
+<script src="hc-lib:chart.umd.min.js"></script>
+<style>
+  
+
+  :root {
+    --bg-gray: #c0c0c0;
+    --bg-light: #d4d0c8;
+    --bg-dark: #808080;
+    --blue-navy: #000080;
+    --blue-bright: #0000a0;
+    --blue-light: #1084d0;
+    --white: #ffffff;
+    --black: #000000;
+    --text-dark: #222222;
+    --btn-face: #d4d0c8;
+    --btn-highlight: #ffffff;
+    --btn-shadow: #404040;
+    --btn-dark-shadow: #000000;
+    --green-retro: #008000;
+    --red-retro: #800000;
+    --yellow-retro: #808000;
+    --cyan-retro: #008080;
+  }
+
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font-family: "MS Sans Serif", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    font-size: 16px;
+    background: var(--bg-dark);
+    color: var(--text-dark);
+  }
+
+  /* === CRT OVERLAY === */
+  .crt-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background:
+      repeating-linear-gradient(
+        0deg,
+        rgba(0,0,0,0.03) 0px,
+        rgba(0,0,0,0.03) 1px,
+        transparent 1px,
+        transparent 3px
+      );
+  }
+
+  /* === SLIDE SYSTEM === */
+  .slide {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw;
+    height: 100vh;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 32px 44px 32px;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+
+  .slide.active {
+    display: flex;
+    opacity: 1;
+  }
+
+  /* === WINDOW CHROME === */
+  .win-window {
+    background: var(--bg-light);
+    border: 2px solid var(--white);
+    border-right-color: var(--btn-dark-shadow);
+    border-bottom-color: var(--btn-dark-shadow);
+    box-shadow: inset 1px 1px 0 var(--btn-highlight), inset -1px -1px 0 var(--btn-shadow);
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 1200px;
+    height: 100%;
+    max-height: calc(100vh - 68px);
+  }
+
+  .win-titlebar {
+    background: linear-gradient(90deg, var(--blue-navy) 0%, var(--blue-bright) 100%);
+    color: var(--white);
+    padding: 4px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: bold;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+  }
+
+  .win-titlebar.inactive {
+    background: linear-gradient(90deg, #808080 0%, #a0a0a0 100%);
+  }
+
+  .win-title-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .win-icon {
+    width: 18px;
+    height: 18px;
+    background: var(--white);
+    border: 1px solid var(--black);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: var(--blue-navy);
+    font-weight: bold;
+  }
+
+  .win-buttons {
+    display: flex;
+    gap: 3px;
+  }
+
+  .win-btn {
+    width: 20px;
+    height: 18px;
+    background: var(--bg-light);
+    border: 2px solid var(--btn-highlight);
+    border-right-color: var(--btn-dark-shadow);
+    border-bottom-color: var(--btn-dark-shadow);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: bold;
+    color: var(--text-dark);
+    cursor: pointer;
+    line-height: 1;
+    padding-bottom: 2px;
+  }
+
+  .win-btn:active {
+    border: 2px solid var(--btn-dark-shadow);
+    border-right-color: var(--white);
+    border-bottom-color: var(--white);
+  }
+
+  .win-body {
+    padding: 20px 24px 24px 24px;
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* === BUTTONS === */
+  .btn-retro {
+    background: var(--btn-face);
+    border: 2px solid var(--btn-highlight);
+    border-right-color: var(--btn-dark-shadow);
+    border-bottom-color: var(--btn-dark-shadow);
+    padding: 6px 24px;
+    font-family: inherit;
+    font-size: 14px;
+    cursor: pointer;
+    color: var(--text-dark);
+    outline: none;
+  }
+
+  .btn-retro:active {
+    border: 2px solid var(--btn-dark-shadow);
+    border-right-color: var(--btn-highlight);
+    border-bottom-color: var(--btn-highlight);
+  }
+
+  .btn-retro:focus {
+    outline: 1px dotted var(--black);
+    outline-offset: -4px;
+  }
+
+  /* === PANELS & GROUP BOXES === */
+  .group-box {
+    border: 2px solid var(--btn-shadow);
+    border-right-color: var(--btn-highlight);
+    border-bottom-color: var(--btn-highlight);
+    padding: 20px 18px 16px 18px;
+    position: relative;
+    background: var(--bg-light);
+  }
+
+  .group-box-title {
+    position: absolute;
+    top: -10px;
+    left: 12px;
+    background: var(--bg-light);
+    padding: 0 8px;
+    font-size: 13px;
+    font-weight: bold;
+    color: var(--text-dark);
+  }
+
+  .panel-raised {
+    background: var(--bg-light);
+    border: 2px solid var(--btn-highlight);
+    border-right-color: var(--btn-dark-shadow);
+    border-bottom-color: var(--btn-dark-shadow);
+    padding: 16px;
+  }
+
+  .panel-sunken {
+    background: var(--white);
+    border: 2px solid var(--btn-shadow);
+    border-right-color: var(--btn-highlight);
+    border-bottom-color: var(--btn-highlight);
+    padding: 12px;
+  }
+
+  /* === PROGRESS BAR === */
+  .progress-bar {
+    width: 100%;
+    height: 24px;
+    background: var(--white);
+    border: 2px solid var(--btn-shadow);
+    border-right-color: var(--btn-highlight);
+    border-bottom-color: var(--btn-highlight);
+    padding: 2px;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: var(--blue-navy);
+    transition: width 0.5s ease;
+  }
+
+  /* === TEXT STYLES === */
+  .pixel-font {
+    font-family: 'Press Start 2P', cursive;
+  }
+
+  .terminal-font {
+    font-family: 'VT323', monospace;
+    font-size: 22px;
+  }
+
+  .text-center { text-align: center; }
+
+  .text-xl { font-size: 32px; font-weight: bold; }
+  .text-lg { font-size: 22px; }
+  .text-md { font-size: 18px; }
+  .text-sm { font-size: 14px; }
+  .text-xs { font-size: 12px; }
+
+  .text-blue { color: var(--blue-navy); }
+  .text-green { color: var(--green-retro); }
+  /* data-trend="up|down|flat" (plus "good" or "bad" when the data says so) sets the arrow and colour from the slide's data; with no tone the figure stays plain. */
+  [data-trend~="up"]::before { content: "\25B2 "; }
+  [data-trend~="down"]::before { content: "\25BC "; }
+  [data-trend~="flat"]::before { content: "\2014 "; }
+  [data-trend~="good"] { color: var(--green-retro); }
+  [data-trend~="bad"] { color: #b00020; }
+  .text-red { color: var(--red-retro); }
+  .text-gray { color: #555; }
+
+  /* === LAYOUT UTILITIES === */
+  .flex { display: flex; }
+  .flex-col { flex-direction: column; }
+  .items-center { align-items: center; }
+  .justify-center { justify-content: center; }
+  .justify-between { justify-content: space-between; }
+  .gap-1 { gap: 6px; }
+  .gap-2 { gap: 10px; }
+  .gap-3 { gap: 16px; }
+  .gap-4 { gap: 24px; }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+  .grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 18px; }
+
+  .w-full { width: 100%; }
+  .h-full { height: 100%; }
+
+  .mt-1 { margin-top: 6px; }
+  .mt-2 { margin-top: 12px; }
+  .mt-3 { margin-top: 20px; }
+  .mb-1 { margin-bottom: 6px; }
+  .mb-2 { margin-bottom: 12px; }
+  .mb-3 { margin-bottom: 20px; }
+
+  .p-1 { padding: 6px; }
+  .p-2 { padding: 10px; }
+
+  .flex-1 { flex: 1; }
+  .flex-2 { flex: 2; }
+  .shrink-0 { flex-shrink: 0; }
+
+  /* === HORIZONTAL RULE === */
+  hr.retro {
+    border: none;
+    border-top: 1px solid var(--btn-shadow);
+    border-bottom: 1px solid var(--btn-highlight);
+    margin: 14px 0;
+    flex-shrink: 0;
+  }
+
+  /* === LIST STYLES === */
+  ul.retro-list {
+    list-style: none;
+    padding-left: 0;
+  }
+
+  ul.retro-list li {
+    padding: 5px 0 5px 22px;
+    position: relative;
+    font-size: 15px;
+  }
+
+  ul.retro-list li::before {
+    content: ">";
+    position: absolute;
+    left: 4px;
+    color: var(--blue-navy);
+    font-weight: bold;
+  }
+
+  /* === CHECKBOX === */
+  .retro-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    padding: 3px 0;
+  }
+
+  .check-box {
+    width: 16px;
+    height: 16px;
+    background: var(--white);
+    border: 2px solid var(--btn-dark-shadow);
+    border-right-color: var(--btn-highlight);
+    border-bottom-color: var(--btn-highlight);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: bold;
+    flex-shrink: 0;
+  }
+
+  /* === CHART CONTAINERS === */
+  .chart-container {
+    position: relative;
+    height: 100%;
+    min-height: 200px;
+    width: 100%;
+  }
+
+  .chart-container-sm {
+    position: relative;
+    height: 100%;
+    min-height: 160px;
+    width: 100%;
+  }
+
+  /* === NAVIGATION DOTS === */
+  .nav-dots {
+    position: fixed;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 8px;
+    z-index: 100;
+  }
+
+  .nav-dot {
+    width: 12px;
+    height: 12px;
+    background: var(--bg-gray);
+    border: 2px solid var(--btn-highlight);
+    border-right-color: var(--btn-dark-shadow);
+    border-bottom-color: var(--btn-dark-shadow);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .nav-dot.active {
+    background: var(--blue-navy);
+  }
+
+  .nav-dot.active::after {
+    content: "";
+    width: 4px;
+    height: 4px;
+    background: var(--white);
+  }
+
+  .slide-counter {
+    position: fixed;
+    bottom: 10px;
+    right: 16px;
+    font-size: 12px;
+    color: var(--bg-dark);
+    background: var(--bg-light);
+    padding: 3px 10px;
+    border: 1px solid var(--btn-shadow);
+    z-index: 100;
+  }
+
+  .nav-hint {
+    position: fixed;
+    bottom: 10px;
+    left: 16px;
+    font-size: 16px;
+    color: #505050;
+    z-index: 100;
+    font-family: 'VT323', monospace;
+  }
+
+  /* === TABLE === */
+  table.retro-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+
+  table.retro-table th {
+    background: var(--bg-gray);
+    border: 1px solid var(--btn-shadow);
+    padding: 6px 10px;
+    text-align: left;
+    font-weight: bold;
+  }
+
+  table.retro-table td {
+    border: 1px solid var(--bg-gray);
+    padding: 6px 10px;
+    background: var(--white);
+  }
+
+  table.retro-table tr:nth-child(even) td {
+    background: #f0f0f0;
+  }
+
+  /* === MARQUEE === */
+  .marquee-container {
+    overflow: hidden;
+    white-space: nowrap;
+    background: var(--white);
+    border: 1px inset var(--bg-gray);
+    padding: 3px 0;
+  }
+
+  .marquee-text {
+    display: inline-block;
+    animation: marquee 14s linear infinite;
+    font-size: 14px;
+    color: var(--text-dark);
+  }
+
+  @keyframes marquee {
+    0% { transform: translateX(100%); }
+    100% { transform: translateX(-100%); }
+  }
+
+  /* === TREE VIEW === */
+  .tree-item {
+    font-size: 14px;
+    padding: 2px 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .tree-icon {
+    width: 18px;
+    height: 18px;
+    text-align: center;
+    font-size: 12px;
+    line-height: 18px;
+    flex-shrink: 0;
+  }
+
+  /* === SEPARATOR === */
+  .separator {
+    width: 2px;
+    background: var(--btn-shadow);
+    border-left: 1px solid var(--btn-highlight);
+    margin: 0 12px;
+  }
+
+  /* === SCROLLBAR === */
+  ::-webkit-scrollbar {
+    width: 16px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--bg-gray);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--bg-gray);
+    border: 2px solid var(--btn-highlight);
+    border-right-color: var(--btn-dark-shadow);
+    border-bottom-color: var(--btn-dark-shadow);
+  }
+
+  /* === HOURGLASS === */
+  .hourglass {
+    font-size: 40px;
+  }
+
+  /* === RESPONSIVE === */
+  @media (max-width: 900px) {
+    .grid-4 { grid-template-columns: 1fr 1fr; }
+    .slide { padding: 15px 20px 40px 20px; }
+  }
+</style>
+<!--hc-fonts-->
+</head>
+<body>
+
+<div class="crt-overlay"></div>
+
+<!-- ======================== SLIDE 1: TITLE / SPLASH ======================== -->

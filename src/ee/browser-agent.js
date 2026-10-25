@@ -143,6 +143,7 @@ export async function runBrowserTask(res, C, a, tc, { guard, ownerToken = null, 
       const before = outline;
       const purchaseBlock = ownerToken != null && purchaseGuard ? browserPurchaseGuard(act[pick], page) : null;
       if (purchaseBlock) return { code: 1, charge: st.charge, out: `browser_task stopped after ${st.steps} step(s), before a browser action: ${purchaseBlock}\nPage: ${page.title || ""} — ${page.url}\n`, page };
+      res.noteBrowserActs?.(act[pick], page);   // a buy or checkout click opens the short window in which a page's payment request is asked about
       const no = guard ? await guard(act[pick], page) : null;
       if ((yielded = handBack())) return yielded;
       if (no) return { code: 1, charge: st.charge, out: `browser_task stopped after ${st.steps} step(s), before a browser action: ${no}\nPage: ${page.title || ""} — ${page.url}\n`, page };

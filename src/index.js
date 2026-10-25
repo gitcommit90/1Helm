@@ -19,6 +19,7 @@ import { cardRoute } from "./cards.js";
 import { logoRoute } from "./logo.js";
 import { appLogoRoute } from "./ee/index.js";
 import { isPublicShare, servePublic, shareApi, attachOffers } from "./share.js";
+import { LONG_MESSAGE } from "./long-message.js";
 import { safeName, mimeOf, servedHeaders, MAX_UPLOAD, MAX_VIEW, storeUpload, storeView } from "./files.js";
 import { previewFileName } from "./file-preview.js";
 import { stComplete, stDelete, room, fullMessage, noteRefused, storageOf, storageView, setBlocks, syncBlocks, recount, recountStale, noticeSeen, rearmNotice, RECOUNT_MS } from "./storage.js";
@@ -61,7 +62,7 @@ import { landingPage, selfHostedSignInPage, checkEmailPage, expiredPage, onboard
 import { createSignIn, decoyPending, verifyCode, pendingEmail, pendingCookie, clearPendingCookie, signInEmail, sweepCodeFails, RESEND_WAIT } from "./signin-code.js";
 import { releasesPage, pushRelease, undoRelease, isReleaseAdmin } from "./internal-shim.js";
 import { kanbanProxy } from "./internal-shim.js";
-import { AGE_VERSION, AGE_ERROR, ageOf, ageCookie, agePage, ageNext, recordAge } from "./age-gate.js";
+import { AGE_VERSION, AGE_ERROR, ageOf, ageCookie, ageClaim, agePage, ageNext, recordAge } from "./age-gate.js";
 import { modelsRoute } from "./ee/index.js";
 import { hindsightRoute } from "./ee/index.js";   // the memory server model endpoint (Cloud only, 404 without the Cloud switch)
 import { hsOn, sweepMemory, recall as hsRecall, bankId as hsBankId } from "./mem0.js";
@@ -183,7 +184,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "291";
+const APP_V = "305";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -416,25 +417,30 @@ async function ensureSelfHostedTenant(env, user) {
   return tenantOf(env, user.id);
 }
 // Check before reading a new email body. A pending pre-deploy sign-in can finish/resend its own email, never another address.
-async function ageAccess(req, env, { allowPending = true } = {}) {
+async function ageAccess(req, env, { allowPending = true, claim = null } = {}) {
   const age = await ageOf(req, env);
   if (age) return { age, allowed: true };
+  // The attestation carried by the submit itself (the checked box on the sign-in form) counts like the separate acknowledgement, and
+  // sets the same cookie. It is checked before a pending sign-in, so a person can start over with a different email.
+  const c = await ageClaim(env, claim);
+  if (c) return { age: c.age, allowed: true, cookie: c.cookie };
   if (await currentUser(req, env)) return { allowed: true };
   if (!allowPending) return { allowed: false };
   const pending = await pendingEmail(env, req);
   return { allowed: !!pending, pending };
 }
+const withAgeCookie = (res, access) => { if (access?.cookie) res.headers.append("set-cookie", access.cookie); return res; };
 async function onboardApi(req, env, url, op) {
   const origin = httpsOrigin(url);
   let body = {};
   try {
     let access;
+    if (req.method === "POST") body = await boundedJson(req, 32_768);
     if (req.method === "POST" && op !== "code") {
       const o = req.headers.get("origin"); if (o && o !== origin) return json({ error: "Not allowed." }, 403);
-      access = eeEnabled(env) ? await ageAccess(req, env) : { allowed: true };
+      access = eeEnabled(env) ? await ageAccess(req, env, { claim: op === "email" ? { adult: body.adult, version: body.age_version } : null }) : { allowed: true };
       if (!access.allowed) return json(AGE_ERROR, 403);
     }
-    if (req.method === "POST") body = await boundedJson(req, 32_768);
     if (op === "email" && req.method === "POST") {
       const email = String(body.email || "").trim().toLowerCase();
       if (access.pending && access.pending !== email) return json(AGE_ERROR, 403);
@@ -445,9 +451,9 @@ async function onboardApi(req, env, url, op) {
       // One email, two ways in: the link and a 6-digit code (src/signin-code.js). The code works only in this browser (hc_signin cookie).
       const plan = PLANS[body.plan] ? body.plan : "", si = await createSignIn(env, email, { age: access.age });
       const link = `${origin}/auth/verify?token=${si.token}${plan ? `&plan=${plan}` : ""}`, ck = { "set-cookie": pendingCookie(si.pending) };
-      if (eeEnabled(env) && env.TEST_MODE === "1" && /@example\.(com|org|net)$/.test(email)) return json({ ok: true, test_link: link, test_code: si.code, resend_wait: RESEND_WAIT }, 200, ck);
+      if (eeEnabled(env) && env.TEST_MODE === "1" && /@example\.(com|org|net)$/.test(email)) return withAgeCookie(json({ ok: true, test_link: link, test_code: si.code, resend_wait: RESEND_WAIT }, 200, ck), access);
       try { await sendMagicLink(env, email, link, si.code); } catch (e) { console.error("magic link send failed", e?.code, e?.message); return json({ error: "We couldn't send your sign-in email just now. Try again in a minute." }); }
-      return json({ ok: true, resend_wait: RESEND_WAIT }, 200, ck);
+      return withAgeCookie(json({ ok: true, resend_wait: RESEND_WAIT }, 200, ck), access);
     }
     // The 6-digit code from the sign-in email, typed on this device. Same session as the link (newSession + hc_session).
     if (op === "code" && req.method === "POST") {
@@ -460,7 +466,6 @@ async function onboardApi(req, env, url, op) {
     if (!user) {
       // Waiting on a code in this browser (a reload, or the installed app coming back from Mail): back to the code screen.
       const pe = op === "state" ? await pendingEmail(env, req) : "";
-      if (eeEnabled(env) && op === "state" && !pe && !await ageOf(req, env)) return json(AGE_ERROR, 403);
       return json(pe ? { signed_in: false, step: "email", email: pe, pending: true, resend_wait: RESEND_WAIT } : { signed_in: false, step: "account" });
     }
     if (!eeEnabled(env)) {
@@ -681,10 +686,9 @@ export default {
           const hostInfo = { host: url.hostname, appHost: env.APP_HOST || url.hostname, helper: helperName(ht), avatar: Number(ht.helper_avatar || 8) };
           if (p === "/auth/start" && req.method === "POST") {
             // Real and decoy pending cookies must never change this page's appearance or reveal the owner's email.
-            const access = await ageAccess(req, env, { allowPending: false });
-            if (!access.allowed) return agePage({ next: "/", error: AGE_ERROR.error, status: 403 });
-            const email = String((await boundedForm(req)).get("email") || "").trim().toLowerCase();
-            if (access.pending && access.pending !== email) return agePage({ next: "/", error: AGE_ERROR.error, status: 403 });
+            const f = await boundedForm(req), email = String(f.get("email") || "").trim().toLowerCase();
+            const access = await ageAccess(req, env, { allowPending: false, claim: { adult: f.get("adult"), version: f.get("version") } });
+            if (!access.allowed) return hostSignInPage({ ...hostInfo, email, error: AGE_ERROR.error, status: 403 });
             if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return hostSignInPage({ ...hostInfo, email, error: "Enter a valid email address." });
             const ou = await env.DB.prepare("SELECT email FROM users WHERE id=?").bind(ht.owner_user_id).first();
             let testLink = "", testCode = "", pending = decoyPending();
@@ -699,7 +703,7 @@ export default {
                 else { try { await sendMagicLink(env, email, link, si.code); } catch (e) { console.error("host magic link", e?.message); return hostSignInPage({ ...hostInfo, email, error: "We couldn't send the email just now. Try again in a minute." }); } }
               }
             }
-            return withCookie(hostSignInPage({ ...hostInfo, email, sent: true, testLink, testCode, wait: RESEND_WAIT }), pendingCookie(pending));
+            return withAgeCookie(withCookie(hostSignInPage({ ...hostInfo, email, sent: true, testLink, testCode, wait: RESEND_WAIT }), pendingCookie(pending)), access);
           }
           // The code typed on the "Check your email" page at the person's own address.
           if (p === "/auth/code" && req.method === "POST") {
@@ -710,13 +714,11 @@ export default {
             if (!cu || cu.id !== ht.owner_user_id) return hostSignInPage({ ...hostInfo, email, sent: true, codeError: "That code isn't right. Check the newest email from 1Helm and try again.", codeKind: "wrong", wait: 0 });
             return signedIn(env, req, r.email, { location: `/w/${ht.slug}/app`, age: r.age });
           }
-          if (!owner && (p === "/" || p === "/onboard") && !(await ageAccess(req, env, { allowPending: false })).allowed) return agePage({ next: "/" });
           if (p === "/" || p === "/onboard") return owner ? Response.redirect(`${origin}/w/${ht.slug}/app${url.search}`, 302) : hostSignInPage(hostInfo);
           const open = p === "/auth/verify" || p === "/auth/code" || p === "/auth/handoff" || p === "/auth/logout" || p === "/auth/email-change" || p === "/health" || p.startsWith("/hooks/") || p === "/stripe/webhook" ||
             p.startsWith("/app-static/") || p.startsWith("/onboard/") || p.startsWith("/fonts/") || p.startsWith("/av/") || p.startsWith("/c/") || /^\/1helm-(icon|sailboat)/.test(p);
           if (!owner && !open) {
             if (p.includes("/api/")) return json({ error: "signed_out" }, 401);
-            if (!(await ageAccess(req, env, { allowPending: false })).allowed) return agePage({ next: "/" });
             return hostSignInPage(hostInfo);
           }
           if (p.startsWith("/w/") && !p.startsWith(`/w/${ht.slug}/`) && !p.startsWith(`/w/${ht.slug}`)) return Response.redirect(`https://${env.APP_HOST || url.hostname}${p}${url.search}`, 302);
@@ -735,7 +737,6 @@ export default {
         const h = new Headers(r.headers); h.delete("content-length"); h.delete("content-encoding"); h.delete("etag");
         return versionedAsset(url, new Response(JSON.stringify(visibleCatalog(await r.json())), { status: 200, headers: h }));
       }
-      if ((p === "/onboard/v1/" || p === "/onboard/v1/index.html") && !(await ageAccess(req, env, { allowPending: false })).allowed) return agePage();
       if (env.ASSETS && (p.startsWith("/app-static/") || p.startsWith("/onboard-static/") || p.startsWith("/onboard/v1/") || p === "/onboard/kit.js" || p === "/onboard/kit.css" || p.startsWith("/fonts/") || p.startsWith("/av/") || p === "/1helm-sailboat.png" || PWA_ICON_RE.test(p))) return versionedAsset(url, await env.ASSETS.fetch(req));
       if (p === "/admin/reconcile") {
         if (req.method !== "POST" || env.ENV_NAME !== "dev" || env.TEST_MODE !== "1" || req.headers.get("origin") !== origin || !isReleaseAdmin(env, await currentUser(req, env)))
@@ -788,9 +789,9 @@ export default {
       }
 
       if (p === "/auth/start" && req.method === "POST") {
-        const access = eeEnabled(env) ? await ageAccess(req, env) : { allowed: true };
-        if (!access.allowed) return agePage({ error: AGE_ERROR.error, status: 403 });
-        const email = String((await boundedForm(req)).get("email") || "").trim().toLowerCase();
+        const f = await boundedForm(req), email = String(f.get("email") || "").trim().toLowerCase();
+        const access = eeEnabled(env) ? await ageAccess(req, env, { claim: { adult: f.get("adult"), version: f.get("version") } }) : { allowed: true };
+        if (!access.allowed || (access.pending && access.pending !== email)) return landingPage({ error: AGE_ERROR.error, email, status: 403 });
         if (access.pending && access.pending !== email) return agePage({ error: AGE_ERROR.error, status: 403 });
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return eeEnabled(env) ? landingPage({ error: "Enter a valid email address.", email }) : await selfHostedPage(env, { error: "Enter a valid email address.", email });
         if (!eeEnabled(env) && !(await ownerAllowsEmail(env, email))) return page("Sign-in closed", "<p>This server already has an owner.</p>");
@@ -801,10 +802,10 @@ export default {
           if (Number(recent?.n || 0) > 5) return checkEmailPage(email, "", false, { error: "We just sent you a few links. Check your inbox (and spam) for the newest one.", wait: 0, emailFrom: env.EMAIL_FROM });
         }
         const si = await createSignIn(env, email, { age: access.age }), link = `${origin}/auth/verify?token=${si.token}`;
-        if (testAddr) return withCookie(checkEmailPage(email, link, true, { testCode: si.code, wait: RESEND_WAIT, emailFrom: env.EMAIL_FROM }), pendingCookie(si.pending));
+        if (testAddr) return withAgeCookie(withCookie(checkEmailPage(email, link, true, { testCode: si.code, wait: RESEND_WAIT, emailFrom: env.EMAIL_FROM }), pendingCookie(si.pending)), access);
         try { await sendMagicLink(env, email, link, si.code); }
         catch (e) { console.error("magic link send failed", e?.code, e?.message); return eeEnabled(env) ? landingPage({ error: "We couldn't send your sign-in email just now. Try again in a minute.", email }) : await selfHostedPage(env, { error: "We couldn't send your sign-in email just now. Try again in a minute.", email }); }
-        return withCookie(checkEmailPage(email, "", false, { wait: RESEND_WAIT, emailFrom: env.EMAIL_FROM }), pendingCookie(si.pending));
+        return withAgeCookie(withCookie(checkEmailPage(email, "", false, { wait: RESEND_WAIT, emailFrom: env.EMAIL_FROM }), pendingCookie(si.pending)), access);
       }
       // The code from the sign-in email, typed on the "Check your email" page (src/signin-code.js).
       if (p === "/auth/code" && req.method === "POST") {
@@ -847,7 +848,6 @@ export default {
         const u = await currentUser(req, env), t = u && await tenantOf(env, u.id);
         if (!eeEnabled(env)) return u && t ? Response.redirect(`${origin}${homeUrl(t, "", req)}`, 302) : await selfHostedPage(env);
         if (t && t.status === "active" && onboarded(t) && onboardDone(t)) return Response.redirect(`${origin}${homeUrl(t, "", req)}`, 302);
-        if (!u && !(await ageAccess(req, env)).allowed) return agePage({ next: `/onboard${url.search}` });
         const r = await env.ASSETS.fetch(new Request(`${origin}/onboard/v1/index.html`));
         return new Response((await r.text()).replaceAll("__V__", ONBOARD_V), { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" } });
       }
@@ -1668,8 +1668,8 @@ export default {
           else return json({ error: "action must be start, stop, continue, presence, mic, speaker, apply or skip" }, 400);
           return json(v, v?.error ? 409 : 200);
         }
-        // Files: /api/res/<ch>/files (GET list, POST upload: raw body + x-file-name) · /files/<id> (GET bytes, ?dl=1 download) · /files/<id>/view (POST small JPEG for the model) · /files/<id>/delete
-        const fm = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/files(?:\/([0-9a-f-]{36})(?:\/(view|delete|preview|transcript(?:\/speakers)?))?)?$/);
+        // Files: /api/res/<ch>/files (GET list, POST upload: raw body + x-file-name) · /files/<id> (GET bytes, ?dl=1 download) · /files/<id>/view (POST small JPEG for the model) · /files/<id>/delete · /files/<id>/zone-edit (POST) · /files/<id>/zone-info (GET)
+        const fm = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/files(?:\/([0-9a-f-]{36})(?:\/(view|delete|preview|zone-edit|zone-info|transcript(?:\/speakers)?))?)?$/);
         if (fm) {
           const chans = await archive(env, t.id).channels(), slugOf = (c) => c.slug || c.name, ch = chans.find((c) => slugOf(c) === fm[1]);
           if (!ch) return json({ error: "no such channel" }, 404);
@@ -1685,6 +1685,8 @@ export default {
           // file-preview.js: a deck or Word document as a PDF for the viewer, made on the computer on first open (then from R2).
           // View-as and read-only accounts only get one already made: nothing here wakes their computer.
           // The transcript of an audio or video file with its speakers (sidecar.js fileTranscript), and naming a speaker ({ speaker, name?, contact_id? } → { speakers } | { error }).
+          // Zone A (zone-edit.js): GET zone-info → { version, has_previous, previous_at }.
+          if (fm[3] === "zone-info" && fm[2] && req.method === "GET") { const d = await R.zoneInfo(fm[2]); return json(d.error ? { error: d.error } : d, d.error ? d.status : 200); }
           if (fm[3] === "transcript" && req.method === "GET") { const d = await R.fileTranscript(fm[2]); return json(d, d.error ? 404 : 200); }
           if (fm[3] === "transcript/speakers" && req.method === "POST") {
             if (access.mode === "read_only") return payRequired(access);
@@ -1703,6 +1705,17 @@ export default {
           if (req.method !== "POST") return json({ error: "method" }, 405);
           if (access.mode === "read_only") return payRequired(access);
           if (fm[3] === "delete") { const result = await R.deleteFile(fm[2]); return json(result, result?.status || 200); }
+          // Zone A: a direct edit of a Library .html file, no model. Body { base, edits: [...] } or { base, restore: "previous" } (zone-edit.js).
+          if (fm[3] === "zone-edit" && fm[2]) {
+            const zlen = Number(req.headers.get("content-length") || -1);
+            if (zlen < 0) return json({ error: "Send a Content-Length." }, 411);
+            if (zlen > 6e6) return json({ error: "That edit is too big (6 MB at most)." }, 413);
+            const raw = await req.text(); if (raw.length > 6e6) return json({ error: "That edit is too big (6 MB at most)." }, 413);
+            let zb; try { zb = JSON.parse(raw); } catch { return json({ error: "Send JSON." }, 400); }
+            if (!zb || typeof zb !== "object" || Array.isArray(zb)) return json({ error: "Send JSON." }, 400);
+            const d = await R.zoneEdit(fm[2], zb.base, { edits: zb.edits, restore: zb.restore });
+            return json(d.error ? { error: d.error, ...(d.version != null ? { version: d.version } : {}) } : d, d.error ? d.status : 200);
+          }
           const rawLength = req.headers.get("content-length");
           if (!req.body || rawLength === null) return json({ error: "Send the file as the request body with a Content-Length." }, 411);
           const len = Number(rawLength);
@@ -1736,7 +1749,7 @@ export default {
           if (req.method !== "POST") return json({ error: "method" }, 405);
           const b = await boundedJson(req);
           if ((!slm[2] || slm[3] === "send") && access.mode === "read_only") return payRequired(access);
-          const d = !slm[2] ? await R.laterAdd(t.id, slugOf(ch), String(ch.id), { session: b.session ? String(b.session) : "new", text: String(b.text ?? "").slice(0, 20001), files: Array.isArray(b.files) ? b.files.map(String).filter((x) => /^[0-9a-f-]{36}$/.test(x)).slice(0, 10) : [], due: Number(b.due), tz: String(b.tz || "").slice(0, 64), cid: typeof b.cid === "string" ? b.cid.slice(0, 64) : null, reply: replyRef(b.reply) })
+          const d = !slm[2] ? await R.laterAdd(t.id, slugOf(ch), String(ch.id), { session: b.session ? String(b.session) : "new", text: String(b.text ?? ""), files: Array.isArray(b.files) ? b.files.map(String).filter((x) => /^[0-9a-f-]{36}$/.test(x)).slice(0, 10) : [], due: Number(b.due), tz: String(b.tz || "").slice(0, 64), cid: typeof b.cid === "string" ? b.cid.slice(0, 64) : null, reply: replyRef(b.reply) })
             : slm[3] === "send" ? await R.laterSend(Number(slm[2])) : slm[3] === "cancel" ? await R.laterCancel(Number(slm[2])) : await R.laterEdit(Number(slm[2]), Number(b.due));
           return json(d, d.error ? (d.status || 400) : 200);
         }
@@ -1817,7 +1830,7 @@ export default {
             // The app's coarse fix rides with each message when location is on (location.js); saved before the turn reads it.
             if (rawFix(loc) && !viewAsToken(req)) await saveLocation(env, t.id, loc, Number(loc.at) || Date.now()).catch((e) => console.log("location", e.message));
             const fids = Array.isArray(files) ? files.map(String).filter((x) => /^[0-9a-f-]{36}$/.test(x)).slice(0, 10) : [];
-            if ((!message && !fids.length) || String(message || "").length > 20000) return json({ error: "Message required (max 20k chars)." }, 400);
+            if (!message && !fids.length) return json({ error: "Message required." }, 400);   // over 100,000 characters: Resident.chatStream saves it as a file
             // cid: the app's own id for this message, so a retry joins as a dup instead of twice. A message sent while the helper works
             // steers that turn ({"t":"steered"} then the stream ends); too many on one turn → 429.
             const body = await R.chatStream(t.id, slugOf(ch), String(ch.id), String(message || ""), { session: session ? String(session) : null, files: fids, cid: typeof cid === "string" && cid ? cid.slice(0, 64) : null, ...(typeof cont === "string" && /^[0-9a-f-]{36}$/.test(cont) ? { continue: cont } : {}), ...(replyRef(reply) ? { reply: replyRef(reply) } : {}), ...(inputMeta ? { input_reply: inputMeta } : {}) });   // reply: the message it answers (reply-to.js)
@@ -1826,7 +1839,7 @@ export default {
           }
           if (rp[2] === "chat") {
             const { message, ctx, max_steps, engine, exclude_tools, session } = await boundedJson(req, 64 * 1024);
-            if (!message || String(message).length > 20000) return json({ error: "Message required (max 20k chars)." }, 400);
+            if (!message || String(message).length > LONG_MESSAGE) return json({ error: "Message required (max 100k chars)." }, 400);
             const r = await R.chat(t.id, slugOf(ch), String(ch.id), String(message), env.TEST_MODE === "1" ? { ...(ctx === "legacy" || ctx === "compact" ? { ctx } : {}), ...(max_steps ? { max_steps: Math.min(80, Number(max_steps)) } : {}), ...(engine === "pi" || engine === "classic" ? { engine } : {}), ...(Array.isArray(exclude_tools) ? { exclude_tools: exclude_tools.map(String).slice(0, 10) } : {}), session: session ? String(session) : null } : { session: session ? String(session) : null });
             return json({ ...r, state: await L.state() });
           }

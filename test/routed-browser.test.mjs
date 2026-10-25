@@ -19,7 +19,7 @@ const stmt=(sql)=>({bind:()=>({
   first:async()=>/link_accounts/.test(sql)?{sealed:await sealSecret(W.env,JSON.stringify({access_token:'tok',refresh_token:'r'})),access_expires_at:Date.now()+3600e3}:/link_purchases/.test(sql)?{id:'sr1',tenant_id:'t1'}:null,
   run:async()=>({})})});
 W.env.DB={prepare:stmt};
-W.env.WS={put:async(k,b)=>({size:b.byteLength}),head:async()=>null,delete:async()=>{}};
+const objects=new Map();W.env.WS={put:async(k,b)=>{objects.set(k,b);return{size:b.byteLength};},get:async(k)=>objects.has(k)?{size:objects.get(k).byteLength,arrayBuffer:async()=>objects.get(k).buffer.slice(0),text:async()=>'',body:objects.get(k)}:null,head:async()=>null,delete:async(k)=>{for(const x of [k].flat())objects.delete(x.key||x);}};
 const oldFetch=globalThis.fetch;
 globalThis.fetch=async (url,init={})=>{
   const u=String(url);
@@ -90,8 +90,9 @@ try{
   R._routingObservers=new Map([[session,new Set([o=>events.push(o)])]]);
   await R.chat('t1','main','1','Buy a kettle.',{session});await W.settle(R);
   const h=W.dodb.prepare('SELECT * FROM helpers WHERE session=?').get(session);
-  // A: the worker's browser events reach whoever watches the task
-  assert(events.some(e=>e.t==='browser'&&e.url.startsWith('https://shop.example.com')),'live browser view is forwarded');
+  // A: only what needs the person reaches whoever watches the task; the worker's own browser views and screenshots stay on its record
+  assert(!events.some(e=>e.t==='browser'),'the worker browser view is not forwarded');
+  assert(!events.some(e=>e.t==='image'),'the worker screenshot is not forwarded');
   assert(events.some(e=>e.t==='browser_handoff'&&/captcha/.test(e.instructions)),'the Take control card is forwarded');
   // B: the handoff pauses the worker and holds the task on the browser
   assert.equal(h.status,'waiting_input');assert.equal(h.input_kind,'browser');
@@ -107,8 +108,11 @@ try{
     assert.equal(d.live,null,'no Primary turn is live');
     assert.equal(d.turns.length,1,"Primary's review of the paused worker adds no message to the chat");
     assert(!d.turns.some(t=>/Use the browser card/.test(t.reply||'')),'the review reply is not shown');
-    assert.equal(d.turns[0].images.length,1,'the worker screenshot shows under the reply that started the worker');
-    assert.equal(d.turns[0].images[0].caption,'Sign in page');
+    assert.equal(d.turns[0].images.length,0,'the worker screenshot is not a chat image');
+    assert.equal(W.dodb.prepare('SELECT COUNT(*) n FROM shots').get().n,0,'no screenshot row was made for the chat');
+    const heldShot=W.dodb.prepare("SELECT * FROM routing_artifacts WHERE helper_id=? AND mime='image/jpeg'").all(h.id);
+    assert.equal(heldShot.length,1,'the worker screenshot is held with its round files for the main helper');assert.equal(heldShot[0].state,'held');assert.match(heldShot[0].name,/Sign in page/);
+    assert.equal(d.turns.some(t=>(t.shared||[]).length),false,'nothing the worker saved is shared into the chat');
     assert(d.cards.some(c=>(c.helpers||[]).some(x=>x.id===h.id&&x.input_kind==='browser')),'the task cards carry what the paused worker waits on, so the row can say it');
     R.sql.exec("UPDATE sessions SET waiting=NULL WHERE id=?",session);
     assert.equal(R.sessionView(R.session(session)).waiting,'browser','a worker paused on the browser holds the task even if the stored flag was cleared');
@@ -128,11 +132,10 @@ try{
       assert.equal(hh.status,'waiting_input');assert.equal(hh.review_tries,0,'a browser pause is not re-offered for review');assert.equal(hh.handed,1);
       R.sql.exec("UPDATE cards SET status='complete' WHERE id=?",first);R.sql.exec("UPDATE helpers SET result_card=NULL WHERE id=?",h.id);
     }
-    // a worker running in the browser (no pause): the live view comes from the task, with no instructions
+    // a worker running in the browser (no pause): the chat shows nothing of it
     R.sql.exec("UPDATE helper_requests SET status='done' WHERE helper_id=? AND kind='browser'",h.id);R.sql.exec("UPDATE helpers SET status='running' WHERE id=?",h.id);
-    R._workerBrowser=new Map([[session,{url:'https://shop.example.com/cart',helper:h.id,at:Date.now()}]]);
-    assert.deepEqual((await R.sessionDetail(session)).worker_browser,{url:'https://shop.example.com/cart',text:''});
-    R.sql.exec("UPDATE helper_requests SET status='open' WHERE helper_id=? AND kind='browser'",h.id);R.sql.exec("UPDATE helpers SET status='waiting_input' WHERE id=?",h.id);R._workerBrowser=new Map();R.sql.exec("UPDATE sessions SET waiting='browser' WHERE id=?",session);   // reading the task while the worker ran dropped the flag, as it should
+    assert.equal((await R.sessionDetail(session)).worker_browser,null,'a worker using the browser shows no live view in the chat');
+    R.sql.exec("UPDATE helper_requests SET status='open' WHERE helper_id=? AND kind='browser'",h.id);R.sql.exec("UPDATE helpers SET status='waiting_input' WHERE id=?",h.id);R.sql.exec("UPDATE sessions SET waiting='browser' WHERE id=?",session);   // reading the task while the worker ran dropped the flag, as it should
     R.sql.exec("DELETE FROM helper_requests WHERE helper_id=? AND kind='browser'",h.id);
     const wb=(await R.sessionDetail(session)).worker_browser;assert(wb&&wb.text.length>0,'a pause with no request row still shows the Take control card');
     R.sql.exec("INSERT INTO helper_requests (helper_id,round,kind,url,job,status,created) VALUES (?,?,?,?,?,?,?)",h.id,h.round,'browser','https://shop.example.com/login','Please solve the captcha, then hand back.','open',Date.now());

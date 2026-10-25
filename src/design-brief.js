@@ -1,7 +1,7 @@
 // The design brief, run by 1Helm itself. The first time in a task that any agent (Primary or a helper, either engine, a native worker too)
 // writes web page or deck source, the result of that write gets the design brief appended: real-site references, :root tokens, rules and
 // component suggestions from the design MCP Worker (design-mcp/, tool design_brief). Nothing depends on a model choosing to ask for it.
-//   Trigger: the file type only (a .html or .htm file written or edited). No keyword matching and no classifier on the request.
+//   Trigger: the file type only (a .html or .htm file written or edited), except a deck's slide files (.src/slides/). No keyword matching and no classifier on the request.
 //   Once per task: design_briefs holds the task's row, so a restart or a second helper doesn't repeat it. A failed call leaves the write
 //   result unchanged and says nothing; it is tried again on a later write, at most twice in a task.
 import { SKIP_SOURCE } from "./better-design.js";
@@ -15,13 +15,15 @@ export const BRIEF_MAX_CHARS = 9000;
 export const BRIEF_HEADER = "Design brief for this page, from 1Helm's design sources. Build the page from it before you share it: follow the direction, paste the :root tokens into the page's own style (in a deck, use the palette and fonts and keep the deck's own CSS), and take the references and components as guidance.";
 
 const HTML_PATH = /\.html?$/i;
+// A deck's slide files (<project>/.src/slides/<id>.html) are filled-in templates, not new designs: no brief for them.
+const DECK_SLIDE = /\.src\/slides\/[^/]+\.html?$/i;
 // A command that writes an .html file: a redirect or tee into it, or Python opening it for writing. Cheap and literal; reading one never matches.
 const HTML_WRITE_CMD = [/>>?\s*["']?[^\s"'|;&<>]+\.html?\b/i, /\btee\s+(?:-a\s+)?["']?[^\s"'|;&]+\.html?\b/i, /open\(\s*["'][^"']+\.html?["']\s*,\s*["'][wa]/i];
 
 export function writesDesignFile(name, a, r) {
   if (!r || r.code !== 0) return false;
-  if (name === "write_file" || name === "edit_file") return HTML_PATH.test(String(a?.path || "").trim());
-  if (name === "run_command") return HTML_WRITE_CMD.some((re) => re.test(String(a?.command || "")));
+  if (name === "write_file" || name === "edit_file") return HTML_PATH.test(String(a?.path || "").trim()) && !DECK_SLIDE.test(String(a?.path || "").trim());
+  if (name === "run_command") return HTML_WRITE_CMD.some((re) => re.test(String(a?.command || ""))) && !/\.src\/slides\//.test(String(a?.command || ""));
   return false;
 }
 

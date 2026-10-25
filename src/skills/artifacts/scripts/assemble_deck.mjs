@@ -1,448 +1,183 @@
 #!/usr/bin/env node
-// Build the one combined deck document from the per-slide source.
+// Build the one self-contained deck file from the deck's source.
 //
-//   .src/slides/deck.json    the authored manifest: main_title + slides in order (the order is the manifest's)
-//   .src/slides/deck.css     the shared stylesheet: :root tokens, layouts, lockups, embedded fonts
-//   .src/slides/<id>.html    one standalone slide each, images embedded as data: URIs
-//     -> .src/index.html     one self-contained document holding every <section class="slide">
-//     -> .src/slides/deck.json rewritten with derived fields (canvas, theme tokens, per-slide titles and layouts)
+//   .src/deck.json            { template, title, slides: [{ id, pattern, orig }] }, the slides in order
+//   .src/slides/<id>.html     one slide each, copied from the template by new_deck.mjs and rewritten with the deck's words
+//   .src/media/<file>         photos, referenced as src="media/<file>" or url('media/<file>')
+//   .src/notes.json           optional: speaker notes, one string per slide, in order
+//     -> .src/build/deck.html   the template's own document with every slide, fonts and photos embedded
+//     -> .src/build/notes.json  the notes plus each photo's credit (from .src/media/SOURCES.md)
+//     -> <project>/<slug>.html  deck_shell.html wrapped around it: the 1920x1080 stage scaled to the window, keys, tap,
+//                               fullscreen, counter and the notes view
 //
-// Everything downstream (render_audit.mjs, validate_pdf.sh, build_pptx.py, an HTML export) reads index.html, so a deck
-// that fails here can't be checked or shipped: every failure exits non-zero and names the file to fix.
+//   node assemble_deck.mjs <abs project dir>
 //
-//   node assemble_deck.mjs --slides <abs .src/slides dir> --out <abs .src/index.html>
-//
-// stdout: one JSON line { ok, out, count, manifest, deck_css_bytes, bytes, slides:[{id,path}], unlisted } or { ok:false, error }.
-
-import { mkdir, readdir, writeFile, readFile, rename, rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
+// Fonts are cut to the characters the deck uses and embedded as base64 woff2; photos are embedded as data: URIs (scaled to at
+// most 2560 px); Chart.js, when the template draws charts with it, is embedded. The file works offline.
+// stdout: one JSON line { ok, out, slides, bytes, fonts, missing_media, warnings } or { ok:false, error }. Exit 0 ok, 1 failed, 2 bad arguments.
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import { shownSlide } from "./deck_checks.mjs";
+import { templatesFor } from "./deck_templates_dir.mjs";
 
-import { loadBrowserRuntime } from "./browser_runtime.mjs";
-import { fileUrlWithinRoots, realRootsFor } from "./deck_asset_scope.mjs";
-// --help: print the header above and exit.
-if (process.argv[1] && import.meta.url.endsWith("/" + process.argv[1].split("/").pop()) && process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
-  const HELP = (await import("node:fs")).readFileSync(new URL(import.meta.url), "utf8").split("\n"), end = HELP.findIndex((l, i) => i > 0 && !l.startsWith("//"));
-  process.stdout.write(HELP.slice(HELP[0].startsWith("#!") ? 1 : 0, end).map((l) => l.replace(/^\/\/ ?/, "")).join("\n") + "\n"); process.exit(0);
+const HERE = dirname(fileURLToPath(import.meta.url));
+if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+  const L = readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n"), end = L.findIndex((l, i) => i > 0 && !l.startsWith("//"));
+  process.stdout.write(L.slice(1, end).map((l) => l.replace(/^\/\/ ?/, "")).join("\n") + "\n"); process.exit(0);
 }
+const fail = (error, code = 1) => { console.log(JSON.stringify({ ok: false, error })); process.exit(code); };
+const P = process.argv[2] && !process.argv[2].startsWith("--") ? resolve(process.argv[2]) : "";
+if (!P) fail("usage: assemble_deck.mjs <project dir>", 2);
 
-const SLIDE_SELECTOR = "section.slide";
-const PAGE_LOAD_TIMEOUT_MS = 30_000;
-const MANIFEST_NAME = "deck.json";
-const DECK_CSS_NAME = "deck.css";
-const FORMAT_VERSION = 1;
-// Kebab-case ids only: a "." would need escaping in a selector and the scope check could never match it.
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const RESERVED_ID = "index";   // index.html is the combined document
+const SRC = join(P, ".src"), BUILD = join(SRC, "build"), SLUG = basename(P);
+let deck;
+try { deck = JSON.parse(readFileSync(join(SRC, "deck.json"), "utf8")); } catch { fail(`no readable ${SRC}/deck.json: start the deck with new_deck.mjs`); }
+const TEMPLATES = templatesFor(P);
+const T = join(TEMPLATES, String(deck.template || ""));
+if (!/^[a-z0-9-]+$/.test(String(deck.template || "")) || !existsSync(join(T, "head.html"))) fail(`unknown template "${deck.template}"`);
+if (!Array.isArray(deck.slides) || !deck.slides.length) fail("deck.json lists no slides");
 
-// Slides are untrusted markup opened in a real browser, and the page images are given to the person, so a slide must
-// not be able to name a local file or run script. Schemes that read or execute are refused anywhere in a URL; a path
-// that starts at / or climbs with .. is refused unless the URL is a data: URI (whose payload may contain "/../").
-const UNSAFE_SCHEME = /^(?:file|javascript|vbscript):|^data:text\/html/i;
-const UNSAFE_PATH = /^\/|(?:^|\/)\.\.(?:\/|$)/;
-const DATA_URI = /^data:/i;
-// Elements that execute, navigate, or pull in content no URL check can see.
-const FORBIDDEN_SLIDE_TAGS = ["script", "iframe", "object", "embed", "frame", "frameset", "base", "form"];
-const URL_ATTRIBUTES = [
-  "src", "srcset", "href", "xlink:href", "poster", "data", "background",
-  "action", "formaction", "ping", "cite", "longdesc", "manifest", "profile",
-  "codebase", "archive",
-];
-// Only these hold a list of URLs and are split. Splitting anything else breaks data: URIs (a JPEG payload after the
-// comma starts with "/").
-const LIST_URL_ATTRIBUTES = ["srcset", "imagesrcset", "ping"];
+const warnings = [];
+const read = (p) => readFileSync(p, "utf8");
+const slideFiles = deck.slides.map((s) => {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(s.id || "")) fail(`bad slide id "${s.id}" in deck.json`);
+  const f = join(SRC, "slides", `${s.id}.html`);
+  if (!existsSync(f)) fail(`deck.json lists slide "${s.id}" but ${f} does not exist`);
+  return f;
+});
+const tplSlides = readdirSync(join(T, "slides")).filter((f) => !f.startsWith("00-")).sort();   // 00-media is 1Helm's own pattern, not one of the template's numbered slides
+const origTotal = tplSlides.length, total = deck.slides.length;
 
-// url() targets in CSS. Quoted forms are read as strings so an escaped ")" can't end the token early.
-const CSS_URL_TOKEN = /url\(\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|([^)]*?))\s*\)/gi;
-function cssUrlTargets(css) {
-  return [...String(css ?? "").matchAll(CSS_URL_TOKEN)].map((m) => (m[1] ?? m[2] ?? m[3] ?? "").trim());
+// Photos: embed into copies of the slide files, so the source files stay small.
+mkdirSync(BUILD, { recursive: true });
+const tmp = mkdtempSync(join(tmpdir(), "deck-"));
+let missing = [];
+slideFiles.forEach((f, i) => copyFileSync(f, join(tmp, `${String(i).padStart(3, "0")}.html`)));
+if (existsSync(join(SRC, "media"))) {
+  const run = (() => { try { return { out: execFileSync("python3", [join(HERE, "inline_media.py"), "--media", join(SRC, "media"), ...readdirSync(tmp).map((n) => join(tmp, n))], { encoding: "utf8" }) }; } catch (e) { return { out: String(e.stdout || ""), err: e }; } })();
+  let j = null;
+  try { j = JSON.parse(run.out.trim().split("\n").pop()); } catch { /* not JSON */ }
+  if (!j) fail(`inline_media.py failed: ${String((run.err && (run.err.stderr || run.err.message)) || run.out).slice(-300)}`);   // it exits 1 when a picture is missing, and says which
+  missing = [...new Set((j.files || []).flatMap((f) => (f.missing || []).map((m) => `media/${m}`)))];
+} else {
+  for (const n of readdirSync(tmp)) for (const m of read(join(tmp, n)).matchAll(/\b(?:src\s*=\s*["']|url\(\s*["']?)(media\/[^"')\s]+)/g)) missing.push(m[1]);
+  missing = [...new Set(missing)];
 }
+let slides = readdirSync(tmp).sort().map((n) => read(join(tmp, n)));
+rmSync(tmp, { recursive: true, force: true });
 
-// CSS decodes "\69" style escapes before resolving a URL ("f\69le:" is "file:"), so decode them before checking.
-// CSS values only: in an HTML attribute a backslash is a path separator, not an escape.
-function decodeCssEscapes(value) {
-  return String(value ?? "").replace(/\\(?:([0-9a-fA-F]{1,6})[ \t\n\f\r]?|([\s\S]))/g, (whole, hex, literal) => {
-    if (literal !== undefined) return literal;
-    const point = parseInt(hex, 16);
-    if (!Number.isFinite(point) || point === 0 || point > 0x10ffff) return "�";
-    try { return String.fromCodePoint(point); } catch { return "�"; }
+// Page labels such as "04 / 12" in a slide: the template's own numbers become the deck's.
+const pad = (n, w) => String(n).padStart(w, "0");
+const LABEL = /(?<=>\s*)(\d{1,2})(\s*(?:\/|·|•|of)\s*)(\d{1,2})(?=\s*<)/g;
+const firstClass = (read(join(T, "slides", tplSlides[0])).match(/^\s*<[^>]*?\sclass="([^"]*)"/) || [])[1] || "";
+const activeTokens = firstClass.split(/\s+/).filter((t) => t === "active" || t === "is-active");
+slides = slides.map((html, i) => {
+  const orig = Number(deck.slides[i].orig) || 0;
+  let out = html.replace(LABEL, (m, a, sep, b) => (Number(a) === orig && Number(b) === origTotal ? `${pad(i + 1, a.length)}${sep}${pad(total, b.length)}` : m));
+  // Mark the slide's root element so the shell and the checks can find it whatever the template calls it.
+  out = out.replace(/^\s*<([a-zA-Z][\w-]*)/, `<$1 data-hc-slide="${i}"`);
+  // The template marks its first slide as the shown one with a class; the deck's first slide, whatever it is, gets it.
+  out = out.replace(/^(\s*<[^>]*?\sclass=")([^"]*)(")/, (m, a, cls, c) => {
+    const rest = cls.split(/\s+/).filter((t) => t && !activeTokens.includes(t));
+    return a + [...rest, ...(i === 0 ? activeTokens : [])].join(" ") + c;
   });
+  return out;
+});
+// Some templates number their slides in the markup (data-slide="3", data-index="2") and look a slide up by that number: the deck's
+// slides are numbered by position, from the number the template's own first slide has.
+const firstOpen = (read(join(T, "slides", tplSlides[0])).match(/^\s*<[^>]*>/) || [""])[0];
+const baseOf = (attr) => { const m = firstOpen.match(new RegExp(`\\s${attr}="(\\d+)"`)); return m ? Number(m[1]) : null; };
+const bases = { "data-slide": baseOf("data-slide"), "data-index": baseOf("data-index") };
+slides = slides.map((html, i) => html.replace(/^\s*<[^>]*>/, (open) => {
+  for (const [attr, base] of Object.entries(bases)) if (base !== null) open = open.replace(new RegExp(`(\\s${attr}=")\\d+(")`), `$1${base + i}$2`);
+  return open.replace(/(\sid="slide-)\d+(")/, `$1${i + 1}$2`);   // a slide looked up by id="slide-3"
+}));
+let head = read(join(T, "head.html")), tail = read(join(T, "tail.html"));
+// Navigation dots written out in the markup (one per sample slide): one per slide of the deck.
+const DOTS = /(?:[ \t]*<(div|button|span)\b[^>]*class="[^"]*\bnav-dot\b[^"]*"[^>]*>\s*<\/\1>[ \t]*\n?)+/;
+const fixDots = (text) => text.replace(DOTS, (run) => {
+  const one = run.match(/[ \t]*<(div|button|span)\b[^>]*class="[^"]*\bnav-dot\b[^"]*"[^>]*>\s*<\/\1>[ \t]*\n?/)[0], dots = [];
+  for (let k = 0; k < total; k++) dots.push(one.replace(/(data-slide=")\d+(")/, `$1${k + 1}$2`).replace(/\bactive\b/, k === 0 ? "active" : "").replace(/class="([^"]*?)\s*"/, 'class="$1"'));
+  return dots.join("");
+});
+head = fixDots(head); tail = fixDots(tail);
+for (const k of ["head", "tail"]) {
+  const re = new RegExp(`(?<=>\\s*)(\\d{1,2})(\\s*(?:\\/|\\u00b7|\\u2022|of)\\s*)${origTotal}(?=\\s*<)`, "g");
+  if (k === "head") head = head.replace(re, (m, a, sep) => `${a}${sep}${pad(total, String(origTotal).length)}`);
+  else tail = tail.replace(re, (m, a, sep) => `${a}${sep}${pad(total, String(origTotal).length)}`);
 }
 
-// Fold a URL the way the browser will: drop whitespace/control characters, read %2e as a dot, and treat a backslash as
-// a slash. Stops there on purpose: decoding everything would let %00 or %2f change how the rest parses.
-function normalizeUrl(value) {
-  return String(value ?? "").replace(/[\u0000- ]/g, "").replace(/%2e/gi, ".").replace(/\\/g, "/");
-}
-function urlIsUnsafe(raw) {
-  const url = normalizeUrl(raw);
-  if (url === "") return false;
-  if (UNSAFE_SCHEME.test(url)) return true;
-  if (DATA_URI.test(url)) return false;
-  return UNSAFE_PATH.test(url);
-}
-const cssUrlIsUnsafe = (raw) => urlIsUnsafe(decodeCssEscapes(raw));
-const firstUnsafeCssUrl = (css) => cssUrlTargets(css).find(cssUrlIsUnsafe);
-
-// deck.css must not import another sheet: the deck carries its fonts embedded and fetches nothing.
-const CSS_IMPORT_TARGET = /@import\s+(?:url\(\s*(['"]?)([^'")]*)\1\s*\)|(['"])([^'"]*)\3)/gi;
-function firstCssImport(css) {
-  for (const m of String(css ?? "").matchAll(CSS_IMPORT_TARGET)) {
-    const target = (m[2] ?? m[4] ?? "").trim();
-    if (target !== "") return target;
-  }
-  return undefined;
-}
-
-// This browser only reads the DOM: no network. Failing name resolution also silences Chrome's own startup requests.
-const HERMETIC_LAUNCH_ARGS = ["--disable-quic", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost"];
-
-function parseArgs(argv) {
-  const flags = new Map();
-  for (let i = 0; i < argv.length; i += 1) {
-    if (!argv[i].startsWith("--")) continue;
-    const eq = argv[i].indexOf("=");
-    if (eq >= 0) flags.set(argv[i].slice(2, eq), argv[i].slice(eq + 1));
-    else if (typeof argv[i + 1] === "string" && !argv[i + 1].startsWith("--")) flags.set(argv[i].slice(2), argv[(i += 1)]);
-    else flags.set(argv[i].slice(2), "");
-  }
-  const slides = (flags.get("slides") ?? "").trim();
-  const out = (flags.get("out") ?? "").trim();
-  if (!slides || !out) throw new Error("assemble_deck: --slides (the .src/slides dir) and --out (the combined .src/index.html) are both required");
-  for (const [name, value] of [["slides", slides], ["out", out]]) {
-    if (!value.startsWith("/")) throw new Error(`assemble_deck: --${name} must be an absolute path (got: ${value})`);
-    const parts = value.split("/").filter(Boolean);
-    const idx = parts.lastIndexOf("workspace");
-    if (idx === -1 || idx === parts.length - 1) throw new Error(`assemble_deck: --${name} must be under /workspace (got: ${value})`);
-  }
-  if (resolve(dirname(out)) === resolve(slides)) throw new Error(`assemble_deck: refusing to write the combined deck into the slides directory ${slides}`);
-  return { slides, out };
-}
-
-// The authored manifest decides which slides are in the deck and in what order; its other fields are derived later.
-async function readAuthoredManifest(slidesDir) {
-  const path = join(slidesDir, MANIFEST_NAME);
-  let raw;
-  try { raw = await readFile(path, "utf8"); } catch { throw new Error(`assemble_deck: no ${MANIFEST_NAME} in ${slidesDir}; it lists the deck's slides in order`); }
-  let manifest;
-  try { manifest = JSON.parse(raw); } catch (err) { throw new Error(`assemble_deck: ${path} is not valid JSON: ${err?.message ?? err}`); }
-  if (!Array.isArray(manifest?.slides) || manifest.slides.length === 0) throw new Error(`assemble_deck: ${path} needs a non-empty "slides" array in deck order`);
-  const seen = new Set();
-  const slides = manifest.slides.map((slide, index) => {
-    const id = typeof slide?.id === "string" ? slide.id.trim() : "";
-    if (!SAFE_ID.test(id) || id === RESERVED_ID) throw new Error(`assemble_deck: ${path} slide ${index + 1} has an unusable id ${JSON.stringify(slide?.id)}`);
-    if (seen.has(id)) throw new Error(`assemble_deck: ${path} repeats the slide id "${id}"`);
-    seen.add(id);
-    // The file name comes from the id; a path in the manifest may only restate it.
-    const declared = typeof slide?.path === "string" ? slide.path.trim() : "";
-    if (declared && basename(declared) !== declared) throw new Error(`assemble_deck: ${path} slide "${id}" path must be a bare file name (got: ${declared})`);
-    const file = declared || `${id}.html`;
-    if (basename(file, ".html") !== id) throw new Error(`assemble_deck: ${path} slide "${id}" must live in ${id}.html (got: ${file})`);
-    return { id, path: file };
-  });
-  return { mainTitle: typeof manifest?.main_title === "string" ? manifest.main_title.trim() : "", slides };
-}
-
-// ---- runs inside Chrome (serialized: no closures over this module) -------------------------------------------------
-
-// Check one slide file holds exactly the slide the manifest names, refuse unsafe markup and unscoped CSS, and return
-// the parts the combined document is built from (or { error }).
-function readAuthoredSlide([selector, expectedId, scopePrefixSource, cssLinkName, unsafeSchemeSource, unsafePathSource, forbiddenTags, urlAttributeNames, listUrlAttributeNames]) {
-  const sections = Array.from(document.querySelectorAll(selector));
-  if (sections.length !== 1) return { error: `expected exactly one '${selector}', found ${sections.length}` };
-  const section = sections[0];
-  const id = (section.id || "").trim();
-  if (id !== expectedId) return { error: `its '${selector}' has id "${id}", but the manifest calls it "${expectedId}"` };
-
-  const unsafeScheme = new RegExp(unsafeSchemeSource, "i");
-  const unsafePath = new RegExp(unsafePathSource);
-  const forbidden = new Set(forbiddenTags.map((t) => t.toUpperCase()));
-  const urlNames = new Set(urlAttributeNames);
-  const listUrlNames = new Set(listUrlAttributeNames);
-  const namesUnsafeUrl = (value, isList) => {
-    const text = String(value);
-    const parts = isList && !/^\s*data:/i.test(text) ? [text, ...text.split(/[,\s]+/)] : [text];
-    return parts.some((part) => {
-      const url = part.replace(/[\x00-\x20]/g, "").replace(/%2e/gi, ".").replace(/\\/g, "/");
-      if (url === "") return false;
-      if (unsafeScheme.test(url)) return true;
-      if (/^data:/i.test(url)) return false;
-      return unsafePath.test(url);
-    });
-  };
-  const urlTargets = (css) => {
-    const found = [];
-    const token = /url\(\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|([^)]*?))\s*\)/gi;
-    for (const m of String(css).matchAll(token)) found.push((m[1] ?? m[2] ?? m[3] ?? "").trim());
-    return found;
-  };
-  const decodeCss = (value) => String(value ?? "").replace(/\\(?:([0-9a-fA-F]{1,6})[ \t\n\f\r]?|([\s\S]))/g, (w, hex, literal) => {
-    if (literal !== undefined) return literal;
-    const p = parseInt(hex, 16);
-    if (!Number.isFinite(p) || p === 0 || p > 0x10ffff) return "�";
-    try { return String.fromCodePoint(p); } catch { return "�"; }
-  });
-  const unsafeStyleUrl = (css) => urlTargets(css).find((t) => namesUnsafeUrl(decodeCss(t), false));
-  for (const node of Array.from(document.querySelectorAll("*"))) {
-    const tag = (node.tagName || "").toUpperCase();
-    if (forbidden.has(tag)) return { error: `carries <${tag.toLowerCase()}>, which a slide may not (it runs code or pulls in another document)` };
-    if (tag === "META" && node.hasAttribute("http-equiv")) return { error: "carries a <meta http-equiv>, which can navigate the page away mid-render" };
-    if (tag === "STYLE" && unsafeStyleUrl(node.textContent || "") !== undefined) {
-      return { error: `has a <style> url() the deck can't carry: ${unsafeStyleUrl(node.textContent || "").slice(0, 120)} (embed the asset as a data: URI)` };
-    }
-    for (const name of node.getAttributeNames()) {
-      const lower = name.toLowerCase();
-      if (lower.startsWith("on") && lower in node) return { error: `sets the inline handler ${lower}=, which runs script during the render` };
-      if (lower === "srcdoc") return { error: "sets srcdoc, a nested document the checks can't see" };
-      const value = node.getAttribute(name) || "";
-      if (urlNames.has(lower) && namesUnsafeUrl(value, listUrlNames.has(lower))) {
-        return { error: `points ${lower} at ${value.slice(0, 120)}, which a slide may not name (no file:, no javascript:, no absolute path, no ..)` };
-      }
-      if (lower === "style" && unsafeStyleUrl(value) !== undefined) {
-        return { error: `has a style="" url() the deck can't carry: ${unsafeStyleUrl(value).slice(0, 120)} (embed the asset as a data: URI)` };
-      }
-    }
-  }
-
-  // The only stylesheet a slide may link is deck.css (inlined once in the combined document). Anything else would become
-  // deck-wide there while the slide's own view looks fine.
-  for (const node of Array.from(document.querySelectorAll("link"))) {
-    const rel = (node.getAttribute("rel") || "").toLowerCase().split(/\s+/);
-    if (!rel.includes("stylesheet")) continue;
-    const href = (node.getAttribute("href") || "").trim();
-    if (href === cssLinkName || href.endsWith(`/${cssLinkName}`)) continue;
-    return { error: `links a stylesheet the deck can't carry: ${href.slice(0, 120) || "<empty href>"} (shared CSS belongs in ${cssLinkName}; fonts are embedded by embed_deck_fonts.mjs)` };
-  }
-
-  // A slide's own rules end up in one document with every other slide's, so each selector must name this slide.
-  const scoped = new RegExp(scopePrefixSource);
-  const unscoped = [];
-  const styles = [];
-  const walk = (rules) => {
-    for (const rule of rules) {
-      if (typeof rule.href === "string" && rule.cssRules === undefined) { unscoped.push(`@import ${rule.href.slice(0, 60)}`); continue; }
-      if (typeof rule.selectorText === "string") {
-        const parts = rule.selectorText.split(",").map((p) => p.trim());
-        if (parts.every((p) => p === "")) { unscoped.push(`${rule.constructor.name} with no selector`); continue; }   // e.g. a bare @page
-        for (const part of parts) if (part && !scoped.test(part)) unscoped.push(part.slice(0, 80));
-        continue;
-      }
-      // Any grouping rule (@media, @supports, @layer...) holds selectors; only @keyframes children are not selectors.
-      if (rule.cssRules && !(rule instanceof CSSKeyframesRule)) walk(Array.from(rule.cssRules));
-    }
-  };
-  for (const node of Array.from(document.querySelectorAll("style"))) {
-    const styleMedia = (node.getAttribute("media") || "").trim();
-    if (styleMedia !== "") return { error: `has a <style media="${styleMedia.slice(0, 40)}">, which the combined deck can't carry: use an @media block inside the <style>` };
-    // Head styles are hoisted; a <style> inside the section already travels with it. Both get scope-checked.
-    if (node.closest(selector) === null) styles.push(node.textContent || "");
-    let rules;
-    try { rules = Array.from(node.sheet?.cssRules || []); } catch { continue; }
-    walk(rules);
-  }
-  if (unscoped.length > 0) {
-    return { error: `has <style> rules not scoped to #${expectedId}: ${unscoped.slice(0, 5).join(", ")} (shared CSS goes in ${cssLinkName}; a slide's own rules start with #${expectedId})` };
-  }
-
-  const heading = section.querySelector("h1, .title, h2, h3");
-  return { html: section.outerHTML, styles, pageTitle: heading ? (heading.textContent || "").replace(/\s+/g, " ").trim().slice(0, 200) : "" };
-}
-
-// Read back the combined document: slide ids in order, the canvas size, and the :root tokens as authored.
-function readAssembledDeck(selector) {
-  const slides = Array.from(document.querySelectorAll(selector));
-  let canvas = null;
-  if (slides.length > 0) {
-    const width = Math.round(slides[0].offsetWidth), height = Math.round(slides[0].offsetHeight);
-    if (width > 0 && height > 0) canvas = { width, height };
-  }
-  const cssVariables = {};
-  for (const sheet of Array.from(document.styleSheets)) {
-    let rules;
-    try { rules = Array.from(sheet.cssRules || []); } catch { continue; }
-    for (const rule of rules) {
-      if (typeof rule.selectorText !== "string" || !rule.selectorText.includes(":root")) continue;
-      for (let i = 0; i < rule.style.length; i += 1) {
-        const prop = rule.style[i];
-        if (prop.startsWith("--")) cssVariables[prop] = rule.style.getPropertyValue(prop).trim();
-      }
-    }
-  }
-  return { ids: slides.map((s) => (s.id || "").trim()), canvas, cssVariables };
-}
-
-// ---- assembly -----------------------------------------------------------------------------------------------------
-
-// "</style" inside CSS would close the element early; "<\/" keeps it inert.
-const escapeStyleContent = (css) => css.replace(/<\/(style)/gi, "<\\/$1");
-const escapeHtmlText = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-const escapeAttribute = (v) => escapeHtmlText(v).replace(/"/g, "&quot;");
-
-function buildCombinedDocument({ title, deckCss, slides }) {
-  const head = ['<meta charset="utf-8">'];
-  if (title) head.push(`<title>${escapeHtmlText(title)}</title>`);
-  if (deckCss.trim()) head.push(`<style>\n${escapeStyleContent(deckCss)}\n</style>`);
-  for (const slide of slides) {
-    for (const style of slide.styles) {
-      if (style.trim()) head.push(`<style data-slide="${escapeAttribute(slide.id)}">\n${escapeStyleContent(style)}\n</style>`);
-    }
-  }
-  return ["<!doctype html>", '<html lang="en">', "<head>", ...head, "</head>", "<body>", ...slides.map((s) => s.html), "</body>", "</html>", ""].join("\n");
-}
-
-// An @font-face carrying its bytes, as embed_deck_fonts.mjs writes it.
-const EMBEDDED_FACE = /@font-face\s*\{[^}]*url\(\s*["']?data:font\/[^}]*\}/i;
-
-// The saved style plan (optional): theme id and per-slide layouts for the manifest.
-async function readStylePlan(deckFile) {
-  const plan = await readFile(join(dirname(deckFile), "style_plan.json"), "utf8").then(JSON.parse).catch(() => null);
-  const layouts = new Map();
-  for (const entry of (plan && plan.layout_plan) || []) {
-    if (typeof entry?.id === "string" && typeof entry.layout === "string") layouts.set(entry.id, entry.layout);
-  }
-  return { themeId: typeof plan?.theme === "string" ? plan.theme : "", layouts };
-}
-
-function buildManifest({ mainTitle, slides, canvas, cssVariables, stylePlan, hasDeckCss }) {
-  const manifest = { format_version: FORMAT_VERSION, main_title: mainTitle };
-  if (canvas) manifest.canvas = canvas;
-  if (hasDeckCss) manifest.deck_css = DECK_CSS_NAME;
-  const variables = cssVariables || {};
-  if (stylePlan.themeId || Object.keys(variables).length > 0) {
-    manifest.theme = {};
-    if (stylePlan.themeId) manifest.theme.id = stylePlan.themeId;
-    manifest.theme.css_variables = variables;
-  }
-  manifest.slides = slides.map((slide, index) => {
-    const entry = { index, id: slide.id };
-    if (slide.pageTitle) entry.page_title = slide.pageTitle;
-    entry.path = slide.path;
-    const layout = stylePlan.layouts.get(slide.id);
-    if (layout) entry.layout = layout;
-    return entry;
-  });
-  return manifest;
-}
-
-async function run(args) {
-  const authored = await readAuthoredManifest(args.slides);
-  for (const slide of authored.slides) {
-    if (!existsSync(join(args.slides, slide.path))) throw new Error(`assemble_deck: ${MANIFEST_NAME} lists ${slide.path}, which does not exist`);
-  }
-  // A slide file the manifest leaves out is not in the deck. Could be scratch, could be a forgotten slide: say so.
-  const listed = new Set(authored.slides.map((s) => s.path));
-  const unlisted = (await readdir(args.slides)).filter((n) => n.endsWith(".html") && !listed.has(n)).sort();
-  if (unlisted.length) {
-    process.stderr.write(`assemble_deck: WARNING ${unlisted.length} file(s) in ${args.slides} are not in ${MANIFEST_NAME}, so they are NOT in the deck: ${unlisted.join(", ")}. Add real slides to ${MANIFEST_NAME}, delete scratch.\n`);
-  }
-  const deckCss = await readFile(join(args.slides, DECK_CSS_NAME), "utf8").catch(() => "");
-  const unsafeDeckCssUrl = firstUnsafeCssUrl(deckCss);
-  if (unsafeDeckCssUrl !== undefined) {
-    throw new Error(`assemble_deck: ${DECK_CSS_NAME} names a url() the deck can't carry: ${unsafeDeckCssUrl.slice(0, 120)} (no file:, no javascript:, no absolute path, no ..; embed the asset as a data: URI)`);
-  }
-  const deckCssImport = firstCssImport(deckCss);
-  if (deckCssImport !== undefined) {
-    throw new Error(`assemble_deck: ${DECK_CSS_NAME} imports ${deckCssImport.slice(0, 120)}; a deck fetches nothing. Remove the @import (name the font in the :root tokens and run embed_deck_fonts.mjs)`);
-  }
-  const stylePlan = await readStylePlan(args.out);
-
-  const { audit, playwright, executablePath } = await loadBrowserRuntime();
-  const launchOptions = audit.buildLaunchOptions(executablePath);
-  launchOptions.args = [...(launchOptions.args ?? []), ...HERMETIC_LAUNCH_ARGS];
-  const browser = await playwright.chromium.launch(launchOptions);
-
-  // Keep the .html suffix: Chrome picks the parser for a file:// URL by extension.
-  const temporary = `${args.out}.assembling.${process.pid}.html`;
+// Fonts: the faces the template uses, cut to the deck's characters.
+const text = [head, ...slides, tail].join(" ").replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ").replace(/data:[^"')\s]+/g, " ").replace(/<[^>]+>/g, " ");
+const faces = JSON.parse(read(join(T, "fonts.json")));
+let fontsCss = "", fontBytes = 0;
+if (faces.length) {
   try {
-    const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    // file: requests may only reach the deck's own folders; everything remote is aborted.
-    const assetRoots = realRootsFor([dirname(args.out), args.slides]);
-    let blocked = 0, blockedLocal = 0;
-    await context.route("**/*", (route) => {
-      const url = route.request().url();
-      if (/^(data|about):/.test(url)) return route.continue();
-      if (url.startsWith("file:")) {
-        if (fileUrlWithinRoots(url, assetRoots)) return route.continue();
-        blockedLocal += 1;
-        process.stderr.write(`assemble_deck: refused a local request outside the deck: ${url.slice(0, 160)}\n`);
-        return route.abort();
-      }
-      blocked += 1;
-      return route.abort();
-    });
-    const page = await context.newPage();
-    page.on("pageerror", (err) => process.stderr.write(`assemble_deck pageerror: ${err.message}\n`));
-
-    // Pass one: each authored slide, in manifest order.
-    const collected = [];
-    for (const slide of authored.slides) {
-      await page.goto(pathToFileURL(join(args.slides, slide.path)).href, { waitUntil: "domcontentloaded", timeout: PAGE_LOAD_TIMEOUT_MS });
-      const read = await page.evaluate(readAuthoredSlide, [
-        SLIDE_SELECTOR,
-        slide.id,
-        // A selector must start with #<id> (optionally after a tag name) and must not hop to a sibling with ~ or +,
-        // which would reach every later slide once the deck is combined.
-        `^(?:[A-Za-z][\\w-]*)?#${slide.id.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")}(?![\\w-])(?!\\s*[~+])`,
-        DECK_CSS_NAME,
-        UNSAFE_SCHEME.source,
-        UNSAFE_PATH.source,
-        FORBIDDEN_SLIDE_TAGS,
-        URL_ATTRIBUTES,
-        LIST_URL_ATTRIBUTES,
-      ]);
-      if (read.error) throw new Error(`assemble_deck: ${slide.path} ${read.error}`);
-      collected.push({ ...slide, ...read });
+    // Cutting the fonts takes seconds. The cut is the same for the same faces and the same characters beyond the ones deck_fonts.py always keeps (ASCII and common
+    // punctuation), which is nearly every deck of a template, so the result is kept in .src/cache (new_deck.mjs --redo leaves that folder alone).
+    const BASE = new Set([...Array(0x5f).keys()].map((k) => String.fromCharCode(0x20 + k)).concat([..."\u2013\u2014\u2018\u2019\u201c\u201d\u2026\u00b7\u2022\u20ac\u00a3\u00a5 \u2192\u2190\u2191\u2193\u00d7\u2212"]));
+    const extra = [...new Set([...text].filter((c) => c.codePointAt(0) >= 0x20 && !BASE.has(c)))].sort().join("");
+    const key = createHash("sha256").update(JSON.stringify([faces, extra, "v1"])).digest("hex").slice(0, 24), cached = join(SRC, "cache", `fonts-${key}.json`);
+    let j = null;
+    try { j = JSON.parse(read(cached)); } catch { /* not cut yet */ }
+    if (!j) {
+      const out = execFileSync("python3", [join(HERE, "deck_fonts.py"), join(TEMPLATES, "_fonts")], { input: JSON.stringify({ faces, text, html: slides.join("\n") + head }), encoding: "utf8", maxBuffer: 1 << 28 });
+      j = JSON.parse(out);
+      try { mkdirSync(join(SRC, "cache"), { recursive: true }); writeFileSync(cached, JSON.stringify(j)); } catch { /* a read-only folder just means no cache */ }
     }
-    if (!EMBEDDED_FACE.test(deckCss)) {
-      process.stderr.write(`assemble_deck: WARNING ${DECK_CSS_NAME} has no embedded @font-face, so an HTML or PDF copy opened elsewhere falls back to another font. Run embed_deck_fonts.mjs --slides ${args.slides} and re-assemble.\n`);
-    }
-
-    const title = authored.mainTitle || collected[0].pageTitle;
-    const combined = buildCombinedDocument({ title, deckCss, slides: collected });
-    await mkdir(dirname(args.out), { recursive: true });
-    await writeFile(temporary, combined, "utf8");
-
-    // Pass two: load exactly what the renderer will load and derive the manifest from it.
-    await page.goto(pathToFileURL(temporary).href, { waitUntil: "domcontentloaded", timeout: PAGE_LOAD_TIMEOUT_MS });
-    const outline = await page.evaluate(readAssembledDeck, SLIDE_SELECTOR);
-    const expected = collected.map((s) => s.id);
-    if (outline.ids.length !== expected.length || outline.ids.some((id, i) => id !== expected[i])) {
-      throw new Error(`assemble_deck: the combined deck holds [${outline.ids.join(", ")}], expected [${expected.join(", ")}]`);
-    }
-    await context.close();
-
-    const manifestPath = join(args.slides, MANIFEST_NAME);
-    const manifest = buildManifest({ mainTitle: title, slides: collected, canvas: outline.canvas, cssVariables: outline.cssVariables, stylePlan, hasDeckCss: deckCss.trim().length > 0 });
-    await rename(temporary, args.out);
-    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
-    process.stderr.write(`assemble_deck: ${collected.length} slides, deck.css ${deckCss.length} bytes, ${EMBEDDED_FACE.test(deckCss) ? "fonts embedded" : "NO fonts embedded"}, ${blocked} remote and ${blockedLocal} out-of-deck requests blocked\n`);
-    return {
-      ok: true,
-      out: args.out,
-      count: collected.length,
-      manifest: manifestPath,
-      deck_css_bytes: Buffer.byteLength(deckCss, "utf8"),
-      bytes: Buffer.byteLength(combined, "utf8"),
-      slides: collected.map((s) => ({ id: s.id, path: s.path })),
-      unlisted,
-    };
-  } finally {
-    await rm(temporary, { force: true }).catch(() => {});
-    await browser.close();
-  }
+    fontsCss = j.css; fontBytes = j.bytes; warnings.push(...(j.warnings || []));
+  } catch (e) { fail(`deck_fonts.py failed: ${String(e.stderr || e.stdout || e.message).slice(-300)}`); }
 }
+// The empty box of the "media" pattern: dashed, drawn in the slide's own colour.
+const BASE_CSS = `<style id="hc-base">.hc-drop{position:absolute;box-sizing:border-box;border:4px dashed currentColor;border-radius:18px;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;font-size:30px;line-height:1.3;font-weight:600;letter-spacing:0;text-transform:none;opacity:.9;z-index:2}</style>`;
+head = head.replace("</head>", () => `${BASE_CSS}\n</head>`);
+head = head.replace("<!--hc-fonts-->", fontsCss ? `<style id="hc-fonts">\n${fontsCss}</style>` : "");
+// Chart.js when the template charts with it.
+const lib = (s) => s.replace(/<script src="hc-lib:([\w.-]+)"><\/script>/g, (m, f) => `<script>${read(join(TEMPLATES, "_lib", f)).replace(/<\/script/gi, "<\\/script")}</script>`);
+// A template that draws its charts at load looks them up by id; a deck without that chart slide must not stop its script there.
+if (/hc-lib:chart/.test(head + tail)) head = head.replace("</head>", () => `<script>(function(){var g=document.getElementById.bind(document);document.getElementById=function(i){return g(i)||(/Chart$/.test(i)?document.createElement("canvas"):null)}})()</script>\n</head>`);
+head = lib(head); tail = lib(tail);
 
-async function main() {
-  try {
-    process.stdout.write(JSON.stringify(await run(parseArgs(process.argv.slice(2)))) + "\n");
-    return true;
-  } catch (err) {
-    const message = err?.message ?? String(err);
-    process.stderr.write(`${message.startsWith("assemble_deck") ? message : `assemble_deck: ${message}`}\n`);
-    process.stdout.write(JSON.stringify({ ok: false, error: message }) + "\n");
-    return false;
-  }
+// The bridge the shell talks to (deck_bridge.js), just before the document ends.
+const bridge = `<script id="hc-bridge">${read(join(HERE, "deck_bridge.js")).replace("var shown = __SHOWN__;", () => `var shown = ${shownSlide.toString()};`)}</script>`;
+tail = /<\/body>/i.test(tail) ? tail.replace(/<\/body>(?![\s\S]*<\/body>)/i, () => `${bridge}\n</body>`) : `${tail}\n${bridge}`;
+const doc = `${head}${slides.join("\n")}\n${tail}`;
+writeFileSync(join(BUILD, "deck.html"), doc);
+
+// Notes: the author's notes and each photo's credit.
+let notes = [];
+try { notes = JSON.parse(read(join(SRC, "notes.json"))); } catch { /* none */ }
+// A bare array of strings, or the same list under a key ({"notes": [...]}), a list of {"notes": "..."} objects, or an object keyed by slide id or number.
+const noteText = (x) => typeof x === "string" ? x : x && typeof x === "object" ? String(x.notes ?? x.note ?? x.speaker_notes ?? x.text ?? "") : "";
+if (notes && !Array.isArray(notes) && typeof notes === "object") {
+  const list = Object.values(notes).find(Array.isArray);
+  if (list) notes = list;
+  else notes = deck.slides.map((s, i) => notes[s.id] ?? notes[String(i + 1)] ?? notes[String(parseInt(s.id, 10))] ?? "");
 }
+if (!Array.isArray(notes)) { warnings.push("notes.json is not a list of notes and was ignored"); notes = []; }
+notes = notes.map(noteText);
+const credits = {};
+try {
+  for (const row of read(join(SRC, "media", "SOURCES.md")).split("\n")) {
+    const c = row.trim().replace(/^\||\|$/g, "").split("|").map((x) => x.trim().replace(/^None$/, ""));
+    if (c.length < 4 || c[0].toLowerCase() === "file" || /^[-: ]*$/.test(c[0])) continue;
+    const title = (c[1] || "Photo").replace(/^File:/, "").replace(/\.(jpe?g|png|webp|gif|tiff?)$/i, "").trim() || "Photo";
+    credits[basename(c[0])] = [c[2] ? `${title} by ${c[2]}` : title, c[3], c[4]].filter(Boolean).join(", ");
+  }
+} catch { /* no photos with credits */ }
+const finalNotes = deck.slides.map((s, i) => {
+  const used = [...new Set([...read(slideFiles[i]).matchAll(/media\/([^"')\s]+)/g)].map((m) => m[1]))].map((f) => credits[f]).filter(Boolean);
+  return [String(notes[i] || "").trim(), ...used.map((c) => `Photo: ${c}`)].filter(Boolean).join("\n\n");
+});
+writeFileSync(join(BUILD, "notes.json"), JSON.stringify(finalNotes));
 
-main().then((ok) => process.exit(ok ? 0 : 1));
+// The shell around the template's document. The document goes in as a JS string, so "</" and "<!--" are escaped.
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const asJs = (s) => JSON.stringify(s).replace(/<\//g, "<\\/").replace(/<!--/g, "<\\!--").replace(new RegExp("[\\u2028\\u2029]", "g"), (c) => "\\u" + c.charCodeAt(0).toString(16));
+const shell = read(join(HERE, "deck_shell.html")).replace("__TITLE__", () => esc(deck.title || SLUG)).replace("__NOTES__", () => asJs(finalNotes)).replace("__DOC__", () => asJs(doc));
+writeFileSync(join(P, `${SLUG}.html`), shell);
+console.log(JSON.stringify({ ok: true, out: join(P, `${SLUG}.html`), slides: total, bytes: Buffer.byteLength(shell), fonts: fontBytes, missing_media: missing, warnings }));

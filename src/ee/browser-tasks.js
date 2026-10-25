@@ -60,6 +60,20 @@ export function browserPurchaseGuard(actions, page = {}) {
   }
   return null;
 }
+// True when these steps click, or press Enter on, a control that buys or checks out (the same words browserPurchaseGuard stops a background
+// job on), or act on a checkout or payment page. Used only to open the short window in which a page's payment request is asked about.
+export function buyControlTargeted(actions, page = {}) {
+  const outline = String(page.snapshot || "");
+  let pathname = ""; try { pathname = new URL(String(page.url || "")).pathname; } catch {}
+  const paymentPage = PAYMENT_STAGE.test(pathname) || PAYMENT_HEADING.test(outline);
+  return (actions || []).some((x) => {
+    if (!x || typeof x !== "object" || x.kind === "scroll" || x.kind === "wait") return false;
+    if (paymentPage && ["click", "press", "fill", "select"].includes(x.kind)) return true;
+    if (x.kind === "press" || x.submit) return paymentPage;
+    const line = outline.split("\n").find((l) => l.startsWith(`[${x.ref}] `));
+    return !!line && PAYMENT_CONTROL.test(line);
+  });
+}
 export function browserJobNote(sql, session) {
   const rows = sql.exec("SELECT id,status,url FROM browser_jobs WHERE session=? AND status IN ('queued','running','stopping') ORDER BY id", String(session)).toArray();
   return rows.length ? `\n\n(Context note, not from the person: browser job ${rows.map((j) => `#${j.id} (${j.status}${(() => { try { return ", " + new URL(j.url).host; } catch { return ""; } })()})`).join(", ")} is still working. If you reply now, say its result will follow.)` : "";

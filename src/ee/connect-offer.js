@@ -31,6 +31,7 @@ import { loginSites } from "../logins.js";
 import { appLink } from "./texting.js";
 import { taskWords } from "./appfirst.js";
 import { personWords } from "../person-asked.js";
+import { SLIDES_APP, declineSlides } from "../deck-route.js";
 
 export const CONNECT_DDL = [
   `CREATE TABLE IF NOT EXISTS connect_offers (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, session TEXT NOT NULL, turn TEXT, app TEXT NOT NULL,
@@ -237,7 +238,7 @@ export function serviceAsk(app, name, { words = [], memNote = "", serviceFrom = 
     `When they pick, call offer_connect for that one (or find_app first if it's another service)${kind === "email" ? ", with your draft of the email if they asked you to send one" : ", with your draft of the event if they asked you to add one"}. If memory clearly says which one they use, pass service_from with those exact words from your memory recall.`;
 }
 
-const offerRow = (sql, session, app) => sql.exec("SELECT * FROM connect_offers WHERE session=? AND app=? ORDER BY id DESC LIMIT 1", String(session), app).toArray()[0] || null;
+export const offerRow = (sql, session, app) => sql.exec("SELECT * FROM connect_offers WHERE session=? AND app=? ORDER BY id DESC LIMIT 1", String(session), app).toArray()[0] || null;
 export function offerView(r) {
   const d = draftOf(r);
   return { id: r.id, at: r.at, app: r.app, name: r.name, why: r.why, logo: `https://logos.composio.dev/api/${r.app}`, kind: r.kind, reconnect: !!r.reconnect, status: r.status, turn: r.turn || null, session: r.session, ...(d ? { draft: d } : {}),
@@ -444,6 +445,7 @@ export function offerAct(res, id, op) {
   if (!r) return { error: "no such offer" };
   if (op !== "dismiss") return { error: "op must be dismiss" };
   if (r.status === "pending") res.sql.exec("UPDATE connect_offers SET status='dismissed', decided_at=? WHERE id=?", Date.now(), r.id);
+  if (r.app === SLIDES_APP) declineSlides(res);   // declining Google Slides sets the channel's deck choice to HTML until a message names Google Slides again
   const o = offerView(res.sql.exec("SELECT * FROM connect_offers WHERE id=?", r.id).one());
   res.liveTurn?.(r.session)?.emit?.({ t: "connect_offer_done", offer: o });
   return { ok: true, offer: o };

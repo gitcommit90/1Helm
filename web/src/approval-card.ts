@@ -18,7 +18,7 @@ export type Decision = "once" | "session" | "channel" | "always" | "deny" | "tru
 /** pending, a decision, "allowed" (approved somewhere else, decision unknown) or "expired". */
 export type ApStatus = "pending" | Decision | "allowed" | "expired" | "consumed" | "cancelled" | "failed" | "host_key_required";
 /** host: a site (Sentinel). perm: a kind of action (perms.js) with its plain name, what it would do, the question and the Always label. */
-export type Approval = { id: number | string; host: string; bytes?: number; keys?: string[]; via?: "form" | "command" | "page" | string; perm?: string; name?: string; what?: string; ask?: string; always?: string; action?: ConfirmAction; ssh?: { remember_allowed?: boolean; remember_requested?: boolean; trust_saved?: boolean }; native_progress?: "connecting" | "resuming" | "running" | "complete" | "failed"; native_progress_error?: string };
+export type Approval = { id: number | string; host: string; label?: string; method?: string; path?: string; bytes?: number; keys?: string[]; via?: "form" | "command" | "page" | string; perm?: string; name?: string; what?: string; ask?: string; always?: string; action?: ConfirmAction; ssh?: { remember_allowed?: boolean; remember_requested?: boolean; trust_saved?: boolean }; native_progress?: "connecting" | "resuming" | "running" | "complete" | "failed"; native_progress_error?: string };
 /** A confirm card (1HC confirm.js, perm "confirm"): the exact action, built by 1HC from what will run (never written by the model). */
 export type ConfirmAction = { title?: string; app?: string; action?: string; lines?: [string, string][]; body?: string; note?: string };
 export type ApView = {
@@ -52,8 +52,9 @@ const list = (xs: string[]) => xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).
 export function apLine(a: Approval, helper: string) {
   const keys = (a.keys || []).filter(Boolean).map((k) => `<b>${esc(k)}</b>`), size = fmtBytes(a.bytes);
   const using = keys.length ? `, using your saved ${keys.length > 1 ? "keys" : "key"} ${list(keys)}` : "";
-  if (a.via === "form") return `${esc(helper)} wants to submit a form on <b>${esc(a.host)}</b>${size ? ` (${esc(size)})` : ""}${using}.`;
-  return `${esc(helper)} wants to send ${size ? esc(size) : "something"} to <b>${esc(a.host)}</b>${using}.`;
+  const site = esc(a.label || a.host);
+  if (a.via === "form") return `${esc(helper)} wants to submit a form on <b>${site}</b>${size ? ` (${esc(size)})` : ""}${using}.`;
+  return `${esc(helper)} wants to send ${size ? esc(size) : "something"} to <b>${site}</b>${using}.`;
 }
 /** What a decided card says. */
 export function apDone(s: ApStatus, helper: string, channel: string): { ok: boolean; label: string; after: string } | null {
@@ -117,7 +118,7 @@ export function approvalHtml(a: Approval, v: ApView, o: ApOpts) {
   if (a.perm === "ssh" || a.perm === "ssh_hostkey") return sshHtml(a, v, o);
   if (a.perm === "confirm") return confirmHtml(a, v, o);
   if (a.perm) return permHtml(a, v, o);
-  const h = esc(a.host), st = v.status, done = st !== "pending", busy = v.busy || "";
+  const h = esc(a.host), shown = esc(a.label || a.host), st = v.status, done = st !== "pending", busy = v.busy || "";
   const dis = busy || done ? " disabled" : "";
   const btn = (k: Decision, cls: string, label: string) =>
     `<button type="button" class="gu-b ${cls}${busy === k ? " busy" : ""}" ${o.attr(k)}${dis}>${busy === k ? `<i class="gu-bspin" aria-hidden="true"></i>` : ""}${label}</button>`;
@@ -134,8 +135,8 @@ export function approvalHtml(a: Approval, v: ApView, o: ApOpts) {
   }
   const err = v.error && !done ? `<p class="gu-perr" role="alert">${esc(v.error)}</p>` : "";
   return `<div class="gu-sys gu-perm${done ? " locked" : ""}${v.fresh ? " gu-in" : ""}"${o.id ? ` id="${esc(o.id)}"` : ""}${o.attrs || ""} data-apst="${esc(st)}">
-    <div class="gu-sh"><span class="gu-si">${KEY}${logoOver(a.host, 32)}</span><b>OK to send this to ${h}?</b></div>
-    <p class="gu-sl">${apLine(a, o.helper)}${done ? "" : " Nothing is sent until you choose."}</p>${err}${foot}</div>`;
+    <div class="gu-sh"><span class="gu-si">${KEY}${logoOver(a.host, 32)}</span><b>OK to send this to ${shown}?</b></div>
+    <p class="gu-sl">${apLine(a, o.helper)}${done ? "" : " Nothing is sent until you choose."}</p>${a.method || a.path ? `<p class="gu-apraw">Request: ${esc([a.method, a.host + (a.path || "")].filter(Boolean).join(" ").slice(0, 160))}</p>` : ""}${err}${foot}</div>`;
 }
 
 // Native cards offer saved server trust only when the trusted server explicitly enables it.

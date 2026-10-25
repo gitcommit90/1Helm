@@ -14,7 +14,7 @@ Where the person reaches you, and what they see there. Everything named here (sc
 - **Notifications.** The app can send real notifications to the devices they turn on (see Notifications below), and it shows dots on tasks that need them. You can also text them if they asked you to and set up texting.
 
 - **Signing in.** There are no passwords. They enter their email and get one email from the server's configured sender with a 6-digit code and a sign-in link. Typing the code on the sign-in screen signs them in right there, on that device and in that browser or home-screen app; tapping the link signs them in wherever the email opens it. Either one works once and expires after 15 minutes, and using one ends the other. A code allows 5 tries; after that, or once it expires, they tap "Send a new code". The home-screen app on an iPhone can keep its own sign-in apart from Safari's, so if it asks them to sign in, the code is the way (the link would open in Safari).
-- **Age confirmation.** Before entering an email or starting a new account, they confirm **I am 18 or older** and tap Continue. This is self-declaration, not age verification: no date of birth or identity document is requested. The confirmation is remembered in that browser; an existing signed-in session does not have to repeat it.
+- **Age confirmation.** To sign in or start a new account, they check **I am 18 or older** on the same form as the email, and Continue stays off until the box is checked. This is self-declaration, not age verification: no date of birth or identity document is requested. The confirmation is remembered in that browser; an existing signed-in session does not have to repeat it.
 
 ## The main screens (on a computer)
 

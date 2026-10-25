@@ -22,6 +22,12 @@ export async function ageOf(req, env, at = Date.now()) {
   if (!await crypto.subtle.verify("HMAC", await key(env), sig, enc.encode(`${m[1]}.${m[2]}`))) return null;
   return { version: m[1], at: Number(m[2]) };
 }
+// The attestation can also arrive with the email submit itself (a checked "I am 18 or older" on the sign-in form): { adult: true | "yes", version }.
+// It yields the same record as /onboard/age: an age object for the sign-in row and the same signed cookie. Anything else is no attestation.
+export async function ageClaim(env, claim, at = Date.now()) {
+  if (!claim || (claim.adult !== true && claim.adult !== "yes") || String(claim.version) !== AGE_VERSION) return null;
+  return { age: { version: AGE_VERSION, at }, cookie: await ageCookie(env, at) };
+}
 export function ageNext(value = "/onboard") {
   // Never redirect to a supplied origin, arbitrary route, or a sign-in token.
   return /^\/(?:onboard)?(?:\?[^#\r\n]*)?$/.test(value) ? value : "/onboard";

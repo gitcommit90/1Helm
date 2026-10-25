@@ -63,12 +63,15 @@ Data shape:
 ## Technique by kind
 
 ### Slide deck
-- Draw the chart with matplotlib from the real data and place the PNG; never fake it with CSS shapes, styled boxes or hand-drawn SVG.
-- Colour it from the deck: read the colours from the deck's style plan (primary, accent, ink, a muted tint) and pass them to the
-  chart script, so the chart belongs to the deck. Set the chart's font to the deck's body font.
-- Place it with `object-fit: contain`, never `cover`, which crops axes and labels.
-- Render at least twice the size it shows on the slide (a 600 px-wide slot gets a 1200 px PNG, `dpi=200` or more) so it stays sharp.
-- The one-fact-one-home rule and slide layout live in deck-authoring.
+- In an HTML deck a chart is part of the slide: start from the template's own chart pattern (bar-chart, chart, line-chart, donut
+  and so on) and change its numbers, labels and sizes (a bar's height is value / largest value x the plot's height). The sample
+  already uses the template's colours and fonts; copy those for anything you add. Templates that draw with Chart.js
+  (cartesian, coral, retro-windows) keep their script: change the data arrays in it.
+- For a chart the template doesn't have, draw an inline `<svg>` with a viewBox of the slot's size, text in `font-family: inherit`,
+  the colours of the sample's bars and lines, a muted grid, and direct value labels. Never a screenshot or a picture of a chart,
+  and never a library's default colours.
+- Title the chart with its claim in the slide's title; the one chart is the slide's visual. Numbers come from the data file.
+- A .pptx export keeps SVG and canvas charts as pictures, so say so when they asked for an editable deck.
 
 ### PDF or Word document
 - Draw it with matplotlib from a script in `.src/` and save the PNG to `.src/media/`. Never use a picture of a chart from somewhere else.

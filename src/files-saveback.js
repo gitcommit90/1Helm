@@ -5,6 +5,7 @@
 // app's facts. See docs/files-and-library.md.
 import { MAX_UPLOAD, mimeOf, humanBytes } from "./files.js";
 import { stDelete } from "./storage.js";
+import { identicalLibraryFile, adoptName, dropNewBytes } from "./library-dedupe.js";
 
 // One line per file: size, modified time (seconds with fractions), name.
 export const SNAP_CMD = `cd /workspace && find files -maxdepth 1 -type f -printf '%s %T@ %f\\n' 2>/dev/null; true`;
@@ -47,6 +48,8 @@ export async function saveBack(R, names, after, tc) {
         const id = crypto.randomUUID(), key = `t/${tenant}/files/${channel}/${id}`;
         const r = await C.fileToR2(path, key, MAX_UPLOAD);
         if (!r.ok) { failed.push({ name, error: r.error || "the copy to storage failed" }); continue; }
+        const twin = await identicalLibraryFile(R, { key, bytes: r.bytes, name });   // the same deck, document or PDF already given to the person under another name: no second file
+        if (twin) { await dropNewBytes(R, key, r.bytes); adoptName(R, twin, name, tc?.emit); done.set(name, sig); continue; }
         const f = R.addFileRow({ id, name, mime: mimeOf(name), bytes: r.bytes, r2key: key, source: "helper", session: tc?.session || null, turn: tc?.turn || null, synced: 1, src_path: path });
         try { tc?.emit?.({ t: "file", file: f }); } catch {}
         saved.push({ name: f.name, version: 1, bytes: r.bytes, created: true });

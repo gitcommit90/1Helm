@@ -8,6 +8,7 @@ import { boundedJson } from "./bounded-body.js";
 // PUSH_CAP pushes per workspace per rolling hour.
 import { sendPush, vapidReady, okPushEndpoint as okEndpoint } from "./webpush.js";
 import { textConnected, textSend } from "./ee/index.js";
+import { recordTextAlert } from "./text-alerts.js";
 import { cardsToText } from "./genui.js";
 import { helperName } from "./helper-name.js";
 
@@ -95,6 +96,8 @@ export async function notifyTask(R, session, kind, { why = "", reply = "", noTex
         : `${helper} ${WHY[why] || "needs you"} on "${title}". Open it in the app: ${url}`;
       const d = await textSend(env, tenant, msg).catch((e) => ({ ok: false, reason: e.message }));
       out.texted = !!d?.ok;
+      // "Open it in the app" notices ask for nothing by text, so they are context for the Texts task only (expects stays false).
+      if (d?.ok) recordTextAlert(R, { session, kind: why === "question" ? "question" : "needs", text: msg, guid: d.id });
     }
   }
   return out;

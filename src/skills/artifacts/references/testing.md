@@ -13,7 +13,7 @@ explains what the checks mean; you don't run the steps one by one.
 | Kind | Gate |
 |---|---|
 | pdf | `make_pdf.sh` (render_audit with the PDF gates, then validate_pdf.sh, which writes a PNG of every page) |
-| presentation | `make_deck.sh` (assemble_deck, then render_audit with the deck gates, a PNG per slide) |
+| presentation | `make_deck.sh` (assemble_deck, then deck_check steps through every slide at 1920x1080: cut-off or overlapping text, text under the size floor, pictures, fonts, sample text, keys and counter; a PNG per slide) |
 | document (.docx) | `make_docx.sh` (render_docx.sh: LibreOffice turns it into a PDF, then a PNG per page) |
 | spreadsheet (.xlsx) | always in this order: `python3 /opt/1hc/skills/artifacts/scripts/recalc_xlsx.py <file>.xlsx`, then `python3 /opt/1hc/skills/artifacts/scripts/validate_xlsx.py <file>.xlsx` (it fails on a formula the recalc hasn't filled in); `render_docx.sh` for page images when the layout matters |
 | csv | read it back with Python's csv module: the row count, the same number of columns on every row, the header you meant |
@@ -66,7 +66,7 @@ Anything it finds is fixed in the source, never shipped. Then read the text your
 - For a document whose value is its words, the prose reference's read-back: the claims, the headings read alone, one voice.
 - Nothing about how you made it reached the page.
 
-A deck exported as slide images has no text layer in the .pptx: run readback.py on the deck's `.src/index.html` instead. A long
+A deck's slide text is in `.src/readback.txt` (make_deck.sh prints it). A long
 file prints in parts: the full text is in the `--out` file; read it with `read_file`.
 
 ## 5. Fix, at most three times

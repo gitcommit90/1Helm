@@ -1,6 +1,7 @@
 import { originInput, messageOrigin, phoneOrigin, messageTime } from "./message-origin.js";
 import { phoneFilesInit, phoneFilesNext, queuePhoneFiles, deliverPhoneFiles, dropPhoneFiles, nativePollInit, sendNativePoll, receiveNativeVote, nativePollDelivered, nativeVoteNext, recoverNativeVotes, recoverNativeSends, deliverNativeFallback, dropNativePolls, photonReplyInit, photonReplyOptions, photonReplySource, recordPhotonReplySource, photonAnswerOptions, dropPhotonReplies, photonSourceInput, retainAgentRound, retainAgentMessage, flushAgentMemory, agentMemoryNextWake, searchAgentBank, readAgentDocument, AGENT_MEMORY_TOOLS, initRoutingArtifacts, collectRoutingFiles, approveRoutingFiles, discardRoutingFiles, stageRoutingFile, routingFileTool, ROUTING_FILE_TOOLS, routingImageFallback, isRoutingImageError, dynamicRoutingOn, REQUEST_INPUT_TOOL, DONE_TOOL, WORKER_REQUEST_TOOLS, ORCHESTRATOR_TOOLS, orchestrationPolicy, routingToolsAllowed, storedMessages, stepLog, lineRange } from "./ee/index.js";
 import { userInputInit, acceptAmbiguous, chooseInput, createInputChooser, replyView, replyForTurn, inputView, questionForTurn, pendingInputs, createQuestion, resolveInput, acceptInput, attachInputTurn, deleteInputs, inputContext } from "./user-input.js";
+import { textAlertInit, recordTextAlert, routeInboundText, dropTextAlerts } from "./text-alerts.js";
 // Channel resident: the always-on agent for one channel. Runs in its own Durable Object (never in the container).
 // - Context: the channel's imported purpose, memories and recent history, plus this Cloud conversation.
 // - Tools: run_command / read_file / write_file / search_files run on this channel's ChannelComputer.
@@ -9,8 +10,8 @@ import { userInputInit, acceptAmbiguous, chooseInput, createInputChooser, replyV
 // - Billing: every model call is reserved against the tenant ledger (balance + daily safety limit), then settled at cost+15%.
 import { DurableObject } from "cloudflare:workers";
 import { enabled as eeEnabled, toolEnabled as eeToolEnabled } from "./ee/index.js";
-import { protectedRequest } from "./approval-scope.js";
-import { tolerantEnv, codeV, isResetErr } from "./do-stub.js";
+import { protectedRequest, financeHost } from "./approval-scope.js";
+import { tolerantEnv, codeV, isResetErr, isLostErr } from "./do-stub.js";
 import { resumeInit, resumeMix, guardIn, JOURNALED, runIdOf } from "./resume.js";
 import { traceMix } from "./turn-trace.js";   // Langfuse turn traces: a root, a span per model step, a TOOL per tool run (no text)
 import { runTurnPi } from "./pi-engine.js";
@@ -24,8 +25,9 @@ import { savedTo } from "./saved-to.js";   // where a remember really saved (the
 import { recoverCards, openCard, addInput, findByCid, markConsumed, stepBegin, stepEnd, stepSkipped, setStatus, commitCard, labelCard, labelInput, summarizeCard, cardView, eventView, withStepTitles, splitStepTitle, fallbackStepTitle, MAX_INPUTS } from "./tracker.js";
 import { newAutoChat, startChatTitle } from "./chat-titles.js";
 import { steerText, SKIP_TEXT, TOO_MANY, LIMIT_REPORT_ASK } from "./steer.js";
+import { zoneEditFile, zoneInfo, zoneEditsNote } from "./zone-edit.js";
 import { replyRef, replyIn, withReply } from "./reply-to.js";   // Reply on a chat bubble: the quoted message travels with the person's
-import { workingSet, bringBack, sameAsShown, BRING_BACK_TOOL } from "./workmem.js";
+import { workingSet, bringBack, sameAsShown, BRING_BACK_TOOL, SOURCE_TOOLS, SOURCE_MAX, SOURCE_BUDGET } from "./workmem.js";
 import { linkCreatePurchase, linkGetPurchase } from "./ee/index.js";
 import { normSite, hostMatchesSite, loginForHost, loginSites, loginAccountsForHost } from "./logins.js";
 import { useOpenRouter, jevNote, OR_RESERVE_PRICE, prefixPrint, runPrint, CACHE_WRITE_MULT, cacheKey } from "./model.js";
@@ -62,9 +64,10 @@ import { notifyTask, notifyReset, textAllowed } from "./notify.js";   // Setting
 import { BUILTIN_TEXT, isHiddenApp } from "./ee/index.js";
 import { turnCalls, recordLines, RECORD_HEAD, REC_TURNS, usedApps, usedAppsNote } from "./turnrec.js";   // compact context: earlier turns' tool record + integrations used
 import { runBrowserTask } from "./ee/index.js";
-import { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput } from "./ee/index.js";
+import { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput, buyControlTargeted } from "./ee/index.js";
 import { CONNECT_TOOLS, CONNECT_LINES, connectOfferInit, connectTool, offersView, offerAct, offerGet, offerConnected, composioSigninOffer, connectWriteBlock, appCatalog, catalogFile } from "./ee/index.js";
-import { jobStartedReply, ACK_UPDATE_SENT, ACK_UPDATE_UNCONFIRMED, ACK_RESULT_NOT_READY, ACK_UPDATE_FAILED, ACK_JOB_NOT_STARTED, ACK_ANSWER_RECEIVED } from "./plain-ack.js";
+import { approvalLabel } from "./egress-policy.js";
+import { ackFor, jobStartedReply, ACK_UPDATE_SENT, ACK_UPDATE_UNCONFIRMED, ACK_RESULT_NOT_READY, ACK_UPDATE_FAILED, ACK_JOB_NOT_STARTED, ACK_ANSWER_RECEIVED } from "./plain-ack.js";
 import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, DESIGNED_WORK, DESIGNED_WORK_NO_BD, HELPER_NAME_MAX, HELPER_TASK_MAX, HELPER_MESSAGE_MAX, HELPER_MESSAGES_MAX, COORDINATOR_MAX_CHILDREN, COORDINATOR_LIMITS, helperExclude, helperAllowed, helperContextSnapshot, helperDir, workerOutputPath, helperJobText, coordinatorFinalText, helperStartedText, helperNoteText, helperMessageRows, helperMessagePending, helperMessageText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, helperRow, coordinatorChildren, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, reconcileHelperReviews, helperNextWake, liveTurnOf, helperTcOf, emitHelper, helperRequestOpen, helperRequestPending, workerLoginGrant, workerPurchaseGrant, workerPauseNote, LOGIN_GRANT_MS, LOGIN_GRANT_USES } from "./helpers.js";
 import { routeTwoTurn, dispatchOrder, HANDOFF_PREFIX } from "./ee/index.js";   // routing policy
 import { privacyOf, PRIVACY_EXHAUSTED } from "./privacy.js";   // AI data privacy: the account's level, read on every dispatch
@@ -93,12 +96,14 @@ import { spendPausesOn, pausesApply, stepAllowance } from './spend-preferences.j
 import { stallCheck } from './stall-guard.js';
 import { trimTurnState, resumedReplyState, diagnosticTrace } from './spend-retention.js';
 import { savedWorkflowHardReport } from './workflow-hard-report.js';
-import { safeName, mimeOf, humanBytes, MAX_UPLOAD, storeUpload, storeView, viewJpeg, fileTags } from "./files.js";
+import { safeName, mimeOf, humanBytes, MAX_UPLOAD, MAX_VIEW, storeUpload, storeView, viewJpeg, fileTags } from "./files.js";
 import { APP_FILE_MAX } from "./ee/index.js";
+import { splitLongMessage } from "./long-message.js";
 import { stPut, stDelete } from "./storage.js";
 import { designToolDefs, designToolCall, prepareDesignTools, isDesignToolName } from "./design-tools.js";   // the five design MCP servers as tools
 import { betterDesignState } from "./better-design.js";   // Better Design as a design source follows the account (Settings → Advanced, AI privacy level)
 import { briefForWrite } from "./design-brief.js";   // the design brief 1Helm appends to a task's first .html write (no model choice involved)
+import { identicalLibraryFile, adoptName, dropNewBytes } from "./library-dedupe.js";
 import { parseSnap, changedNames, saveBack, saveBackNote } from "./files-saveback.js";   // changes under /workspace/files reach the Library file
 import { fileVersionsMix } from "./file-versions.js";   // one rule for every file an agent adds: an edit of a Library file updates it in place
 import { SHARE_TOOLS, runShareTool, shareFileDeleted, republishFrom } from "./share.js";   // share links + published pages: prepare only, the person taps
@@ -158,9 +163,11 @@ import { TASK_TOOLS, taskTitle } from "./task-tools.js";
 import { LIST_CHANNELS_TOOL, listChannels, routeTaskTool, receiveTaskAccess } from "./task-access.js";
 import { CREATE_CHANNEL_TOOL, START_TASK_TOOL, createChannelTool } from "./task-kickoff.js";
 import { recallHistory } from "./history-search.js";
-import { appFirstBlock, repeatBlock, repeatNote } from "./ee/index.js";
+import { appFirstBlock, repeatBlock, repeatNote, taskWords } from "./ee/index.js";
 import { integrationHint, hintNudge } from "./ee/index.js";
 import { wantsWebsiteLive, websiteLiveNote } from "./website-live.js";
+import { fileRecipe, RECIPE_SLUG } from "./file-recipe.js";
+import { slidesLine, slidesGate, namesGoogleSlides, slidesImageNote } from "./deck-route.js";   // the deck route: HTML by default, the tool the person named or chose before
 import { APPS_USED_TOOL, APPS_USED_LINE, appsUsedTool, appsUsedLine, getAppsUsed, usedSlugs } from "./ee/index.js";   // "Apps I use": the person's own list, a heads-up for offers and hints   // a named service that has an integration: one hint line per message, one nudge per app per task
 import { memoryReply, isStatusNotice, looksLikeStatus, STATUS_MARK } from "./status-notes.js";
 import { ackNudge } from "./ack-stall.js";
@@ -168,6 +175,7 @@ import { liveNudge, noteRan } from "./live-check.js";   // live status (flights,
 import { plansInit, PROPOSE_PLAN_TOOL, proposePlan, decidePlan, startPlanTask, planCardData, plansOf, originOf, textPlan } from "./plans.js";
 import { INTERVIEW_TOOL, interviewInit, interviewTool, interviewOp, ivView, ivRow, attachInterviews, ivDeliverTexted, ivOnlyCard } from "./interview-chat.js";
 import { pomoInit, pomoMethods, POMODORO_TOOL } from "./pomodoro.js";
+import { DECK_STYLES_TOOL, DECK_TAG, deckStylesTool, turnHasDeckStyles } from "./deck-styles.js";
 import { lnResidentMethods } from "./ee/index.js";   // Live notes (SPEC §9): the task's mirror, the meeting doc, the per-turn tag
 import { WEB_SEARCH_TOOL, webSearch, WEB_SEARCH_NANO, isSearchFail, fetchPage, wantsMarkdown, publicPageUrl } from "./websearch.js";   // web_search (DuckDuckGo via Browser Run, paid fallback) + fetch_url pages as markdown
 import { VERTICAL_SEARCH_TOOL, VS_TOOL_NAME, VS_NANO, verticalSearch, searchNote } from "./ee/index.js";   // search_web_vertical: Composio's live search (flights, hotels, maps, shopping, finance…), one compact tool
@@ -203,6 +211,8 @@ export const DAY_LIMIT_REPLY = "I've paused until midnight Pacific. I've already
 const MARKUP = 1.15, HISTORY_TURNS = 40;   // step limits: limits.js (saved on the Models page)
 // Bounded context ("compact" mode, default): a step costs about the same however long the session gets.
 const CHECKPOINT_TOKENS = 40000;
+// Source reads (file_text / read_file) stay whole for the request: up to SOURCE_BUDGET chars, and no more than 30% of the model's context (about 1.2 chars per context token); 120,000 when the context is unknown.
+const sourceBudgetFor = (ctx) => Number(ctx) > 0 ? Math.min(SOURCE_BUDGET, Math.floor(Number(ctx) * 1.2)) : 120000;
 const WM_BUDGET = 55000, WM_HUGE = { hugeAt: 20000, hugeKeep: 7500 };   // chars of this request's own steps kept in full under WORKMEM=on (~14k tokens); a batch starts at 10% over (workmem BATCH_MARGIN, so at about 60,000 as before)     // mid-turn: when a step's input passes this, fold the work so far into working notes
 const HANDOFF_MIN_TOOLS = 3;         // end of turn: turns with this many tool calls leave hand-off notes instead of their raw work log
 const HISTORY_CHARS = 60000;         // cross-turn: newest visible turns (+ notes) up to this budget; older ones stay searchable via recall_history
@@ -213,10 +223,12 @@ const REG_SLACK = 30e3, REG_REFRESH = 5 * 60e3, INPUT_TRIES = 3, INPUT_BACKOFF =
 // Rough similarity of two job descriptions (word-set overlap), for duplicate-job detection.
 const words = (t) => new Set(String(t).toLowerCase().match(/[a-z0-9]{4,}/g) || []);
 function overlap(a, b) { const A = words(a), B = words(b); if (!A.size || !B.size) return 0; let n = 0; for (const w of A) if (B.has(w)) n++; return n / Math.min(A.size, B.size); }
+const IMAGE_FILE = /\.(png|jpe?g|gif|webp|heic|heif|bmp|tiff?)$/i;
 const COMPUTER_TOOLS = new Set(["run_command", "read_file", "write_file", "edit_file", "search_files", "browser_navigate", "browser_snapshot", "browser_act", "browser_handoff", "browser_fill_card", "browser_fill_login", "browser_screenshot", "browser_task"]);
-// What a routed worker's turn shows the person while they watch the task: approvals, the live browser view, the Take control card,
-// screenshots the worker chose to show, and a purchase card. Everything else the worker emits stays on its own hidden card.
-const ROUTED_WORKER_EVENTS = new Set(["approval", "approval_done", "browser", "browser_handoff", "image", "link_purchase"]);
+// The one rule for what a background helper puts in the person's chat: only what needs the person to act (an approval to decide, the
+// Take control card of a browser handoff, a purchase to approve). Everything else the helper does (browser views, screenshots, shared
+// files, plans, notes) stays on its own hidden card and in its round's held files; the main helper reviews it and presents what it chooses.
+const PERSON_EVENTS = new Set(["approval", "approval_done", "browser_handoff", "link_purchase"]);
 // A routed worker cannot speak to the person, so these tools read differently for it.
 const WORKER_TOOL_NOTES = {
   browser_handoff: "You are a worker, not the one who talks to the person. Calling this shows the person the live browser with your instructions and pauses you; Primary sends you what they said or did, and you continue in this same session. ",
@@ -226,12 +238,15 @@ const WORKER_TOOL_NOTES = {
 };
 const BROWSER_TOOLS = new Set(["browser_navigate", "browser_snapshot", "browser_act", "browser_handoff", "browser_fill_card", "browser_fill_login", "browser_screenshot", "browser_task"]);
 const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
+// read_file: the first max_bytes of a file (default 120,000, at most 190,000), and a line saying so when the file is longer (it used to end silently). The caller lifts the computer's 20,000-character tail cut for this call.
+export const readFileCommand = (path, maxBytes) => { const mb = Math.min(Number(maxBytes) || 120000, 190000);
+  return `head -c ${mb} -- ${q(path)}; c=$?; s=$(stat -c %s -- ${q(path)} 2>/dev/null); [ "\${s:-0}" -gt ${mb} ] && printf '\n[read_file stopped at ${mb} of %s bytes; read again with a larger max_bytes (at most 190000) or print the rest with a command]\n' "$s"; exit $c`; };
 // The react tool's tapbacks, as the app draws them (the same six iMessage has).
 export const REACTIONS = { love: "❤️", like: "👍", dislike: "👎", laugh: "😂", emphasize: "‼️", question: "❓" };
 let toolDefs;
 const TOOLS = () => (toolDefs ??= [
   { type: "function", function: { name: "run_command", description: "Run a bash command on this channel's Linux computer. Main turns start in /workspace (workspace/, files/, home/); background helpers start in their own /workspace/workspace/helpers/<id>/ folder. Use for anything shell-like: python, curl, git, jq, etc. Output is truncated to the last 20k characters. A command may run 4 minutes; one still running then is stopped with everything it started.", parameters: { type: "object", properties: { command: { type: "string" }, timeout_minutes: { type: "integer", minimum: 1, maximum: 15, description: "Only when the person asked for a long job (a big download, a long build or install): how many minutes this one command may run, up to 15. Leave it out otherwise. Never use it to wait or retry until something changes." } }, required: ["command"] } } },
-  { type: "function", function: { name: "read_file", description: "Read a text file from this channel's computer (path relative to this turn's working folder or absolute). For a document the person gave you (PDF, Word, spreadsheet, slides in /workspace/files), use file_text instead: it has the text, and read_file would show raw bytes.", parameters: { type: "object", properties: { path: { type: "string" }, max_bytes: { type: "integer" } }, required: ["path"] } } },
+  { type: "function", function: { name: "read_file", description: "Read a text file from this channel's computer (path relative to this turn's working folder or absolute). For a document the person gave you (PDF, Word, spreadsheet, slides in /workspace/files), use file_text instead: it has the text, and read_file would show raw bytes. An image file (png, jpg, gif, webp, heic) is the exception: read_file on it shows you the picture itself, so to look at a slide render, chart or photo you made, read_file its path. You never need a browser or a web server for that. The person does not see the picture. A text file of up to 120,000 bytes comes back whole (max_bytes up to 190000 for more), and what you read stays in your context for the rest of the request, so read it once and don't restore it.", parameters: { type: "object", properties: { path: { type: "string" }, max_bytes: { type: "integer" } }, required: ["path"] } } },
   { type: "function", function: { name: "write_file", description: "Create or overwrite a text file on this channel's computer.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
   { type: "function", function: { name: "edit_file", description: "Change part of an existing text file by replacing an exact snippet. old_text must appear exactly once (include a few surrounding lines to make it unique), or set replace_all to change every occurrence. Prefer this over write_file for existing files: send only the part that changes. Returns a short diff.", parameters: { type: "object", properties: { path: { type: "string" }, old_text: { type: "string", description: "Exact text currently in the file, whitespace included" }, new_text: { type: "string" }, replace_all: { type: "boolean" } }, required: ["path", "old_text", "new_text"] } } },
   { type: "function", function: { name: "search_files", description: "Search file contents in this channel's files with ripgrep (case-insensitive). Returns matching lines with paths.", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
@@ -239,13 +254,13 @@ const TOOLS = () => (toolDefs ??= [
   { type: "function", function: { name: "browser_snapshot", description: "Get a fresh text outline of the page currently open in the browser (refs change after every page change, so snapshot again before acting on a changed page).", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "browser_act", description: "Do 1–20 steps in the open page, in order, using refs from the latest outline. Kinds: click {ref}; fill {ref, text, submit?} (replaces the field's text; submit presses Enter); type {ref, text} (appends); select {ref, text} (dropdown option); press {key: Enter|Tab|Escape|ArrowDown|ArrowUp|PageDown|...}; scroll {direction: down|up}; wait {ms}; click_at {x, y} (a pixel position on the screen, 0 to 1280 across and 0 to 800 down, for things with no ref such as a canvas; get the position from browser_screenshot with look: true). Returns the new outline. Typing the person's personal details (name, phone, email, address, date of birth) is allowed directly on the Standard permission level; on Careful or Locked down 1Helm asks them first with a card (Allow once or Always allow). Never type a password, card number or ID number here.", parameters: { type: "object", properties: { actions: { type: "array", items: { type: "object", properties: { kind: { type: "string", enum: ["click", "click_at", "fill", "type", "select", "press", "scroll", "wait"] }, ref: { type: "string" }, x: { type: "number" }, y: { type: "number" }, text: { type: "string" }, submit: { type: "boolean" }, key: { type: "string" }, direction: { type: "string" }, ms: { type: "integer" } }, required: ["kind"] } }, fills_personal: { type: "boolean", description: "true when any text you type is the person's (or their guest's) name, phone, email, address or date of birth" } }, required: ["actions"] } } },
   { type: "function", function: { name: "browser_handoff", description: "Ask the person to take over the browser themselves: logging in when there's no saved login for the site (if there is one, use browser_fill_login instead), a CAPTCHA, a code sent to their phone, card details, ID numbers (passport, license, SSN), personal details they didn't allow you to fill in, or approving a purchase. Never type passwords, card numbers or one-time codes yourself. The app shows them the live browser with a Take control button. After calling this, end your turn and tell them briefly what to do; continue when they say they're done.", parameters: { type: "object", properties: { instructions: { type: "string", description: "One or two plain sentences for the person, e.g. 'Please sign in to Target, then tell me when you're done.'" } }, required: ["instructions"] } } },
-  { type: "function", function: { name: "browser_screenshot", description: "Take a screenshot of the page open in the browser and show it to the person right in this chat (they see the picture; you don't). Use when they ask to see something, or to show proof of a result (a confirmation, a price, an order). Say in one short line what it shows. With look: true it works the other way round: nothing is shown or saved, and you get a text description of what is on screen, an answer to your question, the click_at x,y positions of that thing with find, the text on screen read by OCR with the click_at position of each short text, and where the page is scrolled (it only sees the part of the page in view). Use look: true when the outline lacks what you need (a canvas editor, pictures, a chart, a map). Then click a position with browser_act click_at.", parameters: { type: "object", properties: { caption: { type: "string", description: "A few words describing what the picture shows, e.g. 'omaha.com front page'" }, look: { type: "boolean", description: "true: get a text description of the screen for yourself; the person does not see a picture" }, question: { type: "string", description: "With look: what you need to know, e.g. 'What does the chart show?'" }, find: { type: "string", description: "With look: a short phrase naming one thing to locate, e.g. 'blue Press me button'. You get its click_at x,y positions." } } } } },
+  { type: "function", function: { name: "browser_screenshot", description: "Take a screenshot of the page open in the browser and show it to the person right in this chat (they see the picture; you don't). Use when they ask to see something, or to show proof of a result (a confirmation, a price, an order). Say in one short line what it shows. A background helper's screenshot is not shown in the chat: it is held for review, and the helper that started you decides whether to show it. With look: true it works the other way round: nothing is shown or saved, and you get a text description of what is on screen, an answer to your question, the click_at x,y positions of that thing with find, the text on screen read by OCR with the click_at position of each short text, and where the page is scrolled (it only sees the part of the page in view). Use look: true when the outline lacks what you need (a canvas editor, pictures, a chart, a map). Then click a position with browser_act click_at.", parameters: { type: "object", properties: { caption: { type: "string", description: "A few words describing what the picture shows, e.g. 'omaha.com front page'" }, look: { type: "boolean", description: "true: get a text description of the screen for yourself; the person does not see a picture" }, question: { type: "string", description: "With look: what you need to know, e.g. 'What does the chart show?'" }, find: { type: "string", description: "With look: a short phrase naming one thing to locate, e.g. 'blue Press me button'. You get its click_at x,y positions." } } } } },
   { type: "function", function: { name: "buy_with_link", description: "Ask the person to approve a purchase with their Link wallet. Use only when they asked you to buy something, after you've reached the store's checkout and read the exact total (items + shipping + tax). Link texts/notifies them to approve; nothing is charged unless they approve. Returns a purchase id. Then end your turn telling them to approve in Link; when they say they approved, call check_purchase.", parameters: { type: "object", properties: { amount_cents: { type: "integer", description: "Exact checkout total in cents, e.g. 4375 for $43.75" }, currency: { type: "string" }, merchant_name: { type: "string" }, merchant_url: { type: "string", description: "The store's checkout page URL" }, context: { type: "string", description: "At least 100 characters the person reads in Link: what exactly is being bought, quantity, from which store, the total with shipping/tax, and that they asked for it." } }, required: ["amount_cents", "merchant_name", "merchant_url", "context"] } } },
   { type: "function", function: { name: "check_purchase", description: "Check a Link purchase you requested: pending_approval, approved, denied, expired, etc.", parameters: { type: "object", properties: { purchase_id: { type: "string" } }, required: ["purchase_id"] } } },
   { type: "function", function: { name: "browser_fill_card", description: "After check_purchase says approved: type Link's one-time card (number, expiry, security code, and optionally the cardholder name/billing ZIP) into the checkout form in the browser. You never see the card; pass the refs of the fields from the latest outline. Afterwards take a snapshot, check the total still matches, and press the store's Pay button.", parameters: { type: "object", properties: { purchase_id: { type: "string" }, number_ref: { type: "string" }, expiry_ref: { type: "string", description: "Ref of a combined MM/YY field, if the form has one" }, exp_month_ref: { type: "string" }, exp_year_ref: { type: "string" }, cvc_ref: { type: "string" }, name_ref: { type: "string" }, zip_ref: { type: "string" } }, required: ["purchase_id", "number_ref", "cvc_ref"] } } },
   { type: "function", function: { name: "browser_fill_login", description: "Sign in with a login the person saved in Settings → Passwords & keys (the saved sites are listed in your instructions). Open the site's sign-in page first, then pass the site and the refs of the username/email field and the password field from the latest outline. 1Helm types the saved username and password itself, and only if the open page belongs to that site (the site or a subdomain); you never see the password. Sites that ask for the username first and the password on the next page: call it once for each step. Afterwards press the sign-in button (or set submit) and snapshot to check it worked. No saved login for the site, or it asks for a code or CAPTCHA: use browser_handoff.", parameters: { type: "object", properties: { site: { type: "string", description: "The saved login's site, e.g. costco.com" }, username_ref: { type: "string", description: "Ref of the username/email field, if the page shows one" }, password_ref: { type: "string", description: "Ref of the password field, if the page shows one" }, username: { type: "string", description: "Which saved account to use, when the site has more than one (the list says '2 accounts'). Leave out to get the list of usernames; ask the person if it isn't clear which one." }, submit: { type: "boolean", description: "Press Enter in the last filled field to sign in" } }, required: ["site"] } } },
   { type: "function", function: { name: "fetch_url", description: "Read a public URL without starting the computer. A web page comes back as clean readable text (rendered like a browser would, links kept); a feed, API or file comes back as the response body as is. Truncated to 20k chars. Use run_command+curl+jq when you need to filter large data.", parameters: { type: "object", properties: { url: { type: "string" }, raw: { type: "boolean", description: "true: the page's raw HTML source instead of readable text" } }, required: ["url"] } } },
-  { type: "function", function: { name: "text_person", description: "Send one text message to this person's phone (an iMessage on an iPhone, a regular text message on Android). Use only when they asked to be texted (e.g. a workflow's delivery contract) and the condition is met. Never text quiet/no-news results. It only reaches the person themselves, never their contacts or anyone else, so if they ask you to text someone else, say plainly that you can't send texts to other people yet and offer to draft the message for them to send.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
+  { type: "function", function: { name: "text_person", description: "Send one text message to this person's phone (an iMessage on an iPhone, a regular text message on Android). Use only when they asked to be texted (e.g. a workflow's delivery contract) and the condition is met. Never text quiet/no-news results. It only reaches the person themselves, never their contacts or anyone else, so if they ask you to text someone else, say plainly that you can't send texts to other people yet and offer to draft the message for them to send.", parameters: { type: "object", properties: { message: { type: "string" }, expects_reply: { type: "boolean", description: "Set true when the text asks the person to decide, confirm or answer something, so their plain text reply comes back to this task. Leave it out for reports, finished notices and anything that asks for nothing." } }, required: ["message"] } } },
   { type: "function", function: { name: "react", description: "Optional: put a reaction on the person's latest message in this task, like an iMessage tapback: love ❤️, like 👍, dislike 👎, laugh 😂, emphasize ‼️, question ❓. It shows on their message (and as a real tapback on their phone when they texted you). Use it only if and when it feels natural: a quick 👍 to acknowledge a task (\"got it, starting\"), or ❤️ / 😂 to show warmth. It is never a substitute for an answer they need, so reply as you normally would. At most one reaction per message from them: calling it again replaces your earlier one. Don't overuse it; most messages need none.", parameters: { type: "object", properties: { reaction: { type: "string", enum: ["love", "like", "dislike", "laugh", "emphasize", "question"] } }, required: ["reaction"] } } },
   { type: "function", function: { name: "schedule_workflow", description: "Create a recurring workflow in this channel: the prompt runs on schedule with no one watching. For calendar times (\"every weekday at 7am\", \"Sundays 8pm\", \"last Friday of the month\") use `schedule` (a cron rule in the person's time zone, DST-safe). For monitors (\"check every 30 min\") use interval_seconds. ONLY when the person asks for something to happen whenever something happens in one of their connected apps (\"when an email from Dana arrives, save it to my notebook\"), use on_event instead (find the event with app_events first) and pass person_asked: each event then runs this workflow once with the event as its input. Never set one up on your own idea.", parameters: { type: "object", properties: { name: { type: "string" }, prompt: { type: "string", description: "Self-contained instructions for every run (for on_event: what to do with each event, and whether to tell the person)" }, schedule: { type: "string", description: "5-field cron rule in the person's local time: minute hour day-of-month month day-of-week. E.g. \"0 7 * * MON-FRI\" (weekdays 7:00), \"0 20 * * SUN\", \"0 17 * * 5L\" (last Friday), \"0 9 1 * *\" (1st of month)." }, time_zone: { type: "string", description: "IANA zone for schedule; defaults to the person's time zone" }, interval_seconds: { type: "integer", minimum: 60, description: "For fixed-interval repeats (monitors). Runs without a gate are spaced at least 15 min apart; add a gate (set_workflow_gate) for faster checks" }, start_in_seconds: { type: "integer" }, max_runs: { type: "integer", description: "0 = forever" }, replace_existing: { type: "boolean", description: "Set only after you paused/completed a similar existing workflow" },
     on_event: { type: "object", description: "Run when an app event happens instead of on a schedule", properties: { app: { type: "string", description: "app id, e.g. gmail" }, event: { type: "string", description: "event id from app_events, e.g. GMAIL_NEW_GMAIL_MESSAGE" }, settings: { type: "object", description: "the event's settings from app_events, e.g. {\"query\": \"from:dana@example.com\"}" }, account: { type: "string", description: "which account to watch when they have several (label or email)" }, tell_person: { type: "boolean", description: "true only if the person asked to be told or texted when it happens; otherwise its runs never message them" } }, required: ["app", "event"] },
@@ -261,6 +276,7 @@ const TOOLS = () => (toolDefs ??= [
   FILE_TEXT_TOOL,
   SAVE_SKILL_TOOL,
   INTERVIEW_TOOL,
+  DECK_STYLES_TOOL,
   { type: "function", function: { name: "share_file", description: "Give the person a file from your computer: it appears as a download card in this chat and in the channel Library. Use it for anything you made for them (a document, spreadsheet, PDF, image, zip). Saving a file on your computer alone does NOT show it to them. When you change a file you already gave them, share it again: a file that is an edit of one already in the Library (the Library copy, the same path, a file you read or copied in this task, or the same name) updates that Library file in place, including a file the person uploaded (same file, same name, new version; its share link and any published page of it show the new version at the same link). Share the edit under whatever name you like: the Library file keeps its name. Don't make a copy unless they ask for one (copy: true). For a web page (.html, or a folder with index.html) meant to be opened in a browser, also offer publish_page so they can tap Publish; the card of a shared .html file offers Share file and Publish too.", parameters: { type: "object", properties: { path: { type: "string", description: "Path on your computer (relative to /workspace or absolute)" }, name: { type: "string", description: "Optional file name to show, e.g. \"October budget.xlsx\"" }, replace: { type: "string", description: "Optional: the Library file (name or id) this is a new version of, when it was saved under another path or name. Not needed when the path or name is the same" }, copy: { type: "boolean", description: "true only when the person asked for a separate copy: added as a new file next to the old one" }, restore: { type: "string", description: "Instead of sharing: put back the version of this Library file (name or id) from before your last update to it. Calling it again swaps back. path is not needed" }, original: { type: "boolean", description: "With restore: put back the file exactly as the person first uploaded it (always kept, however many edits were made)" } }, required: [] } } },
   { type: "function", function: { name: "list_workflows", description: "List this channel's workflows and follow-ups with status and next run.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "set_workflow_status", description: "Pause, resume or complete a workflow by id.", parameters: { type: "object", properties: { id: { type: "integer" }, status: { type: "string", enum: ["active", "paused", "complete"] } }, required: ["id", "status"] } } },
@@ -338,7 +354,7 @@ export function lineFor(name, a = {}) {
     browser_handoff: "waiting for you in the browser", request_saved_login: "asking to use a saved login", request_purchase: "asking to start a purchase", browser_task: host ? `working on ${host}` : "using the browser", browser_screenshot: "taking a screenshot", browser_fill_card: "filling in the payment", browser_fill_login: a.site ? `signing in to ${normSite(a.site) || "a site"}` : "signing in", buy_with_link: "asking you to approve a purchase", gmail_search: "checking your email", gmail_read: "reading an email", gmail_draft: "writing a draft", gmail_send: "sending your email", calendar_events: "checking your calendar", calendar_add: "adding to your calendar",
     check_purchase: "checking the purchase", fetch_url: host ? `reading ${host}` : "reading a web page", web_search: "searching the web", search_web_vertical: a.kind === "flights" ? "checking flights" : a.kind === "hotels" ? "checking hotels" : a.kind === "finance" ? "checking the markets" : a.kind === "events" ? "looking for events" : "searching live listings", text_person: "texting you", text_captain: "texting you",
     schedule_workflow: "setting up a scheduled check", schedule_followup: "setting a reminder", recall_history: "looking back through earlier work", file_text: a.query ? `searching ${String(a.file || "a file").split("/").pop().slice(0, 60)}` : `reading ${String(a.file || "a file").split("/").pop().slice(0, 60)}`, work_log: "checking what it already looked up", bring_back: "looking back at an earlier step", remember: a.fact ? `remembering: ${String(a.fact).slice(0, 140)}` : "remembering",
-    save_skill: a.delete ? "deleting a saved skill" : a.slug ? `saving the ${String(a.slug).slice(0, 40)} skill` : "saving a skill", list_workflows: "checking its scheduled jobs", set_workflow_status: "updating a scheduled job", set_workflow_gate: "updating a scheduled job", save_run_notes: "saving notes", update_todos: "updating the to-do list", share_file: file ? `sharing ${file}` : "sharing a file", start_helper: a.name ? `starting a helper: ${String(a.name).slice(0, 60)}` : "starting a helper", stop_helper: "stopping a helper", start_browser_task: "starting a browser job", list_browser_tasks: "checking browser jobs", stop_browser_task: "stopping a browser job", read_skill: "checking its playbook", app_actions: a.app ? `looking in ${isCustomSlug(a.app) ? CUSTOM_WORDS : String(a.app).replace(/super$/, "")}` : "looking in your apps", app_run: "working in your apps", app_proxy: "working in your apps", apps_i_use: APPS_USED_LINE, ...CONNECT_LINES })[name] || "working";
+    save_skill: a.delete ? "deleting a saved skill" : a.slug ? `saving the ${String(a.slug).slice(0, 40)} skill` : "saving a skill", list_workflows: "checking its scheduled jobs", set_workflow_status: "updating a scheduled job", set_workflow_gate: "updating a scheduled job", save_run_notes: "saving notes", update_todos: "updating the to-do list", share_file: file ? `sharing ${file}` : "sharing a file", show_deck_styles: "showing deck styles", start_helper: a.name ? `starting a helper: ${String(a.name).slice(0, 60)}` : "starting a helper", stop_helper: "stopping a helper", start_browser_task: "starting a browser job", list_browser_tasks: "checking browser jobs", stop_browser_task: "stopping a browser job", read_skill: "checking its playbook", app_actions: a.app ? `looking in ${isCustomSlug(a.app) ? CUSTOM_WORDS : String(a.app).replace(/super$/, "")}` : "looking in your apps", app_run: "working in your apps", app_proxy: "working in your apps", apps_i_use: APPS_USED_LINE, ...CONNECT_LINES })[name] || "working";
 }
 // remember's result, plus a live "saved" event saying where it really went (saved-to.js), for the chat's "Added to …" chip.
 function savedNote(ctx, a, out) { const saved = savedTo("remember", a, out); if (saved.length) ctx.emit?.({ t: "saved", saved }); return out; }
@@ -487,11 +503,12 @@ export class Resident extends DurableObject {
     try { this.sql.exec("ALTER TABLE turns ADD COLUMN engine TEXT"); } catch {}
     try { this.sql.exec("ALTER TABLE turns ADD COLUMN cache_write_tok INTEGER"); } catch {}
     try { this.sql.exec("ALTER TABLE turns ADD COLUMN resumes INTEGER"); } catch {}   // resume.js: how many times a deploy cut this turn off and it carried on   // prompt-cache writes (model.js withCacheBreakpoints)
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, host TEXT NOT NULL, method TEXT NOT NULL, path TEXT, bytes INTEGER, keys TEXT, turn TEXT, workflow_id INTEGER, session TEXT, status TEXT NOT NULL DEFAULT 'pending', decision TEXT, decided_at INTEGER, via TEXT);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, host TEXT NOT NULL, method TEXT NOT NULL, path TEXT, bytes INTEGER, keys TEXT, turn TEXT, workflow_id INTEGER, session TEXT, status TEXT NOT NULL DEFAULT 'pending', decision TEXT, decided_at INTEGER, via TEXT, page TEXT);
       CREATE TABLE IF NOT EXISTS grants (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, host TEXT NOT NULL, method TEXT NOT NULL DEFAULT '*', scope TEXT NOT NULL, session TEXT, uses_left INTEGER NOT NULL DEFAULT -1, expires INTEGER, approval_id INTEGER);`);
     confirmInit(this.sql);   // confirm.js: a confirm card's payload hash, view and one-time token
     permsInit(this.sql);   // perms.js: a permission request can be for a kind of action (perm), not only a site
     nativeInit(this.sql);
+    try { this.sql.exec("ALTER TABLE approvals ADD COLUMN page TEXT"); } catch {}   // egress-policy.js: the site a page's request came from
     try { this.sql.exec("ALTER TABLE approvals ADD COLUMN via TEXT"); } catch {}   // egress-policy.js: form (a browser form) | command (older tables)
     // Tasks (sessions): several per channel. "done" belongs to the person (the General helper's mark_task_done only on their explicit, quoted ask); the helper's state is derived (working/waiting/watching/ready).
     this.sql.exec("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, done_at INTEGER, created INTEGER NOT NULL, updated INTEGER NOT NULL, last_reply_at INTEGER, seen_at INTEGER NOT NULL DEFAULT 0, waiting TEXT, preview TEXT)");
@@ -547,7 +564,7 @@ export class Resident extends DurableObject {
     spendInit(this.sql);   // spendguard.js: pause cards (Keep going / Stop here)
     pomoInit(this.sql);   // focus timers per task (pomodoro.js)
     this.lnInit();   // Live notes per task (live-notes.js): the LiveNotes DO's mirror
-    helpersInit(this.sql); userInputInit(this.sql); nativePollInit(this.sql); photonReplyInit(this.sql); phoneFilesInit(this.sql); browserJobsInit(this.sql); forgottenInit(this.sql);
+    helpersInit(this.sql); userInputInit(this.sql); nativePollInit(this.sql); photonReplyInit(this.sql); textAlertInit(this.sql); phoneFilesInit(this.sql); browserJobsInit(this.sql); forgottenInit(this.sql);
     if (env.BACKUP_MAINTENANCE !== "1") {
       this.helpersRecover({ boot: true }).catch((e) => console.log("helpers recover", e.message));
       this.browserJobsRecover({ boot: true }).catch((e) => console.log("browser jobs recover", e.message));
@@ -569,7 +586,15 @@ export class Resident extends DurableObject {
     this.put("sessions_v1", "1");
   }
   // Next job-started line for this channel (the Resident is one channel). The counter lives in kv, written before the line is used, so a resume never repeats the line.
-  nextJobAck() { const n = Number(this.get("ack_job_n")) || 0; this.put("ack_job_n", n + 1); return jobStartedReply(n); }
+  nextJobAck(tc = null) { if (this.internalTurn(tc)) return ""; const n = Number(this.get("ack_job_n")) || 0; this.put("ack_job_n", n + 1); return jobStartedReply(n); }
+  // A turn the person did not start (a worker's returned result or pause, a due follow-up, a browser job, a resume of one of those). It joins the
+  // person's chat only with something for them, so the app's fixed acknowledgement lines are never set on it (plain-ack.js ackFor). A turn where the
+  // person typed into the handoff card is theirs: it has a "msg" event.
+  internalTurn(tc) {
+    if (!tc?.handoff) return false;
+    try { return !this.sql.exec("SELECT 1 FROM card_events WHERE card=? AND type='msg' LIMIT 1", String(tc.turn)).toArray().length; } catch { return true; }
+  }
+  ack(tc, line) { return ackFor(this.internalTurn(tc), line); }
   put(k, v) { this.sql.exec("INSERT INTO kv VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", k, String(v)); }
 
   // The channel computer must know its tenant (for billing and storage paths) before first use; a never-used channel's computer doesn't.
@@ -957,6 +982,11 @@ export class Resident extends DurableObject {
     if (ev[0]?.seq === 1) { lead = withReply(lead, replyIn(ev[0].reply)); ev = ev.slice(1); }   // each message keeps the one it replied to (reply-to.js)
     return [lead, ...ev.map((e) => e.type === "handoff" ? `[handed back while you worked] ${String(e.text || "").slice(0, 1500)}` : `[added while you worked] ${withReply(e.text || "(a file)", replyIn(e.reply)).replace("\n", " ")}`)].join("\n");
   }
+  // The call behind a tool result is a source read (file_text / read_file): the append task keeps such a result whole up to SOURCE_MAX instead of cutting it at 16,000 characters.
+  isSourceRead(turn, callId) {
+    try { const r = this.sql.exec("SELECT tool_calls FROM msgs WHERE turn=? AND tool_calls LIKE ? ORDER BY rowid DESC LIMIT 1", turn, `%"id":"${String(callId).replace(/[%_"\\]/g, "")}"%`).toArray()[0];
+      return !!r && JSON.parse(r.tool_calls).some((c) => c.id === callId && SOURCE_TOOLS.has(c.function?.name)); } catch { return false; }
+  }
   save(turn, m) {
     const store = this._appendTurns?.get(turn)?.transcript;
     const text = m.role === "user" ? typeof m.content === "string" ? m.content : m.content?.filter(p => p.type === "text").map(p => p.text).join("") : null;
@@ -965,7 +995,7 @@ export class Resident extends DurableObject {
     // recording is the actual request, so keep its assembled data for resume.
     if (tc?.preparedSteers.full) m = { ...m, content: Array.isArray(m.content) ? m.content.map(p => p.type === "text" ? { ...p, text: tc.preparedSteers.full } : p) : tc.preparedSteers.full };
     const write = () => {
-      if (store) { store.bound(m); store.append(m, turn); }
+      if (store) { store.bound(m, m.role === "tool" && this.isSourceRead(turn, m.tool_call_id) ? SOURCE_MAX : undefined); store.append(m, turn); }
       this.sql.exec("INSERT INTO msgs (turn,role,content,tool_calls,tool_call_id,at) VALUES (?,?,?,?,?,?)", turn, m.role, typeof m.content === "object" ? JSON.stringify(m.content) : m.content ?? null, m.tool_calls ? JSON.stringify(m.tool_calls) : null, m.tool_call_id ?? null, Date.now());
       if (tc) markConsumed(this.sql, tc.preparedSteers.card, tc.preparedSteers.seqs, tc.stepNo ?? 0);
     };
@@ -1364,17 +1394,51 @@ export class Resident extends DurableObject {
     else if (name === "browser_fill_login" && a.site) return await appFirstBlock(this, tc, name, a.site, { site: true });
     return hintNudge(this, tc, name, a);   // integration-hint.js: this turn's hint named the site's app; once per app per task
   }
+  // Whether the model running this task can take a picture as input: the task's saved model facts, else the saved catalog's entry for the
+  // task's model. Unknown counts as yes (the router skips models without image input when a picture is in the request).
+  async modelSeesImages(tc) {
+    const cat = tc?.taskProfile?.catalog; if (Array.isArray(cat?.input_modalities)) return cat.input_modalities.includes("image");
+    const m = tc?.taskProfile?.requestedModel || tc?.route?.primary, all = m ? await this.savedCatalog() : null;
+    return Array.isArray(all?.[m]?.input_modalities) ? all[m].input_modalities.includes("image") : true;
+  }
+  // read_file on an image file: the picture goes to the model as an image in the next message (the same downsized copy an attached image
+  // gets: the file itself when it is a png, jpeg, gif or webp up to MAX_VIEW, else viewJpeg's). The person is not shown anything.
+  // Only a short note is saved with the turn, so a stored message never holds the picture.
+  async viewImageFile(path, tc) {
+    const raw = String(path || "").trim(), abs = raw.startsWith("/") ? raw : (tc?.kind === "helper" && tc.helper?.id ? helperDir(tc.helper.id) : "/workspace/") + raw.replace(/^\.\//, "");
+    if (abs.split("/").includes("..")) return { code: 2, out: "Give the image path without .. in it." };
+    if (!(await this.modelSeesImages(tc))) return { code: 0, out: `${raw} is an image, and the model working on this task can't look at images, so its picture was not shown. Work from what you know about the file (its name, size and how it was made), or ask the person to describe it.` };
+    let f; try { f = await this.computer().readFile(abs, MAX_UPLOAD); } catch (e) { return { code: 1, out: `couldn't read ${raw} (${String(e.message || e).slice(0, 120)}).` }; }
+    if (!f?.ok) return { code: 1, out: f?.error || `couldn't read ${raw}.` };
+    let bytes = f.bytes, mime = mimeOf(raw);
+    if (bytes.byteLength > MAX_VIEW || !/^image\/(png|jpeg|gif|webp)$/.test(mime)) {
+      const small = await viewJpeg(this.env, bytes).catch(() => null);
+      if (!small) return { code: 1, out: `${raw} is ${humanBytes(bytes.byteLength)} and could not be made small enough to look at (png, jpg, gif and webp up to ${humanBytes(MAX_VIEW)} work as they are). Make a smaller copy with run_command and read_file that.` };
+      bytes = small; mime = "image/jpeg";
+    }
+    let bin = ""; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    (tc.viewPics ||= []).push({ name: raw.split("/").pop(), part: { type: "image_url", image_url: { url: `data:${mime};base64,${btoa(bin)}` } } }); tc.needImg = true;
+    return { code: 0, out: `${raw}: the picture follows in the next message (${humanBytes(f.bytes.byteLength)}). The person does not see it.` };
+  }
+  // The pictures read_file collected during one step, added after that step's tool results.
+  flushViewPics(tc, messages, turn) {
+    const pics = tc?.viewPics?.splice(0) || []; if (!pics.length) return;
+    const list = pics.map((p) => `"${p.name}"`).join(", ");
+    messages.push({ role: "user", content: [{ type: "text", text: `(Not from the person: the picture${pics.length > 1 ? "s" : ""} you read with read_file, in order: ${list}.)` }, ...pics.map((p) => p.part)] });
+    this.save(turn, { role: "user", content: `(Not from the person: ${list} was shown to you here as a picture. Read the file again to look at it again.)` });
+  }
   async execComputerToolInner(name, a, tc) {
     if (tc?.helper?.dynamic_routing && (name === "write_file" || name === "edit_file")) {
       const path = workerOutputPath(this, tc.helper, a.path);
       if (!path) return { code: 2, out: `The file was not changed. Save outputs inside ${helperDir(tc.helper.id)}, or edit an exact existing Library copy under /workspace/files/. Files elsewhere are not collected automatically for Primary review. Move or copy command outputs into your work folder before calling done.` };
       a = { ...a, path };
     }
+    if (name === "read_file" && IMAGE_FILE.test(String(a.path || ""))) return await this.viewImageFile(a.path, tc);
     try { await this.syncFiles(); } catch (e) { console.log("file sync", e.message); }
     let cmd;
     switch (name) {
       case "run_command": cmd = String(a.command || ""); break;
-      case "read_file": cmd = `head -c ${Math.min(Number(a.max_bytes) || 60000, 200000)} -- ${q(a.path)}`; break;
+      case "read_file": cmd = readFileCommand(a.path, a.max_bytes); break;
       case "write_file": { const b64 = btoa(unescape(encodeURIComponent(String(a.content ?? "")))); cmd = `mkdir -p "$(dirname -- ${q(a.path)})" && echo ${q(b64)} | base64 -d > ${q(a.path)} && echo "wrote $(wc -c < ${q(a.path)}) bytes to ${a.path}"`; break; }
       case "search_files": cmd = `rg -n -i --max-columns 300 --max-count 20 -- ${q(a.pattern)} ${q(a.path || ".")} | head -200`; break;
       case "edit_file": { const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(a)))); cmd = `python3 - <<'PY'\n${EDIT_PY.replace("__ARGS__", b64)}\nPY`; break; }
@@ -1390,7 +1454,7 @@ export class Resident extends DurableObject {
     const watch = !tc?.helper?.dynamic_routing && (name === "run_command" || name === "write_file" || name === "edit_file");   // files-saveback.js: what changes under /workspace/files is saved to the Library file
     const snap = async () => { try { const x = await this.computer().filesSnapshot(); return x?.ok ? parseSnap(x.out) : null; } catch { return null; } };
     const before = watch ? await snap() : null;
-    const r = await this.computer().exec(work + cmd, { save: name === "read_file" || name === "search_files" ? "none" : "defer", ...(tc?.key ? { tag: tc.key } : {}), ...(tc?.turn && tc?.callId ? { run: runIdOf(tc.turn, tc.callId) } : {}), timeoutMs: commandLimitMs(name, a, tc?.limits?.timingSaved) });   // run: a deploy mid-command can re-attach to it (resume.js)   // tag: Stop can kill it
+    const r = await this.computer().exec(work + cmd, { save: name === "read_file" || name === "search_files" ? "none" : "defer", ...(tc?.key ? { tag: tc.key } : {}), ...(tc?.turn && tc?.callId ? { run: runIdOf(tc.turn, tc.callId) } : {}), timeoutMs: commandLimitMs(name, a, tc?.limits?.timingSaved), ...(name === "read_file" ? { outMax: 200000 } : {}) });   // run: a deploy mid-command can re-attach to it (resume.js)   // tag: Stop can kill it
     if (r?.storage_note) r.out = `${String(r.out || "").replace(/\n*$/, "")}\n\n${r.storage_note}`;   // storage.js: a computer save was refused (storage full)
     if (watch && r && !r.browser_busy) {
       const after = await snap(), res = before && after ? await saveBack(this, changedNames(before, after), after, tc) : { saved: [], failed: [] };
@@ -1511,11 +1575,19 @@ export class Resident extends DurableObject {
       if (r.url !== undefined && !/^https?:/.test(r.url)) return { code: 1, out: "The browser has no page open (it's blank), so there's nothing to show. Open the page with browser_navigate first." };
       const bytes = Uint8Array.from(atob(r.jpeg_base64), (c) => c.charCodeAt(0));
       if (a.look === true) return await this.lookAtScreen(r, bytes, a, tc);   // the bytes are described and dropped: never saved, shown or logged
+      if (tc?.kind === "helper") {
+        // A background helper's screenshot never reaches the chat. It is held with the helper's round files, where the main helper
+        // sees it at review and chooses whether to present it (approve_subagent attaches the files it names).
+        if (!tc.helper?.dynamic_routing) return { code: 0, out: "The screenshot was taken, but a background helper cannot show pictures to the person. Describe what it shows in your report." };
+        const host = (() => { try { return new URL(r.url).host; } catch { return ""; } })(), caption = String(a.caption || r.title || "").replace(/\s+/g, " ").trim().slice(0, 60);
+        try { const held = await stageRoutingFile(this, tc.helper, { name: `screenshot ${tc.shotN = (tc.shotN || 0) + 1} ${caption || host}.jpg`, mime: "image/jpeg", bytes }); return { code: 0, out: `Saved the screenshot of ${r.url} as held file ${held.id} "${held.name}" for the main helper's review. The person does not see it unless the main helper presents it, so tell the main helper in your response which held file shows what.` }; }
+        catch (e) { return { code: 1, out: `The screenshot could not be saved for review: ${String(e.message || e).slice(0, 200)}` }; }
+      }
       const id = crypto.randomUUID(), key = `t/${this.get("tenant")}/shots/${this.get("channel")}/${id}.jpg`;
       try { await stPut(this.env, key, bytes, { httpMetadata: { contentType: "image/jpeg" } }, { check: true }); }
       catch (e) { if (e.code === "storage_full") return { code: 1, out: e.toolNote }; throw e; }   // storage.js
       const caption = String(a.caption || r.title || "").slice(0, 200);
-      this.sql.exec("INSERT INTO shots (id, at, turn, session, url, caption, r2key, bytes) VALUES (?,?,?,?,?,?,?,?)", id, Date.now(), (tc?.helper?.dynamic_routing && tc.helper.parent_card) || tc?.turn || null, tc?.session || null, r.url || "", caption, key, bytes.byteLength);
+      this.sql.exec("INSERT INTO shots (id, at, turn, session, url, caption, r2key, bytes) VALUES (?,?,?,?,?,?,?,?)", id, Date.now(), tc?.turn || null, tc?.session || null, r.url || "", caption, key, bytes.byteLength);
       tc?.emit?.({ t: "image", id, url: r.url || "", caption });
       return { code: 0, out: `The person now sees a screenshot of ${r.url} in the chat${caption ? ` ("${caption}")` : ""}. Don't describe it pixel by pixel; one short line about what it shows is enough.` };
     }
@@ -1592,8 +1664,10 @@ export class Resident extends DurableObject {
       return { code: 0, out: `Filled the saved ${did.join(" and ")} for ${login.site}.${a.submit ? " Pressed Enter to sign in." : " Now press the site's sign-in button."} Check the page: if it asks for a code or a CAPTCHA, use browser_handoff. Page: ${scrub(r.title)} — ${scrub(r.url)}\n` + untrusted(`the web page ${rh || "?"}`, scrub(r.snapshot)) };
     }
     const op = name.slice(8);
+    if (name === "browser_act") this.noteBrowserActs(a.actions, { url: this._outline?.url, snapshot: this._outline?.snapshot });
     const r = await C.browser(op, name === "browser_navigate" ? { url: a.url } : name === "browser_act" ? { actions: a.actions } : {});
     if (!r.ok) return { code: 1, out: `browser error: ${r.error}` };
+    if (r.snapshot) this._outline = { url: r.url, snapshot: r.snapshot };   // the outline the next browser_act's refs come from
     tc?.emit?.({ t: "browser", url: r.url, title: r.title });
     const head = `${name === "browser_act" ? `completed ${r.completed} step(s). ${r.page_changed === false ? "NOTHING VISIBLE CHANGED on the page after these steps: the action probably had no effect. Don't report it as done; " : ""}` : ""}${r.visited ? `Pages passed through: ${r.visited.join(" → ")}. ` : ""}Page: ${r.title || "(untitled)"} — ${r.url}\n`;
     return { code: 0, out: head + untrusted(`the web page ${new URL(r.url || "about:blank").host || r.url}`, r.snapshot || "") };
@@ -1670,6 +1744,7 @@ export class Resident extends DurableObject {
       case "mark_task_done": return routeTaskTool(this, name, a, ctx);
       case "propose_plan": return proposePlan(this, a, ctx);   // plans.js: a system plan card; only the person approves
       case "pomodoro": return this.pomoTool(ctx, a);
+      case "show_deck_styles": return deckStylesTool(ctx);
       case "react": {
         const kind = String(a.reaction || "").trim().toLowerCase();
         if (!REACTIONS[kind]) return `error: reaction must be one of ${Object.keys(REACTIONS).join(", ")}`;
@@ -1730,7 +1805,7 @@ export class Resident extends DurableObject {
         const one = async (x) => { let out = await runAppTool(this.env, this.get("tenant"), name, x, c, cx);
           if (out.startsWith("NOT CONNECTED") || out.startsWith("error: no ")) { c = await this.conns(true); out = await runAppTool(this.env, this.get("tenant"), name, x, c, { ...cx, batch: null }); }
           if (name === "app_run" && /^COMPOSIO_SEARCH_/i.test(String(x.action || "")) && / ok\b/.test(out.split("\n", 1)[0])) await this.chargeExtra("vs", VS_NANO, ctx);   // a Composio search call (vertical-search.js)
-          return out; };
+          return name === "app_run" ? slidesImageNote(x, out) : out; };   // deck-route.js: pictures asked for but not made
         const logged = (x) => (name === "app_run" || name === "app_proxy" ? workLogged(this, ctx, name, x, one, c) : one(x));   // worklog.js: reads logged, reused, big results trimmed
         const out = await guardedTool(this, ctx, name, a, c, logged);   // ask-first.js: which account, when several fit and nobody said
         if (out.startsWith(ENDED_PREFIX)) { cmpCard(this, ctx); return out; }
@@ -1784,7 +1859,7 @@ export class Resident extends DurableObject {
         if (ctx.workflow_id != null) { const ev = evOf(this.wf(ctx.workflow_id)); if (ev && !ev.tell) return "NOT SENT: this workflow runs on an app event and wasn't set up to tell the person anything, so nothing was sent. Do the rest of what its instructions say and end with your short report."; }
         let d; try { d = await deliverText(this.env, this.get("tenant"), msg); } catch (e) { d = { ok: false, reason: `error: ${String(e.message || e).slice(0, 160)}` }; }
         this.sql.exec("INSERT INTO outbox (at,turn,workflow_id,message,delivery) VALUES (?,?,?,?,?)", now, ctx.turn || null, ctx.workflow_id ?? null, msg, d.ok ? `sent:${d.id || ""}` : `held:${d.reason}`);
-        if (d.ok) { ctx.texted = true; return "Sent. The text was delivered to their phone."; }
+        if (d.ok) { ctx.texted = true; recordTextAlert(this, { session: ctx.session, turn: ctx.turn, workflow_id: ctx.workflow_id ?? null, kind: ctx.workflow_id != null ? "workflow" : "alert", text: msg, guid: d.id, expects: a.expects_reply === true }); return "Sent. The text was delivered to their phone."; }
         if (d.reason === "not_connected") return "NOT DELIVERED: texting isn't connected for this person yet. They can turn it on in Settings → Texting (it takes about a minute). Don't say you texted them. Tell them plainly, in one short sentence, and put the message in your reply instead.";
         return "NOT DELIVERED: the text didn't go through just now. Don't say you texted them. Tell them plainly and put the message in your reply.";
       }
@@ -1906,7 +1981,7 @@ export class Resident extends DurableObject {
       }
       case "file_text": return await this.fileTextTool(a);   // sidecar.js: a Library file's prepared text, no computer
       case "recall_history": return recallHistory(this.sql, a, ctx, { ranked: hsUse(this.env) });   // HS_USE: any word matches, more words first, then newest
-      case "share_file": { const t0 = Date.now(), out = await this.shareFile(a, ctx); this.warmPreviews(t0); return out; }   // file-preview.js: a deck/document it gave gets its viewer preview now
+      case "share_file": { const t0 = Date.now(), out = await this.shareFile(a, ctx) + await this.shareDeckFiles(a, ctx); this.warmPreviews(t0); return out; }   // file-preview.js: a deck/document it gave gets its viewer preview now
       case "list_workflows": return JSON.stringify(await this.listWorkflows());
       case "app_events": return await appEventsTool(this.env, this.get("tenant"), a, await this.conns(true));   // composio-triggers.js: an app's events, for on_event
       case "set_workflow_status": return JSON.stringify(await this.setWorkflowStatus(Number(a.id), String(a.status)));
@@ -2446,6 +2521,7 @@ export class Resident extends DurableObject {
     if (coordinating && role !== "worker") return "error: a coordinator can start direct worker children only; there is no deeper nesting.";
     const nm = scrubSecrets(String(a.name || "").replace(/\s+/g, " ").trim()).slice(0, HELPER_NAME_MAX), task = scrubSecrets(String(a.task || "").trim()).slice(0, HELPER_TASK_MAX);
     if (!nm || !task) return "error: name and task are both required.";
+    { const no = ctx.kind === "chat" ? await slidesGate(this, ctx, `${nm}\n${task}`, taskWords(this, ctx)).catch(() => null) : null; if (no) return no; }   // deck-route.js: a Google Slides deck is built by you, not a helper
     const parent = ctx.card || ctx.turn || null;
     const callId = ctx.callId ? String(ctx.callId) : null;
     if (coordinating && (!parent || !callId)) return "error: this child start has no saved call identity; retry only after checking the coordinator's record.";
@@ -2622,7 +2698,10 @@ export class Resident extends DurableObject {
       if(this.sql.exec("SELECT 1 FROM user_questions WHERE helper_id=? AND (status='pending' OR (status='answered' AND (answer_turn IS NULL OR answer_turn<>?) AND NOT EXISTS (SELECT 1 FROM turns WHERE turns.id=user_questions.answer_turn)))",id,tc.turn||"").toArray().length)return "error: wait for the person's answer before approving this worker.";
       if (h.status !== "awaiting_review") return "error: approval is available only after done.";
       if (JSON.parse(h.handoff_json || "{}").incomplete) return "error: this file handoff is incomplete. Request a revision before approving.";
-      const published = await approveRoutingFiles(this, h, a.files || [], tc);
+      let published;
+      // A refused file choice is a tool result the reviewing turn can act on (it lists the held files with their IDs). Thrown out of the tool loop it ended the whole review turn.
+      try { published = await approveRoutingFiles(this, h, Array.isArray(a.files) ? a.files : a.files == null ? undefined : [a.files], tc); }
+      catch (e) { if (isResetErr(e)) throw e; return `error: ${String(e.message || e)}`; }
       this.sql.exec("UPDATE helpers SET status='approved',history_json=NULL,ended=? WHERE id=? AND status='awaiting_review'", Date.now(), id);
       tc.orchestration = { approved: id };
       this.journalDelegation(tc,"approve_subagent",`Worker #${id} approved. The session is closed. ${published.notice}`);
@@ -2733,6 +2812,13 @@ export class Resident extends DurableObject {
   }
   // One helper job: an unattended sub-turn (kind "helper": a saved snapshot, no live history or sessQ, never steerable) on the allowlisted tools.
   // resume (resume.js): a helper run a deploy cut off carries on in its own card, with its deadline timers set again.
+  // The artifacts skill's references for the kind of file a helper job asks for (file-recipe.js), read here so they sit in the worker's first input.
+  helperRecipe(h) {
+    const r = fileRecipe(`${h.name || ""}\n${h.task || ""}`); if (!r) return null;
+    if (r.kind === "presentation" && namesGoogleSlides(`${h.name || ""}\n${h.task || ""}`)) return null;   // a Google Slides job gets no HTML deck recipe (deck-route.js)
+    const flags = this.docFlags();
+    return { kind: r.kind, text: r.refs.map((ref) => readSkill({ slug: RECIPE_SLUG, ref }, flags)).join("\n\n") };
+  }
   async helperRun(h, { resume = null, card = null, phase = null } = {}) {
     const coordinatorPhase = h.role === "coordinator" ? phase || h.phase || "dispatch" : null;
     const measured = { general: { steps: 20, charge: 1e8, time: 10 }, research: { steps: 25, charge: 2e8, time: 10 }, apps_economical: { steps: 50, charge: 5.5e8, time: 15 }, skills: { steps: 25, charge: 3e8, time: 25 }, spreadsheet: { steps: 20, charge: 1e8, time: 10 }, technical: { steps: 20, charge: 5e8, time: 10 }, apps_complete: { steps: 50, charge: 5.5e8, time: 15 } };
@@ -2742,7 +2828,7 @@ export class Resident extends DurableObject {
     const opts = { kind: "helper", session: h.session, helper: h, parent_card: h.parent_card,
       coordinator_phase: coordinatorPhase, max_steps: share?.steps || this.hl().steps, max_charge: share?.charge || this.hl().charge,
       ...(share ? { hard_charge: share.charge } : {}), exclude_tools: helperExclude(this.tools(), h, coordinatorPhase).filter(n => !h.dynamic_routing || n !== "done"), ...(resume ? { resume, card } : {}) };
-    const prompt = coordinatorPhase === "aggregate" ? coordinatorFinalText(h, coordinatorChildren(this.sql, h.id), this.get("channel")) : h.dynamic_routing && h.round > 1 ? "Continue the same assigned job using the latest correction above. Call done with your response to finish this round." : helperJobText(h, this.get("channel"), () => readSkill({ slug: "business-setup" }, this.docFlags()));
+    const prompt = coordinatorPhase === "aggregate" ? coordinatorFinalText(h, coordinatorChildren(this.sql, h.id), this.get("channel")) : h.dynamic_routing && h.round > 1 ? "Continue the same assigned job using the latest correction above. Call done with your response to finish this round." : helperJobText(h, this.get("channel"), () => readSkill({ slug: "business-setup" }, this.docFlags()), () => this.helperRecipe(h));
     const p = this.runTurn(this.get("tenant"), this.get("channel"), this.get("channel_id"), prompt, null, opts);
     // runTurn registers the turn (tc.helper = opts.helper, its hidden card in tc.turn) synchronously: helpers have no session queue.
     const tc = [...this.active.values()].find((t) => t.helper?.id === h.id && !t.finished) || null;
@@ -2753,15 +2839,13 @@ export class Resident extends DurableObject {
       // Approvals for the helper's outgoing requests go to whoever watches the task. It counts as "watched" only while
       // someone does; otherwise egressDecision falls back to the texted card, else denies ("waiting in the app").
       const fwd = (o) => {
-        if (ROUTED_WORKER_EVENTS.has(o.t)) {
-          // No Primary turn is live while a routed worker runs, so these are also kept: a browser view the chat shows from the session detail,
-          // and a bump of the task's updated time so open apps reload it (screenshots and the handoff card are stored rows).
-          if (o.t === "browser") { this._workerBrowser ||= new Map(); const was = this._workerBrowser.get(h.session); this._workerBrowser.set(h.session, { url: String(o.url || ""), helper: h.id, at: Date.now() }); if (!was) this.touchSession(h.session); }
-          else if (o.t === "browser_handoff" || o.t === "image" || o.t === "link_purchase") this.touchSession(h.session);
+        if (PERSON_EVENTS.has(o.t)) {
+          // No Primary turn is live while a routed worker runs, so a bump of the task's updated time lets open apps reload the handoff card.
+          if (o.t === "browser_handoff" || o.t === "link_purchase") this.touchSession(h.session);
           liveTurnOf(this, h.session)?.emit?.(o);
           for (const watcher of this._routingObservers?.get(h.session) || []) watcher(o);
         }
-        if (o.t === "done") { this._workerBrowser?.delete(h.session); this.touchSession(h.session); }
+        if (o.t === "done") this.touchSession(h.session);
         if (o.t === "done") for (const watcher of this._routingObservers?.get(h.session) || []) watcher({t:"idle",session:this.sessionView(this.session(h.session))});
       };
       tc.subs.add(fwd);
@@ -3056,9 +3140,15 @@ export class Resident extends DurableObject {
       if(!q||q.status==="pending")options.input_reply={source_turn:source.source_turn,...(m.id?{response_id:`text:${m.id}`}:{})};
       else options.photon_source_turn=source.source_turn;
     }
-    const text = String(m.text || "").trim(), files = Array.isArray(m.files) ? m.files : [], messageAt = messageTime(m.timestamp) || Date.now();
+    let text = String(m.text || "").trim(); const files = Array.isArray(m.files) ? m.files : []; let messageAt = messageTime(m.timestamp) || Date.now();
     let b = this._textBatch;
     if(b&&(b.options?.photon_target?.id||null)!==(options.photon_target?.id||null)){await this.flushTexts(b);b=null;}
+    // A plain text (no phone reply target) that answers a text the app sent from a task goes to that task (text-alerts.js).
+    if(!source&&!options.photon_target&&!b&&(text||files.length)) {
+      const routed=await routeInboundText(this,{text,hasFiles:files.length>0,options,messageAt}).catch(e=>{console.log("text alert route",e.message);return {action:"pass"};});
+      if(routed.action==="asked")return {ok:true,asked:true};
+      if(routed.text!=null){text=String(routed.text).trim();if(routed.messageAt)messageAt=routed.messageAt;}
+    }
     if (!files.length && !b) {
       if (this._lastFlush) await this._lastFlush;   // a photo batch still downloading goes first, so its turn isn't overtaken
       return text ? await this.textTurn(tenant, channel, channelId, text, { ...options, origin_messages: [{text, at: messageAt, origin: options.origin}], photonMsg: m.id || null }) : { ok: true };
@@ -3165,6 +3255,7 @@ export class Resident extends DurableObject {
   // own text, prose after it follows. Plain replies, and card replies that are only talk (`Say("You're welcome!")`): plain text.
   async deliverTextReply(tenant, channel, r) {
     if (tenant !== this.get("tenant") || channel !== this.get("channel")) return {ok:false,reason:"wrong_channel"};
+    if (r?.quiet) return { ok: true, via: "quiet" };   // an internal turn with nothing for the person: no text, and no "I hit a snag" in place of an empty reply
     queuePhoneFiles(this, r?.turn);
     try { return await this.deliverTextBodyReply(tenant, channel, r); }
     finally { if (r?.turn) await deliverPhoneFiles(this, r.turn).catch(e => console.log("phone files", e.message)); }
@@ -3315,9 +3406,17 @@ export class Resident extends DurableObject {
   // Steering (contract §3): the second line is {"t":"card_open", card, msg} for a new task turn, or {"t":"steered", card, msg, dup}
   // when the message joined the turn already running in this task (then the stream closes: that turn's own stream carries the reply).
   // opts.cid: the app's id for this message (a retry with the same id is a dup). Too many inputs on one card → { error, status: 429 }.
+  // A message over 100,000 characters becomes an attached Markdown file (long-message.js); a draft upload like any chat attachment.
+  async splitLong(tenant, channel, channelId, text, files, answer = false) {
+    return splitLongMessage(text, files, { answer, maxBytes: MAX_UPLOAD, humanBytes, save: async (bytes, name) => {
+      const f = await storeUpload(this.env, tenant, channel, { name, mime: "text/markdown", body: bytes, len: bytes.length });
+      return this.addUpload(tenant, channel, channelId, { ...f, pending: true }); } });
+  }
   async chatStream(tenant, channel, channelId, text, opts = {}) {
     this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId);
-    const s = this.resolveSession(opts.session, text || this.fileTitle(opts.files), text);
+    const lg = await this.splitLong(tenant, channel, channelId, text, opts.files, !!opts.input_reply); if (lg.error) return lg;
+    text = lg.text; opts = { ...opts, files: lg.files };
+    const s = this.resolveSession(opts.session, lg.title || text || this.fileTitle(opts.files), lg.title || text);
     const repeated=!s.error&&!opts.input_reply&&opts.cid?findByCid(this.sql,String(opts.cid).slice(0,64)):null;
     if(repeated){
       const receipt=this.sql.exec("SELECT * FROM user_input_receipts WHERE turn=? ORDER BY created LIMIT 1",repeated.card).toArray()[0];
@@ -3505,7 +3604,7 @@ export class Resident extends DurableObject {
       // Live chaos check 10-08 (2nd run): Cloudflare doesn't always fail the reset object's own storage writes at once, so the error
       // itself decides too: any "Durable Object reset" (this object's, or the Ledger's / computer's under one of its calls) parks the
       // turn for a resume instead of ending it with that text.
-      if (tc.objectReset || isResetErr(e) || e?.objectReset || this.storageGone()) { tc.finished = true; tc.objectReset = true; e.objectReset = true; this.parkForResume(tc); throw e; }
+      if (tc.objectReset || isResetErr(e) || e?.objectReset || this.storageGone() || (isLostErr(e) && this.storageLost(tc))) { tc.finished = true; tc.objectReset = true; e.objectReset = true; this.parkForResume(tc); throw e; }
       // Failed outside the model loop: the card closes as failed, and a chat turn keeps a turns row so its messages stay in history.
       this.commitTurn(tc, true);
       e.failedTurn = tc.turn;
@@ -3536,6 +3635,9 @@ export class Resident extends DurableObject {
       console.log("turn parked after a reset, resuming", tc.turn);
     } catch {}   // the object itself was reset: the new one finds the journal at its start
   }
+  // The platform dropped this object mid-turn (release 61: "Network connection lost" at 13 s, outcome "canceled", no deploy): reads can still work
+  // while every write fails, so a lost-connection error plus a failing write to this turn's own row means the new object resumes the turn.
+  storageLost(tc) { try { this.sql.exec("UPDATE turn_runs SET status=status WHERE card=?", tc?.turn ?? ""); return false; } catch { return true; } }
   storageGone() { try { this.sql.exec("SELECT 1 x").toArray(); return false; } catch { return true; } }
   // Settings → Notifications (notify.js): a task turn ended waiting on the person ("needs you") or done ("finished").
   // Not for texting turns (the reply already went to their phone), scheduled runs, helpers, a Stop, or an error.
@@ -3703,10 +3805,13 @@ export class Resident extends DurableObject {
     const placeNote = kind === "chat" || kind === "followup" || kind === "workflow" ? await this.placeNote(t0) : ""; tc.placeNote = placeNote; tc.placeKnown = !!this._placeKnown;
     // Integrations this message names (integration-hint.js): one line next to the time and place, never saved, never the system prompt.
     const ih = kind === "chat" && !RS ? await integrationHint(this, text) : { line: "", items: [] }; tc.hint = ih.items;
-    const hintNote = [ih.line, kind === "chat" && !RS && eeEnabled(this.env) && wantsWebsiteLive(text) ? websiteLiveNote() : ""].filter(Boolean).map((x) => `\n${x}`).join(""); tc.hintNote = hintNote;   // website-live.js: the business-setup skill is required reading for a website going live on a domain (Cloud only: the note names the Cloudflare MCP app)
+    const slidesNote = kind === "chat" && !RS ? await slidesLine(this, tc.session, text, tc.turn).catch(() => "") : "";   // deck-route.js
+    const hintNote = [ih.line, slidesNote, kind === "chat" && !RS && eeEnabled(this.env) && wantsWebsiteLive(text) ? websiteLiveNote() : ""].filter(Boolean).map((x) => `\n${x}`).join(""); tc.hintNote = hintNote;   // website-live.js: the business-setup skill is required reading for a website going live on a domain (Cloud only: the note names the Cloudflare MCP app)
     // Reply on a chat bubble (reply-to.js): one line naming the earlier message this answers, in front of their words. Saved with
     // them (both engines), so later turns' history and a resume read it too; the cached prefix is untouched.
-    const asked = kind === "chat" ? withReply(text, opts.reply) : text;
+    // Zone A: when the person edited a Library file by hand in the canvas, the helper is told before it rebuilds or edits that file (zone-edit.js).
+    let zoneNote = ""; if (kind === "chat" && !RS) { try { zoneNote = zoneEditsNote(this, replyRef(opts.reply)?.zone?.file); } catch {} }
+    const asked = kind === "chat" ? withReply(text, opts.reply) + (zoneNote ? `\n${zoneNote}` : "") : text;
     let userText = RS?.user_text != null ? RS.user_text : kind === "chat" ? chatUserText({ asked, attNote, fileBody, nowTag, placeNote, hintNote, others, todoNote, helperNote, pomoNote, lnNote, recallNote, viaNote }) : text + attNote + placeNote + todoNote + helperNote + pomoNote + lnNote + recallNote + viaNote + (opts.eventNote || "");   // an app event: this run's input only, never saved with it (app-events.js)
     const userMsg = { role: "user", content: pics.length ? [{ type: "text", text: userText }, ...pics] : userText };
     tc.needImg = pics.length > 0;
@@ -3855,9 +3960,9 @@ export class Resident extends DurableObject {
         await this.spendRefresh(tc, opts);
         if (tc.abort !== "hard" && (tc.delegationUncertain || tc.orchestration?.sent || tc.orchestration?.waitingInput)) {
           const q = questionForTurn(this.sql,tc.turn);
-          if (tc.delegationUncertain) { reply = ACK_UPDATE_UNCONFIRMED; error = "delegation_outcome_unknown"; }
+          if (tc.delegationUncertain) { reply = this.ack(tc, ACK_UPDATE_UNCONFIRMED); error = "delegation_outcome_unknown"; }
           else if (tc.orchestration.waitingInput) { tc.inputRequest = q; reply = q?.status === "pending" ? q.presentation || q.question : "The question is no longer waiting for an answer."; }
-          else reply = tc.orchestration.review || tc.orchestration.steer ? ACK_UPDATE_SENT : this.nextJobAck();
+          else reply = tc.orchestration.review || tc.orchestration.steer ? this.ack(tc, ACK_UPDATE_SENT) : this.nextJobAck(tc);
           said.length=0; saidMeta.length=0; said.push(reply); this.commitTurn(tc,true); break;
         }
         if (!pausesApply(tc) && !opts.hard_charge && !tc.stall) delete stats.hit_limit;
@@ -3904,7 +4009,7 @@ export class Resident extends DurableObject {
         let spoke = false;
         // P4 working memory (WORKMEM=on): per-step working set from the originals (protected + scored, dropped results leave a keyed label
         // and come back when the focus touches them). Off: the old trim + 40k checkpoint.
-        if (wm) { const ws = workingSet(messages, wmFull, { budget: WM_BUDGET, ...WM_HUGE, base: wmBase, task: text, state: wmState }); wmLog.push({ step, kept: ws.receipts.kept, aside: ws.receipts.dropped.length, newly: ws.receipts.newly, size: ws.receipts.size }); tc.wmView = ws.messages; tc.wmSrcLen = messages.length; }
+        if (wm) { const ws = workingSet(messages, wmFull, { budget: WM_BUDGET, ...WM_HUGE, base: wmBase, task: text, state: wmState, sourceBudget: sourceBudgetFor(tc.taskProfile?.contextLength) }); wmLog.push({ step, kept: ws.receipts.kept, aside: ws.receipts.dropped.length, newly: ws.receipts.newly, size: ws.receipts.size }); tc.wmView = ws.messages; tc.wmSrcLen = messages.length; }
         else if (!tc.appendRuntime) compactTools(messages);
         const restrictedNarration = !!(tc.orchestration?.requiredDelegation || tc.orchestration?.review || tc.orchestration?.steer) && !tc.orchestration?.approved;
         const res = await this.callModel(wm ? tc.wmView : messages, () => {
@@ -4021,9 +4126,10 @@ export class Resident extends DurableObject {
           messages.push(toolMsg); this.save(turn, toolMsg); this.effectDone(tc, call.id, out);
         }
         await settle();
+        this.flushViewPics(tc, messages, turn);
         } finally { tc.readBatch = null; tc.onAppQueued = null; if (batch && parked.length) batch.cancel(); }   // stopped mid-step: parked reads never run
         if (tc.helperInputQuestion != null || tc.helperDoneResponse != null || tc.orchestration?.waitingInput || tc.orchestration?.sent || tc.delegateYield) {
-          reply = tc.helperInputQuestion ?? (tc.inputRequest ? tc.inputRequest.presentation || tc.inputRequest.question : tc.helperDoneResponse ?? ((tc.orchestration?.steer || tc.orchestration?.review) ? ACK_UPDATE_SENT : tc.orchestration?.requiredDelegation ? this.nextJobAck() : stripNotesEcho(answerText(splitProgress(said, saidMeta)))));
+          reply = tc.helperInputQuestion ?? (tc.inputRequest ? tc.inputRequest.presentation || tc.inputRequest.question : tc.helperDoneResponse ?? ((tc.orchestration?.steer || tc.orchestration?.review) ? this.ack(tc, ACK_UPDATE_SENT) : tc.orchestration?.requiredDelegation ? this.nextJobAck(tc) : stripNotesEcho(answerText(splitProgress(said, saidMeta)))));
           if (tc.inputRequest || tc.orchestration?.requiredDelegation || tc.orchestration?.steer || tc.orchestration?.review) { said.length=0; saidMeta.length=0; said.push(reply); }
           this.commitTurn(tc, true); break;
         }
@@ -4053,12 +4159,12 @@ export class Resident extends DurableObject {
       if (tc.abort === "hard") error = null; else if (publicTurnError(e)) { error = e.code; reply = publicTurnError(e); said.length = 0; saidMeta.length = 0; said.push(reply); } else if (e.budget) { error = null; reply = (kind === "workflow" ? savedWorkflowHardReport(this.sql, turn) : null) || pauseFallback(said.join("\n\n")); said.length = 0; said.push(reply); } else { error = e.message; if (!reply) reply = isByokError(e) ? e.message : e.privacy ? PRIVACY_EXHAUSTED : e.status === 402 ? (this.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : e.status === 429 ? DAY_LIMIT_REPLY : `Something went wrong: ${e.message}`; } }
     }
     if (!error && tc.orchestration && !tc.orchestration.sent && !tc.orchestration.approved && !tc.orchestration.waitingInput && !tc.stoppedTurn) {
-      if (tc.orchestration.review) { reply = ACK_RESULT_NOT_READY; said.length=0; saidMeta.length=0; said.push(reply); }
-      else if (tc.orchestration.steer) { reply = ACK_UPDATE_FAILED; error = "worker_update_not_sent"; said.length=0; saidMeta.length=0; said.push(reply); }
-      else if (tc.orchestration.requiredDelegation && !tc.orchestration.started) { reply = ACK_JOB_NOT_STARTED; error = "required_delegation_not_started"; said.length=0; saidMeta.length=0; said.push(reply); }
+      if (tc.orchestration.review) { reply = this.ack(tc, ACK_RESULT_NOT_READY); said.length=0; saidMeta.length=0; said.push(reply); }
+      else if (tc.orchestration.steer) { reply = this.ack(tc, ACK_UPDATE_FAILED); error = "worker_update_not_sent"; said.length=0; saidMeta.length=0; said.push(reply); }
+      else if (tc.orchestration.requiredDelegation && !tc.orchestration.started) { reply = this.ack(tc, ACK_JOB_NOT_STARTED); error = "required_delegation_not_started"; said.length=0; saidMeta.length=0; said.push(reply); }
     }
     if (!error && !reply && !said.join("").trim() && tc.orchestration?.started && !tc.stoppedTurn && tc.abort !== "hard") {
-      reply = this.nextJobAck(); said.push(reply);
+      reply = this.nextJobAck(tc); if (reply) said.push(reply);
     }
     // Stopped by the person (stop.js): what it already did stays, the reply is one plain line, no model call.
     // (A stop that lands after the reply already closed the card changes nothing: that card is complete.)
@@ -4166,7 +4272,7 @@ export class Resident extends DurableObject {
       labelCard(this.sql, null, turn, labels);
       if (labels.billed && labels.charge_nano) this.sql.exec("UPDATE turns SET charge_nano=charge_nano+? WHERE id=?", Math.round(labels.charge_nano), turn);
     }).catch((e) => console.log("labeller follow-up", e.message)));
-    return { reply, turn, ...(tc.inputRequest ? {input_request:questionForTurn(this.sql,turn)} : {}), ...(tc.helperInputQuestion ? {input_requested:tc.helperInputQuestion} : {}), total_ms: Date.now() - t0, ...stats, trace, error, ...(tc.progressOmitted ? {progress_omitted:tc.progressOmitted} : {}), ...(tc.modelFailure && !tc.stoppedTurn ? { recoverable: true, failure_phase: tc.modelFailure.phase || null } : {}), notes, ctx: ctxMode, checkpoints, step_in: stepIn, engine, reaction: tc.reaction || null };
+    return { reply, turn, ...(!reply && !error && !tc.stoppedTurn && !tc.inputRequest && this.internalTurn(tc) ? { quiet: true } : {}), ...(tc.inputRequest ? {input_request:questionForTurn(this.sql,turn)} : {}), ...(tc.helperInputQuestion ? {input_requested:tc.helperInputQuestion} : {}), total_ms: Date.now() - t0, ...stats, trace, error, ...(tc.progressOmitted ? {progress_omitted:tc.progressOmitted} : {}), ...(tc.modelFailure && !tc.stoppedTurn ? { recoverable: true, failure_phase: tc.modelFailure.phase || null } : {}), notes, ctx: ctxMode, checkpoints, step_in: stepIn, engine, reaction: tc.reaction || null };
   }
 
   async transcript(limit = 60, session = null) {
@@ -4305,6 +4411,10 @@ export class Resident extends DurableObject {
     const checkin = !tc && this.spendWaiting?.(row.id);
     const routedWork = !tc && dynamicRoutingOn(this.env) && this.sql.exec("SELECT 1 FROM helpers WHERE session=? AND dynamic_routing=1 AND required_delegation=1 AND status='running' LIMIT 1",row.id).toArray().length > 0;
     const pending = pendingInputs(this.sql,row.id);
+    // A worker that returned is waiting for Primary's review turn (handed=0: the review has not started yet; once it starts it is a live turn). The task is still working until the
+    // review ends in approve_subagent or message_subagent; only a question or approval for the person overrides it. A helper whose review never finishes is
+    // closed as failed by reconcileHelperReviews, so this cannot hold a task forever.
+    const reviewPending = !tc && dynamicRoutingOn(this.env) && !pending.length && !nPend && this.sql.exec("SELECT 1 FROM helpers WHERE session=? AND dynamic_routing=1 AND required_delegation=1 AND coordinator_id IS NULL AND status='awaiting_review' AND handed=0 LIMIT 1",row.id).toArray().length > 0;
     // A worker paused on the browser holds the task on the person, whatever the stored flag says (a turn that ends can clear it).
     const browserPause = !tc && dynamicRoutingOn(this.env) && this.sql.exec("SELECT 1 FROM helpers WHERE session=? AND status='waiting_input' AND input_kind='browser' LIMIT 1",row.id).toArray().length > 0;
     // In a routed task only a worker can hold the task on the browser. When none is paused there any more, the saved flag is stale: drop it.
@@ -4312,7 +4422,7 @@ export class Resident extends DurableObject {
     if (rowWaiting === "browser" && !tc && !browserPause && dynamicRoutingOn(this.env) && this.sql.exec("SELECT 1 FROM helpers WHERE session=? AND dynamic_routing=1 LIMIT 1", row.id).toArray().length) {
       rowWaiting = null; this.sql.exec("UPDATE sessions SET waiting=NULL WHERE id=? AND waiting='browser'", row.id);
     }
-    const state = tc || resuming || nativeProgress || routedWork ? "working" : nPend || pending.length || rowWaiting || checkin || browserPause ? "waiting" : nJobs ? "watching" : "ready";
+    const state = tc || resuming || nativeProgress || routedWork || reviewPending ? "working" : nPend || pending.length || rowWaiting || checkin || browserPause ? "waiting" : nJobs ? "watching" : "ready";
     return { id: row.id, title: row.title, title_manual: !!row.title_manual, title_revision: Number(row.title_revision || 0), pinned: !!row.pinned, done: !!row.done, done_at: row.done_at, state, line: tc ? (tc.line || "thinking") : nativeProgress ? nativeProgress.line : resuming ? "picking up where it left off (1Helm was just updated)" : null, ...(nativeProgress?{native_progress:nativeProgress}:{}), ...(tc?.slotWait ? { queued: true } : {}),
       pending_inputs: pending, waiting: tc ? null : nPend ? "approval" : pending.length ? "answer" : rowWaiting || (browserPause ? "browser" : null) || (checkin ? "checkin" : null), jobs: nJobs, unread: !!row.last_reply_at && row.last_reply_at > row.seen_at,
       created: row.created, updated: row.updated, preview: row.preview || "", default: row.id === this.getRaw("default_session"), helpers: this.helperCount ? this.helperCount(row.id) : 0, ...this.pomoField(row.id), ...this.lnField(row.id), ...((texts || new Set(this.textsSessions())).has(row.id) ? { texts: true } : {}) };
@@ -4350,7 +4460,7 @@ export class Resident extends DurableObject {
     await dropNativePolls(this,id);
     for(const h of this.sql.exec("SELECT id FROM helpers WHERE session=? AND dynamic_routing=1 AND status IN ('running','awaiting_review','waiting_input')",String(id)).toArray())await this.helperStop(id,h.id);
     deleteInputs(this.sql,id);
-    dropPhotonReplies(this.sql,id);
+    dropPhotonReplies(this.sql,id);dropTextAlerts(this,id);
     await dropNativePolls(this,id);
     this.sql.exec("DELETE FROM sessions WHERE id=?", String(id));
     transcriptDelete(this.sql, String(id));
@@ -4407,6 +4517,28 @@ export class Resident extends DurableObject {
     const w = String(s || "").trim().replace(/^\/workspace\/files\//, "").replace(/^files\//, ""); if (!w) return null;
     return this.sql.exec("SELECT * FROM files WHERE deleted=0 AND pending=0 AND (id=? OR lower(name)=lower(?)) ORDER BY at DESC LIMIT 1", w, w).toArray()[0] || null;
   }
+  // A deck is one set of files: make_deck.sh lists what its last successful run built (.html, .pdf, .pptx) in <deck folder>/.src/make_deck.json.
+  // Sharing any one of them shares the others too (a background helper's copies are held for review the same way), so the .html never stays
+  // behind on the computer when only the .pptx or .pdf was named. Returns the lines to add to share_file's answer ("" when it isn't a deck).
+  async shareDeckFiles(a, ctx = {}) {
+    try {
+      const raw = String(a.path || "").trim(); if (!raw || a.restore) return "";
+      const abs = raw.startsWith("/") ? raw : (ctx.helper?.dynamic_routing ? helperDir(ctx.helper.id) : "/workspace/") + raw.replace(/^\.\//, "");
+      const m = abs.match(/^(.*\/([^/]+))\/\2\.(html|pdf|pptx)$/i); if (!m) return "";
+      const read = await this.computer().readFile(`${m[1]}/.src/make_deck.json`.replace(/^\/workspace\//, ""), 100000); if (!read?.ok) return "";
+      const made = JSON.parse(new TextDecoder().decode(read.bytes)); if (!made?.ok || typeof made.out !== "string") return "";
+      const base = a.name ? String(a.name).replace(/\.[^./]*$/, "") : "", lines = [];
+      for (const p of made.out.split(" ")) {
+        const ext = (p.match(/\.(html|pdf|pptx)$/i) || [])[1]; if (!ext || p === abs || !p.startsWith(m[1] + "/") || p.slice(m[1].length + 1).includes("/")) continue;
+        lines.push(await this.shareFile({ path: p, name: base ? `${base}.${ext.toLowerCase()}` : undefined }, ctx));
+      }
+      const htmlPath = (made.out.split(" ").find((p) => /\.html$/i.test(p) && p.startsWith(m[1] + "/")) || "").replace(/^\/workspace\//, "");
+      const row = htmlPath ? this.sql.exec("SELECT id FROM files WHERE deleted=0 AND src_path=? ORDER BY at DESC LIMIT 1", htmlPath).toArray()[0] || this.libFile(`${base || m[2]}.html`) : null;
+      const tagged = row ? await this.tagFile(row.id, [DECK_TAG]) : null;   // deck-styles.js: the card gets "Change style"
+      if (tagged) ctx.emit?.({ t: "file", file: tagged });
+      return lines.length ? `\nThe rest of the deck goes with it (the person gets every file of one deck): ${lines.join(" ")}` : "";
+    } catch (e) { return ""; }
+  }
   async shareFile(a, ctx = {}) {
     if (ctx.helper?.dynamic_routing) {
       const path = String(a.path || "");
@@ -4438,6 +4570,10 @@ export class Resident extends DurableObject {
       const id = crypto.randomUUID(), key = `t/${tenant}/files/${channel}/${id}`;
       let r; try { r = await this.computer().fileToR2(path, key, MAX_UPLOAD); } catch (e) { return `error: ${e.message}`; }
       if (!r.ok) return `error: ${r.error}`;   // storage full: fileToR2's error is storage.js's note for the helper
+      if (!a.copy) {   // the same bytes were already given to the person (a deck's copy under a readable name): that file stays the one file, with the readable name
+        const twin = await identicalLibraryFile(this, { key, bytes: r.bytes, name });
+        if (twin) { await dropNewBytes(this, key, r.bytes); const kept = adoptName(this, twin, name, ctx.emit); return `"${kept.name}" is already shared (${humanBytes(kept.bytes)}, exactly these bytes), so no second file was added. The person has one card for it.`; }
+      }
       const f = this.addFileRow({ id, name, mime: mimeOf(name), bytes: r.bytes, r2key: key, source: "helper", session: ctx.session || null, turn: ctx.turn || null, synced: path === `files/${name}` ? 1 : 0, src_path: path });
       ctx.emit?.({ t: "file", file: f });
       const pages = await this.republishPages(f, key, path, ctx);   // a page published from this path (publish_page of a folder holding it)
@@ -4534,6 +4670,9 @@ export class Resident extends DurableObject {
     return [...new Set(this.sql.exec("SELECT r2key,prev_key FROM files WHERE deleted=0").toArray()
       .flatMap((row) => [row.r2key, row.prev_key]).filter((key) => key && key.startsWith(prefix)))];
   }
+  // Zone A (zone-edit.js): the person's direct edits and "restore the previous version" of a Library .html file, with no model. Added methods only.
+  async zoneEdit(fileId, base, body) { return zoneEditFile(this, fileId, base, body); }
+  async zoneInfo(fileId) { return zoneInfo(this, fileId); }
   async fileRow(id) { return this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(id)).toArray()[0] || null; }
   async deleteFile(id) {
     id = String(id);
@@ -4590,15 +4729,19 @@ export class Resident extends DurableObject {
       && !!this.sql.exec("SELECT 1 FROM helpers WHERE id=? AND dynamic_routing=1", Number(from.id)).toArray().length;
     return (!!from?.pause || old) && !questionForTurn(this.sql, turn);
   }
-  // What the chat shows while a routed worker uses the browser with no Primary turn running: the live view, or the handoff card.
+  // A worker-report review turn whose reply is empty, with no question for the person. Turns saved before this rule always have a reply.
+  emptyReview(turn) {
+    const ev = this.sql.exec("SELECT input FROM card_events WHERE card=? AND type='handoff' ORDER BY seq LIMIT 1", String(turn)).toArray()[0];
+    let from = null; try { from = JSON.parse(ev?.input || "null"); } catch {}
+    return from?.type === "helper" && !questionForTurn(this.sql, turn);
+  }
+  // What the chat shows while a routed worker waits on the person in the browser with no Primary turn running: the handoff card.
   workerBrowserView(session) {
     const open = this.sql.exec("SELECT r.url, r.job FROM helper_requests r JOIN helpers h ON h.id=r.helper_id WHERE h.session=? AND r.kind='browser' AND r.status='open' ORDER BY r.id DESC LIMIT 1", String(session)).toArray()[0];
     if (open) return { url: open.url || "", text: open.job || "Please take over the browser." };
     // A pause saved before the request row existed still shows its card, from the worker's own saved question.
     const paused = this.sql.exec("SELECT input_question FROM helpers WHERE session=? AND dynamic_routing=1 AND status='waiting_input' AND input_kind='browser' ORDER BY id DESC LIMIT 1", String(session)).toArray()[0];
     if (paused) return { url: "", text: String(paused.input_question || "Please take over the browser.").slice(0, 600) };
-    const live = this._workerBrowser?.get(session);
-    if (live && this.sql.exec("SELECT 1 FROM helpers WHERE session=? AND status='running' AND dynamic_routing=1 LIMIT 1", String(session)).toArray().length) return { url: live.url, text: "" };
     return null;
   }
   // One task: its turns (with scheduled-run reports it owns) as a simple timeline for the app.
@@ -4620,12 +4763,13 @@ export class Resident extends DurableObject {
           : handoffCard ? [] : [{ seq: 1, type: "msg", at: t.at, id: t.id, cid: null, text: t.user_text ?? "", files: [], via: "app", consumed: 0, reaction: react[t.id] || null }];
         if (handoffCard && t.error === "interrupted" && !String(t.reply || "").trim()) return null;   // a handed-back result a deploy cut off: nothing the person sent, so no "Send it again"
         if (handoffCard && (!t.error || t.error === "interrupted" || t.error === "stopped" || t.reply === STOPPED_REPLY) && this.quietReview(t.id)) return null;   // a deploy that cut a quiet review off leaves no "Send it again" bubble
+        if (handoffCard && !t.error && !String(t.reply || "").trim() && this.emptyReview(t.id)) return null;   // a worker's returned result the main helper only acted on (sent a correction): no reply was made, so no empty bubble
         const binding=replyForTurn(this.sql,t.id);if(binding&&msgs[0])msgs[0].input_reply=binding;
         const images = this.sql.exec("SELECT id, url, caption FROM shots WHERE turn=? ORDER BY at", t.id).toArray();
         const ups = (() => { try { return JSON.parse(t.files || "[]"); } catch { return []; } })();
         const fr = this.sql.exec("SELECT * FROM files WHERE turn=? AND deleted=0 ORDER BY at", t.id).toArray();
         const attached = ups.map((x) => this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(x)).toArray()[0]).filter(Boolean).map((x) => this.fileView(x)), shared = fr.filter((x) => x.source === "helper").map((x) => this.fileView(x));
-return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id, card: t.id, input_request: questionForTurn(this.sql,t.id), msgs, at: t.at, kind: t.kind, workflow_id: t.workflow_id, user_text: t.kind === "chat" && !handoffCard ? t.user_text : null, ...(react[t.id] ? { reaction: react[t.id] } : {}), reply: t.reply, ...(t.kind === "livenote" && t.notes ? (() => { try { const m = JSON.parse(t.notes); return m?.refine ? { livenote: { refine: m.refine } } : {}; } catch { return {}; } })() : {}), parts: (() => { try { return t.parts ? JSON.parse(t.parts) : null; } catch { return null; } })(), progress: (() => { try { return t.progress ? JSON.parse(t.progress) : null; } catch { return null; } })(), tool_calls: t.tool_calls, steps, total_ms: t.total_ms, charge_nano: t.charge_nano, error: t.error, images, attached, shared }; }).filter(Boolean);
+return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnHasDeckStyles(steps) ? { deck_styles: true } : {}), id: t.id, card: t.id, input_request: questionForTurn(this.sql,t.id), msgs, at: t.at, kind: t.kind, workflow_id: t.workflow_id, user_text: t.kind === "chat" && !handoffCard ? t.user_text : null, ...(react[t.id] ? { reaction: react[t.id] } : {}), reply: t.reply, ...(t.kind === "livenote" && t.notes ? (() => { try { const m = JSON.parse(t.notes); return m?.refine ? { livenote: { refine: m.refine } } : {}; } catch { return {}; } })() : {}), parts: (() => { try { return t.parts ? JSON.parse(t.parts) : null; } catch { return null; } })(), progress: (() => { try { return t.progress ? JSON.parse(t.progress) : null; } catch { return null; } })(), tool_calls: t.tool_calls, steps, total_ms: t.total_ms, charge_nano: t.charge_nano, error: t.error, images, attached, shared }; }).filter(Boolean);
     const jobs = this.sql.exec("SELECT id,kind,name,interval_seconds,next_run,last_run,run_count,status FROM workflows WHERE session=? AND status IN ('active','paused') ORDER BY id", id).toArray();
     const tc = this.liveTurn(id);
     // resume.js: a turn an update cut off, waiting to carry on, shows as live too (the app attaches and gets {"t":"resuming"} first).
@@ -4730,7 +4874,12 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
   // The channel computer is shared by all of the channel's tasks, so a request can't name its task. It is attributed to the turns
   // that have a computer tool running right now (else every turn in flight). If that's more than one task, it is allowed only when
   // the permission covers every one of them, and the approval card goes to all of them.
-  async egressDecision({ host, method, path, bytes, keys, via = null }) {
+  async egressDecision({ host, method, path, bytes, keys, via = null, page = "" }) {
+    // A payment request a web page sends on its own while nothing is being bought in this channel (e.g. X's script calling grok.com's
+    // checkout for its Premium upsell) never reaches the person: dropped quietly, logged with the reason, so the page carries on. It only
+    // turns an ask into a deny, so it cannot spend money. Keys, key operations and commands are not covered and keep asking.
+    if (via === "page" && !(keys || []).length && (protectedRequest(method, path, host) && !protectedRequest("GET", path, host) || financeHost(host) && !["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase()) && !protectedRequest("GET", path, host)) && !(await this.purchaseInProgress()))
+      return { verdict: "deny", why: "a web page's own payment request while no purchase is in progress (not sent)", rule: "page-payment-idle", quiet: true };
     // During a browser job, an approval belongs to that job's task, not whichever
     // unrelated turn is active. After a reset the lease can outlive the runner;
     // without its in-memory owner, deny rather than borrow another task's grant.
@@ -4772,7 +4921,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
     const live = owners.filter((t) => t.subs.size);
     let a = this.sql.exec("SELECT * FROM approvals WHERE status='pending' AND host=? AND method=? AND at>? ORDER BY id DESC LIMIT 1", host, method, now - 10 * 60e3).toArray()[0];
     if (!a) {
-      this.sql.exec("INSERT INTO approvals (at,host,method,path,bytes,keys,turn,workflow_id,session,via) VALUES (?,?,?,?,?,?,?,?,?,?)", now, host, method, path || "", bytes || 0, JSON.stringify(keys || []), owners[0]?.turn || null, owners[0]?.workflow_id ?? null, sessions[0] ?? null, via || null);
+      this.sql.exec("INSERT INTO approvals (at,host,method,path,bytes,keys,turn,workflow_id,session,via,page) VALUES (?,?,?,?,?,?,?,?,?,?,?)", now, host, method, path || "", bytes || 0, JSON.stringify(keys || []), owners[0]?.turn || null, owners[0]?.workflow_id ?? null, sessions[0] ?? null, via || null, page || null);
       a = this.sql.exec("SELECT * FROM approvals WHERE id=last_insert_rowid()").one();
     }
     // Nobody is watching in the app (a texting turn, a scheduled run or a job): if they text with their helper, the request goes
@@ -4796,6 +4945,15 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
     }
     return { verdict: "deny", why: `nobody is watching this run; request #${a.id} is waiting in the app` };
   }
+  // A purchase is in progress when the helper clicked a buy or checkout control in the last 90 seconds (noteBrowserActs), or this channel
+  // has a Link purchase that is waiting, approved and not finished, updated in the last 30 minutes. When that can't be read, say yes (ask).
+  async purchaseInProgress() {
+    if (this._buyClickAt && Date.now() - this._buyClickAt < 90e3) return true;
+    try { return !!(await this.env.DB.prepare("SELECT 1 FROM link_purchases WHERE tenant_id=? AND channel=? AND status IN ('created','pending_approval','approved') AND updated_at>? LIMIT 1")
+      .bind(this.get("tenant"), this.get("channel"), Date.now() - 30 * 60e3).first()); } catch { return true; }
+  }
+  // Called with the browser steps the helper is about to run and the outline they were chosen from.
+  noteBrowserActs(actions, page = {}) { try { if (buyControlTargeted(actions, page)) this._buyClickAt = Date.now(); } catch {} }
   // A permission request by text: one live app card per request (deduped by the cards table), only when texting is connected.
   // The card falls back to a plain text with the link (new-contact limit or any send error). Returns true when it went out.
   async textApproval(a) {
@@ -4826,13 +4984,15 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
     const status = a.status === "pending" ? (Date.now() - a.at > APPROVAL_TTL ? "expired" : "pending") : a.status === "denied" ? "deny" : a.status === "expired" ? "expired" : a.decision || "once";
     const keys = JSON.parse(a.keys || "[]");
     if (a.perm) return { status, approval: { id: a.id, host: "", ...permView(a) } };
-    return { status, approval: { id: a.id, host: a.host, ...(a.bytes ? { bytes: a.bytes } : {}), ...(keys.length ? { keys } : {}), ...(a.via ? { via: a.via } : {}) } };
+    return { status, approval: { id: a.id, host: a.host, label: approvalLabel(a), method: a.method, path: a.path, ...(a.bytes ? { bytes: a.bytes } : {}), ...(keys.length ? { keys } : {}), ...(a.via ? { via: a.via } : {}) } };
   }
-  approvalView(a) { return { id: a.id, at: a.at, host: a.host, method: a.method, path: a.path, ...(a.via ? { via: a.via } : {}), bytes: a.bytes, keys: JSON.parse(a.keys || "[]"), status: a.status, decision: a.decision, workflow_id: a.workflow_id, session: a.session || null, ...(SSH_PERMS.has(a.perm) ? sshApprovalView(a) : a.perm === CONFIRM ? confirmView(a) : a.perm ? permView(a) : {}) }; }
+  approvalView(a) { return { id: a.id, at: a.at, host: a.host, label: approvalLabel(a), method: a.method, path: a.path, ...(a.via ? { via: a.via } : {}), bytes: a.bytes, keys: JSON.parse(a.keys || "[]"), status: a.status, decision: a.decision, workflow_id: a.workflow_id, session: a.session || null, ...(SSH_PERMS.has(a.perm) ? sshApprovalView(a) : a.perm === CONFIRM ? confirmView(a) : a.perm ? permView(a) : {}) }; }
   approvals(all = false, session = null) {
     nativeExpire(this);
-    const w = [all ? null : "status='pending'", session ? "session=?" : null].filter(Boolean);
-    return this.sql.exec(`SELECT * FROM approvals ${w.length ? "WHERE " + w.join(" AND ") : ""} ORDER BY id DESC LIMIT 50`, ...(session ? [session] : [])).toArray().map((a) => this.approvalView(a));
+    // A plain send request nobody answered within an hour is not waiting any more (the card page already says expired). Read-only: nothing is written here.
+    const stale = Date.now() - APPROVAL_TTL;
+    const w = [all ? null : "status='pending'", all ? null : "NOT (perm IS NULL AND at<?)", session ? "session=?" : null].filter(Boolean);
+    return this.sql.exec(`SELECT * FROM approvals ${w.length ? "WHERE " + w.join(" AND ") : ""} ORDER BY id DESC LIMIT 50`, ...(all ? [] : [stale]), ...(session ? [session] : [])).toArray().map((a) => this.approvalView(a));
   }
   // once = this request (or its next retry within the hour) · session = this site for this conversation · channel = this site in this channel from now on
   async decideApproval(id, decision) {
@@ -4876,7 +5036,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
     await dropNativePolls(this,id);
     for(const h of this.sql.exec("SELECT id FROM helpers WHERE session=? AND dynamic_routing=1 AND status IN ('running','awaiting_review','waiting_input')",String(id)).toArray())await this.helperStop(id,h.id);
     deleteInputs(this.sql,id);
-    dropPhotonReplies(this.sql,id);
+    dropPhotonReplies(this.sql,id);dropTextAlerts(this,id);
     await dropNativePolls(this,id);
     transcriptDelete(this.sql, id);
     this.sql.exec("DELETE FROM msgs WHERE turn IN (SELECT id FROM turns WHERE kind='chat' AND session=?)", id);

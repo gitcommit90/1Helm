@@ -20,5 +20,9 @@ export function wantsWebsiteLive(text) {
   return domain && HOSTING.test(t);
 }
 
+// A job that makes a file (a deck, PDF, document or sheet) can mention a website or a domain name as a topic ("the tennis.com page", "The Big T website").
+// For those jobs the guide is added only when the words also ask for it to go live or be hosted.
+export const wantsWebsiteLiveJob = (text, fileJob = false) => wantsWebsiteLive(text) && (!fileJob || LIVE.test(String(text).slice(0, 4000)) || HOSTING.test(String(text).slice(0, 4000)));
+
 export const websiteLiveNote = () => "(This request is about putting a website live on a domain. Your first tool call must be read_skill with slug business-setup, before any app, browser, GitHub or purchase step, and follow it. Cloudflare is done only through the Cloudflare MCP app (app id cloudflare_mcp, app_run CLOUDFLARE_MCP_SEARCH and CLOUDFLARE_MCP_EXECUTE), and never ask for a Cloudflare API token, Global API Key or wrangler login. If you start a helper for it, say in the job that it is about putting a website live on a domain.)";
 

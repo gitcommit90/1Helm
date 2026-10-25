@@ -37,7 +37,10 @@ const write = (tc, path = "/workspace/workspace/fish/.src/page.html") => R.execC
 // 1. Pure: the trigger is the file type only.
 {
   const r0 = { code: 0, out: "x" };
-  for (const p of ["a.html", "/w/b.HTM", "/w/.src/slides/cover.html"]) assert.equal(writesDesignFile("write_file", { path: p }, r0), true, p);
+  for (const p of ["a.html", "/w/b.HTM", "/w/.src/page.html"]) assert.equal(writesDesignFile("write_file", { path: p }, r0), true, p);
+  // a deck is built from a template: its slide files get no design brief
+  for (const p of ["/w/.src/slides/cover.html", "/workspace/workspace/k/.src/slides/02-media.html"]) assert.equal(writesDesignFile("write_file", { path: p }, r0), false, p);
+  assert.equal(writesDesignFile("run_command", { command: "cat > /w/k/.src/slides/01-cover.html <<EOF\nx\nEOF" }, r0), false);
   assert.equal(writesDesignFile("edit_file", { path: "/w/page.html" }, r0), true);
   for (const p of ["notes.txt", "build.py", "style.css", "page.html.bak", "data.json", ""]) assert.equal(writesDesignFile("write_file", { path: p }, r0), false, p);
   assert.equal(writesDesignFile("write_file", { path: "a.html" }, { code: 1, out: "" }), false, "a failed write triggers nothing");

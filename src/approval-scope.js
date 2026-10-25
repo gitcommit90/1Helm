@@ -24,15 +24,26 @@ export function protectedAppAction(slug, args = {}, depth = 0) {
       (c.path || c.endpoint || c.url) && protectedRequest(c.method, c.path || c.endpoint || c.url)));
 }
 
-export function protectedRequest(method, path, service = "") {
+function requestParts(path, service) {
   let pathname = String(path || "").split(/[?#]/)[0];
   try { const u = new URL(String(path)); pathname = u.pathname; service ||= u.hostname; } catch {}
   try { pathname = decodeURIComponent(pathname); } catch {}
-  const p = words(pathname);
-  if (KEYS.test(p)) return true;
-  if (/(^|[.])cloudflare(?:[.]com)?$/i.test(service) && /\/(?:user|accounts\/[^/]+)\/tokens(?:\/|$)/i.test(pathname)) return true;
-  return !["GET", "HEAD", "OPTIONS"].includes(String(method || "GET").toUpperCase()) &&
-    (MONEY.test(p) || FINANCE.test(service) && FINANCIAL_ONLY.test(p));
+  return { pathname, service, p: words(pathname) };
+}
+// A payment company's own host (stripe, paypal, adyen...), by name.
+export const financeHost = (service) => FINANCE.test(String(service || ""));
+// An API-key or token operation by its path (any method; also reading keys).
+export function keyRequest(path, service = "") {
+  const { pathname, service: sv, p } = requestParts(path, service);
+  return KEYS.test(p) || /(^|[.])cloudflare(?:[.]com)?$/i.test(sv) && /\/(?:user|accounts\/[^/]+)\/tokens(?:\/|$)/i.test(pathname);
+}
+// A payment operation by its path: a request that sends data to a payment path or a payment company.
+export function moneyRequest(method, path, service = "") {
+  const { service: sv, p } = requestParts(path, service);
+  return !["GET", "HEAD", "OPTIONS"].includes(String(method || "GET").toUpperCase()) && (MONEY.test(p) || FINANCE.test(sv) && FINANCIAL_ONLY.test(p));
+}
+export function protectedRequest(method, path, service = "") {
+  return keyRequest(path, service) || moneyRequest(method, path, service);
 }
 
 export function needsActionConfirm(spec = {}) {
