@@ -65,6 +65,7 @@ export function judgeSlide(m, limits = LIMITS) {
   if (small.length) fail.push(`running text under ${limits.minBodyPx}px: ${list(small)}`);
   const snug = m.texts.filter((x) => x.fs >= limits.minBodyPx && x.fs < limits.comfortPx && x.t.length >= 40);
   if (snug.length) note.push(`running text is ${Math.min(...snug.map((x) => Math.round(x.fs)))}px on the 1920x1080 stage: ${list(snug, 2)}. Fine for the template's own style; cut words rather than shrink`);
+  if ((m.stuck || []).length) fail.push(`text that stays invisible after the slide has finished animating (its entrance animation never shows it: check its data-anim or animation class and its delay against the style's CSS rules): ${list(m.stuck)}`);
   if (m.brokenImages.length) fail.push(`pictures that did not load: ${m.brokenImages.slice(0, 3).join(", ")}`);
   if (m.emptyBoxes.length) fail.push(`empty picture boxes (a placeholder with no picture): ${m.emptyBoxes.slice(0, 3).join(", ")}`);
   if (!m.texts.length && !m.imageCount) fail.push("the slide shows no text and no picture");
@@ -76,7 +77,7 @@ export function judgeSlide(m, limits = LIMITS) {
 export function measureSlide(index, limits) {
   const slide = document.querySelectorAll("[data-hc-slide]")[index];
   const sr = slide.getBoundingClientRect();
-  const out = { texts: [], clipped: [], overlaps: [], brokenImages: [], emptyBoxes: [], imageCount: 0 };
+  const out = { texts: [], clipped: [], overlaps: [], brokenImages: [], emptyBoxes: [], stuck: [], imageCount: 0 };
   const lines = [];
   const clips = (el) => { const cs = getComputedStyle(el); return /(hidden|clip|auto|scroll)/.test(cs.overflowX + cs.overflowY) ? cs : null; };
   const effectiveOpacity = (el) => { let o = 1; for (let e = el; e && e !== slide.parentElement; e = e.parentElement) o *= parseFloat(getComputedStyle(e).opacity); return o; };
@@ -86,7 +87,11 @@ export function measureSlide(index, limits) {
     const el = n.parentElement;
     if (!t || !el || el.closest("script,style,noscript,title,template")) continue;
     const cs = getComputedStyle(el);
-    if (cs.visibility === "hidden" || cs.display === "none" || effectiveOpacity(el) < 0.05) continue;
+    if (cs.visibility === "hidden" || cs.display === "none") continue;
+    // Invisible for good: opacity 0 with no animation left on it or on a parent that could show it (an entrance effect the style has no rule for), or already
+    // shown by the deck's own safety net (deck_bridge.js marks such an element data-hc-unstuck). The slide is repaired when it is shown, but its markup is still wrong.
+    const stuckNow = !!(el.closest("[data-hc-unstuck]") || (effectiveOpacity(el) < 0.05 && (() => { for (let a = el; a && a !== slide.parentElement; a = a.parentElement) if (parseFloat(getComputedStyle(a).opacity) < 0.05 && !a.getAnimations().length) return true; return false; })()));
+    if (effectiveOpacity(el) < 0.05) { if (stuckNow && el.getClientRects().length) out.stuck.push({ t }); continue; }   // a box only: a parent with display:none hides its text on purpose
     // The alpha of the text colour: the fourth number of rgba(r, g, b, a) or the number after the slash of rgb(r g b / a); a colour with no alpha is opaque.
     const cm = cs.color.match(/^rgba?\(([^)]*)\)$/), parts = cm ? cm[1].split(/[,/]/).map((x) => x.trim()).filter(Boolean) : [], alpha = parts.length >= 4 ? parseFloat(parts[3]) : 1;
     const fs0 = parseFloat(cs.fontSize);
@@ -98,6 +103,7 @@ export function measureSlide(index, limits) {
     const range = document.createRange(); range.selectNodeContents(n);
     const rects = [...range.getClientRects()].filter((r) => r.width > 1 && r.height > 1);
     if (!rects.length) continue;
+    if (stuckNow) out.stuck.push({ t });   // only text that has a box: a parent with display:none hides its text on purpose
     const fs = parseFloat(cs.fontSize);
     out.texts.push({ t, fs, tag: el.tagName.toLowerCase() });
     if (!decorative && !moving) for (const r of rects) { const h = Math.min(r.height, fs * 0.72), mid = r.top + r.height / 2; lines.push({ t, el, r: { left: r.left, right: r.right, top: mid - h / 2, bottom: mid + h / 2, width: r.width, height: h }, fs }); }

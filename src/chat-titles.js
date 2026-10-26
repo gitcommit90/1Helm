@@ -59,6 +59,7 @@ export function applyChatTitle(R, claim, title) {
   const clean = cleanChatTitle(title);
   if (!claim || !clean) return;
   R.sql.exec("UPDATE sessions SET title=?, title_revision=title_revision+1 WHERE id=? AND title_manual=0 AND title_revision=? AND title=? AND title<>?", clean, claim.id, claim.revision, claim.title, clean);
+  R.tsTouch?.(claim.id);   // task search follows the new title
 }
 // What the model is sent: the person's message, then the instruction.
 export const chatTitleRequest = (text, maxTokens = undefined) => ({ messages: [{ role: "user", content: `${String(text).slice(0, CHAT_TITLE_TEXT_MAX)}\n\n${CHAT_TITLE_INSTRUCTION}\n${CHAT_TITLE_TAIL}` }], ...(maxTokens ? { max_tokens: maxTokens } : {}) });

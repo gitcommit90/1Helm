@@ -77,3 +77,5 @@
 }
 /* the phone header is full: while the checklist button is there, the header buttons sit a little closer so the title keeps its room */
 @media (max-width:767px){.mh:has(.tdbtn){gap:5px}.mh:has(.tdbtn) .mpill{padding-right:14px}}
+/* phone: the panel lives inside the chat pane, so it slides away with the pane; while the sidebar is open it takes no taps */
+.cv.open #tdpw,.cv.open #tdpw .tdpop{pointer-events:none!important}

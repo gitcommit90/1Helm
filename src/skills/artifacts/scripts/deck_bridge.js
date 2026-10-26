@@ -6,9 +6,17 @@
   if (window.parent === window) return;
   var shown = __SHOWN__;   // replaced by the function that finds the shown slide
   var last = -2, count = -1;
+  // Items a style keeps invisible until an entrance animation shows them, that no animation shows (see UNSTICK_JS in the Zone, the same text).
+  function unstick(s){var all=s?s.querySelectorAll("*"):[],n=0;for(var i=0;i<all.length;i++){var e=all[i];if(e.hasAttribute("data-hc-unstuck")||/^(SCRIPT|STYLE|TEMPLATE|NOSCRIPT)$/.test(e.tagName))continue;
+  var cs=getComputedStyle(e);if(cs.opacity!=="0"||cs.display==="none"||cs.visibility==="hidden")continue;if(e.getAnimations&&e.getAnimations().length)continue;
+  var h=e.className&&e.className.baseVal!==undefined?e.className.baseVal:String(e.className||"");for(var j=0;j<e.attributes.length;j++)h+=" "+e.attributes[j].name+" "+e.attributes[j].value.slice(0,40);
+  if(!/anim|delay|reveal|fade|stagger|enter|appear|aos|wow|in-view/i.test(h))continue;
+  if(!(e.textContent.trim()||e.querySelector("img,svg,canvas,video")||/^(IMG|SVG|CANVAS|VIDEO)$/i.test(e.tagName)))continue;
+  e.setAttribute("data-hc-unstuck","");e.style.setProperty("opacity","1","important");n++}return n}
+  function settle() { [1700, 3800].forEach(function (ms) { setTimeout(function () { unstick(document.querySelectorAll("[data-hc-slide]")[shown()]); }, ms); }); }
   function report() {
     var n = document.querySelectorAll("[data-hc-slide]").length, i = shown();
-    if (i !== last || n !== count) { last = i; count = n; window.parent.postMessage({ hc: "state", index: i, count: n }, "*"); }
+    if (i !== last || n !== count) { if (i !== last) settle(); last = i; count = n; window.parent.postMessage({ hc: "state", index: i, count: n }, "*"); }
   }
   setInterval(report, 300);
   window.addEventListener("message", function (e) {

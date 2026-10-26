@@ -36,4 +36,13 @@ assert.match(ed, /CSS variables[\s\S]*head\.html/); assert.match(ed, /\.src\/med
 const pres = readFileSync(R + 'presentation.md', 'utf8');
 assert.ok(!/Never open a template file/.test(pres) && !/No new colours/.test(pres) && !/never write a script that writes them/.test(pres));
 assert.match(pres, /--show/);
+// Items a style keeps invisible until an entrance animation shows them: the check fails a slide whose text stays invisible, and the deck's own bridge repairs it when the slide is shown.
+{
+  // run in a plain node (the test loader replaces .mjs imports under src/skills)
+  const probe = "import('" + new URL('../src/skills/artifacts/scripts/deck_checks.mjs', import.meta.url).href + "').then(({ judgeSlide }) => { const base = { texts: [{ t: 'a', fs: 30, tag: 'p' }], clipped: [], overlaps: [], brokenImages: [], emptyBoxes: [], imageCount: 0 }; console.log(JSON.stringify([judgeSlide({ ...base, stuck: [] }).fail, judgeSlide({ ...base, stuck: [{ t: 'Treat long-term relationship' }] }).fail])); })";
+  const [none, some] = JSON.parse(spawnSync(process.execPath, ['-e', probe], { encoding: 'utf8' }).stdout);
+  assert.equal(none.length, 0); assert.ok(some.some((f) => /stays invisible/.test(f)));
+  const br = readFileSync(new URL('../src/skills/artifacts/scripts/deck_bridge.js', import.meta.url), 'utf8');
+  assert.match(br, /function unstick\(/); assert.match(br, /data-hc-unstuck/); assert.match(br, /settle\(\)/);
+}
 console.log('PASS deck ours');

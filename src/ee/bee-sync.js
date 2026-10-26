@@ -692,7 +692,7 @@ export class BeeSync extends DurableObject {
     this.put("remove_r2", "1"); await this.removeTranscripts().catch((e) => console.log("bee remove r2", String(e?.message || e).slice(0, 120)));
     const r2Left = this.get("remove_r2") === "1";
     await this.ev(`sync: off (disconnected; removed ${ids.length} conversation${ids.length === 1 ? "" : "s"} from memory${r2Left ? "; transcripts retried in 1 min" : " and their transcripts"}${notes ? `; ${notes} From-Bee note${notes === 1 ? "" : "s"} removed from the Notebook` : ""})`);
-    if (r2Left) { this.sql.exec("DELETE FROM convs"); this.sql.exec("DELETE FROM pending"); this.sql.exec("DELETE FROM facts"); try { this.spkInit(); this.sql.exec("DELETE FROM speakers"); this.sql.exec("DELETE FROM speaker_map"); } catch {} await this.ctx.storage.setAlarm(now() + 60e3); return { memories: "removed", removed: ids.length }; }
+    if (r2Left) { this.sql.exec("DELETE FROM convs"); this.sql.exec("DELETE FROM pending"); this.sql.exec("DELETE FROM facts"); try { this.spkInit(); this.sql.exec("DELETE FROM speakers"); this.sql.exec("DELETE FROM speaker_map"); this.sql.exec("DELETE FROM speaker_answer"); } catch {} await this.ctx.storage.setAlarm(now() + 60e3); return { memories: "removed", removed: ids.length }; }
     await this.ctx.storage.deleteAll(); this.init(); this.ambient = new AmbientStore(this);
     return { memories: "removed", removed: ids.length };
   }

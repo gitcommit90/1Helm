@@ -47,6 +47,7 @@ import { initAppDetail, openAppDetail, appDetailSync, appDetailRepaint } from ".
 import { appIsSoon } from "./apps-availability";
 import { initAcctNote, onAcctNote, acctNoteHtml, acctNoteReset, acctNoteAfter } from "./ee/acct-note";   // a note per connected account, for the helper
 import { cmInit as amInit, cmHtml, cmClick, cmSet, cmNewTab, cmBack, cmMode } from "./ee/apps-mode";   // Settings → Connected accounts: Managed vs Self-managed (1HC composio-self.js)
+import { keepPaneFloats } from "./pane-float";
 import { todoBtn, todoSet, todoSync, todoInit } from "./todos";
 import { pomoBtn, pomoGlobalBtn, pomoShortcut, pomoSet, pomoSync, pomoInit } from "./pomodoro";
 import { lnSpeakers, lnBtn, lnSet, lnSync, lnInit, lnWrap, lnDot, lnRefineCard, lnStartFor, lnCanStart } from "./ee/livenotes";
@@ -56,7 +57,7 @@ import { streamState, streamLease, streamCurrent, streamRelease, streamInvalidat
 import { tkInit, tkLoad, tkEvent, tkOn, tkLiveCard, tkBtn, tkWrap, tkSync, tkChip, tkMsgOf, tkCardView, tkHelperCount, tkProgress, orbState, type EventView } from "./tracker";
 import { dictBtn, dictInit, dictActive } from "./dictate";
 import { slBtn, slInit, slGate, slSchedule, slBubbles, slSentNote, slSet } from "./send-later";
-import { zoneKind } from "./zone-doc";   // the Zone (zone.ts, loaded only when a file is opened in it): which files it can open
+import { docEditable, zoneKind } from "./zone-doc";   // the Zone (zone.ts, loaded only when a file is opened in it): which files it can open
 import { dsAttr, dsBtn, dsCardHtml, dsInit, dsIsDeck, dsWire } from "./deck-styles";   // deck styles: Change style on a deck card, and the helper's picker card
 import { schInit, schPage, schPaint, schAfter, schRedirect, isSch, schSec } from "./scheduled";   // the one Scheduled view (repeats, follow-ups, send later)
 import { logoOver, logoChip, workDomain, appLogo, logoWarm } from "./logo";
@@ -73,11 +74,12 @@ import * as billingByok from "./ee/byok-billing";
 import * as coreStorage from "./storage";
 import * as billingStorage from "./ee/storage-billing";
 import { cmcpInit, cmcpPage, cmcpBefore, cmcpAfter, CMCP_SEC } from "./ee/custom-mcp";   // Settings → Advanced → Custom MCP connections (Experimental)
-import { hInit, hWatch } from "./headfit";   // the tablet/desktop task header: folds actions into ⋯ instead of running under the computer button
+import { hInit, hWatch, hFit } from "./headfit";   // the tablet/desktop task header: folds actions into ⋯ instead of running under the computer button
 import { sidebarInit, sidebarSync, sidebarReveal, sidebarCollapseButton, sidebarRestoreButton } from "./channel-sidebar";
 import { stInit, sync as stSync, headStop, rowStop, composerStop, stopTask, stopMany, stopBusy, pausedNote, SQ } from "./stop";   // Stop / Stop all
 import { nfInit, nfHtml, nfSeen, nfPerm, nfAsk, nfElsewhere } from "./notif";   // Settings → Notifications: switches, this device (Web Push), sounds
 import { maInit, maActs, maOpenCls, maQuote, rqHtml, rqTake, rqPut, rqClear, refOf, copyPlain, excerpt, type Pin, type Role } from "./msgreply";   // Copy + Reply on chat bubbles, the reply pinned above the composer
+import { createRankedSearch, rankedRows } from "./task-search";   // sidebar and drawer Search: the server ranks every task after a pause
 import { sgInit, pauseSet, usageSet, usageAdd, usageNote } from "./spendguard";   // core runaway guard and per-task usage
 import { sgBillingInit, monthLine, noticeShow } from "./ee/spendguard-billing";   // 1HC monthly plan meter and credit notices
 
@@ -254,7 +256,10 @@ const md = (s: string) => DOMPurify.sanitize(marked.parse(s, { async: false, bre
 const live = (s: Session) => s.status === "open" || s.status === "waiting";
 // The one place the unread / needs-you dot lives: a fixed-width slot at the far right of a task row, after the pin and more buttons.
 // The slot holds the time (rows that show one) or the dot, never both, and keeps its width, so nothing moves when the dot appears or clears.
-const rowDot = (x: Session) => !x.done && (x.status === "waiting" || x.unread) ? `<i class="dot" title="${x.unread ? "New result" : "Needs you"}"></i>` : "";
+// needsYou is the one rule for "this task waits on the person": the rail dot, the phone channel list, the phone menu dot, the row dot and Home's
+// "All clear" all read it, so a dot only shows when the list it leads to has a row with a dot. A done task never counts.
+const needsYou = (x: Session) => !x.done && x.status === "waiting";
+const rowDot = (x: Session) => (needsYou(x) || (!x.done && x.unread)) ? `<i class="dot" title="${x.unread ? "New result" : "Needs you"}"></i>` : "";
 const rowTail = (x: Session, when = true) => `<span class="tail">${rowDot(x) || (when ? `<span class="when">${ago(x.done ? doneAt(x) : x.updated)}</span>` : "")}</span>`;
 function ago(t: number) {
   const m = Math.round((Date.now() - t) / 60e3);
@@ -292,7 +297,7 @@ function pcFab(ch: Channel) { const busy = ch.sessions.some(x => x.state === "wo
 // The channel rail (desktop): every channel, then New channel. railWire keeps its scroll spot and bottom fade.
 function railHtml(ch: Channel) {
   return `<div class="chs"><div class="brand" title="1Helm"><img src="/1helm-icon.png" alt="1Helm"></div>${sidebarRestoreButton()}${channels.map((c, i) => {
-    const n = c.sessions.filter(x => x.status === "waiting").length;
+    const n = c.sessions.filter(needsYou).length;
     return `<button class="ch${c === ch ? " on" : ""}" data-ch="${c.slug}" title="${esc(c.name)}${scLabel("jump") ? `  ${scLabelN("jump", i + 1)}` : ""}">
       <span class="tile">${c.slug === "main" ? av(c) : mono(c)}${n ? `<i class="pip" title="Needs you"></i>` : ""}</span><span class="lbl">${esc(c.name)}</span></button>`;
   }).join("")}<button class="ch add" title="New channel" aria-label="New channel" data-newch><span class="tile">${ic.plus}</span></button></div>
@@ -334,7 +339,7 @@ function keepDraft(paint: () => void) {
   box.scrollTop = kept.top;
   if (kept.focus) { box.focus({ preventScroll: true }); box.setSelectionRange(kept.a ?? kept.v.length, kept.b ?? kept.v.length, kept.dir ?? "none"); }
 }
-function render() { keepDraft(renderStage); }
+function render() { keepPaneFloats(() => keepDraft(renderStage)); }
 function renderStage() {
   zoneGuard();
   if (isNb()) nbBeeVisit(route().ch);
@@ -451,7 +456,7 @@ function tasksHtml(ch: Channel) {
   const shut = (k: string) => folded(ch, `home-${k}`), sec = (k: string, label: string, n: number) => foldHead("hsec", `home-${k}`, label, n, shut(k));
   const group = (k: string, label: string, items: Session[]) => items.length ? `${foldHead("hsec hst", `home-${k}`, label, 0, shut(k))}${shut(k) ? "" : items.map(task).join("")}` : "";
   return `${pins.length ? `${sec("pinned", `${ic.pin}Pinned`, pins.length)}${shut("pinned") ? "" : pins.map(task).join("")}` : ""}
-    ${act.length ? stateGroups(act, group) : `<div class="hnone">All clear. Nothing open.</div>`}
+    ${act.length ? stateGroups(act, group) : txt.some(needsYou) ? "" : `<div class="hnone">All clear. Nothing open.</div>`}
     ${txt.length ? `${sec("texts", "Texts", txt.length)}${shut("texts") ? "" : txt.map(task).join("")}` : ""}
     ${done.length ? `${sec("done", "Done", done.length)}${shut("done") ? "" : done.map(x => `<a class="recent isdone" href="#/${ch.slug}/s/${x.id}">${box(x, true)}<span class="rt">${esc(x.title)}</span>${pinBtn(x)}<span class="when">${ago(doneAt(x))}</span></a>`).join("")}` : ""}
     ${libHtml(ch)}`;
@@ -537,31 +542,38 @@ if (!LIVE) for (const [k, v] of Object.entries(EXTRA)) (LIB[k] ??= []).push(...v
 type LF = Art & { ch: Channel };
 const allFiles = (): LF[] => channels.flatMap(c => lib(c).map(a => ({ ...a, ch: c }))).sort((a, b) => b.at - a.at);
 // [key, label, kinds it shows (null = any), tag it shows (files tagged in the Library API's tags[], e.g. meeting notes)]
-const TYPES: [string, string, Art["kind"][] | null, string?][] = [["all", "All", null], ["doc", "Documents", ["doc"]], ["sheet", "Spreadsheets", ["sheet"]], ["pdf", "PDFs", ["pdf"]], ["image", "Images", ["image"]], ["link", "Links & code", ["link", "code"]], ["meeting", "Meetings", null, "meeting"]];
+const TYPES: [string, string, Art["kind"][] | null, string?][] = [["all", "All", null], ["doc", "Documents", ["doc"]], ["sheet", "Spreadsheets", ["sheet"]], ["pdf", "PDFs", ["pdf"]], ["image", "Images", ["image"]], ["link", "Links & code", ["link", "code"]], ["meeting", "Meetings", null, "meeting"], ["zone", "The Zone", null]];
+// The Zone can change a deck, a web page and a .docx; a PDF report and the other word formats only open there to read, so "The Zone" leaves them out.
+const ZSECS: [string, string][] = [["deck", "Presentations"], ["doc", "Documents"], ["page", "Websites"]];
+const zoneSec = (f: Art) => { const k = zoneKind(f); return k === "deck" || k === "page" || (k === "doc" && docEditable(f.name)) ? k : null; };
 const L = { q: "", type: "all", coll: "all", view: "list" as "list" | "grid", scope: "ch" as "ch" | "all" };
 function libFiltered() {
   const ql = L.q.trim().toLowerCase(), [, , ks, tag] = TYPES.find(t => t[0] === L.type)!;
   const here = route().ch;
-  return allFiles().filter(f => (L.scope === "ch" ? f.ch === here : L.coll === "all" || (L.coll === "recent" ? NOW - f.at < 3 * D || f.fresh : f.ch.slug === L.coll))
+  return allFiles().filter(f => (L.type !== "zone" || !!zoneSec(f)) && (L.scope === "ch" ? f.ch === here : L.coll === "all" || (L.coll === "recent" ? NOW - f.at < 3 * D || f.fresh : f.ch.slug === L.coll))
     && (!ks || ks.includes(f.kind)) && (!tag || !!f.tags?.includes(tag)) && (!ql || f.name.toLowerCase().includes(ql) || f.ch.name.toLowerCase().includes(ql) || (f.ch.sessions.find(x => x.id === f.sid)?.title.toLowerCase().includes(ql) ?? false)));
 }
 function fileDate(t: number) { return NOW - t < 6 * D || t > NOW ? ago(t) : new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
 function libFilesHtml() {
-  const ups = LIVE ? (L.scope === "ch" ? lupHere(route().ch.slug) : LUP.filter(u => !u.f)) : [];
+  const ups = LIVE && L.type !== "zone" ? (L.scope === "ch" ? lupHere(route().ch.slug) : LUP.filter(u => !u.f)) : [];
   if (ups.length && !L.q) { const rest = libFilesInner(); return `<div class="lrows lups${L.scope === "ch" ? " one" : ""}">${ups.map(lupRow).join("")}</div>${/class="lempty"/.test(rest) ? "" : rest}`; }
   return libFilesInner();
 }
 function libFilesInner() {
   const list = libFiltered(), one = L.scope === "ch", here = route().ch;
-  if (!list.length) return `<div class="lempty">${L.q ? `Nothing matches “${esc(L.q)}”.` : L.type === "meeting" ? "No meeting notes yet." : one ? `Files ${esc(who(here))} makes for you, and files you add, show up here.${LIVE ? ` <button class="linkb" data-addfile>Add a file</button>` : ""}` : `No files here yet.`}</div>`;
-  const src = (f: LF) => f.ch.sessions.find(x => x.id === f.sid);
-  if (L.view === "grid") return `<div class="arts lgrid">${list.map(f => { const [k, d] = KIND[f.kind];
-    return `<a class="art" href="${artHref(f.ch, f)}"${f.fid ? ` data-fv="${esc(f.ch.slug)}|${esc(f.fid)}" data-fvl` : ""}><span class="aico k-${f.kind}">${I(d, 20)}</span><span class="an">${esc(f.name)}</span>
-      <span class="am">${one ? `${k} · ${esc(f.size)} · ${fileDate(f.at)}` : `${av(f.ch, "av xs")}${esc(f.ch.name)} · ${fileDate(f.at)}`}${LIVE ? shBadge(f.ch.slug, f.fid, f.name) : ""}</span></a>`; }).join("")}</div>`;
-  return `<div class="lrows${one ? " one" : ""}">${list.map(f => { const [k, d] = KIND[f.kind], x = src(f), you = f.you ?? f.size === "You added";
-    return `<a class="lrow${f.fresh ? " fresh" : ""}" href="${artHref(f.ch, f)}"${f.fid ? ` data-fv="${esc(f.ch.slug)}|${esc(f.fid)}" data-fvl` : ""}><span class="aico k-${f.kind}">${I(d, 18)}</span>
+  if (!list.length) return `<div class="lempty">${L.q ? `Nothing matches “${esc(L.q)}”.` : L.type === "meeting" ? "No meeting notes yet." : L.type === "zone" ? "Nothing to open in the Zone yet." : one ? `Files ${esc(who(here))} makes for you, and files you add, show up here.${LIVE ? ` <button class="linkb" data-addfile>Add a file</button>` : ""}` : `No files here yet.`}</div>`;
+  const src = (f: LF) => f.ch.sessions.find(x => String(x.id) === String(f.sid));
+  const zl = L.type === "zone", open = (f: LF) => zl ? ` href="${f.sid != null ? `#/${f.ch.slug}/s/${esc(String(f.sid))}` : "#"}" data-zl="${esc(f.ch.slug)}|${esc(f.fid || "")}|${esc(String(f.sid ?? ""))}"` : ` href="${artHref(f.ch, f)}"${f.fid ? ` data-fv="${esc(f.ch.slug)}|${esc(f.fid)}" data-fvl` : ""}`;
+  const card = (f: LF) => { const [k, d] = KIND[f.kind];
+    return `<a class="art"${open(f)}><span class="aico k-${f.kind}">${I(d, 20)}</span><span class="an">${esc(f.name)}</span>
+      <span class="am">${one ? `${k} · ${esc(f.size)} · ${fileDate(f.at)}` : `${av(f.ch, "av xs")}${esc(f.ch.name)} · ${fileDate(f.at)}`}${LIVE ? shBadge(f.ch.slug, f.fid, f.name) : ""}</span></a>`; };
+  const row = (f: LF) => { const [k, d] = KIND[f.kind], x = src(f), you = f.you ?? f.size === "You added";
+    return `<a class="lrow${f.fresh ? " fresh" : ""}"${open(f)}><span class="aico k-${f.kind}">${I(d, 18)}</span>
       <span class="lmain"><span class="ln">${esc(f.name)}</span><span class="lsub">${LIVE ? shBadge(f.ch.slug, f.fid, f.name).trimStart() : ""}${you ? "You added it" : `${esc(who(f.ch))} made it`}${x ? ` in “${esc(x.title)}”` : ""}${f.fid ? ` · ${esc(f.size)}` : ""}</span></span>${f.fid ? `<button class="ldel" data-fdel="${esc(f.ch.slug)}|${esc(f.fid)}" title="Delete" aria-label="Delete ${esc(f.name)}">${ic.trash}</button>` : ""}
-      <span class="ltype">${k}</span>${one ? "" : `<span class="lch">${av(f.ch, "av xs")}<span>${esc(f.ch.name)}</span></span>`}<span class="ldate">${fileDate(f.at)}</span></a>`; }).join("")}</div>`;
+      <span class="ltype">${k}</span>${one ? "" : `<span class="lch">${av(f.ch, "av xs")}<span>${esc(f.ch.name)}</span></span>`}<span class="ldate">${fileDate(f.at)}</span></a>`; };
+  const body = (l: LF[]) => L.view === "grid" ? `<div class="arts lgrid">${l.map(card).join("")}</div>` : `<div class="lrows${one ? " one" : ""}">${l.map(row).join("")}</div>`;
+  if (zl) return ZSECS.map(([k, n]) => [n, list.filter(f => zoneSec(f) === k)] as const).filter(([, l]) => l.length).map(([n, l]) => `<h3 class="lzh">${n}</h3>${body(l)}`).join("");
+  return body(list);
 }
 function collHtml() {
   const all = allFiles(), recent = all.filter(f => NOW - f.at < 3 * D || f.fresh).length;
@@ -575,7 +587,7 @@ function libBody() {
     <div class="colls" id="colls">${collHtml()}</div>`}
     <div class="lbar${one ? " first" : ""}"><h2>${one ? `${lib(ch).length} ${lib(ch).length === 1 ? "file" : "files"}` : L.coll === "all" ? "All files" : L.coll === "recent" ? "Recent" : esc(channels.find(c => c.slug === L.coll)?.name ?? "")}</h2>
       <div class="vt"><button class="${L.view === "list" ? "on" : ""}" data-view="list" aria-label="List">${ic.list}</button><button class="${L.view === "grid" ? "on" : ""}" data-view="grid" aria-label="Grid">${ic.grid}</button></div></div>
-    <div class="chips">${TYPES.map(([k, n]) => `<button class="fchip${L.type === k ? " on" : ""}" data-type="${k}">${n}</button>`).join("")}</div>
+    <div class="chips">${TYPES.filter(t => LIVE || t[0] !== "zone").map(([k, n]) => `<button class="fchip${L.type === k ? " on" : ""}" data-type="${k}">${n}</button>`).join("")}</div>
     ${LIVE ? shLibHtml(one ? ch.slug : null) : ""}<div id="lfiles">${libFilesHtml()}</div>`;
 }
 function libHead(ch: Channel) {
@@ -590,7 +602,7 @@ function libPage(ch: Channel) {
   return `<div class="dhome" id="scroll"><div class="lwrap"><div id="lhd">${libHead(ch)}</div>
     <div id="lbody">${libBody()}</div></div></div>`;
 }
-function libUpdate(head = false) { const b = document.getElementById("lbody"); if (b) b.innerHTML = libBody(); const h = document.getElementById("lhd"); if (head && h) h.innerHTML = libHead(route().ch); }
+function libUpdate(head = false) { const b = document.getElementById("lbody"); if (b) { b.innerHTML = libBody(); if (phone()) document.querySelector(".chips .fchip.on")?.scrollIntoView({ block: "nearest", inline: "nearest" }); } const h = document.getElementById("lhd"); if (head && h) h.innerHTML = libHead(route().ch); }
 function openLib(ch: Channel, coll?: string) { L.scope = "ch"; L.coll = coll ?? "all"; L.type = "all"; L.q = ""; const h = `#/${ch.slug}/library`; if (location.hash === h) render(); else location.hash = h; }
 
 // ---------- Files: attach in chat (button, drag and drop, paste) and Library "Add file". Uploads start at once; chips show progress. ----------
@@ -791,7 +803,28 @@ function foldTitle(c: any): string {
   if (c.t === "contact") return CX_DONE[c.k] ? "" : `Add ${c.c.name} to your contacts?`;
   return "";
 }
-function chatCards(cards: any[], ch: Channel, reply?: string) {
+// The files and pictures the helper already shared in a turn that is still running, from an attach snapshot or the open task's live part
+// ({ shared, images }). A watcher that attaches after share_file ran never saw its "file" event, so these draw the same cards the reload does.
+function liveOutputs(ch: Channel, reply: Msg, d: any) {
+  for (const x of d?.images || []) { const cs = (reply.cards ??= []); if (!cs.some((c: any) => c.t === "image" && c.id === x.id)) cs.push({ t: "image", id: x.id, url: x.url, caption: x.caption }); }
+  for (const f of d?.shared || []) {
+    const cs = (reply.cards ??= []), i = cs.findIndex((c: any) => c.t === "file" && c.f?.id === f.id); if (i >= 0) cs[i] = { t: "file", f }; else cs.push({ t: "file", f });
+    LIB[ch.slug] = [{ ...toArt(f), fresh: true }, ...(LIB[ch.slug] || []).filter((a) => a.fid !== f.id)];
+  }
+}
+// One "Open in editor" card under an agent reply that shares files the Zone can open (zoneKind decides). It opens the first such file; with
+// several, a file-name chooser on the card picks another. The choice is kept per reply (keyed by its first Zone file) so a repaint keeps it.
+const OED: Record<string, string> = {};
+function oedCard(cards: any[], ch: Channel) {
+  if (!LIVE) return "";
+  const fs: FileV[] = []; for (const c of cards) if (c.t === "file" && c.f?.id && zoneKind(c.f) && !fs.some(x => x.id === c.f.id)) fs.push(c.f);
+  if (!fs.length) return "";
+  const key = ch.slug + "|" + fs[0].id, cur = fs.find(x => x.id === OED[key]) || fs[0];
+  const who = fs.length > 1 ? `<select class="oed-pick" data-oed="${esc(key)}" aria-label="File to open in the editor">${fs.map(x => `<option value="${esc(x.id)}"${x.id === cur.id ? " selected" : ""}>${esc(x.name)}</option>`).join("")}</select>` : `<span class="oed-name">${esc(cur.name)}</span>`;
+  return `<div class="oed" data-oedc="${esc(key)}"><button type="button" class="oed-open" data-zone="${esc(ch.slug)}|${esc(cur.id)}" aria-label="Open ${esc(cur.name)} in the editor">${I('<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/><rect x="9" y="9" width="6" height="6" rx="1"/>', 16)}<span>Open in editor</span></button>${who}</div>`;
+}
+if (LIVE) document.addEventListener("change", e => { const t = e.target as HTMLSelectElement; if (!t?.matches?.("select[data-oed]")) return; OED[t.dataset.oed!] = t.value; const b = t.closest(".oed")?.querySelector<HTMLElement>("[data-zone]"); if (b) { b.dataset.zone = t.dataset.oed!.split("|")[0] + "|" + t.value; b.setAttribute("aria-label", `Open ${t.selectedOptions[0]?.text || "the file"} in the editor`); } });
+function chatCards(cards: any[], ch: Channel, reply?: string, all: any[] = cards) {
   let html = "", group = false;
   for (const c of cards) { const tile = c.t === "file" || c.t === "image";
     if (tile && !group) html += '<div class="chat-file-grid">';
@@ -799,7 +832,7 @@ function chatCards(cards: any[], ch: Channel, reply?: string) {
     const ft = foldTitle(c);
     html += ft ? foldHtml(`card:${ch.slug}:${c.t}:${c.o?.id ?? c.id ?? c.k}`, ft, cardHtml(c, ch), reply !== undefined) : cardHtml(c, ch); group = tile;
   }
-  return html + (group ? '</div>' : '');
+  return html + (group ? '</div>' : '') + oedCard(all, ch);
 }
 // The message's cards without the file tiles its own File cards already show.
 function claimedOut(m: Msg, text: string) { const { ids } = claimFiles(m, text); return ids.size ? (m.cards || []).filter(c => !(c.t === "file" && ids.has(c.f?.id))) : m.cards || []; }
@@ -822,7 +855,18 @@ async function zoneStart(slug: string, id: string) {
 // The Zone belongs to the task it was opened from: leaving that task closes it.
 function zoneGuard() { if (!zoneMod?.zoneIsOpen()) return; const sid = zoneMod.zoneSession(), { s } = route(); if (!s || String(s.id) !== sid) zoneMod.zoneClose(); }
 document.addEventListener("rq:clear", () => zoneMod?.zoneUnpinned());
-if (LIVE) { document.addEventListener("click", e => { const b = (e.target as HTMLElement).closest<HTMLElement>("[data-zone]"); if (!b) return; e.preventDefault(); e.stopPropagation(); const [slug, id] = b.dataset.zone!.split("|"); void zoneStart(slug, id); }, true);
+// A file in the Library's "The Zone" list: go to the task it came from, then open it in the Zone beside that chat. A file with no task that still exists
+// opens in the channel's newest task (the Zone needs a task to sit beside, and the file belongs to the channel); a channel with no tasks opens the file viewer.
+async function zoneFromLib(slug: string, id: string, sid: string) {
+  const ch = channels.find(c => c.slug === slug); if (!ch) return;
+  const to = ch.sessions.find(x => String(x.id) === sid) ?? [...ch.sessions].filter(x => !x.tmp).sort((a, b) => b.updated - a.updated)[0];
+  if (!to) { const x = (LIB[slug] || []).find(y => y.fid === id); if (x) openFile([fvOf(slug, x)], 0); return; }
+  const h = `#/${slug}/s/${to.id}`; if (location.hash !== h) location.hash = h; else render();
+  for (let i = 0; i < 100; i++) { const { ch: c, s } = route(); if (c.slug === slug && s === to && (!LIVE || s.loaded) && document.getElementById("box")) break; await new Promise(r => setTimeout(r, 50)); }
+  await zoneStart(slug, id);
+}
+if (LIVE) { document.addEventListener("click", e => { const z = (e.target as HTMLElement).closest<HTMLElement>("[data-zl]"); if (z && !(e.target as HTMLElement).closest("[data-fdel]")) { e.preventDefault(); e.stopPropagation(); const [slug, id, sid] = z.dataset.zl!.split("|"); void zoneFromLib(slug, id, sid); return; }
+    const b = (e.target as HTMLElement).closest<HTMLElement>("[data-zone]"); if (!b) return; e.preventDefault(); e.stopPropagation(); const [slug, id] = b.dataset.zone!.split("|"); void zoneStart(slug, id); }, true);
   document.addEventListener("keydown", e => { const t = e.target as HTMLElement; if ((e.key === "Enter" || e.key === " ") && t?.matches?.("[data-zone]")) { e.preventDefault(); t.click(); } }); }
 function fileCard(ch: Channel, f: FileV, mine: boolean) {
   const k = fkind(f.name, f.mime), u = fileUrl(ch.slug, f.id);
@@ -1213,7 +1257,7 @@ function repaint(ch: Channel) {
   const mt = document.getElementById("mtasks"); if (mt) morph(mt, tasksHtml(ch));
   const dl = document.getElementById("dlist"); if (dl) morph(dl, sessRows(ch, s, (document.getElementById("dq") as HTMLInputElement | null)?.value ?? ""));
   const hp = document.getElementById("hpin"); if (hp && s) hp.outerHTML = headPin(s);
-  const hd = document.getElementById("hdone"); if (hd && s) hd.outerHTML = headDone(s);
+  if (s) paintHeadDone(s);
   const hh = document.querySelector(".hdate"); if (hh) hh.outerHTML = dateLine(ch);
   if (s) {
     document.querySelectorAll<HTMLElement>("[data-task-title]").forEach(el => { el.textContent = s.title; });
@@ -1274,6 +1318,17 @@ function toggleDone(id: any, fromUndo = false) {
   if (!fromUndo && x.done) note(`${ic.check}`, "Marked done", x.title, `<button class="tview" data-undo="${x.id}">Undo</button>`);
   else if (!fromUndo) hideToast();
 }
+// Repaint #hdone only when its markup changed, so the status dot animation is not restarted, and refit the header at once so a
+// folded .ho item is never painted visible for a frame (the new markup has no hhid class until hFit runs).
+const paintHeadDone = (s: Session) => {
+  const hd = document.getElementById("hdone"); if (!hd) return;
+  const html = headDone(s), sig = html.replace(/animation-delay:-\d+ms/g, "");   // the spinner's phase offset changes on every call
+  if (hd.dataset.sig === sig) return;
+  const keep = new Set([...hd.querySelectorAll<HTMLElement>(".ho.hhid")].map(x => x.dataset.ho));
+  hd.outerHTML = html; const nh = document.getElementById("hdone"); if (nh) nh.dataset.sig = sig;
+  nh?.querySelectorAll<HTMLElement>(".ho").forEach(x => { if (keep.has(x.dataset.ho)) x.classList.add("hhid"); });
+  hFit();
+};
 const headDone = (s: Session) => `<span id="hdone" class="hdone-wrap">${s.done ? "" : `<span class="meta ${astate(s)}" title="${statusText(s)}"><i class="st"></i>${statusText(s)}</span>`}${headStop(chOf(s).slug, s.id, stWorking(s))}
   ${isTexts(s) ? "" : `<span class="ho" data-ho="2"><button class="hdone${s.done ? " on" : ""}" data-done="${s.id}" aria-pressed="${!!s.done}">${box(s, true).replace(/ data-done="[^"]+"/, "").replace('role="checkbox" tabindex="0"', 'aria-hidden="true"')}<span>${s.done ? "Done" : "Mark done"}</span></button></span>`}</span>`;
 window.addEventListener("click", e => {
@@ -1311,15 +1366,24 @@ function isTexts(x: Session) { return !!x.srv?.texts; }
 const TSECS = [["waiting", "Waiting on you"], ["working", "Working"], ["ready", "Ready for you"], ["watching", "Watching"]] as const;
 const stateGroups = (rest: Session[], group: (k: string, l: string, items: Session[], nc?: boolean) => string) =>
   TSECS.map(([k, l]) => group(k, l, rest.filter(x => !x.done && !isTexts(x) && astate(x) === k), true)).join("");
+// Ranked task search (task-search.ts). Only the real app has a server to ask; the design sandbox keeps the local filter.
+const RS = createRankedSearch({
+  fetchRanked: (slug, q, signal) => api(`/res/${slug}/search?q=${encodeURIComponent(q)}`, undefined, { signal }).then(d => { if (!d || d.error || !Array.isArray(d.results)) throw new Error("search failed"); return d.results; }),
+  onChange: () => { const { ch, s } = route(), side = document.querySelector(".sessions"), dl = document.getElementById("dlist");
+    if (side) morph(side, sideList(ch, s, (document.getElementById("q") as HTMLInputElement | null)?.value ?? ""));
+    if (dl) morph(dl, sessRows(ch, s, (document.getElementById("dq") as HTMLInputElement | null)?.value ?? "")); },
+});
+const rankSearch = (slug: string, q: string) => { if (LIVE) RS.input(slug, q); };
 function sideList(ch: Channel, s: Session | null, q: string) {
-  const ql = q.toLowerCase();
-  const list = ch.sessions.filter(x => !ql || x.title.toLowerCase().includes(ql) || x.messages.some(m => m.body.toLowerCase().includes(ql)));
+  const ql = q.toLowerCase(), ranked = LIVE ? RS.ranked(ch.slug, q) : null;
+  const list = ranked ? rankedRows(ch.sessions, ranked) : ch.sessions.filter(x => !ql || x.title.toLowerCase().includes(ql) || x.messages.some(m => m.body.toLowerCase().includes(ql)));
   const row = (x: Session) => `<a class="sess${x === s ? " on" : ""}${freshOnce("sess", x, x.fresh)}${x.done ? " isdone" : ""}" href="#/${ch.slug}/s/${x.id}">${box(x, true)}
       <span class="t">${esc(x.title)}</span>${LIVE && hasFeature("ambient") ? lnDot(ch.slug, x.id) : ""}${rowStop(ch.slug, x.id, x.title, stWorking(x))}${pinBtn(x)}${LIVE && x.srv ? rowMore(ch.slug, x.id, x.title) : ""}${rowTail(x)}</a>`;
   // Searching shows every match: folded sections open while there's a query (the saved choice comes back when it's cleared).
   const group = (key: string, label: string, items: Session[], nc = false) => { if (!items.length) return ""; const shut = !ql && folded(ch, `side-${key}`);
     return `${foldHead("grp", `side-${key}`, label, nc ? 0 : items.length, shut, !!ql)}${shut ? "" : items.map(row).join("")}`; };
   const rest = list.filter(x => !x.pinned);
+  if (ranked) return list.length ? list.map(row).join("") : `<div class="empty">Nothing matches.</div>`;   // a ranked answer is one flat list, most likely first, with no sections
   return `${group("pinned", `${ic.pin}Pinned`, list.filter(x => x.pinned))}${group("texts", "Texts", rest.filter(x => !x.done && isTexts(x)))}${stateGroups(rest, group)}${group("done", "Done", rest.filter(x => x.done).sort(byDone))}${!list.length ? `<div class="empty">${q ? "Nothing matches." : "No tasks yet."}</div>` : ""}`;
 }
 function clearFresh(ch: Channel) { if (ch.sessions.some(x => x.fresh) || lib(ch).some(a => a.fresh)) setTimeout(() => { ch.sessions.forEach(x => x.fresh = false); lib(ch).forEach(a => a.fresh = false); }, 600); }
@@ -1503,7 +1567,7 @@ function msgHtml(m: Msg, ch: Channel, prev?: Msg, live = false, s?: Session, rep
   if (tkon && !live && ["paused", "failed", "interrupted", "stopped"].includes(tkCardView(ch.slug, s!.id, tm.card)?.status || "")) steps = tkChip(ch.slug, s!.id, tm.card);
   const slot = progressSlot(m, live);
   return `<div class="m agent${first ? " first" : ""}" data-mr="${m.id}"${tkon ? ` data-card="${esc(tm.card!)}"` : ""}>
-    <div class="reply-steps">${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}</div>${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${live ? ctUsed(m) + nbSaved(m, ch) : ""}${chatCards(claimedOut(m, slot.text), ch, reply)}</div>`;
+    <div class="reply-steps">${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}</div>${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${live ? ctUsed(m) + nbSaved(m, ch) : ""}${chatCards(claimedOut(m, slot.text), ch, reply, m.cards || [])}</div>`;
 }
 
 document.addEventListener("click", e => {
@@ -1525,10 +1589,10 @@ document.addEventListener("click", e => {
 });
 document.addEventListener("input", e => {
   const t = e.target as HTMLElement;
-  if (t.id === "q") render();
+  if (t.id === "q") { render(); rankSearch(route().ch.slug, (t as HTMLInputElement).value); }
   if (t.id === "lq") { L.q = (t as HTMLInputElement).value; $("#lfiles").innerHTML = libFilesHtml(); }
   if (t.id === "chq") $("#chlist").innerHTML = chRows((t as HTMLInputElement).value);
-  if (t.id === "dq") { const { ch, s } = route(); $("#dlist").innerHTML = sessRows(ch, s, (t as HTMLInputElement).value); }
+  if (t.id === "dq") { const { ch, s } = route(); $("#dlist").innerHTML = sessRows(ch, s, (t as HTMLInputElement).value); rankSearch(ch.slug, (t as HTMLInputElement).value); }
   if (t.id === "nbox") { const b = t as HTMLTextAreaElement; b.style.height = "auto"; b.style.height = Math.min(b.scrollHeight, 260) + "px"; ($("#ngo") as HTMLButtonElement).disabled = !b.value.trim() && !(LIVE && UP.nbox.some(u => u.f)); }
   if (t.id === "box") { const b = t as HTMLTextAreaElement; b.style.height = "auto"; b.style.height = Math.min(b.scrollHeight, 220) + "px"; const has = !!b.value.trim() || !!(LIVE && UP.box.some(u => u.f)); ($("#go") as HTMLButtonElement).disabled = !has; $("#send").classList.toggle("has", has); }
 });
@@ -1537,7 +1601,7 @@ document.addEventListener("keydown", e => {
   if (NT.open && e.key === "Escape") { e.preventDefault(); if (NT.pick) { NT.pick = false; paintNew(); } else closeNew(); return; }
   if (t.id === "nbox" && e.key === "Enter" && !e.shiftKey && !phone()) { e.preventDefault(); sendNew(); return; }
   if (t.id === "box" && e.key === "Enter" && !e.shiftKey && !phone()) { e.preventDefault(); $("#send").requestSubmit(); return; }
-  if (t.id === "q" && e.key === "Escape") { (t as HTMLInputElement).value = ""; t.blur(); render(); return; }
+  if (t.id === "q" && e.key === "Escape") { (t as HTMLInputElement).value = ""; RS.clear(); t.blur(); render(); return; }
   // ⌘K, ⌘⇧L, ⌘N (now ⌘⇧O), ⌘⇧H, ⌘1-9, ⌘, ⌘/ and ⌘⇧A live in the shortcut registry (shortcuts.ts; registered below, near initSettings).
 });
 document.addEventListener("submit", e => {
@@ -1623,22 +1687,23 @@ function chRows(q: string) {
   return list.map(c => {
     const last = latest(c), m = last?.messages.filter(x => x.body).at(-1);
     const prev = LIVE ? (plainPreview(last?.srv?.preview || "") || c.purpose) : m ? (m.role === "user" ? "You: " : "") + plain(m.body) : c.purpose;
-    return `<a class="chr${c === cur ? " on" : ""}" href="#/${c.slug}" data-mch>${c.sessions.some(x => x.status === "waiting") ? `<i class="udot"></i>` : ""}<span class="chtile">${chTile(c)}</span>
+    return `<a class="chr${c === cur ? " on" : ""}" href="#/${c.slug}" data-mch>${c.sessions.some(needsYou) ? `<i class="udot"></i>` : ""}<span class="chtile">${chTile(c)}</span>
       <span class="ctext"><span class="ctop"><b>${esc(c.name)}</b><span>${c === cur ? ic.check : last ? day(last.updated) : ""}</span></span><span class="cprev">${esc(prev || "")}</span></span></a>`;
   }).join("") || `<div class="mempty">Nothing matches “${esc(q)}”.</div>`;
 }
 function sessRows(ch: Channel, s: Session | null, q: string) {
-  const ql = q.trim().toLowerCase();
-  const list = [...ch.sessions].sort((a, b) => b.updated - a.updated).filter(x => !ql || x.title.toLowerCase().includes(ql) || x.messages.some(m => m.body.toLowerCase().includes(ql)));
+  const ql = q.trim().toLowerCase(), ranked = LIVE ? RS.ranked(ch.slug, q) : null;
+  const list = ranked ? rankedRows(ch.sessions, ranked) : [...ch.sessions].sort((a, b) => b.updated - a.updated).filter(x => !ql || x.title.toLowerCase().includes(ql) || x.messages.some(m => m.body.toLowerCase().includes(ql)));
   const one = (x: Session) => `<a class="ds${x === s ? " on" : ""}${x.done ? " isdone" : ""}" href="#/${ch.slug}/s/${x.id}" data-mgo>${box(x)}<span>${esc(x.title)}</span>${rowStop(ch.slug, x.id, x.title, stWorking(x))}${pinBtn(x)}${LIVE && x.srv ? rowMore(ch.slug, x.id, x.title) : ""}${rowTail(x, false)}</a>`;
   // The same sections as the desktop side panel (sideList): Pinned, Texts, the task-state sections, Done, each folding with its caret. Same fold keys,
   // so a section folded here is folded there too (in this browser). Searching opens every section.
   const group = (key: string, label: string, items: Session[], nc = false) => { if (!items.length) return ""; const shut = !ql && folded(ch, `side-${key}`);
     return `${foldHead("dsub", `side-${key}`, label, nc ? 0 : items.length, shut, !!ql)}${shut ? "" : items.map(one).join("")}`; };
   const rest = list.filter(x => !x.pinned);
+  if (ranked) return list.length ? list.map(one).join("") : `<div class="mempty">No tasks match.</div>`;   // one flat list, most likely first
   return list.length ? `${group("pinned", `${ic.pin}Pinned`, list.filter(x => x.pinned))}${group("texts", "Texts", rest.filter(x => !x.done && isTexts(x)))}${stateGroups(rest, group)}${group("done", "Done", rest.filter(x => x.done).sort(byDone))}` : `<div class="mempty">${ql ? "No tasks match." : "No tasks yet."}</div>`;
 }
-function renderM() { keepDraft(renderPhone); }
+function renderM() { keepPaneFloats(() => keepDraft(renderPhone)); }
 function renderPhone() {
   zoneGuard();
   requestAnimationFrame(nbBeePaint);
@@ -1646,7 +1711,7 @@ function renderPhone() {
   // No channel-list page on phone: "#/" opens the last channel (its drawer header switches channels).
   if (isHome()) history.replaceState(null, "", `#/${channels.some(c => c.slug === mState.last) ? mState.last : main.slug}`);
   const { ch, s } = route(); mState.last = ch.slug;
-  const other = ch.sessions.some(x => x !== s && x.status === "waiting"), elsewhere = channels.some(c => c !== ch && c.sessions.some(x => x.status === "waiting"));
+  const other = ch.sessions.some(x => x !== s && needsYou(x)), elsewhere = channels.some(c => c !== ch && c.sessions.some(needsYou));
   const head = `<header class="mh"><button class="cb" data-mdrawer aria-label="Tasks and channels" aria-controls="mobile-tasks" aria-expanded="${mState.drawer}">${ic.menu}${other || elsewhere ? `<i class="udot"></i>` : ""}</button>
     ${s && canRename(s) ? `<div class="mpill task-pill"><button class="task-about" data-msheet="about" aria-label="About ${esc(ch.name)}" title="About ${esc(ch.name)}">${av(ch, "av sm")}</button><button class="task-title" data-rename="${esc(ch.slug)}|${esc(s.id)}" aria-label="Rename task" title="Rename task"><span data-task-title>${esc(s.title)}</span></button></div>` : `<button class="mpill" data-msheet="about">${isSch() ? `<span class="pico">${ic.clock}</span>` : isLib() ? `<span class="pico">${ic.lib}</span>` : isCt() ? `<span class="pico">${ic.people}</span>` : isNb() ? `<span class="pico">${ic.nb}</span>` : av(ch, "av sm")}<span>${esc(isSch() ? "Scheduled" : isCt() ? (ctSel() ? ctSel()!.name : "Contacts") : isNb() ? `${who(ch)}'s notebook` : isLib() ? `${ch.name} Library` : s ? s.title : `${ch.name} Home`)}</span></button>`}<span class="grow"></span>${LIVE ? pomoGlobalBtn(true) : ""}${LIVE && s ? `<span class="mo" data-mo="3">${hasFeature("ambient") ? lnBtn(ch.slug, s.id, true) : ""}${pomoBtn(ch.slug, s.id, true)}</span><span class="mo" data-mo="5">${todoBtn(ch.slug, s.id, true)}</span><span class="mo" data-mo="4">${tkBtn(ch.slug, s.id, true)}</span>` : ""}${LIVE ? `<span class="mo" data-mo="2"><button class="cb${ch.sessions.some(x => x.state === "working") ? " busy" : ""}" data-watch="${esc(ch.slug)}" aria-label="Open ${esc(who(ch))}'s computer">${ic.screen}</button></span>` : ""}${s && stWorking(s) ? `<button class="cb mstop" data-stop="${esc(ch.slug)}|${esc(s.id)}" aria-label="Stop this task" title="Stop">${SQ}</button>` : ""}${s ? `<span class="mo" data-mo="4"><button class="cb mdone${s.done ? " on" : ""}" data-done="${s.id}" aria-label="${s.done ? "Reopen" : "Mark done"}">${box(s).replace(/ data-done="[^"]+"/, "").replace('role="checkbox" tabindex="0"', 'aria-hidden="true"')}</button></span>` : ""}<span class="mo" data-mo="1"><button class="cb" data-ntask aria-label="New task">${ic.newS}</button></span><button class="cb mmore" data-mmore aria-label="More actions" aria-haspopup="dialog" hidden>${MORE}</button></header>`;
   if (s) { if (LIVE && s.unread) livePatch(ch, s, { seen: true }); s.unread = false; if (LIVE && !s.loaded && !s.loading) liveLoad(ch, s); }
@@ -2975,7 +3040,7 @@ if (LIVE) { sgInit({ api, note: (t, b) => note(ic.check, t, b, ""), repaint: () 
 if (LIVE) stInit({ api, note: (t, b) => note(ic.check, t, b, ""),
   working: () => channels.flatMap(c => c.sessions.filter(stWorking).map(x => ({ slug: c.slug, sid: String(x.id), title: x.title }))),
   apply: (slug, v) => { const c = channels.find(y => y.slug === slug), x = c?.sessions.find(y => String(y.id) === String(v?.id)); if (x) applySrv(x, v); },
-  repaint: () => { const { ch, s } = route(); if (s && !isLib() && !isNb() && !isCt()) { const hd = document.getElementById("hdone"); if (hd) hd.outerHTML = headDone(s); tkSync(ch.slug, s.id); } refresh(); } });
+  repaint: () => { const { ch, s } = route(); if (s && !isLib() && !isNb() && !isCt()) { paintHeadDone(s); tkSync(ch.slug, s.id); } refresh(); } });
 if (LIVE) todoInit({ api, phone, dragToClose, helper: slug => { const c = channels.find(x => x.slug === slug); return c ? who(c) : ""; },
   current: () => { const { ch, s } = route(); return s && !isLib() && !isNb() && !isCt() ? `${ch.slug}|${s.id}` : ""; },
   working: (slug, sid) => !!channels.find(c => c.slug === slug)?.sessions.some(x => String(x.id) === sid && x.state === "working") });
@@ -3067,7 +3132,7 @@ async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
       const lm = (d.live.card?.events || []).filter((e: any) => e.type === "msg");
       if (lm.length) lm.forEach((x: any, i: number) => msgs.push(userOf(x, { at: d.live.started }, i)));
       else if (d.live.user_text && !nativeResumeInput(d.live.card) && !internalHandoffInput(d.live.card)) msgs.push({ id: nextId++, role: "user", body: d.live.user_text, at: d.live.started, steps: [], turn: d.live.turn, reaction: d.live.reaction || undefined } as RxMsg);
-      const r: Msg = { id: nextId++, role: "agent", body: d.live.text || "", at: Date.now(), steps: [], rid: d.live.turn, ...(d.live.input_request ? { input_request: d.live.input_request } : {}), ...(d.live.card?.id ? { card: d.live.card.id } : {}), ...(d.live.interviews?.length ? { cards: d.live.interviews.map((v: any) => ({ t: "interview", v })) } : {}) } as TkMsg; progressSnapshot(r, d.live.reply_state); msgs.push(r);
+      const r: Msg = { id: nextId++, role: "agent", body: d.live.text || "", at: Date.now(), steps: [], rid: d.live.turn, ...(d.live.input_request ? { input_request: d.live.input_request } : {}), ...(d.live.card?.id ? { card: d.live.card.id } : {}), ...(d.live.interviews?.length ? { cards: d.live.interviews.map((v: any) => ({ t: "interview", v })) } : {}) } as TkMsg; progressSnapshot(r, d.live.reply_state); liveOutputs(ch, r, d.live); msgs.push(r);
       s.messages = msgs; s.state = "working"; s.rawLine = d.live.line || ""; liveAttach(ch, s, r);
     } else if (!s.streaming && d.session?.state === "working" && !d.session.native_progress && !(Number(d.session.helpers) > 0 && !d.session.line)) {
       // A worker-only task has no Primary reply to resume. Other working tasks
@@ -3091,7 +3156,7 @@ function paintChat(s: Session) {
   const near = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 140;
   morph(box, msgsHtml(s, ch));
   if (near) sc.scrollTop = sc.scrollHeight;
-  const hd = document.getElementById("hdone"); if (hd) hd.outerHTML = headDone(s);
+  paintHeadDone(s);
   todoSync(ch.slug, s.id); tkSync(ch.slug, s.id); pomoSync(ch.slug, s.id); if (hasFeature("ambient")) lnSync(ch.slug, s.id); stNow();
   repaint(ch); // Include the mobile task drawer when a pause or Stop here changes the task's state.
 }
@@ -3112,6 +3177,7 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
   if (ev.t === "snapshot" && ev.input_request) reply.input_request = ev.input_request;
   if (ev.t === "snapshot" && ev.turn) (reply as TkMsg).rid = ev.turn;   // a quote of resumed text keeps its originating turn
   if (ev.t === "model_wait") { paintTask(ch, s); return; }
+  if (ev.t === "snapshot") liveOutputs(ch, reply, ev);   // files and pictures shared before this watcher attached
   if (ev.t === "snapshot" && ev.card?.id) { tkEvent(ch.slug, s.id, ev); (reply as TkMsg).card = ev.card.id; }
   if (ev.t === "session") { const tmp = s.tmp; applySrv(s, ev.session); s.state = "working"; if (tmp && location.hash.endsWith(`/s/${tmp}`)) history.replaceState(null, "", `#/${ch.slug}/s/${s.id}`); }
   else if (ev.t === "user_input" && ev.input?.question_id) {
@@ -3505,7 +3571,7 @@ if (LIVE) {
     if (added) { if (!phone()) { const top = document.querySelector("#rail .chs")?.scrollTop ?? 0; if (document.querySelector("#rail .chs")) { $("#rail").innerHTML = railHtml(route().ch); railWire(top); } }
       else { const cl = document.getElementById("chlist"); if (cl) cl.innerHTML = chRows((document.getElementById("chq") as HTMLInputElement | null)?.value ?? ""); } }
     const nsig = JSON.stringify(d.channels.map((c: any) => c.sessions.map((v: any) => [v.id, v.state, v.line, v.done, v.pinned, v.unread, v.updated, v.texts, v.helpers, v.title, v.title_revision])));
-    if (changed || nsig !== sig) { sig = nsig; const { ch, s } = route(); if (s) { repaint(ch); const hd = document.getElementById("hdone"); if (hd) hd.outerHTML = headDone(s); } else refresh(); stNow(); }
+    if (changed || nsig !== sig) { sig = nsig; const { ch, s } = route(); if (s) { repaint(ch); paintHeadDone(s); } else refresh(); stNow(); }
     schPaint();   // the Scheduled count and view: jobs (and Send later) may have changed
     { const os = route().s; nfSeen(d.channels, os ? String(os.id) : null); }   // a task started waiting on you or finished: a soft chime (Settings → Notifications → Sounds)
   };
@@ -3971,7 +4037,9 @@ function bfMerge(ch: Channel, srv: BeeFact[]) {
 // "New speaker detected" (General only, in the New from Bee area; bee-speakers.js): one card per speaker per recording, as Bee labelled
 // it, with the possible Contacts matches the server sends. One click answers it (Captain 2026-10-21): exactly one match asks "Is <label> <person>?" with Yes, Not them
 // and Edit; several matches show a Yes on each one; no match keeps Accept, which ends the review. Yes links that speaker in that recording to that person (and the server
-// remembers the label, so the same label in another recording needs no card); nothing else is ever linked. No helper or status text: the card shows Bee's label, the name given to it, and the matches.
+// remembers the label, so the same label in another recording needs no card); nothing else is ever linked. No helper or status text: the card shows Bee's label, the name given to it, the matches,
+// the speaker's own words (excerpt, two lines, as on a generic card) and the recording's time and place. An answer that names nobody (Accept, or an Edit and Not them that end with no match)
+// is remembered by the server for the label, and the other waiting cards with that label leave in the same response (`cleared`).
 // generic: Bee's label names nobody ("Unknown", "Speaker 2", "Others", an id). The server sends a card only for a generic label that has its own Bee speaker id
 // (spk starts with "id:"); a generic label with no id is never a card, because one such voice can hold several people's words. Such a card shows the speaker's
 // own words (excerpt, two lines), the recording's date and time and its place, has no Accept (Edit names it), and never shows the bare label as its headline.
@@ -4015,6 +4083,7 @@ async function spkAct(ch: Channel, op: "edit" | "accept" | "confirm", k: string,
   if (op === "confirm" && !r?.ok) BF.done = Math.max(0, BF.done - 1);
   if (r?.ok) {
     if (r.reviewed && op !== "confirm") BF.done++;
+    if (Array.isArray(r.cleared) && r.cleared.length) { const gone = new Set(r.cleared.map((y: any) => `${y.rec}|${y.spk}`)); (ch as any).beeSpeakers = ((ch as any).beeSpeakers || []).filter((y: BeeSpk) => !gone.has(spkKey(y))); }
     if (op === "confirm" || r.reviewed) (ch as any).beeSpeakers = ((ch as any).beeSpeakers || []).filter((y: BeeSpk) => spkKey(y) !== k);
     else { x.state = "accepted"; if (op === "edit") x.name = extra.name; SPK.matches[k] = Array.isArray(r.matches) ? r.matches : SPK.matches[k]; }
   }
@@ -4267,11 +4336,11 @@ function wkBeeItem(ch: Channel, top: WkQ, pos: number, total: number, many: bool
     // A named label: Bee's label is the headline, the person's name beside it. A generic one: the speaker's own words (two lines), the person's name in front once given.
     const who = one ? `<p class="wkbp" title="${esc(x.excerpt || "")}">Is <b>${esc(x.label)}</b> <b>${esc(one.name)}</b>?</p>` : gen ? `<p class="wkbp wkbq" title="${esc(x.label ? `Bee labelled this voice "${x.label}"` : "")}">${x.name ? `<b>${esc(x.name)}</b> ` : ""}${quote}</p>`
       : `<p class="wkbp"><b title="${esc(x.excerpt || "")}">${esc(x.label)}</b>${x.name && x.name !== x.label ? `<span class="wkbas">${esc(x.name)}</span>` : ""}</p>`;
-    const smeta = `<span class="wkbmeta">${count && total > 1 ? `<span class="wkbn">${pos} of ${total}</span>` : ""}<span class="wkbmt" title="${esc(x.place || "")}">New speaker detected${top.at ? ` · ${gen ? spkWhen(top.at) : fileDate(top.at)}` : ""}${gen && spkWhere(x) ? ` · ${esc(spkWhere(x))}` : ""}</span></span>`;
+    const smeta = `<span class="wkbmeta">${count && total > 1 ? `<span class="wkbn">${pos} of ${total}</span>` : ""}<span class="wkbmt" title="${esc(x.place || "")}">New speaker detected${top.at ? ` · ${spkWhen(top.at)}` : ""}${spkWhere(x) ? ` · ${esc(spkWhere(x))}` : ""}</span></span>`;
     const heading = gen ? (x.name || (x.excerpt || "").slice(0, 60) || "this speaker") : x.label;
     if (SPK.edit === k) inner = `<div class="wkbi editing" role="group" aria-label="Name for ${esc(heading)}">${mark}<div class="wkbbody">${gen ? who : smeta}<input class="nedit wkbin" id="spkedit" value="${esc(x.name || (gen ? "" : x.label))}" placeholder="Name" aria-label="Name for ${esc(heading)}"></div>
       <div class="wkbacts"><button class="sa mute" data-spkcancel>Cancel</button><button class="sa wkbok" data-spksave="${esc(k)}">${ic.check}Save</button></div></div>`;
-    else inner = `<div class="wkbi${gen ? " wkbg" : ""}" role="group" aria-label="New speaker detected: ${esc(heading)}">${mark}<div class="wkbbody">${who}${smeta}</div>
+    else inner = `<div class="wkbi${gen ? " wkbg" : ""}" role="group" aria-label="New speaker detected: ${esc(heading)}">${mark}<div class="wkbbody">${who}${!gen && quote ? `<p class="wkbp wkbq">${quote}</p>` : ""}${smeta}</div>
       <div class="wkbacts">${skip}<button class="sa mute" data-spkedit="${esc(k)}"${busy ? " disabled" : ""}>${pen}Edit</button>${one ? `<button class="sa mute" data-wkno="${esc(k)}" data-wkp="${esc(one.id)}"${busy ? " disabled" : ""}>Not them</button><button class="sa wkbok" data-spkconf="${esc(k)}" data-spkp="${esc(one.id)}"${busy ? " disabled" : ""}>${ic.check}Yes</button>` : none && x.state === "new" ? `<button class="sa wkbok" data-spkok="${esc(k)}"${busy ? " disabled" : ""}>${ic.check}Accept</button>` : ""}</div></div>
       ${!one && m?.length ? `<div class="wkbm">${m.map(p => `<div class="wkbmr"><span>Is it ${esc(p.name)}?</span><button class="sa mute" data-wkno="${esc(k)}" data-wkp="${esc(p.id)}"${busy ? " disabled" : ""}>Not them</button><button class="sa wkbok" data-spkconf="${esc(k)}" data-spkp="${esc(p.id)}"${busy ? " disabled" : ""}>${ic.check}Yes</button></div>`).join("")}</div>` : ""}`;
   }
@@ -4365,7 +4434,7 @@ async function wkNotThem(ch: Channel, k: string, contact: string) {
   WKQ.no.add(key); nbRefresh();
   const r = await spkCall({ op: "not_them", rec: x.rec, sid: x.spk, spk: x.spk, contact });
   if (!r?.ok) { WKQ.no.delete(key); wkToast(r); if (isNb()) nbRefresh(); return; }
-  if (r.reviewed) { BF.done++; (ch as any).beeSpeakers = ((ch as any).beeSpeakers || []).filter((y: BeeSpk) => spkKey(y) !== k); if (isNb()) nbRefresh(); }   // the last match answered: the card goes, like Confirm
+  if (r.reviewed) { BF.done++; const gone = new Set<string>([k, ...(Array.isArray(r.cleared) ? r.cleared.map((y: any) => `${y.rec}|${y.spk}`) : [])]); (ch as any).beeSpeakers = ((ch as any).beeSpeakers || []).filter((y: BeeSpk) => !gone.has(spkKey(y))); if (isNb()) nbRefresh(); }   // the last match answered: the card goes, like Confirm
 }
 // Fact values are textareas that take exactly the height of their text, so Edit never changes a row's height.
 function wkFit() { if (CSS.supports("field-sizing", "content")) return; document.querySelectorAll<HTMLTextAreaElement>(".wkfv").forEach(t => { t.style.height = "0"; t.style.height = `${t.scrollHeight}px`; }); }

@@ -34,3 +34,10 @@
 .msgs .shot{box-sizing:border-box;width:120px;height:120px;max-width:100%;border-radius:14px;overflow:hidden;display:flex;flex-direction:column;padding:0;margin:0}
 .msgs .shot img{width:100%;height:90px;flex:1;min-height:0;object-fit:contain}
 .msgs .shot span{width:100%;box-sizing:border-box;padding:4px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;line-height:20px;flex:none}
+.msgs .oed{display:flex;align-items:center;gap:8px;max-width:100%;min-width:0;margin-top:8px;padding:3px 4px 3px 3px;border:1px solid var(--line);border-radius:12px;background:var(--sheet)}
+.msgs .oed-open{display:inline-flex;align-items:center;gap:6px;flex:none;height:30px;padding:0 10px;border:0;border-radius:9px;background:var(--hover);color:var(--ink);font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.msgs .oed-open:hover{background:var(--abub)}
+.msgs .oed-name,.msgs .oed-pick{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:var(--mute)}
+.msgs .oed-pick{appearance:auto;height:30px;padding:0 4px;border:0;background:transparent;font-family:inherit;cursor:pointer}
+.msgs .oed-name{padding-right:8px}
+.msgs .oed-open:focus-visible,.msgs .oed-pick:focus-visible{outline:2px solid var(--ink);outline-offset:1px}

@@ -12,6 +12,7 @@
 // to the app (turning the rectangles from the slide's 1920 by 1080 pixels into the frame's pixels) and forwards the app's commands the other way.
 // Elements are named the way 1HC src/zone-edit.js finds them: slide root = [data-hc-slide="<index>"], then data-slot (and n, which one of that slot) or
 // sel, the 0-based index among element children at each level from the slide root (the page's <body> for a plain page).
+import { UNSTICK_JS } from "./zone-doc";
 export const BRIDGE = String.raw`(function(){
 if(window.__zb)return;window.__zb=1;
 var N="__N__",DECK=__D__,P=window.parent,sel=null,ed=null,edOrig="",edWas="",edWs="",last=-2,dropEl=null,hov=null,raf=0,mx=0,my=0;
@@ -19,7 +20,8 @@ var CSSOK={"font-size":1,"font-weight":1,"font-style":1,"color":1,"text-align":1
 function post(m,el){m.zb=N;if(el){var r=el.getBoundingClientRect?el.getBoundingClientRect():el;m.r=[r.left,r.top,r.width,r.height]}P.postMessage(m,"*")}
 function slides(){return DECK?[].slice.call(document.querySelectorAll("[data-hc-slide]")):[]}
 function shown(){var s=slides(),i;for(i=0;i<s.length;i++)if(/(^|\s)(active|is-active|current)(\s|$)/.test(s[i].className))return i;
- for(i=0;i<s.length;i++){var r=s[i].getBoundingClientRect(),c=getComputedStyle(s[i]);if(c.visibility!=="hidden"&&c.display!=="none"&&+c.opacity>.5&&r.width>0&&r.right>0&&r.left<innerWidth)return i}return 0}
+ var best=0,area=0;for(i=0;i<s.length;i++){var r=s[i].getBoundingClientRect(),c=getComputedStyle(s[i]);if(c.visibility==="hidden"||c.display==="none"||+c.opacity<=.5)continue;
+  var a=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0))*Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));if(a>area){area=a;best=i}}return best}
 function rootEl(){if(!DECK)return document.body;return slides()[shown()]||document.body}
 function own(e){for(var n=e.firstChild;n;n=n.nextSibling)if(n.nodeType===3&&n.nodeValue.trim())return true;return false}
 function meaningful(e){if(/^(img|svg|canvas|video|picture)$/i.test(e.tagName)||own(e))return true;var b=getComputedStyle(e).backgroundImage;return !!b&&b!=="none"}
@@ -61,6 +63,8 @@ function readImage(f,el){if(!f||!/^image\/(png|jpeg|webp|gif)$/.test(f.type)){po
  var fr=new FileReader();fr.onload=function(){var d=String(fr.result),b=d.slice(d.indexOf(",")+1);setImage(el,f.type,b);post({t:"edit",edit:merge({op:"image",mime:f.type,data:b},target(el)),name:f.name,label:1});select(el)};fr.readAsDataURL(f)}
 function go(i){var n=slides().length,c=shown(),k=0;i=Math.max(0,Math.min(n-1,i));
  (function step(){c=shown();if(c===i||k++>60)return;document.dispatchEvent(new KeyboardEvent("keydown",{key:c<i?"ArrowRight":"ArrowLeft",bubbles:true,cancelable:true}));setTimeout(step,90)})()}
+${UNSTICK_JS}
+function settle(){if(!DECK)return;[1700,3800].forEach(function(ms){setTimeout(function(){unstick(slides()[shown()])},ms)})}
 function snapRaw(w,h,cb){try{var c=document.documentElement.cloneNode(true);[].forEach.call(c.querySelectorAll("script"),function(s){s.remove()});
  var W=DECK?1920:innerWidth,H=DECK?1080:innerHeight,x=new XMLSerializer().serializeToString(c),
   svg='<svg xmlns="http://www.w3.org/2000/svg" width="'+W+'" height="'+H+'"><foreignObject width="100%" height="100%">'+x+'</foreignObject></svg>',im=new Image();
@@ -95,9 +99,9 @@ window.addEventListener("message",function(e){var d=e.data;if(e.source!==P||!d||
  else if(d.t==="image"&&sel&&typeof d.data==="string"&&/^image\/(png|jpeg|webp|gif)$/.test(d.mime)){setImage(sel,d.mime,d.data);post({t:"edit",edit:merge({op:"image",mime:d.mime,data:d.data},target(sel)),name:d.name||"",label:1});select(sel)}
  else if(d.t==="snap")snap(Math.max(16,+d.w||960),Math.max(16,+d.h||540));
  else if(d.t==="hello"){last=-2;ready()}});
-if(DECK){var mo=new MutationObserver(function(){var i=shown();if(i!==last){last=i;if(ed)endEdit(true);sel=null;post({t:"slide",i:i,n:slides().length,bg:hex(getComputedStyle(rootEl()).backgroundColor)})}});
+if(DECK){var mo=new MutationObserver(function(){var i=shown();if(i!==last){last=i;if(ed)endEdit(true);sel=null;post({t:"slide",i:i,n:slides().length,bg:hex(getComputedStyle(rootEl()).backgroundColor)});settle()}});
  slides().forEach(function(s){mo.observe(s,{attributes:true,attributeFilter:["class","style"]})})}
-function ready(){last=DECK?shown():0;post({t:"ready",n:DECK?slides().length:1,i:last,bg:hex(getComputedStyle(rootEl()).backgroundColor)})}
+function ready(){last=DECK?shown():0;settle();post({t:"ready",n:DECK?slides().length:1,i:last,bg:hex(getComputedStyle(rootEl()).backgroundColor)})}
 if(document.readyState==="complete")ready();else window.addEventListener("load",ready);
 })();`;
 

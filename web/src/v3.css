@@ -1686,3 +1686,4 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .spkpop .spkclr{color:var(--mute)}
 .spkpop .spkp:hover,.spkpop .spkclr:hover,.spkpop .spkp:focus-visible,.spkpop .spkclr:focus-visible{background:var(--hover)}
 .spkpop .spkerr{margin:2px 4px;font-size:13px;color:var(--warn)}
+.lzh{margin:22px 0 8px;font-size:15px;font-weight:600;color:var(--ink2)}.lzh:first-child{margin-top:4px}

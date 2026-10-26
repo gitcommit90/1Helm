@@ -43,12 +43,48 @@ export function patchForZone(kind: ZKind, text: string, js: { bridge: string; re
   return shell;
 }
 
-/** One slide of a deck as a page of its own (for the strip's small pictures): the template's document, the slide shown, nothing moving. */
+/**
+ * Code that finds content a template keeps invisible until an entrance animation reveals it, and that no animation is going to reveal (the
+ * element still has opacity 0, nothing is running on it, and its name, class or attributes say it is an entrance effect: data-anim, data-delay,
+ * "reveal", "fade", "stagger" and so on). A template whose animation rule covers only some values of its attribute (an item with a delay or an
+ * effect name the style sheet does not define) leaves that item blank for good. The same text is in the in-frame script (zone-bridge.ts) and in
+ * the deck's own bridge (deck_bridge.js in 1HC), so a deck shows every item in the Zone, in the strip and in Present.
+ */
+export const UNSTICK_JS = `function unstick(s){var all=s?s.querySelectorAll("*"):[],n=0;for(var i=0;i<all.length;i++){var e=all[i];if(e.hasAttribute("data-hc-unstuck")||/^(SCRIPT|STYLE|TEMPLATE|NOSCRIPT)$/.test(e.tagName))continue;
+var cs=getComputedStyle(e);if(cs.opacity!=="0"||cs.display==="none"||cs.visibility==="hidden")continue;if(e.getAnimations&&e.getAnimations().length)continue;
+var h=e.className&&e.className.baseVal!==undefined?e.className.baseVal:String(e.className||"");for(var j=0;j<e.attributes.length;j++)h+=" "+e.attributes[j].name+" "+e.attributes[j].value.slice(0,40);
+if(!/anim|delay|reveal|fade|stagger|enter|appear|aos|wow|in-view/i.test(h))continue;
+if(!(e.textContent.trim()||e.querySelector("img,svg,canvas,video")||/^(IMG|SVG|CANVAS|VIDEO)$/i.test(e.tagName)))continue;
+e.setAttribute("data-hc-unstuck","");e.style.setProperty("opacity","1","important");n++}return n}`;
+
+/**
+ * One slide of a deck as a page of its own (for the strip's small pictures): the template's document, the slide shown, every item showing, nothing moving.
+ * The script steps the template to slide k with the arrow keys, one press at a time and only when the slide shown has not changed (a template ignores a key
+ * while its own move is running, so a row of presses would reach only the first slide), then jumps every animation that ends to its end (an item a
+ * template starts invisible and an entrance animation shows would stay blank otherwise) and pauses the ones that never end. The page is transparent
+ * until then, so a small picture never shows a slide half way in.
+ */
 export function thumbDoc(text: string, index: number): string | null {
   const p = deckParts(text); if (!p) return null;
-  const js = `(function(){var k=${index | 0};function go(){var d=document;for(var i=0;i<k;i++){d.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight",bubbles:true}))}}if(document.readyState==="complete")go();else addEventListener("load",go)})();`;
-  const css = `<style>*,*::before,*::after{transition:none!important;animation:none!important}html,body{overflow:hidden!important}</style>`;
-  return before(before(p.doc, "</head>", css), "</body>", inScript(js));
+  const js = `(function(){var k=${index | 0},d=document,r=d.documentElement,t0=Date.now(),tries=0,W=window.__hcst||setTimeout;r.style.opacity="0";
+function sl(){return [].slice.call(d.querySelectorAll("[data-hc-slide]"))}
+function shown(){var s=sl(),i;for(i=0;i<s.length;i++)if(/(^|\s)(active|is-active|current)(\s|$)/.test(s[i].className))return i;
+ var best=0,area=0;for(i=0;i<s.length;i++){var b=s[i].getBoundingClientRect(),c=getComputedStyle(s[i]);if(c.visibility==="hidden"||c.display==="none"||+c.opacity<=.5)continue;
+  var a=Math.max(0,Math.min(b.right,innerWidth)-Math.max(b.left,0))*Math.max(0,Math.min(b.bottom,innerHeight)-Math.max(b.top,0));if(a>area){area=a;best=i}}return best}
+${UNSTICK_JS}
+function fin(){try{d.getAnimations().forEach(function(a){try{if(isFinite(a.effect.getComputedTiming().endTime))a.finish();else a.pause()}catch(e){}})}catch(e){}}
+function show(){fin();unstick(sl()[k]);r.style.opacity=""}
+function step(){var c=shown();if(c===k){fin();W(show,120);return}
+ if(Date.now()-t0>4000+k*300||tries>k*40+40){show();return}
+ tries++;d.dispatchEvent(new KeyboardEvent("keydown",{key:c<k?"ArrowRight":"ArrowLeft",bubbles:true,cancelable:true}));fin();W(step,40)}
+function go(){W(step,60)}
+if(d.readyState==="complete")go();else addEventListener("load",go);W(function(){r.style.opacity=""},6000+k*400)})();`;
+  const css = `<style>*,*::before,*::after{transition:none!important}html,body{overflow:hidden!important}</style>`;
+  // A template ignores keys for a while after each move (about a second in some), so the timers it waits on are short here: the picture is of a still slide.
+  // window.__hcst keeps the real setTimeout for the script above. This goes in first, before any script of the template.
+  const shim = `<script>(function(){var st=window.setTimeout;window.__hcst=st;window.setTimeout=function(f,ms){var a=[].slice.call(arguments,2);return st.apply(window,[f,ms>30?20:ms].concat(a))}})();</script>`;
+  const h = /<head[^>]*>/i.exec(p.doc), doc = h ? p.doc.slice(0, h.index + h[0].length) + shim + p.doc.slice(h.index + h[0].length) : shim + p.doc;
+  return before(before(doc, "</head>", css), "</body>", inScript(js));
 }
 
 // ---- what a person reads: the element's name ----

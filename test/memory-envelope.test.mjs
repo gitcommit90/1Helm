@@ -421,7 +421,7 @@ const bd = async (m, id) => { const items = (await memoriesList(m.env, m.bk, { d
   assert.deepEqual([ed2.ok, ed2.reviewed, bs.speakerRow("78", "id:s2").state, bs.speakerRow("78", "id:s2").name], [true, true, "reviewed", "Zed Nobody"], "the person's name stays as stored");
   // case 4: a failed Contacts lookup is not "no matches": the card stays pending
   const realArchive = bs.archive; bs.archive = () => ({ ...realArchive.call(bs), peopleList: async () => { throw new Error("archive down"); } });
-  bsql.prepare("UPDATE speakers SET state='new', name=NULL, label='Dana' WHERE rec='78'").run(); const accFail = await route({ op: "accept", rec: "78", spk: "id:s2" });
+  bsql.prepare("UPDATE speakers SET state='new', name=NULL, label='Dara' WHERE rec='78'").run(); const accFail = await route({ op: "accept", rec: "78", spk: "id:s2" });
   assert.deepEqual([accFail.ok, accFail.reviewed, bs.speakerRow("78", "id:s2").state], [true, undefined, "accepted"], "lookup failed: still pending");
   assert.equal(await bs.speakerMatches(bs.speakerRow("78", "id:s2")), null, "an error is null, an empty result is []");
   assert.ok((await bs.pendingSpeakersWithMatches()).some((x) => x.rec === "78"), "the Notebook load keeps it while the lookup fails"); assert.ok(bs.pendingSpeakers().some((x) => x.rec === "78"));
@@ -502,6 +502,41 @@ const bd = async (m, id) => { const items = (await memoriesList(m.env, m.bk, { d
   bsql.prepare("INSERT INTO speakers (rec, spk, label, state, excerpt, rec_at, at) VALUES ('913','label:Marco','Marco','new','x',1,1)").run(); assert.deepEqual((await route({ op: "matches", rec: "913", spk: "label:Marco" })).matches.map((x) => x.id), ["p3"]);
   assert.deepEqual(await route({ op: "not_them", rec: "913", spk: "label:Marco", contact: "p3" }), { ok: true, reviewed: true }); assert.equal(st(913, "label:Marco").state, "reviewed");
   ok("G2. Remembered label to contact mapping: a confirm links the same label on its own (waiting rows, new recordings, case and spaces ignored), a generic label never maps, Not them unlinks one recording, the newest confirm replaces, seeding, settle on load, a gone contact");
+  // G3. Answers with no person (Captain 2026-10-26): Accept, Edit that ends with no match, and "Not them" to every match are remembered per label
+  const ansKeys = () => bsql.prepare("SELECT k FROM speaker_answer ORDER BY k").all().map((r) => r.k);
+  await hear(90, "Wren"); await hear(91, "Wren"); assert.deepEqual(pend().filter((x) => /^(90|91)\//.test(x)).sort(), ["90/label:Wren", "91/label:Wren"], "no answer yet: each recording has its card");
+  const wr = await route({ op: "accept", rec: "90", spk: "label:Wren" });
+  assert.deepEqual([wr.ok, wr.reviewed, wr.cleared], [true, true, [{ rec: "91", spk: "label:Wren" }]], "the same response says which waiting card left with the answer");
+  assert.deepEqual([st(91, "label:Wren").state, st(91, "label:Wren").person, st(90, "label:Wren").state], ["reviewed", null, "reviewed"], "the waiting card is reviewed, nothing linked, the row stays");
+  assert.ok(!pend().some((x) => /label:Wren/.test(x)) && !wr.speakers.some((x) => x.label === "Wren")); assert.ok(ansKeys().includes("wren")); assert.equal(bs.speakerAnswerGet(" WREN ").label, "Wren");
+  assert.ok(evs.some((x) => /91\/label:Wren review ended, "Wren" was already answered with no contact/.test(x)), "an event says so");
+  await hear(92, " WREN "); assert.equal(st(92, "label: WREN ").state, "reviewed"); assert.ok(!pend().some((x) => /^92\//.test(x)), "a later recording with the same label (case and spaces ignored) gets no card");
+  assert.equal((await dtext(92)).includes("Written by 1Helm"), false, "and is linked to nobody");
+  // Edit with a name that ends with no match is remembered under Bee's label; a waiting row the person named differently is left for them
+  await hear(93, "Moss"); await hear(94, "Moss"); bsql.prepare("UPDATE speakers SET state='accepted', name='Mossy' WHERE rec='94'").run();
+  const em = await route({ op: "edit", rec: "93", spk: "label:Moss", name: "Moss Nobody" }); assert.deepEqual([em.ok, em.reviewed], [true, true]); assert.ok(ansKeys().includes("moss"));
+  assert.equal(st(94, "label:Moss").state, "accepted", "a row with its own name stays for the person"); await hear(95, "Moss"); assert.equal(st(95, "label:Moss").state, "reviewed");
+  // "Not them" to every match is remembered too (label Marco matches p3 only; 913 above was answered that way)
+  assert.ok(ansKeys().includes("marco")); await hear(96, "Marco"); assert.equal(st(96, "label:Marco").state, "reviewed", "no card for a label answered with Not them"); assert.ok(!pend().some((x) => /^96\//.test(x)));
+  // a generic label is never remembered: Edit "Speaker 9" (it has a Bee id) with a name that matches nobody
+  const gz = await route({ op: "edit", rec: "86", spk: "id:s9", name: "Zed Nobody" }); assert.deepEqual([gz.ok, gz.reviewed], [true, true]);
+  assert.ok(!ansKeys().some((x) => /speaker|unknown/.test(x)), "no generic label is stored"); assert.equal(bs.speakerAnswerSet({ rec: "1", spk: "id:s2", label: "Speaker 2" }), false); assert.equal(bs.speakerAnswerSet({ rec: "1", spk: "label:Unknown", label: "Unknown" }), false);
+  await hear(97, { id: "s9", name: "Speaker 9" }); assert.ok(pend().includes("97/id:s9"), "a generic label still gets its card");
+  // seeding: the answers start once from rows already reviewed with a named label and nobody linked; generic labels and linked rows are skipped
+  bsql.prepare("INSERT INTO speakers (rec, spk, label, state, person, person_name, excerpt, rec_at, at) VALUES ('950','label:Kit','Kit','reviewed',NULL,NULL,'x',1,5),('951','id:s2','Speaker 2','reviewed',NULL,NULL,'x',1,6),('953','label:Lin','Lin','linked','p1','Priya Shah','x',1,7),('952','label:Kit','Kit','new',NULL,NULL,'x',1,1)").run();
+  bsql.exec("DELETE FROM speaker_answer"); bs.put("spk_ans_seeded", null); bs._spkAnsSeeded = false; bs.spkInit();
+  assert.ok(ansKeys().includes("kit") && !ansKeys().includes("speaker 2") && !ansKeys().includes("lin"), "seeded from reviewed named rows only"); assert.equal(bs.get("spk_ans_seeded"), "1");
+  bsql.prepare("DELETE FROM speaker_answer WHERE k='kit'").run(); bs.spkInit(); assert.equal(bs.speakerAnswerGet("kit"), null, "the seed runs once");
+  bsql.prepare("INSERT INTO speaker_answer (k, label, rec, at) VALUES ('kit','Kit','950',1)").run();
+  const after = await bs.pendingSpeakersWithMatches(); assert.ok(!after.some((x) => x.rec === "952"), "the waiting Kit card leaves on the first Notebook load"); assert.deepEqual([st(952, "label:Kit").state, st(952, "label:Kit").person], ["reviewed", null]);
+  // a later Yes overrides: the mapping wins, the answer is removed, and new recordings link to the person
+  bsql.prepare("INSERT INTO speaker_answer (k, label, rec, at) VALUES ('wren','Wren','90',1) ON CONFLICT(k) DO NOTHING").run(); bsql.prepare("INSERT INTO speakers (rec, spk, label, state, excerpt, rec_at, at) VALUES ('960','label:Wren','Wren','new','x',1,1)").run();
+  const yes = await route({ op: "confirm", rec: "960", spk: "label:Wren", person: "p1" }); assert.equal(yes.ok, true); assert.equal(bs.speakerMapGet("wren").person, "p1"); assert.equal(bs.speakerAnswerGet("wren"), null, "the Yes replaced the answer");
+  await hear(98, "Wren"); assert.deepEqual([st(98, "label:Wren").state, st(98, "label:Wren").person], ["linked", "p1"]);
+  // a person mapping wins when both exist for a label
+  bsql.prepare("INSERT INTO speaker_answer (k, label, rec, at) VALUES ('wren','Wren','90',1)").run(); bsql.prepare("INSERT INTO speakers (rec, spk, label, state, excerpt, rec_at, at) VALUES ('961','label:Wren','Wren','new','x',1,1)").run();
+  await bs.pendingSpeakersWithMatches(); assert.deepEqual([st(961, "label:Wren").state, st(961, "label:Wren").person], ["linked", "p1"], "the mapping with a person wins over an answer with none");
+  ok("G3. Answers with no person are remembered per label (Accept, Edit with no match, Not them to every match): the next recording gets no card, waiting cards clear in the same response, case and spaces ignored, a row named differently stays, generic labels never stored, seeded once from reviewed rows, a later Yes replaces it and the mapping wins");
   ok("G. New speaker detected: one row per speaker per recording (no cross recording link), list, edit, accept, matches (name, alias, phone), confirm (link, recording retained with the person, seen in General), rebuild keeps links, flag off");
 }
 

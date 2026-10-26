@@ -3,6 +3,9 @@
 // Identifiers come from sqlite_master and are checked again on restore.
 const IDENT = /^[A-Za-z][A-Za-z0-9_]*$/;
 const FTS_SHADOWS = new Set(["mem_fts", "mem_fts_data", "mem_fts_idx", "mem_fts_content", "mem_fts_docsize", "mem_fts_config"]);
+// The ranked task search index (task-search.js: task_fts, task_msg_fts and task_idx with its vectors) is derived from the sessions and turns that are saved.
+// It is not saved or restored: the next search compares each task with its saved signature and indexes again what is missing or changed, and drops what is gone.
+const TASK_INDEX = new Set(["task_idx", ...["task_fts", "task_msg_fts"].flatMap((n) => [n, `${n}_data`, `${n}_idx`, `${n}_content`, `${n}_docsize`, `${n}_config`])]);
 const q = (name) => {
   if (!IDENT.test(name)) throw new Error("invalid snapshot identifier");
   return `"${name}"`;
@@ -26,14 +29,14 @@ const unpack = (value) => {
 export function snapshotTables(sql) {
   const entries = sql.exec("SELECT name,sql FROM sqlite_master WHERE type='table' ORDER BY name").toArray();
   const virtual = entries.filter((row) => /^CREATE VIRTUAL TABLE\b/i.test(row.sql || ""));
-  if (virtual.some((row) => row.name !== "mem_fts")) throw new Error("unsupported virtual snapshot table");
+  if (virtual.some((row) => row.name !== "mem_fts" && !TASK_INDEX.has(row.name))) throw new Error("unsupported virtual snapshot table");
   // Workerd stores platform metadata in _cf_METADATA and synchronous KV in
   // _cf_KV (older runtimes may expose __cf_kv). Local Miniflare also stores
   // its object name in __miniflare_do_name. KV is checked separately;
   // platform tables must never be copied into another object's SQL storage.
   const tables = entries.map((row) => row.name).filter((name) => !name.startsWith("sqlite_") &&
     name !== "_cf_METADATA" && name !== "_cf_KV" && name !== "__cf_kv" &&
-    name !== "__miniflare_do_name" && !FTS_SHADOWS.has(name));
+    name !== "__miniflare_do_name" && !FTS_SHADOWS.has(name) && !TASK_INDEX.has(name));
   if (tables.some((name) => !IDENT.test(name))) throw new Error("unsupported snapshot table name");
   return tables;
 }

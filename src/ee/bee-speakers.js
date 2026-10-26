@@ -25,6 +25,13 @@
 //     the next load), by the same path as the end of a review: nothing deleted, nothing linked, logged as an event. A generic label WITH a
 //     distinct Bee speaker id keeps its card, which shows the speaker's own words and the recording's time and place, has no Accept (accepting
 //     "Speaker 2" as a name adds nothing) and is named with Edit. The label itself is never rewritten.
+//   - An answer with no person is remembered too (Captain 2026-10-26: Bee labels the wearer by name, so "Joseph" made a card for every recording and Accept was never
+//     kept). When a review of a named label ends with nobody linked (Accept, Edit with a name that ends with no match, or "Not them" to every match), the label is
+//     stored in speaker_answer (one row per label, this account only). A pending row with that label then leaves the queue as "reviewed" (nothing linked, nothing deleted,
+//     logged as an event), on arrival (speakersCarry from hsBeePut), when the Notebook loads, and for the cards already waiting at the moment of the answer (the
+//     response lists them as `cleared`). A person mapping for the label (a Yes) wins over an answer with no person, and a later Yes replaces the answer. Once per
+//     account the answers start from the rows already "reviewed" with a named label (speakersSeedAnswers). A generic label is never remembered. A row the person named
+//     differently stays for them.
 // The rows live in the BeeSync Durable Object, next to the facts waiting for review ("New from Bee"), and go with it.
 import { hsEnvelope } from "../hs-flag.js";
 import { e164 } from "../memory-envelope.js";
@@ -35,6 +42,9 @@ export const SPEAKERS = `CREATE TABLE IF NOT EXISTS speakers (rec TEXT NOT NULL,
 // The standing mapping (Captain 2026-10-21): a confirmed link from a Bee speaker label to a Contacts person, for this account (this Durable Object is the account's).
 // k: the label, trimmed and lower case. One row per label; the newest confirm replaces it.
 export const SPEAKER_MAP = `CREATE TABLE IF NOT EXISTS speaker_map (k TEXT PRIMARY KEY, label TEXT NOT NULL, person TEXT NOT NULL, person_name TEXT NOT NULL, rec TEXT, at INTEGER NOT NULL)`;
+// Answers without a person (Captain 2026-10-26): the person's answer for a named label that ended its review with no Contacts person (Accept, Edit with a name that
+// ends with no match, or "Not them" to every match). k: the label, trimmed and lower case (mapKey). One row per label for this account. A person mapping (speaker_map) wins over it.
+export const SPEAKER_ANSWER = `CREATE TABLE IF NOT EXISTS speaker_answer (k TEXT PRIMARY KEY, label TEXT NOT NULL, rec TEXT, at INTEGER NOT NULL)`;
 export const mapKey = (label) => String(label ?? "").normalize("NFKC").trim().toLowerCase();
 export const EXCERPT_LINES = 3, EXCERPT_CHARS = 240;   // what the review card shows of a speaker's words (the card only; memory keeps every word)
 const now = () => Date.now();
@@ -71,7 +81,7 @@ const words = (s) => String(s || "").toLowerCase().split(/[^\p{L}\p{N}']+/u).fil
 export const mappable = (label, spk) => !genericLabel(label, spkId(spk)) && !unseparated({ spk, label });
 export const speakerMethods = {
   // not_them: the Contacts ids the person said this speaker is not (a JSON list on the row). place: the recording's address when Bee gave one (for the card). Both are added to older tables with one ALTER each, no data changes.
-  spkInit() { this.sql.exec(SPEAKERS); this.sql.exec(SPEAKER_MAP); if (!this._spkSeeded) { this._spkSeeded = true; if (!this.get("spk_map_seeded")) { try { this.speakersSeedMap(); } catch (e) { console.log("speaker map seed", String(e?.message || e).slice(0, 80)); } } } if (!this._spkCols) { try { const have = new Set(this.sql.exec("PRAGMA table_info(speakers)").toArray().map((c) => c.name)); for (const c of ["not_them", "place"]) if (!have.has(c)) this.sql.exec(`ALTER TABLE speakers ADD COLUMN ${c} TEXT`); this._spkCols = true; } catch (e) { console.log("speakers columns", String(e?.message || e).slice(0, 80)); } } },
+  spkInit() { this.sql.exec(SPEAKERS); this.sql.exec(SPEAKER_MAP); this.sql.exec(SPEAKER_ANSWER); if (!this._spkAnsSeeded) { this._spkAnsSeeded = true; if (!this.get("spk_ans_seeded")) { try { this.speakersSeedAnswers(); } catch (e) { console.log("speaker answer seed", String(e?.message || e).slice(0, 80)); } } } if (!this._spkSeeded) { this._spkSeeded = true; if (!this.get("spk_map_seeded")) { try { this.speakersSeedMap(); } catch (e) { console.log("speaker map seed", String(e?.message || e).slice(0, 80)); } } } if (!this._spkCols) { try { const have = new Set(this.sql.exec("PRAGMA table_info(speakers)").toArray().map((c) => c.name)); for (const c of ["not_them", "place"]) if (!have.has(c)) this.sql.exec(`ALTER TABLE speakers ADD COLUMN ${c} TEXT`); this._spkCols = true; } catch (e) { console.log("speakers columns", String(e?.message || e).slice(0, 80)); } } },
   notThem(row) { try { return JSON.parse(row?.not_them || "[]"); } catch { return []; } },
   // A recording arrived: one "new" row per speaker not seen in it before. lines: ambientLines(conv). → how many rows were added.
   speakersSeen(conv, lines) {
@@ -132,7 +142,36 @@ export const speakerMethods = {
     if (!row) return false;
     if (any ? !["new", "accepted"].includes(row.state) : row.state !== "accepted" || !Array.isArray(matches) || matches.length) return false;
     this.sql.exec(`UPDATE speakers SET state='reviewed', at=? WHERE rec=? AND spk=? AND state ${any ? "IN ('new','accepted')" : "='accepted'"}`, now(), row.rec, row.spk);
-    this.ev(`speakers: ${row.rec}/${row.spk} review ended, ${why} (nothing linked, nothing deleted)`); return true;
+    this.ev(`speakers: ${row.rec}/${row.spk} review ended, ${why} (nothing linked, nothing deleted)`);
+    if (this.speakerAnswerSet(row)) this._spkCleared = (this._spkCleared || []).concat(this.speakersClearAnswered());   // a named label's answer is remembered, and the cards already waiting for that label leave with it
+    return true;
+  },
+  // ---- answers without a person (a named label that ended its review with nobody linked) ----
+  speakerAnswerGet(label) { this.spkInit(); return this.sql.exec("SELECT k, label, rec, at FROM speaker_answer WHERE k=?", mapKey(label)).toArray()[0] || null; },
+  // A generic label is never remembered. A person mapping for the label wins, and a later Yes removes this answer. → true when it was stored.
+  speakerAnswerSet(row, at = now()) {
+    if (!row || !mappable(row.label, row.spk)) return false; this.spkInit();
+    this.sql.exec("INSERT INTO speaker_answer (k, label, rec, at) VALUES (?,?,?,?) ON CONFLICT(k) DO UPDATE SET label=excluded.label, rec=excluded.rec, at=excluded.at", mapKey(row.label), String(row.label).trim(), String(row.rec ?? ""), at);
+    return true;
+  },
+  // Once per account: the answers start from the rows already reviewed with a named label and nobody linked.
+  speakersSeedAnswers() {
+    let n = 0;
+    for (const r of this.sql.exec("SELECT rec, spk, label, at FROM speakers WHERE state='reviewed' AND person IS NULL ORDER BY at ASC, rec ASC, spk ASC").toArray()) if (this.speakerAnswerSet(r, Number(r.at) || now())) n++;
+    this.put("spk_ans_seeded", "1"); if (n) this.ev(`speakers: ${n} earlier answer${n === 1 ? "" : "s"} for named labels became remembered answers`); return n;
+  },
+  // Pending rows (new or accepted) whose label has a remembered answer and no person mapping leave the queue as "reviewed", nothing linked, nothing deleted.
+  // A row the person named differently is left for them. → the rows that left, as { rec, spk }.
+  speakersClearAnswered() {
+    this.spkInit(); const ans = new Set(this.sql.exec("SELECT k FROM speaker_answer").toArray().map((r) => r.k)); if (!ans.size) return [];
+    const maps = new Set(this.sql.exec("SELECT k FROM speaker_map").toArray().map((r) => r.k)), out = [];
+    for (const r of this.sql.exec("SELECT rec, spk, label, name FROM speakers WHERE state IN ('new','accepted') LIMIT 500").toArray()) {
+      const k = mapKey(r.label); if (!ans.has(k) || maps.has(k) || !mappable(r.label, r.spk)) continue;
+      if (r.name && mapKey(r.name) !== k) continue;
+      this.sql.exec("UPDATE speakers SET state='reviewed', at=? WHERE rec=? AND spk=? AND state IN ('new','accepted')", now(), r.rec, r.spk);
+      this.ev(`speakers: ${r.rec}/${r.spk} review ended, "${r.label}" was already answered with no contact (nothing linked, nothing deleted)`); out.push({ rec: r.rec, spk: r.spk });
+    }
+    return out;
   },
   // ---- the standing mapping (label to Contacts person) ----
   speakerMapGet(label) { this.spkInit(); return this.sql.exec("SELECT k, label, person, person_name FROM speaker_map WHERE k=?", mapKey(label)).toArray()[0] || null; },
@@ -140,6 +179,7 @@ export const speakerMethods = {
   speakerMapSet(row, person, personName, at = now()) {
     if (!row || !mappable(row.label, row.spk)) return false; this.spkInit();
     this.sql.exec("INSERT INTO speaker_map (k, label, person, person_name, rec, at) VALUES (?,?,?,?,?,?) ON CONFLICT(k) DO UPDATE SET label=excluded.label, person=excluded.person, person_name=excluded.person_name, rec=excluded.rec, at=excluded.at", mapKey(row.label), String(row.label).trim(), String(person), String(personName), String(row.rec ?? ""), at);
+    this.sql.exec("DELETE FROM speaker_answer WHERE k=?", mapKey(row.label));   // a Yes replaces an answer with no person
     return true;
   },
   // Once per account: the mapping starts from the rows already linked, the newest link of each label winning.
@@ -152,7 +192,8 @@ export const speakerMethods = {
   // with the person (retain: true waits for it, "later" lets it finish after the answer, false leaves it to the caller, which is about to retain the recording itself).
   // A row the person named differently, or answered "Not them" for that contact, is left for them. A contact that is gone drops the mapping. → the recordings that were linked.
   async speakersCarry({ retain = false } = {}) {
-    this.spkInit(); const maps = new Map(this.sql.exec("SELECT k, label, person, person_name FROM speaker_map").toArray().map((r) => [r.k, r]));
+    this.spkInit(); try { this.speakersClearAnswered(); } catch (e) { console.log("speaker answers", String(e?.message || e).slice(0, 120)); }
+    const maps = new Map(this.sql.exec("SELECT k, label, person, person_name FROM speaker_map").toArray().map((r) => [r.k, r]));
     if (!maps.size) return [];
     const rows = this.sql.exec("SELECT rec, spk, label, name, state, not_them FROM speakers WHERE state IN ('new','accepted') LIMIT 500").toArray(), found = new Map(), seen = new Set(), recs = [];
     for (const r of rows) {
@@ -173,7 +214,7 @@ export const speakerMethods = {
   opsSpeakers() {
     this.spkInit();
     const rows = this.sql.exec("SELECT rec, spk, label, name, state, person IS NOT NULL AS linked, substr(excerpt,1,120) AS excerpt, place, rec_at FROM speakers ORDER BY rec_at DESC, rec, spk LIMIT 500").toArray();
-    return { counts: Object.fromEntries(this.sql.exec("SELECT state k, COUNT(*) n FROM speakers GROUP BY state").toArray().map((r) => [r.k, r.n])), generic_without_id: rows.filter((r) => unseparated(r)).length, mapping: this.sql.exec("SELECT label, person, person_name, rec FROM speaker_map ORDER BY k").toArray(), rows: rows.map((r) => ({ ...r, linked: !!r.linked, generic: genericLabel(r.label, spkId(r.spk)) })) };
+    return { counts: Object.fromEntries(this.sql.exec("SELECT state k, COUNT(*) n FROM speakers GROUP BY state").toArray().map((r) => [r.k, r.n])), generic_without_id: rows.filter((r) => unseparated(r)).length, mapping: this.sql.exec("SELECT label, person, person_name, rec FROM speaker_map ORDER BY k").toArray(), answers: this.sql.exec("SELECT label, rec FROM speaker_answer ORDER BY k").toArray(), rows: rows.map((r) => ({ ...r, linked: !!r.linked, generic: genericLabel(r.label, spkId(r.spk)) })) };
   },
   // The speakers waiting for review, each with its possible matches (the ones answered "not them" left out), for GET /api/notebook/main.
   async pendingSpeakersWithMatches() {
@@ -186,10 +227,13 @@ export const speakerMethods = {
     }));
     return out.filter(Boolean);
   },
+  // The other waiting cards (same label) that left with the answer just given, for the response: { cleared: [{ rec, spk }] }, or nothing.
+  clearedOut(row) { const l = (this._spkCleared || []).filter((x) => !(x.rec === row.rec && x.spk === row.spk)); return l.length ? { cleared: l } : {}; },
   // op: list | edit | accept | matches | confirm | not_them. o: { name } for edit, { person } (a Contacts id) for confirm.
   async speakerAction(tenant, op, rec, spk, o = {}) {
     if (!this.tid() && tenant) this.put("tenant", tenant);
     if (op === "list") return { speakers: this.pendingSpeakers() };
+    this._spkCleared = [];   // the other waiting cards that leave with this answer (speakerSettle fills it)
     const row = this.speakerRow(rec, spk); if (!row) return { error: "That speaker isn't waiting for review.", speakers: this.pendingSpeakers() };
     if (unseparated(row)) { this.speakerSettle(row, null, "no name and no separate Bee speaker id", true); if (op === "matches") return { matches: [] }; return { error: "Bee didn't separate this voice from the others, so it can't be linked to a person.", reviewed: true, speakers: this.pendingSpeakers() }; }
     if (op === "matches") return { matches: (await this.speakerMatches(row)) || [] };
@@ -210,13 +254,13 @@ export const speakerMethods = {
       this.sql.exec("UPDATE speakers SET name=?, state='accepted', at=? WHERE rec=? AND spk=?", name, now(), row.rec, row.spk);
       this.ev(`speakers: ${row.rec}/${row.spk} named by the person`);
       const m = await this.speakerMatches({ ...row, name }), reviewed = this.speakerSettle({ ...row, state: "accepted" }, m, "named and no possible match");
-      return { ok: true, ...(reviewed ? { reviewed: true } : {}), speakers: this.pendingSpeakers(), matches: m || [] };
+      return { ok: true, ...(reviewed ? { reviewed: true } : {}), ...this.clearedOut(row), speakers: this.pendingSpeakers(), matches: m || [] };
     }
     if (op === "accept") {
       this.sql.exec("UPDATE speakers SET state='accepted', at=? WHERE rec=? AND spk=?", now(), row.rec, row.spk);
       this.ev(`speakers: ${row.rec}/${row.spk} accepted as Bee labelled it`);
       const m = await this.speakerMatches(row), reviewed = this.speakerSettle({ ...row, state: "accepted" }, m, "accepted and no possible match");
-      return { ok: true, ...(reviewed ? { reviewed: true } : {}), speakers: this.pendingSpeakers(), matches: m || [] };
+      return { ok: true, ...(reviewed ? { reviewed: true } : {}), ...this.clearedOut(row), speakers: this.pendingSpeakers(), matches: m || [] };
     }
     if (op === "not_them") {
       const pid = String(o.contact || "").trim(); if (!pid) return { error: "contact required" };
@@ -226,7 +270,7 @@ export const speakerMethods = {
       const fresh = this.speakerRow(row.rec, row.spk), left = await this.speakerMatches(fresh);
       // One click cards: a speaker still "new" whose last offered match was answered "Not them" ends its review too.
       const reviewed = fresh.state === "new" && Array.isArray(left) && !left.length && !unseparated(fresh) ? this.speakerSettle(fresh, null, "answered not them to every match", true) : this.speakerSettle(fresh, left, "answered not them to every match");
-      return reviewed ? { ok: true, reviewed: true } : { ok: true };
+      return reviewed ? { ok: true, reviewed: true, ...this.clearedOut(row) } : { ok: true };
     }
     if (op === "confirm") {
       const pid = String(o.person || ""); let p = null; try { p = pid ? await this.archive().personGet(pid) : null; } catch {}

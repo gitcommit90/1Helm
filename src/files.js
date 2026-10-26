@@ -8,12 +8,18 @@ const EXT = { pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg:
   csv: "text/csv", tsv: "text/tab-separated-values", txt: "text/plain", md: "text/markdown", json: "application/json", html: "text/html", htm: "text/html", xml: "application/xml",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", xls: "application/vnd.ms-excel", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   doc: "application/msword", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", ppt: "application/vnd.ms-powerpoint", rtf: "application/rtf",
-  zip: "application/zip", mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav", mp4: "video/mp4", mov: "video/quicktime", py: "text/x-python", js: "text/javascript", ts: "text/plain", ics: "text/calendar" };
+  zip: "application/zip", mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav", mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm", m4v: "video/x-m4v", mkv: "video/x-matroska", avi: "video/x-msvideo", ogg: "audio/ogg", oga: "audio/ogg", opus: "audio/opus", aac: "audio/aac", flac: "audio/flac", py: "text/x-python", js: "text/javascript", ts: "text/plain", ics: "text/calendar" };
 // The file types the Library takes from outside (app files, composio-files.js): exactly the types it knows by extension above.
 export const LIBRARY_MIMES = new Set(Object.values(EXT));
 export const extForMime = (mime) => Object.entries(EXT).find(([, m]) => m === String(mime || "").toLowerCase())?.[0] || "";
 export const extOf = (n) => (String(n).match(/\.([a-z0-9]{1,8})$/i)?.[1] || "").toLowerCase();
 export const mimeOf = (name, given = "") => (given && given !== "application/octet-stream" ? given : EXT[extOf(name)] || "application/octet-stream").slice(0, 120);
+// A name the helper chose with no extension of its own ("Fall menu board demo") keeps the extension of the file it came from
+// ("fall-menu-board-demo.mp4" gives "Fall menu board demo.mp4"). A name that already ends in an extension is returned as it was.
+export function nameWithSourceExt(name, sourcePath) {
+  const n = String(name || "").trim(), e = extOf(n), src = extOf(String(sourcePath || "").split("/").pop());
+  return n && src && (!e || /^\d+$/.test(e)) ? `${n}.${src}` : n;
+}
 // A display name that is also a safe single path segment on the computer.
 export function safeName(n) {
   let s = String(n || "").normalize("NFC").replace(/[\u0000-\u001f\u007f/\\]+/g, " ").replace(/^[.\s]+/, "").replace(/\s+/g, " ").trim();

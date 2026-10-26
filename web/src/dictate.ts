@@ -39,58 +39,10 @@ function paint() {
   for (const t of document.querySelectorAll<HTMLTextAreaElement>('textarea.dact')) if (t !== s?.textarea) t.classList.remove('dact', 'drec');
   if (s) { s.textarea.classList.add('dact'); s.textarea.classList.toggle('drec', s.phase === 'rec'); }
   for (const f of document.querySelectorAll<HTMLElement>('form.dicting')) if (!s || s.phase === 'starting' || f !== s.textarea.closest('form')) f.classList.remove('dicting');
-  if (s?.phase === 'rec') cueOn(s); else cueOff();
   if (s) announce(s.phase === 'rec' ? 'Recording' : s.phase === 'finishing' ? 'Finishing' : 'Starting');
   else if (lastOn) announce('Stopped');
   lastOn = !!s;
   const form = s?.textarea.closest('form'); if (s && form && s.phase !== 'starting') form.classList.add('dicting');
-}
-// Talk-now cue: a thin bar at the real caret of the dictation textarea (the native caret is hidden while recording), glowing with the voice level.
-type Cue = { s: Session; el: HTMLElement; mirror: HTMLElement; raf: number; key: string; x: number; y: number; h: number; ro: ResizeObserver; off: () => void };
-let cue: Cue | null = null;
-const MIRROR_PROPS = ['direction', 'boxSizing', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'fontStyle', 'fontVariant', 'fontWeight', 'fontStretch', 'fontSize', 'fontFamily', 'lineHeight', 'letterSpacing', 'wordSpacing', 'textTransform', 'textIndent', 'tabSize', 'textAlign'] as const;
-function cueFrame(c: Cue) {
-  c.raf = 0;
-  const s = c.s; if (cue !== c || active !== s || s.phase !== 'rec') return;
-  const t = s.textarea, form = t.closest('form'); if (!form || !t.isConnected) return;
-  const cs = getComputedStyle(t), tr = t.getBoundingClientRect(), fr = form.getBoundingClientRect();
-  const pos = t.selectionEnd, w = t.clientWidth;
-  const key = [w, cs.fontSize, cs.fontFamily, cs.lineHeight, cs.paddingLeft, cs.paddingTop, cs.letterSpacing].join('|');
-  const m = c.mirror;
-  if (key !== c.key || m.dataset.v !== t.value.slice(0, pos)) {
-    for (const p of MIRROR_PROPS) m.style[p] = cs[p];
-    m.style.width = w + 'px';
-    m.textContent = t.value.slice(0, pos);
-    const mark = document.createElement('span'); mark.textContent = '\u200b'; m.append(mark);
-    c.x = mark.offsetLeft; c.y = mark.offsetTop; c.h = mark.offsetHeight; c.key = key; m.dataset.v = t.value.slice(0, pos);
-  }
-  const top = c.y - t.scrollTop, left = c.x - t.scrollLeft, h = c.h || parseFloat(cs.fontSize) * 1.2;
-  const inView = top >= -1 && top + h <= t.clientHeight + 1 && left >= 0 && left <= w && tr.width > 0;
-  c.el.style.visibility = inView && t.selectionStart === t.selectionEnd ? 'visible' : 'hidden';
-  c.el.style.height = h + 'px';
-  c.el.style.left = (tr.left - fr.left - form.clientLeft + t.clientLeft + left - 1) + 'px';
-  c.el.style.top = (tr.top - fr.top - form.clientTop + t.clientTop + top) + 'px';
-  c.el.style.setProperty('--lvl', String(s.level));
-}
-function cueSchedule() { if (cue && !cue.raf) cue.raf = requestAnimationFrame(() => cue && cueFrame(cue)); }
-function cueOn(s: Session) {
-  if (cue?.s === s && cue.el.isConnected) return;
-  cueOff();
-  const form = s.textarea.closest('form'); if (!form) return;
-  const el = document.createElement('span'); el.className = 'dcue'; el.setAttribute('aria-hidden', 'true'); form.append(el);
-  const mirror = document.createElement('div'); mirror.className = 'dmirror'; mirror.setAttribute('aria-hidden', 'true'); document.body.append(mirror);
-  const go = () => cueSchedule(), t = s.textarea;
-  const ro = new ResizeObserver(go); ro.observe(t);
-  const evs: [EventTarget, string, boolean][] = [[t, 'input', false], [t, 'scroll', false], [t, 'keyup', false], [t, 'pointerup', false], [t, 'focus', false], [document, 'selectionchange', false], [window, 'resize', false], [window, 'scroll', true]];
-  for (const [o, n, cap] of evs) o.addEventListener(n, go, cap);
-  const off = () => { ro.disconnect(); for (const [o, n, cap] of evs) o.removeEventListener(n, go, cap); };
-  cue = { s, el, mirror, raf: 0, key: '', x: 0, y: 0, h: 0, ro, off };
-  cueFrame(cue);
-}
-function cueOff() {
-  const c = cue; if (!c) return; cue = null;
-  if (c.raf) cancelAnimationFrame(c.raf);
-  c.off(); c.el.remove(); c.mirror.remove();
 }
 function releaseMic(s: Session) {
   s.stream?.getTracks().forEach(t => t.stop()); s.source?.disconnect(); s.node?.disconnect(); s.ctx.close().catch(() => {});
@@ -180,7 +132,7 @@ async function start(key: Key) {
     const node = s.node = new AudioWorkletNode(ctx, 'dictation-pcm');
     node.port.onmessage = e => {
       if (!current(s)) { if (active === s) end(s); return; }
-      if (e.data.type === 'level') { s.level = Math.min(1, e.data.value * 4); cueSchedule(); return; }
+      if (e.data.type === 'level') { s.level = Math.min(1, e.data.value * 4); return; }
       if (e.data.type === 'audio' && !s.flushed) {
         try { s.audio.push(e.data.pcm); } catch (err: any) { fail(s, err.message); return; }
         pumpAudio(s);

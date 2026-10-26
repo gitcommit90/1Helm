@@ -84,6 +84,7 @@ import { PAY_MSG, INACTIVE_MSG } from "./ee/index.js";   // payment failed: read
 import { changePlan } from "./ee/index.js";
 import { isTestAccount, usd as guardUsd } from "./spendguard.js";
 import { ledgerGuard } from "./ee/index.js";   // paid-plan Ledger accounting and notices
+import { searchRoute } from "./task-search.js";   // ranked task search (the sidebar Search box)
 import { textingStatus, textingStart, textingPoll, textingNewCode, textingOff, textingWebhook, textingUseProject, textingDebug } from "./ee/index.js";
 import { customMcpRoute } from "./ee/index.js";
 import { betterDesignView, betterDesignChoice } from "./better-design.js";   // the Better Design design-source switch, served with the boot account
@@ -184,7 +185,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "305";
+const APP_V = "316";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -1587,6 +1588,8 @@ export default {
           if (stm[3]) return json({ slug: stm[1], ...(await R.stopAll("person")) });
           const d = await R.stopSession(stm[2], "person"); return json(d, d.error ? 404 : 200);
         }
+        // Ranked task search (task-search.js): /api/res/<ch>/search?q=... (GET, owner only) → { results: [{ id, score, snippet }] }, best match first, at most 30.
+        { const ts = await searchRoute({ req, env, t, user, sub, url, channels: () => archive(env, t.id).channels() }); if (ts) return ts; }
         // Tasks: /api/res/<ch>/sessions (GET list, POST create) · /sessions/<id> (GET detail, POST {title,pinned,done,seen}) · /sessions/<id>/attach (NDJSON)
         //   · /sessions/<id>/todos (POST {id, status: "done"|"todo"}: the person ticks or unticks an item on the task's to-do list)
         //   · /sessions/<id>/pomodoro (GET the focus timer + offer prefs; POST {action: start|pause|resume|skip|stop|offer_accept|offer_decline|offers_on, ...}; pomodoro.js)

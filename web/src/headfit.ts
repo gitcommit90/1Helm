@@ -31,10 +31,11 @@ export function hFit() {
   more.classList.toggle("lit", folded.some(x => !!x.querySelector(".ln-rec, .pmbtn:not(.idle)")));
   if (!folded.length && document.getElementById("hmenu")) closeMenu();
 }
+// The mutation observer refits in its own microtask, before the next paint, so a re-inserted item never shows for a frame.
 // Called after every render of the desktop stage.
 export function hWatch() {
   const h = head(); if (!h) { watched = null; return; }
-  mo ??= new MutationObserver(later); ro ??= new ResizeObserver(later);
+  mo ??= new MutationObserver(hFit); ro ??= new ResizeObserver(later);
   if (watched !== h) { mo.disconnect(); ro.disconnect(); mo.observe(h, { childList: true, subtree: true, characterData: true }); ro.observe(h); watched = h; }
   hFit();
 }

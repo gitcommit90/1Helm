@@ -44,7 +44,8 @@ async function scenario(name, fn) { await fn(); console.log("  ok", name); }
 await scenario("tool shape: description carries when to use it; schema is the whole list", async () => {
   const f = TODO_TOOL.function; assert.equal(f.name, "update_todos");
   assert.deepEqual(f.parameters.required, ["items"]); assert.deepEqual(f.parameters.properties.items.items.properties.status.enum, ["todo", "doing", "done"]);
-  for (const w of [/multi-step/, /one item "doing"/, /WHOLE list/, /Don't use it for quick one-step/, /person ticked/, /never mark items done yourself/, /ready for them to tick/, /person_asked/]) assert.match(f.description, w);
+  for (const w of [/multi-step/, /one item "doing"/, /WHOLE list/, /Don't use it for quick one-step/, /person ticked/, /never mark items done yourself/, /shows as ready to tick/, /person_asked/]) assert.match(f.description, w);
+  assert.ok(!/tell them it's ready/.test(f.description) , "the helper is not told to announce ticking");
   assert.ok(!/"done" as soon as it's finished/.test(f.description), "the helper is no longer told to tick items");
 });
 

@@ -166,3 +166,10 @@ html.zdoc-doc .zpgw{cursor:default}
 .zquote{margin:0 0 10px;padding-left:10px;border-left:2px solid var(--line2);color:var(--ink2);font-size:13px;line-height:1.5;overflow-wrap:anywhere}
 /* the composer's placeholder stays on one line when the chat column is narrow (it is cut with an ellipsis, and the box keeps its height) */
 html.zone-open .composer textarea::placeholder{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* The task's Activity panel beside the chat: at 1200px and wider it is a 320px column next to the chat (tracker.css), which leaves the chat column of the Zone
+   (280 to 352px) about 30px wide. With the Zone open it slides over the chat column instead, the way it does on narrower windows. */
+html.zone-open body:not(.pc-on) .tk-on .tk-feed{position:absolute;display:flex;flex:none;width:min(340px,calc(100% - 48px));margin-bottom:0;transform:translateX(104%);visibility:hidden;box-shadow:-18px 0 44px rgba(28,27,25,.10);transition:transform .28s cubic-bezier(.2,.8,.2,1),visibility 0s .28s}
+html.zone-open body:not(.pc-on) .tk-on.tk-open .tk-feed{transform:none;visibility:visible;transition:transform .28s cubic-bezier(.2,.8,.2,1)}
+html.zone-open body:not(.pc-on) .tk-on .tk-scrim{display:block}
+:root[data-theme=dark].zone-open body:not(.pc-on) .tk-on .tk-feed{box-shadow:-18px 0 44px rgba(0,0,0,.45)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]).zone-open body:not(.pc-on) .tk-on .tk-feed{box-shadow:-18px 0 44px rgba(0,0,0,.45)}}

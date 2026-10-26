@@ -96,7 +96,7 @@ import { spendPausesOn, pausesApply, stepAllowance } from './spend-preferences.j
 import { stallCheck } from './stall-guard.js';
 import { trimTurnState, resumedReplyState, diagnosticTrace } from './spend-retention.js';
 import { savedWorkflowHardReport } from './workflow-hard-report.js';
-import { safeName, mimeOf, humanBytes, MAX_UPLOAD, MAX_VIEW, storeUpload, storeView, viewJpeg, fileTags } from "./files.js";
+import { safeName, nameWithSourceExt, mimeOf, humanBytes, MAX_UPLOAD, MAX_VIEW, storeUpload, storeView, viewJpeg, fileTags } from "./files.js";
 import { APP_FILE_MAX } from "./ee/index.js";
 import { splitLongMessage } from "./long-message.js";
 import { stPut, stDelete } from "./storage.js";
@@ -175,6 +175,7 @@ import { liveNudge, noteRan } from "./live-check.js";   // live status (flights,
 import { plansInit, PROPOSE_PLAN_TOOL, proposePlan, decidePlan, startPlanTask, planCardData, plansOf, originOf, textPlan } from "./plans.js";
 import { INTERVIEW_TOOL, interviewInit, interviewTool, interviewOp, ivView, ivRow, attachInterviews, ivDeliverTexted, ivOnlyCard } from "./interview-chat.js";
 import { pomoInit, pomoMethods, POMODORO_TOOL } from "./pomodoro.js";
+import { taskSearchInit, taskSearchMethods } from "./task-search.js";   // ranked task search (the sidebar Search box)
 import { DECK_STYLES_TOOL, DECK_TAG, deckStylesTool, turnHasDeckStyles } from "./deck-styles.js";
 import { lnResidentMethods } from "./ee/index.js";   // Live notes (SPEC §9): the task's mirror, the meeting doc, the per-turn tag
 import { WEB_SEARCH_TOOL, webSearch, WEB_SEARCH_NANO, isSearchFail, fetchPage, wantsMarkdown, publicPageUrl } from "./websearch.js";   // web_search (DuckDuckGo via Browser Run, paid fallback) + fetch_url pages as markdown
@@ -277,7 +278,7 @@ const TOOLS = () => (toolDefs ??= [
   SAVE_SKILL_TOOL,
   INTERVIEW_TOOL,
   DECK_STYLES_TOOL,
-  { type: "function", function: { name: "share_file", description: "Give the person a file from your computer: it appears as a download card in this chat and in the channel Library. Use it for anything you made for them (a document, spreadsheet, PDF, image, zip). Saving a file on your computer alone does NOT show it to them. When you change a file you already gave them, share it again: a file that is an edit of one already in the Library (the Library copy, the same path, a file you read or copied in this task, or the same name) updates that Library file in place, including a file the person uploaded (same file, same name, new version; its share link and any published page of it show the new version at the same link). Share the edit under whatever name you like: the Library file keeps its name. Don't make a copy unless they ask for one (copy: true). For a web page (.html, or a folder with index.html) meant to be opened in a browser, also offer publish_page so they can tap Publish; the card of a shared .html file offers Share file and Publish too.", parameters: { type: "object", properties: { path: { type: "string", description: "Path on your computer (relative to /workspace or absolute)" }, name: { type: "string", description: "Optional file name to show, e.g. \"October budget.xlsx\"" }, replace: { type: "string", description: "Optional: the Library file (name or id) this is a new version of, when it was saved under another path or name. Not needed when the path or name is the same" }, copy: { type: "boolean", description: "true only when the person asked for a separate copy: added as a new file next to the old one" }, restore: { type: "string", description: "Instead of sharing: put back the version of this Library file (name or id) from before your last update to it. Calling it again swaps back. path is not needed" }, original: { type: "boolean", description: "With restore: put back the file exactly as the person first uploaded it (always kept, however many edits were made)" } }, required: [] } } },
+  { type: "function", function: { name: "share_file", description: "Give the person a file from your computer: it appears as a download card under your reply in this chat and in the channel Library. Use it for anything you made for them (a document, spreadsheet, PDF, image, zip). Saving a file on your computer alone does NOT show it to them. When you change a file you already gave them, share it again: a file that is an edit of one already in the Library (the Library copy, the same path, a file you read or copied in this task, or the same name) updates that Library file in place, including a file the person uploaded (same file, same name, new version; its share link and any published page of it show the new version at the same link). Share the edit under whatever name you like: the Library file keeps its name. Don't make a copy unless they ask for one (copy: true). For a web page (.html, or a folder with index.html) meant to be opened in a browser, also offer publish_page so they can tap Publish; the card of a shared .html file offers Share file and Publish too.", parameters: { type: "object", properties: { path: { type: "string", description: "Path on your computer (relative to /workspace or absolute)" }, name: { type: "string", description: "Optional file name to show, e.g. \"October budget.xlsx\"" }, replace: { type: "string", description: "Optional: the Library file (name or id) this is a new version of, when it was saved under another path or name. Not needed when the path or name is the same" }, copy: { type: "boolean", description: "true only when the person asked for a separate copy: added as a new file next to the old one" }, restore: { type: "string", description: "Instead of sharing: put back the version of this Library file (name or id) from before your last update to it. Calling it again swaps back. path is not needed" }, original: { type: "boolean", description: "With restore: put back the file exactly as the person first uploaded it (always kept, however many edits were made)" } }, required: [] } } },
   { type: "function", function: { name: "list_workflows", description: "List this channel's workflows and follow-ups with status and next run.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "set_workflow_status", description: "Pause, resume or complete a workflow by id.", parameters: { type: "object", properties: { id: { type: "integer" }, status: { type: "string", enum: ["active", "paused", "complete"] } }, required: ["id", "status"] } } },
   TODO_TOOL,
@@ -563,6 +564,7 @@ export class Resident extends DurableObject {
     plansInit(this.sql);   // plans.js: propose_plan cards and where plan-started tasks came from
     spendInit(this.sql);   // spendguard.js: pause cards (Keep going / Stop here)
     pomoInit(this.sql);   // focus timers per task (pomodoro.js)
+    taskSearchInit(this.sql);   // the keyword index of the tasks (task-search.js); empty until the first search
     this.lnInit();   // Live notes per task (live-notes.js): the LiveNotes DO's mirror
     helpersInit(this.sql); userInputInit(this.sql); nativePollInit(this.sql); photonReplyInit(this.sql); textAlertInit(this.sql); phoneFilesInit(this.sql); browserJobsInit(this.sql); forgottenInit(this.sql);
     if (env.BACKUP_MAINTENANCE !== "1") {
@@ -3466,6 +3468,16 @@ export class Resident extends DurableObject {
     const tc={kind:"chat",session},o=this.openTurnCard(tc,text,opts,!!this.sessQ.get(session));
     return {mode:"open",...o};
   }
+  // The files the helper already shared and the pictures it already showed in a turn that is still running. A watcher that attaches after
+  // they were announced (a phone that came back from the background, an app opened mid-turn) never saw those events, so the snapshot carries them.
+  liveOutputs(turn) {
+    if (!turn) return {};
+    try {
+      const shared = this.sql.exec("SELECT * FROM files WHERE turn=? AND deleted=0 AND source='helper' ORDER BY at", turn).toArray().map((x) => this.fileView(x));
+      const images = this.sql.exec("SELECT id, url, caption FROM shots WHERE turn=? ORDER BY at", turn).toArray();
+      return { ...(shared.length ? { shared } : {}), ...(images.length ? { images } : {}) };
+    } catch { return {}; }
+  }
   // Watch a task's turn that is already running (e.g. a task started from the New box, opened later). Ends with "done", or "idle" if nothing runs.
   async attach(session) {
     const { readable, writable } = new TransformStream(), w = writable.getWriter(), enc = new TextEncoder();
@@ -3493,7 +3505,7 @@ export class Resident extends DurableObject {
       return readable;
     }
     if (!tc) { send({ t: "idle", session: this.sessionView(this.session(session)) }); w.close().catch(() => {}); return readable; }
-    send({ t: "snapshot", turn: tc.turn, input_request:questionForTurn(this.sql,tc.turn), started: tc.t0, text: tc.text, ...liveReplyState(tc), line: tc.line, reaction: tc.reaction || null, approvals: this.approvals(false, session), card: cardDetail(this.sql, session, tc.turn, { reply: tc.text }) });
+    send({ t: "snapshot", turn: tc.turn, input_request:questionForTurn(this.sql,tc.turn), started: tc.t0, text: tc.text, ...liveReplyState(tc), ...this.liveOutputs(tc.turn), line: tc.line, reaction: tc.reaction || null, approvals: this.approvals(false, session), card: cardDetail(this.sql, session, tc.turn, { reply: tc.text }) });
     const hb = setInterval(() => send({ t: "hb" }), 15e3);
     const sub = (o) => { send(o); if (o.t === "done" || !open) { tc.subs.delete(sub); clearInterval(hb); if (open) w.close().catch(() => {}); open = false; } };
     tc.subs.add(sub);
@@ -4253,6 +4265,7 @@ export class Resident extends DurableObject {
     }
     if (att.length) this.sql.exec("UPDATE turns SET files=? WHERE id=?", JSON.stringify(att.map((f) => f.id)), turn);
     if (RS) this.sql.exec("UPDATE turns SET resumes=? WHERE id=?", RS.resumes || 1, turn);
+    if (kind === "chat") this.tsTouch(tc.session);   // task search: this task's keyword rows follow (nothing happens before the first search)
     // Memory: the finished turn is appended to the task's Hindsight document for the day (hindsight-writers.js, HS_WRITERS).
     const fullText = stripInjectedMemory(kind === "chat" ? this.cardUserText(turn, text) : text);   // the first message plus what was added while it worked; memory 1Helm added to the turn is never retained (memory-block.js)
     // status-notes.js: 1Helm's own notices (day cap, check-in, pause) aren't kept as the helper's words; a paused report is marked as a status from then.
@@ -4422,9 +4435,11 @@ export class Resident extends DurableObject {
     if (rowWaiting === "browser" && !tc && !browserPause && dynamicRoutingOn(this.env) && this.sql.exec("SELECT 1 FROM helpers WHERE session=? AND dynamic_routing=1 LIMIT 1", row.id).toArray().length) {
       rowWaiting = null; this.sql.exec("UPDATE sessions SET waiting=NULL WHERE id=? AND waiting='browser'", row.id);
     }
-    const state = tc || resuming || nativeProgress || routedWork || reviewPending ? "working" : nPend || pending.length || rowWaiting || checkin || browserPause ? "waiting" : nJobs ? "watching" : "ready";
+    // A task marked done never waits on the person, whatever a stale approval, check-in, question or flag still says (the app counts only open tasks as "Needs you").
+    const needs = !row.done && !!(nPend || pending.length || rowWaiting || checkin || browserPause);
+    const state = tc || resuming || nativeProgress || routedWork || reviewPending ? "working" : needs ? "waiting" : nJobs ? "watching" : "ready";
     return { id: row.id, title: row.title, title_manual: !!row.title_manual, title_revision: Number(row.title_revision || 0), pinned: !!row.pinned, done: !!row.done, done_at: row.done_at, state, line: tc ? (tc.line || "thinking") : nativeProgress ? nativeProgress.line : resuming ? "picking up where it left off (1Helm was just updated)" : null, ...(nativeProgress?{native_progress:nativeProgress}:{}), ...(tc?.slotWait ? { queued: true } : {}),
-      pending_inputs: pending, waiting: tc ? null : nPend ? "approval" : pending.length ? "answer" : rowWaiting || (browserPause ? "browser" : null) || (checkin ? "checkin" : null), jobs: nJobs, unread: !!row.last_reply_at && row.last_reply_at > row.seen_at,
+      pending_inputs: pending, waiting: tc || !needs ? null : nPend ? "approval" : pending.length ? "answer" : rowWaiting || (browserPause ? "browser" : null) || (checkin ? "checkin" : null), jobs: nJobs, unread: !!row.last_reply_at && row.last_reply_at > row.seen_at,
       created: row.created, updated: row.updated, preview: row.preview || "", default: row.id === this.getRaw("default_session"), helpers: this.helperCount ? this.helperCount(row.id) : 0, ...this.pomoField(row.id), ...this.lnField(row.id), ...((texts || new Set(this.textsSessions())).has(row.id) ? { texts: true } : {}) };
   }
   // Texting conversations are titled "Text with <the helper's name>".
@@ -4463,6 +4478,7 @@ export class Resident extends DurableObject {
     dropPhotonReplies(this.sql,id);dropTextAlerts(this,id);
     await dropNativePolls(this,id);
     this.sql.exec("DELETE FROM sessions WHERE id=?", String(id));
+    await this.tsForget(id);   // task search: its rows and vector leave
     transcriptDelete(this.sql, String(id));
     this.sql.exec("DELETE FROM kv WHERE k=?", `chat_title_pending:${id}`); return { ok: true };
   }
@@ -4472,12 +4488,18 @@ export class Resident extends DurableObject {
     const hasTitle = Object.prototype.hasOwnProperty.call(b, "title"), title = hasTitle ? taskTitle(b.title) : null;
     if (hasTitle && title === null) return { error: "Use a title of 1–120 characters on one line.", status: 400 };
     const now = Date.now();
-    if (hasTitle) { this.sql.exec("UPDATE sessions SET title=?, title_manual=1, title_revision=title_revision+1 WHERE id=?", title, id); this.lnTitleChanged?.(id, title); }   // live-notes.js: the notes file and transcript files follow the title
+    if (hasTitle) { this.sql.exec("UPDATE sessions SET title=?, title_manual=1, title_revision=title_revision+1 WHERE id=?", title, id); this.lnTitleChanged?.(id, title); this.tsTouch(id); }   // live-notes.js: the notes file and transcript files follow the title
     if (typeof b.pinned === "boolean") this.sql.exec("UPDATE sessions SET pinned=? WHERE id=?", b.pinned ? 1 : 0, id);
     // Texting conversations are ongoing threads: they can't be marked done (reopening an old one is fine).
     if(b.done===true) {
       for(const h of this.sql.exec("SELECT id FROM helpers WHERE session=? AND status='waiting_input'",String(id)).toArray())await this.helperStop(id,h.id);
       this.sql.exec("UPDATE user_questions SET status='cancelled' WHERE session=? AND status='pending'",String(id));
+      // The same endings the person's own taps give: Don't allow on each pending approval, and Stop here on each spend check-in.
+      // A texting thread can't be marked done, so it keeps its own.
+      if(!this.textsSessions().includes(id)){
+        for(const a of this.sql.exec("SELECT id FROM approvals WHERE session=? AND status='pending'",String(id)).toArray())try{await this.decideApproval(a.id,"deny");}catch(e){console.log("done: approval",e.message);}
+        for(const p of this.sql.exec("SELECT card FROM spend_pauses WHERE session=? AND status='paused' AND reason IN ('silent','fast')",String(id)).toArray())try{await this.spendStopHere(p.card);}catch(e){console.log("done: check-in",e.message);}
+      }
     }
     if (typeof b.done === "boolean" && !(b.done && this.textsSessions().includes(id))) this.sql.exec("UPDATE sessions SET done=?, done_at=? WHERE id=?", b.done ? 1 : 0, b.done ? now : null, id);
     if (b.seen === true || b.done === true) this.sql.exec("UPDATE sessions SET seen_at=? WHERE id=?", now, id);
@@ -4561,7 +4583,7 @@ export class Resident extends DurableObject {
       return await this.fileUpdated(f, { r2key: to.key, bytes: to.bytes, path: null }, ctx, `Put back ${toOrig ? "the person's original upload" : "the earlier version"} of "${f.name}" (${humanBytes(to.bytes)}). The one you replaced is kept; restore again swaps back.${this.keptLine(f.id)}`);
     }
     const path = String(a.path || "").trim().replace(/^\/workspace\//, "").replace(/^\.\//, ""); if (!path) return "error: path required";
-    const name = safeName(a.name || path.split("/").pop());
+    const name = safeName(nameWithSourceExt(a.name, path) || path.split("/").pop());
     let target = null;
     if (a.replace && !a.copy) { target = this.libFile(a.replace); if (!target) return `error: there's no "${a.replace}" in this channel's Library to update. Leave out replace to add it as a new file.`; }
     let why = a.replace ? "you named it with replace" : "";
@@ -4577,7 +4599,7 @@ export class Resident extends DurableObject {
       const f = this.addFileRow({ id, name, mime: mimeOf(name), bytes: r.bytes, r2key: key, source: "helper", session: ctx.session || null, turn: ctx.turn || null, synced: path === `files/${name}` ? 1 : 0, src_path: path });
       ctx.emit?.({ t: "file", file: f });
       const pages = await this.republishPages(f, key, path, ctx);   // a page published from this path (publish_page of a folder holding it)
-      return `Shared "${f.name}" (${humanBytes(f.bytes)}). The person sees it as a download card in this chat and in the Library. Don't paste its contents; one line about what it is is enough.${pages}${/\.html?$/i.test(f.name) ? " It's a web page: its card also has Publish (a live page at their own address); you can mention it, and if it loads files from its folder, publish that folder with publish_page instead." : ""}`;
+      return `Shared "${f.name}" (${humanBytes(f.bytes)}). The card shows under your reply in this chat and in the Library. Don't paste its contents; one line about what it is is enough.${pages}${/\.html?$/i.test(f.name) ? " It's a web page: its card also has Publish (a live page at their own address); you can mention it, and if it loads files from its folder, publish that folder with publish_page instead." : ""}`;
     }
     const v = Number(target.version || 1) + 1, key = `t/${tenant}/files/${channel}/${target.id}.v${v}`;
     let r; try { r = await this.computer().fileToR2(path, key, MAX_UPLOAD); } catch (e) { return `error: ${e.message}`; }
@@ -4594,7 +4616,7 @@ export class Resident extends DurableObject {
     const v = this.fileView(this.sql.exec("SELECT * FROM files WHERE id=?", f.id).one());
     ctx.emit?.({ t: "file", file: v });
     const pages = await this.republishPages(f, r2key, path, ctx);
-    return `${said} The person sees it as a download card in this chat and in the Library; its share link, if it has one, now gives the new version.${pages}`;
+    return `${said} The card shows under your reply in this chat and in the Library; its share link, if it has one, now gives the new version.${pages}`;
   }
   async republishPages(f, r2key, path, ctx) {
     let done = []; try { done = await republishFrom(this, { fileId: f.id, r2key, path }, ctx); } catch (e) { console.log("republish", e.message); }
@@ -4774,7 +4796,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
     const tc = this.liveTurn(id);
     // resume.js: a turn an update cut off, waiting to carry on, shows as live too (the app attaches and gets {"t":"resuming"} first).
     const rj = !tc && this.resumingIn?.(id) ? this.sql.exec("SELECT card, started, text FROM turn_runs WHERE session=? AND status IN ('resuming','running') ORDER BY started LIMIT 1", id).toArray()[0] : null;
-    const live = tc ? { turn: tc.turn, started: tc.t0, text: tc.text, ...liveReplyState(tc), line: tc.line, user_text: tc.userText, reaction: tc.reaction || null, card: cardDetail(this.sql, id, tc.turn, { reply: tc.text }) }
+    const live = tc ? { turn: tc.turn, started: tc.t0, text: tc.text, ...liveReplyState(tc), ...this.liveOutputs(tc.turn), line: tc.line, user_text: tc.userText, reaction: tc.reaction || null, card: cardDetail(this.sql, id, tc.turn, { reply: tc.text }) }
       : rj ? { turn: rj.card, started: rj.started, text: "", line: "picking up where it left off (1Helm was just updated)", user_text: rj.text, reaction: null, resuming: true, card: cardDetail(this.sql, id, rj.card, { reply: "" }) } : null;
     // The initial input of a native continuation or delegated task brief is internal model context,
     // not a message sent by the person. Genuine msg/steer events remain intact.
@@ -5043,7 +5065,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
     this.sql.exec("DELETE FROM turns WHERE kind='chat' AND session=?", id);
     this.sql.exec("DELETE FROM todos WHERE session=?", id);
     this.sql.exec("DELETE FROM reactions WHERE session=?", id);
-    if (!session) { this.sql.exec("DELETE FROM sessions WHERE id=?", id); this.put("default_session", ""); this.defaultSession(); }
+    if (!session) { this.sql.exec("DELETE FROM sessions WHERE id=?", id); this.put("default_session", ""); this.defaultSession(); await this.tsForget(id); } else this.tsTouch(id);
     this.sql.exec("DELETE FROM kv WHERE k=?", `hs_origin_block:${id}`);
     return { ok: true, session: this.sessionView(this.session(session || this.defaultSession())) };
   }
@@ -5053,6 +5075,8 @@ laterMix(Resident, titleFrom);
 eventsMix(Resident, { accessOf, localTime, untrusted });
 // Focus timers per task (pomodoro.js).
 Object.assign(Resident.prototype, pomoMethods);
+// Ranked task search (task-search.js).
+Object.assign(Resident.prototype, taskSearchMethods);
 // Live notes per task (live-notes.js).
 Object.assign(Resident.prototype, lnResidentMethods());
 // Deleting a chat / a channel / a Notebook note's memory (deletion-do.js; orchestrated by deletion.js).

@@ -4,6 +4,7 @@
 // API brings it back after a reload. v3.ts only hooks in: the header buttons, liveLoad, the stream handler and repaints.
 // ready: the helper finished it, but only the person ticks things done ("Ready to tick" until they do).
 import { anchorRect, focusHeaderAction } from "./headfit";
+import { mountPaneFloat, paneOrigin } from "./pane-float";
 export type TodoItem = { id: string; text: string; status: "todo" | "doing" | "done"; ready?: boolean };
 type Deps = {
   api: (path: string, body?: any) => Promise<any>;
@@ -100,11 +101,13 @@ function paintPanel() {
   place();
 }
 function place() {
+  { const w = document.getElementById("tdpw"); if (w) mountPaneFloat(w); }   // follows a layout change between phone and wide
   const el = document.querySelector<HTMLElement>("#tdpw .tdpop"), b = TD.btn; if (!el) return;
   if (D?.phone() && TD.automatic) {
     // Reveal live updates above the draft, not over the mobile keyboard/composer.
-    const top = (document.querySelector(".mh")?.getBoundingClientRect().bottom || 64) + 8;
-    const bottom = document.querySelector("#send")?.getBoundingClientRect().top || innerHeight;
+    const o = paneOrigin(document.getElementById("tdpw")!);   // the panel sits inside the chat pane on a phone
+    const top = (document.querySelector(".mh")?.getBoundingClientRect().bottom || 64) + 8 - o.top;
+    const bottom = (document.querySelector("#send")?.getBoundingClientRect().top || innerHeight) - o.top;
     el.style.cssText = `left:8px;right:8px;top:${top}px;bottom:auto;max-height:${Math.max(80, Math.min(360, bottom - top - 12))}px;border-radius:20px`;
     return;
   }
@@ -116,7 +119,8 @@ function place() {
 function todoOpen(k: string, btn: HTMLElement, automatic = false) {
   if (!D || !(LISTS[k] || []).length) return;
   TD.open = k; TD.btn = btn; TD.automatic = automatic;
-  let w = document.getElementById("tdpw"); if (!w) { w = document.createElement("div"); w.id = "tdpw"; document.body.appendChild(w); }
+  let w = document.getElementById("tdpw"); if (!w) { w = document.createElement("div"); w.id = "tdpw"; }
+  mountPaneFloat(w);
   w.classList.toggle("automatic", automatic);
   w.innerHTML = `<div class="tdback" data-tdclose></div><div class="tdpop" role="dialog" aria-modal="${!automatic}" aria-labelledby="tdtitle"></div>`;
   paintBtns(k); paintPanel();

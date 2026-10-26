@@ -1,7 +1,7 @@
 // A held Library snapshot has an opaque file ID and counted tenant storage, but
 // no visible files row, download URL, conversation attachment or memory write.
 // Approval uses the ordinary Library version resolver. No semantic index is made.
-import { MAX_UPLOAD, MAX_VIEW, safeName, mimeOf, humanBytes, viewJpeg } from '../files.js';
+import { MAX_UPLOAD, MAX_VIEW, safeName, nameWithSourceExt, mimeOf, humanBytes, viewJpeg } from '../files.js';
 import { stPut, stDelete } from '../storage.js';
 import { identicalLibraryFile, adoptName, machineName } from '../library-dedupe.js';
 import { prepText, untrustedFile } from '../sidecar.js';
@@ -48,7 +48,7 @@ export async function stageRoutingFile(R,h,{path,name,mime,bytes,r2key,captured=
   initRoutingArtifacts(R.sql);const s=scope(R,h);
   const isBytes=bytes instanceof Uint8Array||bytes instanceof ArrayBuffer;
   const sourcePath=path?normalizedPath(R,h,path):`${folder(h)}.app-output/${safeName(name||'file')}`;
-  const fileName=safeName(name||sourcePath.split('/').pop()),type=mimeOf(fileName,mime);
+  const fileName=safeName(path&&name?nameWithSourceExt(name,sourcePath):(name||sourcePath.split('/').pop())),type=mimeOf(fileName,mime);
   let row=R.sql.exec('SELECT * FROM routing_artifacts WHERE helper_id=? AND round=? AND path=? AND session=? AND channel=?',s.helper,s.round,sourcePath,s.session,s.channel).toArray()[0];
   if(row?.state==='attached'||row?.state==='deleted')throw new Error('This file version is already closed.');
   if(row?.captured&&captured){await cleanupRetired(R,row);return view(row);}

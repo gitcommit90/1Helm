@@ -114,6 +114,7 @@ export const residentDeletion = {
     this.inputs?.delete(sid);
     // 2. The chat row first: from here no new message, handoff or follow-up can land in it ("No such task" / "gone").
     counts.sessions = delWhere(sql, "sessions", "id=?", sid);
+    await this.tsForget?.(sid);   // task search (task-search.js): its keyword rows and its vector
     if (this.getRaw("default_session") === sid) this.put("default_session", "");
     const texts = this.textsSessions();
     if (texts.includes(sid)) { this.put("texts_sessions", JSON.stringify(texts.filter((x) => x !== sid))); if (this.getRaw("texts_session") === sid) this.put("texts_session", ""); }
@@ -227,6 +228,7 @@ export const residentDeletion = {
     await phoneFiles;
     await this.eeDeletion.dropNativePolls(this);
     await this.nativeCancel?.(null, 'Channel deleted');
+    await this.tsWipe?.();   // task search: the vectors of the channel's tasks (Vectorize deletes by id)
     this.inputs?.clear?.();
     const counts = {};
     for (const t of ["sessions", "turns", "msgs", "cards", "card_events", "files", "shots", "todos", "reactions", "later", "helpers", "approvals", "grants", "workflows", "outbox", "mem_rows", "mem_segments", "plans", "plan_origin", "connect_offers", "chat_interviews", "user_questions", "user_input_receipts", "pomodoro", "pomodoro_offers"]) counts[t] = count(sql, t);
