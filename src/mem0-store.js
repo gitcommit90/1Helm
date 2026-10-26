@@ -42,6 +42,43 @@ const cosine = (a, b) => { let d = 0, x = 0, y = 0; for (let i = 0; i < a.length
 const row = (r) => (r ? { id: r.id, payload: JSON.parse(r.payload), ...(r.score != null ? { score: r.score } : {}) } : null);
 const chunks = (a, n) => Array.from({ length: Math.ceil(a.length / n) }, (_, i) => a.slice(i * n, (i + 1) * n));
 
+// Vectorize applies a write only after a delay (86 seconds for one vector, measured on dev on 2026-10-26), and a delete asked for before that lands can run first, so the
+// vector appears afterwards with no D1 row behind it. Every deleted id is therefore remembered here, and deleted from Vectorize again by the 5 minute cron (goneVectorsDue)
+// after 2, 10 and 30 minutes. The recheck cannot read D1 for these ids (their rows are gone), so it works from this table. Ids only, never text.
+const GONE_RECHECK = [2 * 60e3, 10 * 60e3, 30 * 60e3];
+const goneReady = new WeakSet();   // per D1 binding
+async function ensureGone(env) {
+  if (goneReady.has(env.DB)) return;
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS mem_vec_gone (id TEXT PRIMARY KEY, due INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 0)").run();
+  await env.DB.prepare("CREATE INDEX IF NOT EXISTS mem_vec_gone_due ON mem_vec_gone(due)").run();
+  goneReady.add(env.DB);
+}
+async function noteGone(env, ids) {
+  if (!ids.length) return;
+  await ensureGone(env); const due = Date.now() + GONE_RECHECK[0];
+  for (const part of chunks(ids, 30)) await env.DB.prepare(`INSERT INTO mem_vec_gone (id,due,tries) VALUES ${part.map(() => "(?,?,0)").join(",")} ON CONFLICT(id) DO UPDATE SET due=excluded.due, tries=0`).bind(...part.flatMap((id) => [id, due])).run();
+}
+// Deletes again the vectors of the ids whose recheck is due, then schedules the next recheck or forgets the id. → the number of ids rechecked
+export async function goneVectorsDue(env, { limit = 500 } = {}) {
+  if (!env.MEMORY_INDEX || !env.DB) return 0;
+  await ensureGone(env);
+  const rows = (await env.DB.prepare("SELECT id, tries FROM mem_vec_gone WHERE due<=? ORDER BY due LIMIT ?").bind(Date.now(), limit).all()).results || [];
+  for (const all of chunks(rows, VEC_IDS_MAX)) {
+    // An id that has a row in D1 again (written again after its delete) is live: its vector stays and the id is forgotten. Mem0 makes every id with a random UUID, so this is a guard, not an expected case.
+    const live = new Set(); for (const sub of chunks(all.map((r) => r.id), 90)) for (const x of (await env.DB.prepare(`SELECT id FROM mem WHERE id IN (${sub.map(() => "?").join(",")})`).bind(...sub).all()).results || []) live.add(x.id);
+    for (const r of all) if (live.has(r.id)) await env.DB.prepare("DELETE FROM mem_vec_gone WHERE id=?").bind(r.id).run();
+    const part = all.filter((r) => !live.has(r.id));
+    if (!part.length) continue;
+    await vec(() => env.MEMORY_INDEX.deleteByIds(part.map((r) => r.id)));
+    for (const r of part) {
+      const next = Number(r.tries) + 1;
+      if (next >= GONE_RECHECK.length) await env.DB.prepare("DELETE FROM mem_vec_gone WHERE id=?").bind(r.id).run();
+      else await env.DB.prepare("UPDATE mem_vec_gone SET tries=?, due=? WHERE id=?").bind(next, Date.now() + GONE_RECHECK[next], r.id).run();
+    }
+  }
+  return rows.length;
+}
+
 // Every id of the namespaces that start with `prefix`, with their rows removed from D1 and their vectors from Vectorize. where: SQL after "WHERE ns LIKE ?" (default: all).
 export async function removeRows(env, prefix, where = "", args = []) {
   const found = ((await env.DB.prepare(`SELECT id, ns FROM mem WHERE ns LIKE ?${where}`).bind(`${prefix}%`, ...args).all()).results || []), ids = found.map((r) => r.id), gone_vectors = [...ids];
@@ -61,6 +98,7 @@ export async function removeRows(env, prefix, where = "", args = []) {
     for (const part of chunks(dead, 90)) { await env.DB.prepare(`DELETE FROM mem WHERE ns=? AND id IN (${part.map(() => "?").join(",")})`).bind(`${ns}_entities`, ...part).run(); gone_vectors.push(...part); }
   }
   for (const part of chunks(gone_vectors, VEC_IDS_MAX)) await vec(() => env.MEMORY_INDEX.deleteByIds(part));
+  await noteGone(env, gone_vectors);
   return ids.length;
 }
 
@@ -83,10 +121,11 @@ export class MemStore {
     for (const part of chunks(items, 1000)) await vec(() => MEMORY_INDEX.upsert(part));   // Vectorize takes at most 1,000 vectors in one upsert
   }
   async search(query, topK = 20, filters) {
-    const r = await this.env.MEMORY_INDEX.query(query, { topK: Math.min(topK, TOP_K_MAX), namespace: this.ns, returnValues: false, returnMetadata: "none", ...(vecFilter(filters) ? { filter: vecFilter(filters) } : {}) });
+    // Vectors that D1 no longer holds (a delete Vectorize has not applied yet) take places in the answer, so more matches are asked for than the page needs, and the page is cut after the filter.
+    const r = await this.env.MEMORY_INDEX.query(query, { topK: Math.min(Math.max(topK * 3, topK + 30), TOP_K_MAX), namespace: this.ns, returnValues: false, returnMetadata: "none", ...(vecFilter(filters) ? { filter: vecFilter(filters) } : {}) });
     const ids = r.matches.map((m) => m.id), found = new Map();
     for (const part of chunks(ids, 90)) for (const x of (await this.env.DB.prepare(`SELECT id,payload FROM mem WHERE ns=? AND id IN (${part.map(() => "?").join(",")})`).bind(this.ns, ...part).all()).results || []) found.set(x.id, x);
-    const out = r.matches.filter((m) => found.has(m.id)).map((m) => row({ ...found.get(m.id), score: m.score }));   // a vector that D1 no longer holds was deleted: Vectorize deletes lag
+    const out = r.matches.filter((m) => found.has(m.id)).slice(0, topK).map((m) => row({ ...found.get(m.id), score: m.score }));   // a vector that D1 no longer holds was deleted: Vectorize deletes lag
     this.last = { out, query, topK };
     return out;
   }

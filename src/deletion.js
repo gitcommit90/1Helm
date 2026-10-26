@@ -12,6 +12,7 @@
 // Exported for the billing agent (cancel at period end → delete): deleteAccount(env, tenantId, { reason }), deleteChannel(env,
 // tenantId, slug), deleteSession(env, tenantId, slug, sessionId).
 import { hsOn, bankId, forgetChannel, forgetTenant, forgetDocument } from "./mem0.js";
+import { goneVectorsDue } from "./mem0-store.js";
 import { forgetAgentBank, agentSessionDocuments } from "./ee/index.js";
 import { disconnectAllManaged } from "./ee/index.js";
 import { selfSignOut } from "./ee/index.js";
@@ -403,6 +404,7 @@ export async function deletionCron(env) {
     } catch (e) { out.errors++; console.log("deletion resume", j.kind, e.message); }
   }
   try { out.hs = await hsForgetDue(env); } catch (e) { console.log("hindsight forget due", e.message); }
+  try { out.vectors = await goneVectorsDue(env); } catch (e) { console.log("memory vector recheck", e.message); }   // deleted vectors that Vectorize may have written after the delete (mem0-store.js)
   return out;
 }
 
