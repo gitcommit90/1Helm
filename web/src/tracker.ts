@@ -492,8 +492,7 @@ function stepPane(d: CardDetail, e: EventView, k: string) {
     : `<div class="tk-outw"><div class="tk-obar"><span>Output${x.out_bytes ? ` · ${esc(fmtBytes(x.out_bytes))}` : ""}</span><button type="button" class="tk-cp" data-tkcopy="out">${svg(P.copy, 13)}<span>Copy</span></button><a class="tk-cp" href="${esc(dl)}" download data-tkdl>${svg(P.dl, 13)}<span>Download</span></a></div>
         <pre class="tk-out" data-tkout>${esc(out || "(no output)")}</pre></div>`;
   return `<div class="tk-step"><h3 class="tk-pt">${esc(x.title || x.tool || "Step")}</h3>
-    <div class="tk-why"><b>Why it mattered</b><p${x.why ? "" : ` class="tk-mute"`}>${esc(x.why || "Written when the task completes.")}</p></div>
-    ${x.tool === "start_helper" && x.ref ? `<button type="button" class="tk-hchip big h-${esc(h?.status || "running")}" data-tkhelper="${esc(String(x.ref))}">${svg(P.helper, 13)}Background job #${esc(String(x.ref))}${h ? `: ${esc(h.name)} · ${esc(helperStatus(h.status))}` : ""} ›</button>` : ""}
+    <div class="tk-why"><b>Why it mattered</b><p${x.why ? "" : ` class="tk-mute"`}>${esc(x.why || "Written when the task completes.")}</p>${x.tool === "start_helper" && x.ref ? `<button type="button" class="tk-hchip big h-${esc(h?.status || "running")}" data-tkhelper="${esc(String(x.ref))}">${svg(P.helper, 13)}Background job #${esc(String(x.ref))}${h ? `: ${esc(h.name)} · ${esc(helperStatus(h.status))}` : ""} ›</button>` : ""}</div>
     <div class="tk-sec"><div class="tk-sh"><b>Result</b>${exit}${x.ms != null && st !== "running" ? `<span class="tk-ms">${esc(fmtMs(x.ms))}</span>` : ""}<span class="tk-at">${esc(hms(x.at))}</span></div>${body}</div>
     ${ran ? `<div class="tk-sec"><div class="tk-sh"><b>${x.cmd ? "What ran" : "What it asked for"}</b><button type="button" class="tk-cp" data-tkcopy="ran">${svg(P.copy, 13)}<span>Copy</span></button></div><pre class="tk-code" data-tkran>${esc(ran)}</pre></div>` : ""}
   </div>`;

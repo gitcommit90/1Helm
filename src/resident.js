@@ -1731,7 +1731,11 @@ export class Resident extends DurableObject {
       const result = await routingFileTool(this, name, a, ctx); if (result != null) return result;
     }
     if (["done", "request_input", "request_saved_login", "request_purchase", "decide_worker_request", "ask_user", "send_poll", "approve_subagent", "message_subagent", "read_log", "search_agent_bank"].includes(name)) return this.orchestrationTool(name, a, ctx);
-    if (NATIVE_TOOL_NAMES.has(name)) return JSON.stringify(await nativeTool(this, name, a, ctx));
+    if (NATIVE_TOOL_NAMES.has(name)) {
+      // The job is SSH/Tailscale work that only Primary can do, so the required hand-off to a worker no longer applies to this turn.
+      if (ctx.orchestration?.requiredDelegation && !ctx.orchestration.started && !ctx.helper) ctx.orchestration.requiredDelegation = false;
+      return JSON.stringify(await nativeTool(this, name, a, ctx));
+    }
     if (ctx.emit && name !== "update_todos" && name !== "react") { ctx.line = lineFor(name, a); ctx.emit({ t: "status", line: ctx.line }); }   // to-do lists and reactions show themselves
     switch (name) {
       case "read_task_archive": return ctx.transcript && (ctx.transcript.state().memoryRevision || null) === (this.get("task_memory_revision") || null) ? archiveReply(ctx.transcript.archive(a), a) : "Archive unavailable pending an authorized privacy context reset.";

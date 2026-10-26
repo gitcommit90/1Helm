@@ -72,6 +72,19 @@ export function nativeApprovalReceipt(res,a) {
 const safeError = () => ({ ok: false, state: 'error', error: 'The trusted network transport could not complete this operation. Check connection status and retry.' });
 const closedAck = r => { if (r?.ok !== true || r?.error) throw new Error('Session termination not acknowledged; retry termination.'); return r; };
 const unavailable = () => ({ ok: false, available: false, state: 'unavailable', error: 'Native SSH and Tailscale are unavailable on this deployment. No connection was opened.' });
+export const COMPUTER_NETWORK_LINK = '#settings/computer-network';
+// The result of an SSH request that cannot start yet. The person gets the steps for exactly what is missing and a link to Settings, Computer connections.
+// Nothing here opens a connection, and the next request checks the state again before any SSH attempt.
+export const setupNeeded = (missing, steps, extra = {}) => ({ ok: false, state: 'setup_needed', missing, settings_link: COMPUTER_NETWORK_LINK, settings_page: 'Settings, Computer connections', steps, ...extra,
+  next: 'SSH cannot start yet. Show the person a card in the chat that links to settings_link and lists these steps in plain words, then end the turn without any other SSH attempt, probe or workaround. When the person says it is done, call ssh_connect again; it checks the state first.' });
+export function tailnetSetupSteps(tailscale = {}, key = null) {
+  const steps = [], state = tailscale.state || 'disconnected', name = tailscale.device_name;
+  if (state === 'awaiting_user_approval' || state === 'joining') steps.push(`Open Settings, Computer connections, approve ${name ? `the device ${name}` : 'this computer'} in Tailscale, then press Check connection.`);
+  else if (state === 'expired' || state === 'error') steps.push('Open Settings, Computer connections, and join this computer to your tailnet again, then press Check connection.');
+  else steps.push('Open Settings, Computer connections, press Connect to Tailscale, approve this computer in Tailscale, then press Check connection.');
+  if (key?.public_key) steps.push(`Add this computer's public key to the server account's authorized_keys file: ${key.public_key}`);
+  return steps;
+}
 const safeText = (s) => typeof s === 'string' ? s.replace(/https:\/\/login\.tailscale\.com\/[^\s"'<>]+/g, '[login link in Settings]').slice(0, 1000) : undefined;
 const publicKey = (r) => { const k = r?.key || r; return k?.public_key && k?.fingerprint ? { public_key: k.public_key, fingerprint: k.fingerprint } : null; };
 const identityView = (r) => ({ ok: r?.ok !== false, key: publicKey(r), ...(r?.error ? { error: safeText(r.error) } : {}) });
@@ -102,7 +115,7 @@ const str = (description) => ({ type: 'string', description });
 const tool = (name, description, properties, required) => ({ type: 'function', function: { name, description, parameters: objectSchema(properties, required) } });
 export const NATIVE_TOOLS = [
   tool('native_network', 'Inspect native SSH/Tailscale state or manage this computer identity/enrollment. Call status before claiming connected OR not signed in; unchecked, sleeping or timed-out state is unknown, not disconnected. Read the native-network skill. Login links stay in Settings, never chat.', { operation: { type: 'string', enum: ['status','key','tailscale_status','tailscale_connect','tailscale_disconnect'] } }, ['operation']),
-  tool('ssh_connect', 'Open a managed SSH session. Deny blocks requests; Ask each time requires human approval. Allow trusted servers reconnects only an explicitly remembered matching server; new or changed targets require a native card. Connected returns session_id; awaiting approval means end this turn, do not retry. Commands/SFTP share the session. SSH originates from this 1HC computer through its trusted transport.', { host: str('Server hostname or IP, no URL'), port: { type: 'integer', minimum: 1, maximum: 65535 }, username: str('Remote account username'), route: { type: 'string', enum: ['public','tailnet'] } }, ['host','username','route']),
+  tool('ssh_connect', 'Open a managed SSH session. Deny blocks requests; Ask each time requires human approval. Allow trusted servers reconnects only an explicitly remembered matching server; new or changed targets require a native card. Connected returns session_id; awaiting approval means end this turn, do not retry. Commands/SFTP share the session. SSH originates from this 1HC computer through its trusted transport. The computer\'s shell cannot reach tailnet addresses or port 22, so run_command, curl, ssh clients and libraries cannot replace this tool. If the tailnet is not joined or approved, the result is setup_needed with steps for the person.', { host: str('Server hostname or IP, no URL'), port: { type: 'integer', minimum: 1, maximum: 65535 }, username: str('Remote account username'), route: { type: 'string', enum: ['public','tailnet'] } }, ['host','username','route']),
   tool('ssh_session', 'Run commands or SFTP inside an existing approved SSH session belonging to this task, or close it. No forwarding or reconnect. For a closed/lost session call ssh_connect; the actual SSH setting and remembered server identity determine whether approval is required.', { session_id: str('Approved managed session ID'), operation: { type: 'string', enum: ['exec','sftp','close'] }, command: str('Remote shell command for exec'), sftp_operation: { type: 'string', enum: ['list','read','write','mkdir','remove','rename','stat'] }, path: str('Remote SFTP path'), destination: str('New remote path for rename'), data: str('Content for SFTP write, at most 1 MiB per chunk'), encoding: { type: 'string', enum: ['utf8','base64'] }, offset: { type: 'integer', minimum: 0, description: 'Byte offset for chunked reads/writes. Write without offset truncates; explicit offset preserves other bytes unless truncate is true.' }, length: { type: 'integer', minimum: 1, maximum: 1048576, description: 'Maximum bytes returned by a read chunk' }, truncate: { type: 'boolean', description: 'Explicitly truncate destination before writing this chunk' } }, ['session_id','operation']),
 ];
 export const NATIVE_TOOL_NAMES = new Set(NATIVE_TOOLS.map(t => t.function.name));
@@ -143,7 +156,15 @@ export async function nativeTool(res, name, a, tc) {
       return { ok: false, error: 'Unknown native network operation.' };
     }
     const permission = await sshPermission(res.env, own.tenant);
-    if (permission.mode === 'deny') return { ok: false, state: 'denied', error: 'Outbound SSH is Deny. Choose Ask each time or Allow trusted servers in Settings → Permissions → Direct network protocols. No connection was opened.' };
+    if (permission.mode === 'deny') return setupNeeded(['ssh_permission'], ['Open Settings, Permissions, Direct network protocols, and set Outbound SSH to Ask each time or Allow trusted servers.'], { state: 'denied', error: 'Outbound SSH is Deny. No connection was opened.' });
+    if (name === 'ssh_connect' && ['tailnet'].includes(a.route)) {
+      // Check the current state before any connection attempt, so a missing tailnet membership is reported at once.
+      const st = await res.nativeStatus(false), ts = st.tailscale || {};
+      if (['disconnected','awaiting_user_approval','joining','expired'].includes(ts.state || 'disconnected')) {
+        let key = st.key; if (!key) { try { key = publicKey(await broker.identity(own)); } catch {} }
+        return setupNeeded(['tailscale'], tailnetSetupSteps(ts, key), { tailscale: { state: ts.state || 'disconnected', ...(ts.device_name ? { device_name: ts.device_name } : {}) }, key: key || null });
+      }
+    }
     if (name === 'ssh_connect') {
       nativeExpire(res);
       const host = String(a.host || '').trim().toLowerCase().replace(/\.$/, ''), user = String(a.username || '').trim(), port = a.port == null ? 22 : Number(a.port), route = a.route;

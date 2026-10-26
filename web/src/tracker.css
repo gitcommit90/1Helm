@@ -133,7 +133,8 @@ button.tk-rr:focus-visible{outline:0;box-shadow:inset 0 0 0 2px var(--ink2)}
 .tk-hchip{display:inline-flex;align-items:center;gap:5px;align-self:flex-start;margin-top:5px;height:22px;padding:0 9px 0 7px;border-radius:999px;font-size:11.5px;font-weight:600;background:var(--tk-blue-s);color:var(--tk-blue);cursor:pointer}
 .tk-hchip.h-done{background:var(--tk-green-s);color:var(--tk-green)}.tk-hchip.h-failed,.tk-hchip.h-interrupted{background:var(--tk-red-s);color:var(--tk-red)}.tk-hchip.h-stopped{background:var(--abub);color:var(--mute)}
 .tk-hchip:hover{filter:brightness(.97)}
-.tk-hchip.big{height:30px;font-size:13px;padding:0 12px 0 10px;margin:0 0 6px}
+.tk-hchip.big{display:flex;width:fit-content;max-width:100%;box-sizing:border-box;height:auto;min-height:30px;padding:5px 12px 5px 10px;font-size:13px;line-height:1.3;text-align:left;overflow-wrap:anywhere;margin:10px 0 0}
+.tk-hchip.big svg{flex:none}
 
 /* the right pane */
 .tk-res{font:400 27px/1.2 var(--serif);letter-spacing:-.01em;margin:0 0 6px;color:var(--ink)}
