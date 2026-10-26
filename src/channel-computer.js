@@ -10,6 +10,7 @@ import { tolerantEnv } from "./do-stub.js";
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { computerDeletionMix } from "./deletion-do.js";
 import { isCapacityError, computerBusyError, CAPACITY_RETRY_MS, tailOutput } from "./computer-capacity.js";
+import { COMPUTER_ENV, COMPUTER_SHELL_PREFIX } from "./computer-env.js";
 import { computerPreviewMix } from "./file-preview.js";
 import { stPut, stDelete, keyInfo, room, noteRefused, clearRefused, fullMessage, fullToolNote } from "./storage.js";
 import { SKILL_SCRIPTS, SKILLS_VERSION, SKILLS_DIR, SKILLS_INSTALL_JS, skillsPayload, TEMPLATES_DIR, TEMPLATE_INSTALL_JS, DECK_COMMAND, deckCommandRefs } from "./skills/scripts.js";
@@ -265,9 +266,10 @@ export class ChannelComputer extends DurableObject {
       cmd = `find /tmp -maxdepth 1 -name '.1hc-out-*' -mmin +180 -delete 2>/dev/null; rm -f ${f}.out ${f}.code; echo $$ > ${f}.pid; ( ${cmd}
 ) > ${f}.out 2>&1; c=$?; echo $c > ${f}.code; tail -c 200000 ${f}.out; exit $c`; }
     if (tag) cmd = `echo $$ > /tmp/.1hc-run-${tag}; ${cmd}`;
+    cmd = COMPUTER_SHELL_PREFIX + cmd;   // computer-env.js: pip and npm installs land under /workspace/.home, which is saved
     // exec() itself can hang when the platform has no instance behind the DO (seen: 300 s hang after a refused start),
     // so the launch is raced against the timeout too, not only the process.
-    let to; const launch = this.ctx.container.exec(["bash", "-c", cmd], { cwd: "/", stderr: "combined", env: { HOME: "/workspace/.home", ...CA_ENV, ...(this._standins || {}) } });
+    let to; const launch = this.ctx.container.exec(["bash", "-c", cmd], { cwd: "/", stderr: "combined", env: { ...COMPUTER_ENV, ...CA_ENV, ...(this._standins || {}) } });
     const p = await Promise.race([launch, new Promise((_, rej) => { to = setTimeout(() => rej(new Error(`exec launch timed out after ${timeoutMs}ms`)), timeoutMs); })]);
     clearTimeout(to);
     if (tag) (this.procs ||= new Map()).set(tag, p);
