@@ -494,7 +494,7 @@ export class ChannelComputer extends DurableObject {
   }
   // The optional third argument is a bearer token held by a background browser task. Ordinary callers stay unchanged.
   async browser(op, body = {}, ownerToken = null) {
-    if (!/^(navigate|snapshot|act|back|screenshot|status)$/.test(op)) return { ok: false, error: "unknown browser op" };
+    if (!/^(navigate|snapshot|act|back|screenshot|status|record)$/.test(op)) return { ok: false, error: "unknown browser op" };
     const denied = this.#browserOwnerGate(op, ownerToken); if (denied) return denied;
     // Reserve the call before the first await, so a job cannot acquire ownership while Chrome is waking.
     const busyId = op === "status" ? null : this.#busyStart(ownerToken == null ? "browser" : "owner_browser");

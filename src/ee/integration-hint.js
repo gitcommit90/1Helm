@@ -22,7 +22,8 @@
 //    The very next identical call runs. Once per app per task (kept in the Resident's kv, so a later turn of the task isn't nudged
 //    again). Never for generic searches (no hint → no nudge), never when the person asked for the web or the website. The nudged call
 //    didn't run, so it isn't counted by the runaway watch (spendguard.js guardTools skips it) and it isn't a "no progress" sign.
-import { appCatalog, statusFor, connectKind, oneLine } from "./connect-offer.js";
+import { appCatalog, statusFor, connectKind, oneLine, withConnectedTwin } from "./connect-offer.js";
+import { twinKept } from "./app-visibility.js";
 import { BUILTIN_APPS_LATEST, isHiddenApp, builtinApps } from "./builtin-apps.js";
 import { askedForWebsite, connectedServiceFor, callKey } from "./appfirst.js";
 import { personWords } from "../person-asked.js";
@@ -63,9 +64,9 @@ export const ALIASES = {
   "microsoft outlook": "outlook", "outlook email": "outlook", "outlook calendar": "outlook", onedrive: "one_drive", "one drive": "one_drive", quickbooks: "quickbooks", "quick books": "quickbooks",
   seatgeek: "seat_geek", "seat geek": "seat_geek", "all trails": "alltrails_mcp", alltrails: "alltrails_mcp", trivago: "trivago_mcp", viator: "viator_mcp",
   godaddy: "godaddy_mcp", "go daddy": "godaddy_mcp", cloudflare: "cloudflare_mcp", "cloudflare mcp": "cloudflare_mcp", malwarebytes: "malwarebytes_mcp", deepwiki: "deepwiki_mcp", "hacker news": "hackernews",
-  "zoom meeting": "zoom", "zoom meetings": "zoom", "zoom call": "zoom", "zoom calls": "zoom", "monday.com": "monday", "notion page": "notion", "notion pages": "notion",
-  "notion doc": "notion", "notion database": "notion", "outlook inbox": "outlook", "stripe dashboard": "stripe", "stripe payments": "stripe", "square pos": "square",
-  "linear issue": "linear", "linear issues": "linear", "linear ticket": "linear", "linear tickets": "linear", "excel online": "excel",
+  "zoom meeting": "zoom", "zoom meetings": "zoom", "zoom call": "zoom", "zoom calls": "zoom", "monday.com": "monday_mcp", "notion page": "notion_mcp", "notion pages": "notion_mcp",
+  "notion doc": "notion_mcp", "notion database": "notion_mcp", "outlook inbox": "outlook", "stripe dashboard": "stripe_mcp", "stripe payments": "stripe_mcp", "square pos": "square",
+  "linear issue": "linear_mcp", "linear issues": "linear_mcp", "linear ticket": "linear_mcp", "linear tickets": "linear_mcp", "excel online": "excel",
 };
 // Very specific intents → app id. Whole words, case-insensitive. Kept short on purpose: anything vaguer is a generic request.
 export const INTENTS = [
@@ -275,7 +276,7 @@ const DOMAIN = /\b([a-z0-9][a-z0-9-]*)\.(com|io|ai|co|so|app|dev|org|net|us)\b/g
 // "our Instagram followers", "my repos") point at their app of that kind (how "prior": a softer line of its own, never a nudge).
 export function matchIntegrations(text, list, { max = 3, exclude = null, used = null } = {}) {
   const ix = indexFor(list), out = [], seen = new Set();
-  const push = (slug, via, how, at) => { if (!slug || seen.has(slug) || !ix.bySlug.has(slug) || SKIP.has(slug) || isHiddenApp(slug) || exclude?.has?.(slug)) return; seen.add(slug); out.push({ slug, via, how, at }); };
+  const push = (slug0, via, how, at) => { const slug = twinKept(slug0) || slug0; if (!slug || seen.has(slug) || !ix.bySlug.has(slug) || SKIP.has(slug) || isHiddenApp(slug) || exclude?.has?.(slug)) return; seen.add(slug); out.push({ slug, via, how, at }); };
   const s0 = String(text || "").replace(URLS, " ");
   for (const m of s0.matchAll(DOMAIN)) {
     const full = compact(m[0]), label = compact(m[1]), e = ix.keys.get(full) || ix.keys.get(label);
@@ -346,7 +347,7 @@ export async function integrationHint(res, text, list = null) {
     if (!ms.length && !vs.length) return both([]);
     let conns = []; try { if (ms.length) conns = await res.conns(); } catch {}
     const ix = indexFor(list), items = [];
-    for (const m of ms) { const a = ix.bySlug.get(m.slug), st = a && hintState(a, conns); if (!st) continue;
+    for (const m of ms) { const a = withConnectedTwin(ix.bySlug.get(m.slug), conns), st = a && hintState(a, conns); if (!st) continue;
       const route = m.route && st.state === "builtin" && builtinApps(res.env).has(m.slug) ? m.route : null;   // a route names its action only where the app is built in
       if (m.how === "route" && !route) continue;
       items.push({ a, ...st, via: m.via, how: m.how, keys: m.how === "prior" ? keysOf(ix, m.slug, a.n) : [...keysOf(ix, m.slug, m.via), ...(route ? ROUTE_KEYS[route.id] || [] : [])], ...(route ? { route, hosts: ROUTE_HOSTS[route.id] || [] } : {}), ...(used?.has(m.slug) ? { used: true } : {}) }); }

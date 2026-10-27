@@ -26,7 +26,7 @@ import { transportFor } from "./composio-transport.js";
 import { selfStatus, ENDED_LINE } from "./composio-self.js";
 import { tidyAfterConnect } from "./composio.js";
 import { BUILTIN_APPS_LATEST, byokInfo } from "./builtin-apps.js";
-import { isHiddenApp, connectRefusal } from "./app-visibility.js";
+import { isHiddenApp, isTwinApp, twinsOf, visibleCatalog, connectRefusal } from "./app-visibility.js";
 import { loginSites } from "../logins.js";
 import { appLink } from "./texting.js";
 import { taskWords } from "./appfirst.js";
@@ -56,7 +56,7 @@ export function connectOfferInit(sql) { for (const q of CONNECT_DDL) sql.exec(q)
 export const catalogFile = (env) => (latestVersion(env) ? "integrations-latest.json" : "integrations.json");
 const CAT_TTL = 3600e3;
 let CAT = null;             // { at, list }
-export function setCatalog(list) { CAT = list ? { at: Date.now(), list: list.filter((a) => !isHiddenApp(a?.s)).map(prep) } : null; }   // the deny list (builtin-apps.js) never reaches the helper
+export function setCatalog(list) { CAT = list ? { at: Date.now(), list: visibleCatalog(list).map(prep) } : null; }   // the deny list, the twins and the " MCP" in a kept name (app-visibility.js): what the helper sees is what the Apps popup shows
 export async function appCatalog(env) { return catalog(env); }
 async function catalog(env) {
   if (CAT && Date.now() - CAT.at < CAT_TTL) return CAT.list;
@@ -142,15 +142,24 @@ export function oneLine(a) {
   d = d ? d[0].toUpperCase() + d.slice(1) : (a.c || []).join(", ");
   return d.length > 170 ? d.slice(0, 167).replace(/\s+\S*$/, "") + "…" : d;
 }
-// Server side of "Soon and hidden apps can't be connected": → "" when the person may connect this app, else the refusal text.
-// Used by the Connect route (index.js) and appConnectLink (composio.js). A Soon app they are already connected to may get another account.
+// Server side of "Soon, twin and hidden apps can't be connected": → "" when the person may connect this app, else the refusal text.
+// Used by the Connect route (index.js) and appConnectLink (composio.js). A Soon app or a twin they are already connected to may get another account.
 export async function connectBlock(env, tenantId, slugIn) {
   const slug = String(slugIn || "").toLowerCase();
   if (isHiddenApp(slug)) return connectRefusal(slug);
-  const row = (await catalog(env)).find((r) => r.s === slug) || null;
-  if (!row || !row.x) return "";
-  let connected = false; try { connected = (await transportFor(env, tenantId).listConnections({ app: slug, names: false })).some((c) => c.status === "connected"); } catch {}
+  const twin = isTwinApp(slug), row = twin ? null : (await catalog(env)).find((r) => r.s === slug) || null;   // a twin isn't in the catalog the helper sees
+  if (!twin && (!row || !row.x)) return "";
+  let connected = false; try { connected = (await transportFor(env, tenantId).listConnections({ app: slug, names: false })).some((c) => c.status === "connected" || (twin && c.status)); } catch {}   // a twin they have any account in (even an expired one) may be reconnected
   return connectRefusal(slug, row, connected);
+}
+// A person who connected the other side of a pair (the twin) before it was left out of the catalog keeps using it. For an offered app they
+// have no account in, but whose twin they do (connected, or expired so they can reconnect it): → the same row with the twin's slug, so
+// the helper is told to use the account they have.
+export function withConnectedTwin(a, conns = []) {
+  if (!a || statusFor(a.s, conns).status !== "not connected") return a;
+  const sts = twinsOf(a.s).filter((s) => !isHiddenApp(s)).map((s) => [s, statusFor(s, conns).status]).filter(([, st]) => st !== "not connected");
+  const t = (sts.find(([, st]) => st === "connected") || sts[0])?.[0];
+  return t ? { ...a, s: t, _s: compact(t) } : a;
 }
 // This workspace's connection to one app, from listConnections rows ({ app, status, email, retired }).
 export function statusFor(slug, conns = []) {
@@ -316,8 +325,8 @@ async function findApp(res, a, ctx) {
   const conns = named.length ? await res.conns() : [];
   const session = ctx.session || null, tenant = res.get("tenant");
   const off = (await offersFlag(res.env, tenant)) === "off";
-  const out = named.map(({ a: x }) => {
-    const st = statusFor(x.s, conns), kind = connectKind(x, st.status === "connected"), prev = session ? offerRow(res.sql, session, x.s) : null;
+  const out = named.map(({ a: x0 }) => {
+    const x = withConnectedTwin(x0, conns), st = statusFor(x.s, conns), kind = connectKind(x, st.status === "connected"), prev = session ? offerRow(res.sql, session, x.s) : null;
     return { app: x.s, name: x.n, what: oneLine(x), status: statusText(st, kind), connects: byokText(x) || KIND_TEXT[kind], ...(prev ? { offered_in_this_task: offeredText(prev) } : {}), _k: kind, _st: st.status, _p: prev, _x: x };
   });
   const own = mine.map((r) => ({ app: r.slug.toLowerCase(), name: displayOf(r), what: "a custom MCP server the person added in Settings → Advanced", status: "connected", connects: "already added by the person; nothing to connect" }));
@@ -375,6 +384,8 @@ async function offerConnect(res, a, ctx) {
   if (kind === "soon") return `NOT OFFERED: ${x.n} isn't available as a connection yet. Tell them plainly, and offer to do it in the browser instead (browser_task; browser_fill_login if they saved a login for it, else browser_handoff).`;
   if (kind === "builtin") return `NOT OFFERED: ${x.n} is built in, nothing to connect. Use it right away with app_actions (app "${x.s}").`;
   const conns = await res.conns(true), st = statusFor(x.s, conns);
+  { const t = withConnectedTwin(x, conns);   // they have an account in this app's twin: use it, or reconnect it when it expired
+    if (t.s !== x.s) { if (statusFor(t.s, conns).status !== "connected") x = t; else if (!asksForAnother(taskWords(res, ctx), x, a.another === true)) return `NOT OFFERED: ${x.n} is already connected${acctList(conns, t.s)}. Just use it with app "${t.s}".`; } }
   // Already connected: a card only for another account, and only when they asked for one (their words, checked).
   const another = st.status === "connected" && !st.via;
   if (st.status === "connected" && (st.via || !asksForAnother(taskWords(res, ctx), x, a.another === true)))

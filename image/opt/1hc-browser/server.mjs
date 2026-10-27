@@ -2,7 +2,7 @@
 // One HTTP server on :6080 (reachable only from this channel's controller via getTcpPort; containers have no public ingress).
 //   /vnc?mode=view|control  WebSocket → x11vnc (view = a view-only VNC server, control = a full one). The controller decides who may use "control".
 //   /novnc/*                noVNC client files for the live pane.
-//   POST /cdp/<op>          navigate | snapshot | act | back | tabs | screenshot | status — what the resident's browser tools call.
+//   POST /cdp/<op>          navigate | snapshot | act | back | tabs | screenshot | status | record — what the resident's browser tools call.
 // Chrome, Xvfb and x11vnc start only on the first request (lazy), and Chrome's profile lives in /workspace/.browser so logins persist.
 import http from "node:http";
 import net from "node:net";
@@ -264,6 +264,49 @@ async function click(c, x, y) {
   await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
   await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
 }
+async function clickRef(c, ref) {
+  const p = await box(c, ref);
+  // Off-screen controls (e.g. Stripe's hidden "AI agent" steering checkbox) can't take a mouse click; click them in the page.
+  if (p.x < 0 || p.y < 0 || p.x > W || p.y > H) await evalJS(c, `(() => { const e = document.querySelector('[data-1hc="${String(ref).replace(/[^a-z0-9]/gi, "")}"]'); e && e.click(); })()`, p.session);
+  else await click(c, p.x, p.y);
+}
+// upload {ref, path | paths}: put files from the computer into a page. The ref is a file input (set directly), or a button or link that opens
+// the browser's file chooser (the chooser is intercepted and answered with the files, so sites that hide the real input work too).
+const WAIT_MAX = 10e3, UPLOAD_MAX = 10;
+async function upload(c, a) {
+  const raw = a.paths ?? a.path, list = (Array.isArray(raw) ? raw : [raw]).map((x) => String(x ?? "").trim()).filter(Boolean);
+  if (!list.length) throw new Error("upload needs path: the file's path on the computer (relative to /workspace or absolute)");
+  if (list.length > UPLOAD_MAX) throw new Error(`upload takes at most ${UPLOAD_MAX} files at once`);
+  const files = list.map((x) => {
+    const f = path.resolve("/workspace", x); let st; try { st = fs.statSync(f); } catch { throw new Error(`upload: no file at ${x} on the computer`); }
+    if (!st.isFile()) throw new Error(`upload: ${x} is a folder, not a file`);
+    if (f === "/workspace/.browser" || f.startsWith("/workspace/.browser/")) throw new Error("upload: the browser's own profile folder can't be uploaded");
+    return f;
+  });
+  const fr = await frameOf(c, a.ref), session = fr?.session, sel = `document.querySelector('[data-1hc="${String(a.ref).replace(/[^a-z0-9]/gi, "")}"]')`;
+  const info = await evalJS(c, `(() => { const e = ${sel}; return e ? { file: e.tagName === 'INPUT' && e.type === 'file', multiple: !!e.multiple } : null; })()`, session);
+  if (!info) throw new Error(`no element ${a.ref} on the page now — take a new snapshot`);
+  const word = files.length === 1 ? "1 file" : `${files.length} files`;
+  if (info.file) {
+    if (files.length > 1 && !info.multiple) throw new Error(`${a.ref} takes one file; ${files.length} were given`);
+    const o = await c.send("Runtime.evaluate", { expression: sel, returnByValue: false }, 30e3, session);
+    if (!o.result?.objectId) throw new Error(`no element ${a.ref} on the page now — take a new snapshot`);
+    await c.send("DOM.enable").catch(() => {});
+    await c.send("DOM.setFileInputFiles", { files, objectId: o.result.objectId }, 30e3, session);
+    return `attached ${word} to the file input ${a.ref}`;
+  }
+  await c.send("Page.setInterceptFileChooserDialog", { enabled: true });
+  try {
+    const opened = c.once("Page.fileChooserOpened", 5e3);
+    await clickRef(c, a.ref);
+    const ev = await opened;
+    if (!ev) throw new Error(`${a.ref} is not an upload control: clicking it did not open a file chooser. Pick the button or link that adds a file, or a file input`);
+    if (files.length > 1 && ev.mode !== "selectMultiple") throw new Error(`the file chooser from ${a.ref} takes one file; ${files.length} were given`);
+    await c.send("DOM.enable").catch(() => {});
+    await c.send("DOM.setFileInputFiles", { files, backendNodeId: ev.backendNodeId });
+    return `attached ${word} through the file chooser that ${a.ref} opened`;
+  } finally { await c.send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {}); }
+}
 const KEYS = { Enter: [13, "\r"], Tab: [9, "\t"], Escape: [27], Backspace: [8], ArrowDown: [40], ArrowUp: [38], ArrowLeft: [37], ArrowRight: [39], PageDown: [34], PageUp: [33], Home: [36], End: [35], Space: [32, " "] };
 async function press(c, key) {
   const k = KEYS[key]; if (!k) throw new Error(`unsupported key ${key}; use one of ${Object.keys(KEYS).join(", ")}`);
@@ -321,6 +364,75 @@ function ocrJpeg(buf, cssWidth) {
   ocrChain = job.catch(() => {});
   return job;
 }
+// ---- Screen recording: ffmpeg grabs the Xvfb screen (the Chrome window) to H.264 mp4 in the background, so other ops keep working.
+// While it runs the video is a fragmented mp4 (/workspace/recordings/.<name>.part.mp4) that stays playable if anything dies; stop remuxes it into
+// <name>.mp4 with the index up front. It ends by itself after REC_MAX_S. The state is saved in /workspace/.browser/recording.json, so a stop
+// after the server or the whole computer restarted still finishes the file. Chrome restarting does not touch it (ffmpeg reads the display).
+const REC_DIR = "/workspace/recordings", REC_STATE = "/workspace/.browser/recording.json", REC_MAX_S = 180, REC_FPS = 15;
+let rec = null, ffbin = null;
+function ffmpegBin() {
+  if (ffbin) return ffbin;
+  const tryRun = (b) => { try { execFileSync(b, ["-version"], { stdio: "ignore" }); return b; } catch { return null; } };
+  ffbin = tryRun("ffmpeg");
+  if (!ffbin) for (const base of ["/opt/python/lib"]) { try { for (const v of fs.readdirSync(base)) { const d = `${base}/${v}/site-packages/imageio_ffmpeg/binaries`; if (fs.existsSync(d)) for (const f of fs.readdirSync(d)) if (/^ffmpeg/.test(f) && (ffbin = tryRun(`${d}/${f}`))) break; } } catch {} }
+  return ffbin;
+}
+const recState = () => { try { return JSON.parse(fs.readFileSync(REC_STATE, "utf8")); } catch { return null; } };
+const recClear = () => { try { fs.rmSync(REC_STATE, { force: true }); } catch {} };
+const recName = (v) => String(v || "").replace(/\.mp4$/i, "").replace(/[^A-Za-z0-9._ -]+/g, "").trim().replace(/^\.+/, "").slice(0, 60);
+const recFree = (base) => { let name = base, n = 1; while (fs.existsSync(`${REC_DIR}/${name}.mp4`)) name = `${base}-${++n}`; return name; };
+async function recStart(b) {
+  if (rec && rec.exited === undefined) return { ok: false, error: `Already recording (started ${Math.round((Date.now() - rec.started) / 1000)} s ago). Call browser_record stop first.` };
+  const old = recState(); if (rec || (old && fs.existsSync(old.part))) return { ok: false, error: "An earlier recording has not been stopped yet. Call browser_record stop first (it saves what was captured), then start again." };
+  const bin = ffmpegBin(); if (!bin) return { ok: false, error: "Recording is not available: there is no ffmpeg on this computer." };
+  await ensureStack();
+  fs.mkdirSync(REC_DIR, { recursive: true });
+  const base = recName(b.name) || `recording-${new Date().toISOString().slice(0, 19).replace(/:/g, "").replace("T", "-")}`;
+  const name = recFree(base);
+  const part = `${REC_DIR}/.${name}.part.mp4`, final = `${REC_DIR}/${name}.mp4`;
+  const p = spawn(bin, ["-hide_banner", "-loglevel", "error", "-y", "-f", "x11grab", "-framerate", String(REC_FPS), "-video_size", `${W}x${H}`, "-i", DISPLAY, "-t", String(REC_MAX_S),
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "25", "-pix_fmt", "yuv420p", "-g", String(REC_FPS * 2), "-movflags", "+frag_keyframe+empty_moov+default_base_moof", "-flush_packets", "1", part], { env: { ...process.env, DISPLAY }, stdio: ["pipe", "ignore", "pipe"] });
+  const r = { p, part, final, name, started: Date.now(), max_s: REC_MAX_S, tail: "" };
+  p.stderr.on("data", (d) => { r.tail = (r.tail + d).slice(-1500); }); p.stdin.on("error", () => {});
+  p.on("exit", (code) => { r.exited = code ?? -1; r.ended = Date.now(); log(`recording ${name} ffmpeg exited ${code}`); });
+  p.on("error", (e) => { r.exited = -1; r.ended = Date.now(); r.tail = e.message; });
+  r.guard = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} }, (REC_MAX_S + 20) * 1e3); r.guard.unref();   // ffmpeg stopped answering: it never runs past the limit
+  rec = r;
+  try { fs.writeFileSync(REC_STATE, JSON.stringify({ name, part, final, started: r.started, max_s: REC_MAX_S, pid: p.pid })); } catch {}
+  await sleep(700); if (r.exited !== undefined) { rec = null; recClear(); return { ok: false, error: `The recorder stopped at once: ${r.tail.trim().split("\n").pop() || "unknown error"}` }; }
+  return { recording: true, name, will_save_as: final, max_seconds: REC_MAX_S, fps: REC_FPS, size: `${W}x${H}` };
+}
+async function recStop(b = {}) {
+  const st = rec ? { name: rec.name, part: rec.part, final: rec.final, started: rec.started, max_s: rec.max_s } : recState();   // (a state file with no running recorder means a restart)
+  if (!st) return { ok: false, error: "No recording is running. Start one with browser_record start." };
+  { const nn = recName(b.name); if (nn && nn !== st.name) { st.name = recFree(nn); st.final = `${REC_DIR}/${st.name}.mp4`; } }   // a name given at stop wins
+  const r = rec, bin = ffmpegBin(); let stoppedBy = "stop", ended = Date.now();
+  if (r) {
+    clearTimeout(r.guard);
+    if (r.exited === undefined) { try { r.p.stdin.write("q\n"); } catch {} const t0 = Date.now(); while (r.exited === undefined && Date.now() - t0 < 8e3) await sleep(100);
+      if (r.exited === undefined) { try { r.p.kill("SIGINT"); } catch {} while (r.exited === undefined && Date.now() - t0 < 12e3) await sleep(100); }
+      if (r.exited === undefined) { try { r.p.kill("SIGKILL"); } catch {} await sleep(300); } ended = Date.now(); }
+    else { ended = r.ended || ended; stoppedBy = r.exited === 0 && (ended - r.started) / 1000 >= r.max_s - 2 ? "time limit" : r.exited === 0 ? "stop" : "recorder error"; }
+  } else { stoppedBy = "restart";
+    if (st.pid) { const alive = () => { try { return fs.readFileSync(`/proc/${st.pid}/cmdline`, "utf8").includes("x11grab"); } catch { return false; } };   // this server restarted but the old ffmpeg may still be running
+      if (alive()) { try { process.kill(st.pid, "SIGINT"); } catch {} for (let i = 0; i < 80 && alive(); i++) await sleep(100); if (alive()) { try { process.kill(st.pid, "SIGKILL"); } catch {} await sleep(300); } } }
+  }   // nothing running here any more: the computer or this server restarted since the recording began
+  rec = null; recClear();
+  const partBytes = fs.existsSync(st.part) ? fs.statSync(st.part).size : 0;
+  const out = { name: st.name, path: st.final, stopped_by: stoppedBy, wall_seconds: Math.round((ended - st.started) / 100) / 10, max_seconds: st.max_s, ...(r?.tail && stoppedBy === "recorder error" ? { recorder_error: r.tail.trim().split("\n").pop().slice(0, 200) } : {}) };
+  if (partBytes < 1000 || !bin) { try { fs.rmSync(st.part, { force: true }); } catch {} return { ...out, path: null, duration_s: 0, bytes: 0, frames: 0, ...(bin ? {} : { error: "no ffmpeg to finish the file" }) }; }
+  const mux = await new Promise((z) => { let err = ""; const q = spawn(bin, ["-hide_banner", "-y", "-stats", "-i", st.part, "-c", "copy", "-movflags", "+faststart", st.final], { stdio: ["ignore", "ignore", "pipe"] });
+    q.stderr.on("data", (d) => { err = (err + d).slice(-4000); }); q.on("exit", (c) => z({ code: c, err })); q.on("error", (e) => z({ code: -1, err: e.message })); setTimeout(() => { try { q.kill("SIGKILL"); } catch {} }, 60e3).unref(); });
+  const t = [...mux.err.matchAll(/time=(\d+):(\d+):([\d.]+)/g)].pop();
+  if (mux.code !== 0 || !fs.existsSync(st.final)) return { ...out, path: null, duration_s: 0, bytes: 0, frames: 0, error: `could not finish the video file: ${mux.err.trim().split("\n").pop()?.slice(0, 200)}` };
+  // A copy does not report frames in every ffmpeg build, so count them by decoding the finished file (fast; a few seconds at most).
+  const cnt = await new Promise((z) => { let err = ""; const q = spawn(bin, ["-hide_banner", "-i", st.final, "-an", "-f", "null", "-"], { stdio: ["ignore", "ignore", "pipe"] });
+    q.stderr.on("data", (d) => { err = (err + d).slice(-4000); }); q.on("exit", () => z(err)); q.on("error", () => z("")); setTimeout(() => { try { q.kill("SIGKILL"); } catch {} }, 60e3).unref(); });
+  const counted = Number([...cnt.matchAll(/frame=\s*(\d+)/g)].pop()?.[1] || 0), tt = [...cnt.matchAll(/time=(\d+):(\d+):([\d.]+)/g)].pop() || t;
+  const dur = tt ? Number(tt[1]) * 3600 + Number(tt[2]) * 60 + Number(tt[3]) : counted / REC_FPS, frames = counted || Math.round(dur * REC_FPS);
+  try { fs.rmSync(st.part, { force: true }); } catch {}
+  return { ...out, duration_s: Math.round(dur * 10) / 10, bytes: fs.statSync(st.final).size, frames, fps: REC_FPS, width: W, height: H, codec: "h264 yuv420p" };
+}
 const OPS = {
   async status() { const up = !!procs.chrome && await portOpen(CDP_PORT); if (!up) return { running: false }; const ts = await targets(); return { running: true, tabs: ts.map((t) => ({ title: t.title, url: t.url })) }; },
   async navigate(b, c) {
@@ -340,17 +452,11 @@ const OPS = {
   },
   async act(b, c) {
     const acts = Array.isArray(b.actions) ? b.actions : []; if (!acts.length || acts.length > 20) throw new Error("actions: 1–20 steps");
-    let done = 0; const before = await snapshot(c).catch(() => null);
+    let done = 0, uploaded = false; const notes = []; const before = await snapshot(c).catch(() => null);
     const h0 = (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries.length;
     for (const a of acts) {
       const kind = String(a.kind || "");
-      if (kind === "click") {
-        const p = await box(c, a.ref);
-        // Off-screen controls (e.g. Stripe's hidden "AI agent" steering checkbox) can't take a mouse click; click them in the page.
-        if (p.x < 0 || p.y < 0 || p.x > W || p.y > H) await evalJS(c, `(() => { const e = document.querySelector('[data-1hc="${String(a.ref).replace(/[^a-z0-9]/gi, "")}"]'); e && e.click(); })()`, p.session);
-        else await click(c, p.x, p.y);
-        await settle(c, 8e3);
-      }
+      if (kind === "click") { await clickRef(c, a.ref); await settle(c, 8e3); }
       else if (kind === "click_at") {
         // A pixel position in the page (viewport, CSS pixels: the same numbers a screenshot of the page uses), for things with no ref such as a canvas.
         const x = Number(a.x), y = Number(a.y);
@@ -377,14 +483,15 @@ const OPS = {
         if (!ok) throw new Error(`could not select "${a.text}" in ${a.ref}`);
       } else if (kind === "press") { await press(c, String(a.key || "Enter")); await settle(c, 8e3); }
       else if (kind === "scroll") { await c.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: W / 2, y: H / 2, deltaX: 0, deltaY: a.direction === "up" ? -600 : 600 }); await sleep(400); }
-      else if (kind === "wait") await sleep(Math.min(10e3, Number(a.ms) || 1000));
+      else if (kind === "wait") { const want = Number(a.ms) || 1000, ms = Math.min(WAIT_MAX, Math.max(0, want)); if (want > WAIT_MAX) notes.push(`wait shortened from ${want} to ${WAIT_MAX} ms (the most one wait step waits; use several wait steps, or check the page between waits)`); await sleep(ms); }
+      else if (kind === "upload") { notes.push(await upload(c, a)); uploaded = true; await settle(c, 8e3); }
       else if (kind === "select_or_fill") {   // expiry month/year can be a dropdown or a text box
         const fs_ = await frameOf(c, a.ref), sel = `document.querySelector('[data-1hc="${String(a.ref).replace(/[^a-z0-9]/gi, "")}"]')`;
         const isSel = await evalJS(c, `(${sel})?.tagName === 'SELECT'`, fs_?.session);
         if (isSel) { const t = JSON.stringify(String(a.text ?? "")); const ok = await evalJS(c, `(() => { const e = ${sel}; const want = ${t}; const o = [...e.options].find((o) => o.value === want || o.text.trim() === want || o.value === String(Number(want)) || o.value.endsWith(want.slice(-2)) && o.value.length <= 4); if (!o) return false; e.value = o.value; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`, fs_?.session); if (!ok) throw new Error(`could not choose that option in ${a.ref}`); }
         else { a.kind = "fill"; acts.splice(acts.indexOf(a) + 1, 0, a); done--; }
       }
-      else throw new Error(`unknown action kind "${kind}" (click, click_at, fill, type, select, press, scroll, wait)`);
+      else throw new Error(`unknown action kind "${kind}" (click, click_at, fill, type, select, press, scroll, wait, upload)`);
       done++;
     }
     // Payment/submit buttons often call an API for several seconds before the page moves on. After clicking one,
@@ -401,11 +508,11 @@ const OPS = {
     let after = await snapshot(c);
     for (let i = 0; i < (FAST ? 0 : 6) && before && after.snapshot === before.snapshot && after.url === before.url; i++) { await sleep(2000); after = await snapshot(c); }
     // Tell the model plainly when its steps had no visible effect, so it can't narrate a success that didn't happen.
-    const changed = !before || before.snapshot !== after.snapshot || before.url.replace(/[?#]$/, "") !== after.url.replace(/[?#]$/, "");
+    const changed = uploaded || !before || before.snapshot !== after.snapshot || before.url.replace(/[?#]$/, "") !== after.url.replace(/[?#]$/, "");
     // Pages passed through during the steps (e.g. /checkout/success before an automatic redirect home).
     const hist = (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries;
     const visited = hist.slice(Math.max(0, h0 - 1)).map((e) => e.url).filter((u, i, a) => u !== a[i - 1]);
-    return { completed: done, page_changed: changed, ...(visited.length > 1 ? { visited } : {}), ...after };
+    return { completed: done, page_changed: changed, ...(notes.length ? { notes } : {}), ...(visited.length > 1 ? { visited } : {}), ...after };
   },
 };
 
@@ -420,9 +527,10 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "content-type": MIME[path.extname(f)] || "application/octet-stream", "cache-control": "public, max-age=3600" }); return fs.createReadStream(f).pipe(res);
     }
     const m = u.pathname.match(/^\/cdp\/([a-z]+)$/);
-    if (m && req.method === "POST" && OPS[m[1]]) {
+    if (m && req.method === "POST" && (OPS[m[1]] || m[1] === "record")) {
       if (!controllerRequest(req.headers)) return send(403, { error: "forbidden" });
       let body = ""; for await (const ch of req) body += ch; const b = body ? JSON.parse(body) : {};
+      if (m[1] === "record") { const r = b.action === "stop" ? await recStop(b) : b.action === "start" ? await recStart(b) : { ok: false, error: "action must be start or stop" }; return send(200, { ok: r.ok !== false, ...r }); }
       if (m[1] === "status") return send(200, await OPS.status());
       FAST = b._wait === "quiet";
       const boot = await ensureStack(); const c = await page();

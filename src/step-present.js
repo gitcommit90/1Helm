@@ -373,6 +373,12 @@ const P = {
   browser_navigate(c) { const p = pageLine(c.s.plain); if (c.exit) return { error: plainError(c.s.plain.replace(/^exit -?\d+\n/, "")) }; return p ? { text: `Opened “${p.title}”`, links: [p] } : null; },
   browser_snapshot(c) { const p = pageLine(c.s.plain); if (c.exit) return { error: plainError(c.raw) }; return { text: p ? `Read “${p.title}”` : "Read the page", links: p ? [p] : [] }; },
   browser_screenshot(c) { if (c.exit) return { error: plainError(c.raw) }; const u = c.s.plain.match(/screenshot of (https?:\/\/\S+)/)?.[1]; return { text: u ? `Took a screenshot of ${hostOf(u)}` : "Took a screenshot" }; },
+  browser_record(c) {
+    if (c.exit) return { error: plainError(c.raw) }; const t = c.s.plain;
+    if (c.a.action !== "stop") return { text: "Started a screen recording" };
+    const m = t.match(/\((\d+(?:\.\d+)?) s, /); const len = m ? ` (${m[1]} s)` : "";
+    return { text: /^The recording is VERY SHORT/.test(t) ? `Saved a very short screen recording${len}` : `Saved a screen recording${len}` };
+  },
   browser_handoff(c) { if (c.exit) return { error: plainError(c.raw) }; const u = c.s.plain.match(/(https?:\/\/[^\s)]+)/)?.[1]; return { text: u ? `Handed you the browser on ${hostOf(u)}` : "Handed you the browser" }; },
   browser_fill_login(c) { if (c.exit) return { error: plainError(c.raw) }; const h = c.s.plain.match(/saved (?:username|login|password)[^.]*? for ([\w.-]+)/i)?.[1]?.replace(/\.+$/, ""); const p = pageLine(c.s.plain); return { text: `Filled your saved login${h ? ` on ${h}` : ""}`, links: p ? [p] : [] }; },
   browser_fill_card(c) { if (c.exit) return { error: plainError(c.raw) }; return { text: "Filled in the payment details" }; },

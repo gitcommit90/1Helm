@@ -6,10 +6,10 @@
 import { call, RETIRED_APPS, latestVersion, versionQuery } from "./composio.js";
 import { transportFor } from "./composio-transport.js";
 import { isBuiltin, byokInfo } from "./builtin-apps.js";
-import { isHiddenApp, HIDDEN_CONNECT_TEXT } from "./app-visibility.js";
+import { isHiddenApp, isTwinApp, brandName, HIDDEN_CONNECT_TEXT } from "./app-visibility.js";
 import { connectAuth, isOAuthScheme, keyScheme } from "./composio-auth.js";
 
-const MEM_TTL = 600e3, EDGE_TTL = 6 * 3600, CACHE_V = 5;   // v5: PayPal's customer-owned S2S setup
+const MEM_TTL = 600e3, EDGE_TTL = 6 * 3600, CACHE_V = 6;   // v6: a kept twin shows its name without " MCP"; v5: PayPal's customer-owned S2S setup
 const MEM = new Map();            // "<version>:<slug>" → { at, data }
 const ver = (env) => (latestVersion(env) ? "latest" : "pinned");   // the Composio toolkit version this server uses (composio.js)
 // Keyed on this zone's own host (Cache API entries are per data center and only ever read back by this code; never served to visitors).
@@ -90,7 +90,7 @@ async function build(env, slug) {
   let d;
   try { d = await call(env, `/toolkits/${slug}`); }
   catch (e) { if (/not found/i.test(e.message)) { const err = new Error("No app by that name."); err.status = 404; throw err; } throw e; }
-  const m = d.meta || {}, name = String(d.name || slug);
+  const m = d.meta || {}, name = brandName(slug, String(d.name || slug));   // the kept side of a twin pair has no " MCP" (app-visibility.js)
   const [toolsR, trigR] = await Promise.allSettled([allTools(env, slug), call(env, `/triggers_types?toolkit_slugs=${slug}&limit=200`)]);
   const tools = toolsR.status === "fulfilled" ? toolsR.value.filter((t) => !t.is_deprecated && !(t.tags || []).includes("deprecated")).map((t) => ({
     name: String(t.name || "").replace(/\s*\(deprecated\)\s*/i, "").trim() || String(t.slug || "").toLowerCase().replace(/_/g, " "),
@@ -141,6 +141,12 @@ export async function appDetail(env, tenantId, slug) {
     if (!conn.accounts.length) { const e = new Error("No app by that name."); e.status = 404; throw e; }
     const { complete, ...pub } = await appCatalog(env, slug);
     return { ...pub, connect: { kind: "unavailable", text: `${HIDDEN_CONNECT_TEXT} You can still remove the account you saved.` }, auth: [], connection: conn };
+  }
+  // A twin (the other side of a plain app and its MCP twin) has no page unless the person has an account in it: a new person is sent to
+  // the kept entry from the Apps list. With an account it is an ordinary page, so they can manage it.
+  if (isTwinApp(cleanSlug(slug))) {
+    const conn = await appConnection(env, tenantId, slug).catch(() => ({ status: "none", accounts: [] }));
+    if (!conn.accounts.length) { const e = new Error("No app by that name."); e.status = 404; throw e; }
   }
   const [cat, conn] = await Promise.all([appCatalog(env, slug), appConnection(env, tenantId, slug).catch(() => ({ status: "unknown", accounts: [] }))]);
   const { complete, ...pub } = cat;

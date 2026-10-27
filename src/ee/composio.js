@@ -4,6 +4,7 @@
 // One Composio user per 1Helm workspace: user_id = "1hc:<tenant id>".
 // Every request goes through composio-api.js (REST v3.1, the project's scoped key in env.COMPOSIO_KEY).
 import { builtinApps, isBuiltin, isHiddenApp, isHiddenAction, HIDDEN_TEXT } from "./builtin-apps.js";
+import { brandName } from "./app-visibility.js";
 import { DEFAULT_TZ, validTz } from "../schedule.js";
 import { leanMail, readMail, leanJSON, htmlToText, clip as clipText, stripDirectives } from "./lean.js";
 import { composioRequest, latestVersion, versionQuery, toolVersion, ERROR_MAX } from "./composio-api.js";
@@ -156,7 +157,7 @@ export async function runGoogleTool(env, tenantId, name, a, conns = null, opts =
 // short audited list in builtin-apps.js: Composio's NO_AUTH flag alone isn't enough (Gemini says NO_AUTH but needs a key).
 const AC_CACHE = new Map(), TK_CACHE = new Map(), TOOL_CACHE = new Map();
 const ck = (env, slug) => `${latestVersion(env) ? "L" : "P"}:${slug}`;   // TK_CACHE / TOOL_CACHE key: what a toolkit or tool is depends on the version
-export const appName = async (env, slug) => (await toolkitInfo(env, slug).catch(() => null))?.name || slug;
+export const appName = async (env, slug) => brandName(slug, (await toolkitInfo(env, slug).catch(() => null))?.name || slug);   // the kept side of a twin pair has no " MCP" (app-visibility.js)
 export async function toolkitInfo(env, slug) {
   slug = String(slug || "").toLowerCase().replace(/[^a-z0-9_]/g, "");
   if (!slug) throw new Error("Which app?");

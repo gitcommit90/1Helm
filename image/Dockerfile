@@ -20,7 +20,8 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       python3 python3-pip python3-venv \
     && python3 -m venv /opt/python \
     && /opt/python/bin/pip install --no-cache-dir \
-      python-docx openpyxl python-pptx matplotlib pypdf pillow brotli requests beautifulsoup4 \
+      python-docx openpyxl python-pptx matplotlib pypdf pillow brotli requests beautifulsoup4 imageio-ffmpeg \
+    && ln -sf "$(/opt/python/bin/python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" /usr/local/bin/ffmpeg \
     && mkdir -p /opt/chrome /opt/1hc-browser /opt/1hc \
     && curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip" -o /tmp/chrome.zip \
     && unzip -q /tmp/chrome.zip -d /tmp/chrome \
@@ -44,6 +45,8 @@ COPY opt/1hc-browser/request-guard.mjs /opt/1hc-browser/request-guard.mjs
 COPY usr/local/bin/rg /usr/local/bin/rg
 RUN chmod 755 /opt/1hc/init.sh /opt/1hc/save.sh /usr/local/bin/rg \
     && test -x /opt/chrome/chrome \
+    && ffmpeg -hide_banner -devices 2>&1 | grep -q x11grab \
+    && ffmpeg -hide_banner -encoders 2>&1 | grep -q ' libx264 ' \
     && test -s /opt/1hc-browser/novnc/vnc.html \
     && test -s /usr/lib/libreoffice/share/config/soffice.cfg/modules/simpress/ui/tabviewbar.ui \
     && node --version && python3 --version && soffice --version

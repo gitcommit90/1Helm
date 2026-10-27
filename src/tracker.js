@@ -118,6 +118,7 @@ export function fallbackStepTitle(tool, a = {}) {
     browser_act: () => host ? `Used the browser on ${host}` : "Used the browser",
     browser_task: () => host ? `Used the browser on ${host}` : "Used the browser",
     browser_screenshot: () => "Took a screenshot",
+    browser_record: () => a.action === "stop" ? "Stopped the screen recording" : "Started a screen recording",
     browser_handoff: () => "Asked you to take over the browser",
     browser_fill_login: () => a.site ? `Signed in to ${ell(one(a.site), 40)}` : "Signed in",
     browser_fill_card: () => "Filled in the payment details",
