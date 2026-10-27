@@ -34,7 +34,7 @@ const SESSION = '00000000-0000-4000-8000-000000000001', DIR = '/workspace/worksp
 import test from 'node:test';
 import { cpSync, existsSync, readdirSync, readFileSync as rf, writeFileSync as wf, mkdtempSync as mk, statSync, rmSync } from "node:fs";
 import { DECK_STYLES_TOOL, deckStylesTool, turnHasDeckStyles } from '../src/deck-styles.js';
-import { HELPER_ALLOWED } from '../src/helpers.js';
+import { helperAllowed } from '../src/helpers.js';
 const ROOT = new URL('..', import.meta.url).pathname, OUTD = join(ROOT, 'app-assets/app-static/deck-styles'), TPL = join(ROOT, 'app-assets/deck-templates');
 const index = JSON.parse(rf(join(OUTD, 'index.json'), 'utf8'));
 
@@ -80,7 +80,7 @@ test('a delivered deck .html is tagged deck and a plain .html is not', async () 
 test('the helper tool puts the picker in the chat for a chat turn only, helpers never get it, and the transcript marks the turn', () => {
   const seen = []; assert.match(deckStylesTool({ kind: 'chat', turn: 't1', emit: (e) => seen.push(e) }), /sees a card/); assert.deepEqual(seen, [{ t: 'deck_styles' }]);
   assert.match(deckStylesTool({ kind: 'workflow', emit: (e) => seen.push(e) }), /^error/); assert.equal(seen.length, 1);
-  assert.equal(DECK_STYLES_TOOL.function.name, 'show_deck_styles'); assert.ok(!HELPER_ALLOWED.has('show_deck_styles'));
+  assert.equal(DECK_STYLES_TOOL.function.name, 'show_deck_styles'); assert.ok(!helperAllowed('show_deck_styles'));
   assert.ok(R.tools().some((t) => t.function.name === 'show_deck_styles'));
   assert.equal(turnHasDeckStyles([{ tool: 'run_command' }, { tool: 'show_deck_styles' }]), true); assert.equal(turnHasDeckStyles([{ tool: 'run_command' }]), false);
 });

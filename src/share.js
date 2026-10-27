@@ -314,7 +314,6 @@ export async function republishFrom(R, { fileId, r2key, path }, ctx = {}) {
 }
 export async function runShareTool(R, name, a, ctx = {}) {
   const env = R.env;
-  if (ctx.kind === "helper") return `error: ${name} isn't available to a helper. Say in your report what should be shared; the helper who started you offers it to the person.`;
   if (!ctx.session) return `error: ${name} needs a task the person can see, to show them the card.`;
   const tenantId = R.get("tenant"), t = await tenantRow(env, tenantId); if (!t) return "error: this workspace isn't set up.";
   await sweepOffers(env, tenantId).catch(() => {});

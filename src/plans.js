@@ -212,7 +212,7 @@ export const followupPrompt = (brief) => `Scheduled follow-up you set for yourse
 // ---- propose (the tool) ----
 // ctx = the turn (tc). The card is attached to the turn's card; one pending plan per task (a new one replaces it).
 export function proposePlan(res, a, ctx = {}) {
-  if (ctx.kind !== "chat" || !ctx.session || !res.session(ctx.session)) return "error: a plan can only be offered while working on a task with the person.";
+  if ((ctx.kind !== "chat" && ctx.kind !== "helper") || !ctx.session || !res.session(ctx.session)) return "error: a plan can only be offered while working on a task with the person.";
   const tz = res.tz(), now = Date.now();
   const c = checkPlan(a, { general: res.get("channel") === PLAN_GENERAL, tz, now }); if (c.error) return c.error;
   const sql = res.sql, old = sql.exec("SELECT * FROM plans WHERE session=? AND status='pending' ORDER BY id DESC", ctx.session).toArray();

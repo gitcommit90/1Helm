@@ -12,9 +12,11 @@ for (const n of NATIVE) {
   assert.ok(NATIVE_TOOL_NAMES.has(n));
   assert.equal(routingToolsAllowed({ orchestration: { requiredDelegation: true } }, n), true, `${n} allowed on Primary under required delegation`);
   assert.equal(routingToolsAllowed({ orchestration: { requiredDelegation: true, started: 5 } }, n), false, `${n} not allowed once a worker started`);
-  assert.equal(routingToolsAllowed({ orchestration: { requiredDelegation: true, review: 5 } }, n), false);
-  assert.equal(helperAllowed(n, { dynamic_routing: true, required_delegation: true }), false, `${n} is not a worker tool`);
-  assert.equal(helperAllowed(n, null), false);
+  assert.equal(routingToolsAllowed({ orchestration: { requiredDelegation: true, review: 5 } }, n), true, `${n} allowed on Primary while a worker waits for review or input`);
+  assert.equal(routingToolsAllowed({ orchestration: { requiredDelegation: true, steer: 5 } }, n), true);
+  assert.equal(routingToolsAllowed({ orchestration: { requiredDelegation: true, sent: true } }, n), false, `${n} not allowed after the hand-off turn ended`);
+  assert.equal(helperAllowed(n, { dynamic_routing: true, required_delegation: true }), true, `${n} is a worker tool`);
+  assert.equal(helperAllowed(n, null), true, `${n} is offered to every helper`);
 }
 assert.equal(routingToolsAllowed({ orchestration: { requiredDelegation: true } }, 'start_helper'), true);
 assert.equal(routingToolsAllowed({ orchestration: { requiredDelegation: true } }, 'run_command'), false);

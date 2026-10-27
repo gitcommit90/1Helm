@@ -36,8 +36,7 @@ for (const args of [null, [], "text", { mode: "execute" }, { source_id: {} }, { 
 }
 const project = { ...res, get: (key) => ({ channel: "secret-project", tenant: "t1" })[key] };
 assert.equal((await ambientQuery(project)).status, "unavailable_scope");
-assert.equal((await ambientQuery(res, {}, { kind: "helper" })).status, "unavailable_scope");
-assert.equal(calls.length, 0, "invalid input, projects and subhelpers never reach ambient storage");
+assert.equal(calls.length, 0, "invalid input and projects never reach ambient storage");
 for (const mode of ["off", "shadow"]) assert.equal((await ambientQuery({ ...res, memoryMode: () => mode })).status, "memory_disabled");
 assert.equal(calls.length, 0, "disabled memory never reads ambient storage");
 const privateResult = { ...result, evidence: { lines: ["The field trip is secret"] } };
@@ -80,7 +79,7 @@ for (const candidate of [
 ]) {
   const x = await ambientQuery(candidate); assert.equal(x.status, "unavailable"); assert.equal(x.coverage.incomplete, true); assert.equal(x.coverage.searched, false); assert.doesNotMatch(JSON.stringify(x), /private-transport-token/);
 }
-assert.equal(helperAllowed("ambient_query"), false);
+assert.equal(helperAllowed("ambient_query"), true);
 assert.equal(toolClass("ambient_query"), "read");
 assert.equal(AMBIENT_QUERY_TOOL.function.name, "ambient_query");
 for (const prompt of [channelBlock({ general: true, tz: "America/Los_Angeles" }), channelLayers({ general: true, tz: "America/Los_Angeles" }).runtime]) {
@@ -114,8 +113,7 @@ for (const engine of ["classic", "pi"]) for (const layout of ["legacy", "v2"]) {
   };
   const answer = await R.runTurn("t1", "main", "1", "What was I trying to get done today?", null, { session: R.newSession("Ambient review") });
   assert.ok(!answer.error, answer.error); assert.equal(dispatched, 2); assert.match(answer.reply, /school/);
-  assert.ok(!R.availableTools({ kind: "helper" }).some((t) => t.function.name === "ambient_query"));
-  assert.match(await R.localToolInner("ambient_query", {}, { kind: "helper" }), /isn't available to (?:a|this) helper/);
+  assert.ok(R.availableTools({ kind: "helper" }).some((t) => t.function.name === "ambient_query"));
   R.put("channel", "project");
   assert.ok(!R.availableTools({}).some((t) => t.function.name === "ambient_query"));
   assert.equal(JSON.parse(await R.localToolInner("ambient_query", {}, {})).status, "unavailable_scope");

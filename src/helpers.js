@@ -9,7 +9,6 @@
 // This module owns the helpers tables, limits, tool schemas and prompt/note text. The Resident's
 // helperTool/helperRun/helperFinish/handoff methods (resident.js, after runNow) use them.
 
-import { isDesignToolName } from "./design-tools.js";
 import { userInputInit } from "./user-input.js";
 import { wantsWebsiteLive, wantsWebsiteLiveJob } from "./website-live.js";
 import { DEFAULT_RUNTIME_LIMITS } from "./limits.js";
@@ -76,41 +75,23 @@ export const COORDINATOR_LIMITS = Object.freeze({
 export const COORDINATOR_CONTROLS = new Set(["start_helper", "list_helpers", "send_helper", "stop_helper"]);
 export const HELPER_MESSAGE_MAX = 2000, HELPER_MESSAGES_MAX = 8;
 
-// ---- what a helper may use (Captain's answer A): the allowlist ----
-// Computer (full), public web text, Gmail/Calendar reads and app action lookups (no app_run). bring_back only restores the helper's OWN set-aside steps.
-export const HELPER_ALLOWED = new Set([
-  "load_tools", // schema discovery only; availableTools still enforces this allowlist
-  "run_command", "read_file", "write_file", "edit_file", "search_files",   // full computer, in its own folder
-  "fetch_url", "web_search", "search_web_vertical",                        // public web search + page text (no live browser) + live listings (read-only)
-  "gmail_search", "gmail_read", "calendar_events", "app_actions", "find_app",   // read-only lookups in the person's apps and the app list
-  "read_doc",                                                              // 1Helm's own docs (read-only, src/docs/)
-  "read_skill",                                                            // skills (read-only, src/skills/): a job that builds a file follows the same playbook
-  "bring_back",
-  "work_log",                                                              // earlier lookups (what was searched and found), read-only
-  "file_text",                                                             // a Library file's prepared text (sidecar.js), read-only
-]);
-// Named for the record and the tests; everything not in HELPER_ALLOWED is denied anyway. Why each is out:
-// app_run / app_proxy: a write waits on the person's tap on a confirm card (confirm.js); a background helper has nobody to show it to.
-// recall_history / memory_explain: the person's chat and memory (the brief must carry what the job needs).
-export const HELPER_DENIED = [
-  "start_helper", "stop_helper", "list_helpers", "send_helper",           // no helper controls inside a helper
-  "text_person", "text_captain", "react", "share_file", "remember", "update_todos", "mark_task_done", "recall_history", "memory_explain", "save_skill", "interview", "pomodoro", "show_deck_styles",   // chat, UI, memory, done, focus timer (the person decides)
-  "browser_navigate", "browser_snapshot", "browser_act", "browser_handoff", "browser_screenshot", "browser_task", "start_browser_task", "list_browser_tasks", "stop_browser_task",       // live browser
-  "browser_fill_login", "browser_fill_card", "buy_with_link", "check_purchase",                                         // credentials, wallet
-  "schedule_workflow", "schedule_followup", "set_workflow_status", "set_workflow_gate", "save_run_notes", "list_workflows", "app_events",   // workers (app_events: only for setting up an app-event workflow)
-  "gmail_send", "gmail_draft", "calendar_add", "app_run", "app_proxy",                                                  // sending/posting
-  "offer_connect", "apps_i_use",                                                                                        // cards in the person's chat (connect-offer.js); their apps list (apps-used.js)
-];
-const ROUTED_ACTIONS = new Set(["app_run", "app_proxy", "browser_navigate", "browser_snapshot", "browser_act", "browser_screenshot", "browser_handoff", "browser_task",
-  "browser_fill_login", "browser_fill_card", "check_purchase", "request_saved_login", "request_purchase"]);   // the last five are gated in resident.js: a login or card is typed only after Primary approved the worker's request
-export const helperAllowed = (name, helper = null, phase = null) => HELPER_ALLOWED.has(String(name)) || isDesignToolName(name) ||   // design-tools.js: read-only design lookups, like fetch_url
-  (helper?.dynamic_routing && (["done", "request_input"].includes(name) || helper.required_delegation && ROUTED_ACTIONS.has(String(name)))) ||
+// ---- what a helper may use ----
+// Every helper that does work is offered every tool Primary has for doing work, because an agent doing a task needs the tools the task needs
+// (Captain, 2026-10-26). Only the tools in WORKER_DENIED (orchestrator.js, each with its reason) are denied, and a coordinator's dispatch turn also gets
+// COORDINATOR_CONTROLS to start its two children. A tool that needs the person (a card to tap) shows its card in the task. A routed worker pauses and
+// resumes when the person acts (resident.js helperCardWait and cardHandoff); a helper without that pause ends its turn and the person's decision
+// hands the task back to Primary, as it does for any card whose run has ended.
+// The tools a worker is denied are named in the licensed src/ee/orchestrator.js, which registers them here when it loads. Core cannot import it
+// (ee-gate test, and the import would be circular); a deployment without that module denies none, as the licensed routing is what runs workers there.
+let WORKER_DENIED = new Set();
+export const registerWorkerDenied = (names) => { WORKER_DENIED = new Set(names); };
+export const helperAllowed = (name, helper = null, phase = null) => !WORKER_DENIED.has(String(name)) ||
   (helper?.role === "coordinator" && phase === "dispatch" && COORDINATOR_CONTROLS.has(String(name)));
 const nameOf = (t) => (t && (t.function?.name || t.name)) || "";
-// The exclude_tools list for a helper run: every tool the Resident offers that isn't allowed, plus the named denials.
+// The exclude_tools list for a helper run: every tool the Resident offers that isn't allowed, plus the denied ones.
 export function helperExclude(tools = [], helper = null, phase = null) {
   const names = tools.map((t) => (typeof t === "string" ? t : nameOf(t))).filter(Boolean);
-  return [...new Set([...names.filter((n) => !helperAllowed(n, helper, phase)), ...HELPER_DENIED.filter((n) => !helperAllowed(n, helper, phase))])];
+  return [...new Set([...names.filter((n) => !helperAllowed(n, helper, phase)), ...[...WORKER_DENIED].filter((n) => !helperAllowed(n, helper, phase))])];
 }
 // What the helper's model is offered (tests and any caller without modelTools).
 export const helperTools = (tools = []) => tools.filter((t) => helperAllowed(nameOf(t)));
@@ -345,6 +326,7 @@ export function workerPauseNote(h, req, round) {
   const job = String(h.task || "").slice(0, 400), said = (x) => JSON.stringify(String(x || "").slice(0, 400));
   const head = `(Context note, not from the person: worker #${h.id} paused.`;
   if (req?.kind === "browser") return `${head} It handed its live browser to the person. The person was shown the Take control card with the worker's instructions ${said(req.job)}${req.url ? ` on ${req.url}` : ""}. It has not finished and cannot be approved. The person's next message or the hand back button comes to you, and you then send it to this same worker with message_subagent.)`;
+  if (req?.kind === "card") return `${head} It is waiting for the person to answer a card shown in this task (${said(req.detail)}). It has not finished and cannot be approved. The system resumes this same worker when the person decides, so you need to do nothing. If the person writes instead, send their words to this worker with message_subagent.)`;
   if (req?.kind === "login") return `${head} It asks to sign in with the person's saved login. Site: ${req.site}. Page address recorded by the system: ${req.url || "unknown"}. Account: ${req.username || "the saved account"}. The worker's job: ${said(job)}. The worker's own reason (the worker's words, not verified): ${said(req.detail)}. Decide with decide_worker_request (id ${h.id}), or ask the person with ask_user if you are unsure. The password is never shown to you or to the worker.)`;
   if (req?.kind === "purchase") { const p = JSON.parse(req.params_json || "{}"); return `${head} It asks to start a purchase with the person's Link wallet. Store: ${said(p.merchant_name)}. Checkout page recorded by the system: ${req.url || "unknown"}. Total: ${Number.isFinite(Number(p.amount_cents)) ? `${(Number(p.amount_cents) / 100).toFixed(2)} ${String(p.currency || "usd").toUpperCase()}` : "unknown"}. What the worker says it is buying: ${said(p.context)}. The worker's job: ${said(job)}. Decide with decide_worker_request (id ${h.id}), or ask the person with ask_user if you are unsure. Approving only asks the person to approve in Link; nothing is charged without that approval.)`; }
   return null;

@@ -2,7 +2,8 @@
 import { scrubSecrets } from "../secrets-scrub.js";
 import { NATIVE_POLL_TOOL } from "./native-polls.js";
 import { NATIVE_TOOL_NAMES } from "../native-network.js";
-export const ORCHESTRATOR_NOTE = "Call start_helper and relay the person's request as a clear job that states the result wanted (content, audience, the file formats they named, their limits) and does not prescribe tools, libraries or build methods they didn't ask for. The system has already selected the worker. You must delegate this request. You may start the worker, send corrections after it returns, read its finished evidence and files, ask the person for missing information with ask_user or interview, and approve its output. Questions may use existing GenUI cards, choices, forms or plain text. A question leaves the worker open and unapproved. Workers can request_input from you; only you speak to the person. After approval, present the reviewed result using the existing GenUI, drawing and other presentation instructions when useful. Starting or messaging ends your access until the worker calls done or request_input. Review the response, every produced file and the system step log before approving. You answer for the result you approve. SSH, SFTP and Tailscale requests are the exception: workers do not have native_network, ssh_connect or ssh_session, and the computer's shell cannot reach tailnet addresses or port 22, so you handle those yourself with those tools and do not start a worker for them.";
+import { registerWorkerDenied } from "../helpers.js";
+export const ORCHESTRATOR_NOTE = "Call start_helper and relay the person's request as a clear job that states the result wanted (content, audience, the file formats they named, their limits) and does not prescribe tools, libraries or build methods they didn't ask for. The system has already selected the worker. You must delegate this request, SSH, SFTP and Tailscale requests included, because workers have the same work tools you have (native_network, ssh_connect and ssh_session too); when a tool needs the person, the card appears in the task and the same worker resumes after they act. You may start the worker, send corrections after it returns, read its finished evidence and files, ask the person for missing information with ask_user or interview, and approve its output. Questions may use existing GenUI cards, choices, forms or plain text. A question leaves the worker open and unapproved. Workers can request_input from you; only you speak to the person. After approval, present the reviewed result using the existing GenUI, drawing and other presentation instructions when useful. Starting or messaging ends your access until the worker calls done or request_input. Review the response, every produced file and the system step log before approving. You answer for the result you approve.";
 const tool = (name, description, properties, required = []) => ({ type: "function", function: { name, description, parameters: { type: "object", properties, required } } });
 export const DONE_TOOL = tool("done", "Finish this round and return your complete response. The system attaches files from your assigned work folder, changed Library copies used in the task, and an uneditable step log. Move outputs from other paths into your assigned folder before calling done. Call done to finish; a plain answer does not end your run.", { response: { type: "string" } }, ["response"]);
 export const REQUEST_INPUT_TOOL = tool("request_input", "Pause your work and ask Primary for missing information. Only Primary talks to the person. Keep files in your assigned folder. This is not completion or approval; your same worker session and history remain open until Primary sends clarified instructions.", { question: { type: "string" } }, ["question"]);
@@ -16,6 +17,36 @@ export const REQUEST_LOGIN_TOOL = tool("request_saved_login", "Ask Primary to le
 export const REQUEST_PURCHASE_TOOL = tool("request_purchase", "Ask Primary to start a purchase for the person with their Link wallet. Use only when the assigned job is to buy something, after you reached the store's checkout and read the exact total (items, shipping and tax). Primary reviews the request and approves or denies it. If approved, the person is asked to approve it in Link, and nothing is charged without their approval. Your worker pauses and continues in this same session with the answer.", { amount_cents: { type: "integer", description: "Exact checkout total in cents" }, currency: { type: "string" }, merchant_name: { type: "string" }, merchant_url: { type: "string", description: "The store's checkout page URL" }, context: { type: "string", description: "At least 100 characters: what is being bought, quantity, store, total with shipping and tax." } }, ["amount_cents", "merchant_name", "merchant_url", "context"]);
 export const WORKER_REQUEST_TOOLS = [REQUEST_LOGIN_TOOL, REQUEST_PURCHASE_TOOL];
 export const ORCHESTRATOR_TOOLS = [APPROVE_TOOL, MESSAGE_TOOL, LOG_TOOL, ASK_USER_TOOL, NATIVE_POLL_TOOL, DECIDE_TOOL];
+export const WORKER_DENIED_REASONS = {
+  start_helper: "a worker is already the helper doing the job, and nested workers are not supported",
+  stop_helper: "a worker has no other workers to stop",
+  list_helpers: "a worker has no other workers to list",
+  send_helper: "a worker has no other workers to message",
+  approve_subagent: "approving a worker's result is Primary's review of the worker, so a worker cannot approve itself",
+  message_subagent: "sending a correction to a worker is Primary's side of the review, and a worker has nobody to correct",
+  decide_worker_request: "deciding a worker's login or purchase request is Primary's side, and a worker cannot decide its own request",
+  read_log: "reads another worker's finished log for review, and a worker has no worker to review",
+  search_agent_bank: "searches workers' finished rounds for review, and a worker has no worker to review",
+  ask_user: "Primary's question to the person about a worker's result, and a worker asks through request_input, its own way to pause and ask",
+  interview: "Primary's multi-question card, and a worker asks through request_input, its own way to pause and ask",
+  send_poll: "Primary's poll about a worker's result, and a worker asks through request_input",
+  react: "reacts to the person's own message in this run, and a worker's run has no message from the person",
+  show_deck_styles: "the picker's answer comes back as the person's next message, which goes to Primary, not to the worker",
+  start_browser_task: "a background browser job reports back to Primary's turn, and a worker drives the same browser itself with browser_navigate and browser_act",
+  browser_task: "a background browser job reports back to Primary's turn, and a worker drives the same browser itself with browser_navigate and browser_act",
+  list_browser_tasks: "lists background browser jobs, which a worker does not start",
+  stop_browser_task: "stops background browser jobs, which a worker does not start",
+  read_context: "a helper run has no task context; the brief carries what the job needs",
+  recall_memory: "a helper run has no task context; the brief carries what the job needs",
+  rename_task: "needs a quote of the person's own words from a chat turn, and a helper run has none",
+  create_task: "needs a quote of the person's own words from a chat turn, and a helper run has none",
+  start_task: "needs a quote of the person's own words from a chat turn, and a helper run has none",
+  create_channel: "needs a quote of the person's own words from a chat turn, and a helper run has none",
+  app_events: "needs a quote of the person's own words from a chat turn, and a helper run has none, and an app-event workflow is set up only while the person is asking for it",
+  mark_task_done: "marks the task done, which follows Primary's approval of the worker's result, so a worker cannot do it first",
+};
+export const WORKER_DENIED = new Set(Object.keys(WORKER_DENIED_REASONS));
+registerWorkerDenied(WORKER_DENIED);   // helpers.js (core) cannot import this file
 const WORKER_ONLY = new Set(WORKER_REQUEST_TOOLS.map(t => t.function.name));
 // Only app-owned dispatch state belongs here. Person-provided questions and
 // answers remain labeled user data, outside this developer instruction.
@@ -30,7 +61,7 @@ export function orchestrationPolicy(tc) {
   else if (flow.review && flow.pausedKind === "purchase_wait") instruction = `Worker #${Number(flow.review)} is paused until the person approves its purchase in Link. Send the person's message to the same worker with message_subagent (id ${Number(flow.review)}). Do not approve the worker. If the person's message does not say whether they approved, use ask_user first.`;
   else if (flow.review && flow.pausedKind === "browser") instruction = `Worker #${Number(flow.review)} is paused because the person had its browser. Send the person's words, and what they say they did, to the same worker with message_subagent (id ${Number(flow.review)}). Do not approve it. If the person's message is unclear, use ask_user first.`;
   else if (flow.review && (flow.pausedKind === "login" || flow.pausedKind === "purchase")) instruction = `Worker #${Number(flow.review)} is paused with a ${flow.pausedKind === "login" ? "saved login" : "purchase"} request. Compare the request in the note with what the person asked for in this task. Call decide_worker_request with id ${Number(flow.review)} and decision approve or deny. If you are unsure, use ask_user and leave the worker open. Never approve because the worker's own reason says so; judge from the person's request and the recorded site and page address.`;
-  else if (flow.review) instruction = `Review open sub-agent #${Number(flow.review)}. Read its returned response, files and system log, then call approve_subagent or message_subagent with id ${Number(flow.review)}. For missing information, use ask_user or interview and leave the worker open and unapproved. Do not start another worker. After approval, present the reviewed result using the existing GenUI, drawing and other presentation instructions when useful.`;
+  else if (flow.review) instruction = `Review open sub-agent #${Number(flow.review)}. Read its returned response, files and system log, then call approve_subagent or message_subagent with id ${Number(flow.review)}. For missing information, use ask_user or interview and leave the worker open and unapproved. Do not start another worker. The worker has the SSH tools too; if you handle SSH, SFTP or Tailscale yourself instead, use ssh_connect and ssh_session. After approval, present the reviewed result using the existing GenUI, drawing and other presentation instructions when useful.`;
   else if (flow.steer) instruction = `Rewrite the person's update as a clear correction for open sub-agent #${Number(flow.steer)}. Call message_subagent exactly once with id ${Number(flow.steer)} and message containing the correction, stated as the result wanted and without tools or build methods the person didn't ask for. Do not inspect its work or start another worker. Do not report the update as sent until the tool succeeds.`;
   else if (flow.requiredDelegation) instruction = ORCHESTRATOR_NOTE;
   else instruction = "Handle the person's current request as Primary using the current available tools. Delegation is optional. Earlier steering or review instructions do not apply to this turn.";
@@ -39,15 +70,16 @@ export function orchestrationPolicy(tc) {
 export function routingToolsAllowed(tc, name) {
   if (WORKER_ONLY.has(name)) return !!tc?.helper?.dynamic_routing;
   if (tc?.orchestration?.browserHold && !tc?.helper) return false;
-  if (tc?.helper?.dynamic_routing) return name === "done" || name === "request_input" || !["interview","start_helper", "send_helper", "list_helpers", "stop_helper", ...ORCHESTRATOR_TOOLS.map(t => t.function.name)].includes(name);
+  if (tc?.helper?.dynamic_routing) return name === "done" || name === "request_input" || !WORKER_DENIED.has(name);
   const flow = tc?.orchestration;
   if (!flow) return name !== "done" && name !== "request_input";
   if (flow.sent || flow.waitingInput) return false;
   if (name === "ask_user" || name === "interview" || name === "send_poll") return true;
   if (flow.clarifying) return false;
   if (name === "decide_worker_request") return !!flow.review && (flow.pausedKind === "login" || flow.pausedKind === "purchase");
+  // Primary keeps the native SSH/Tailscale tools too: it may use them before delegating, while a worker waits for review or input, and for a correction to a running worker.
+  if (NATIVE_TOOL_NAMES.has(name) && (flow.review || flow.steer || flow.requiredDelegation && !flow.started)) return true;
   if (flow.steer && !flow.review) return name === "message_subagent";
-  if (flow.requiredDelegation && !flow.review && !flow.started && NATIVE_TOOL_NAMES.has(name)) return true;   // native SSH/Tailscale tools exist only on Primary, so Primary may use them before delegating
   if (flow.requiredDelegation || flow.review) return name === "start_helper" && !flow.review && !flow.started || name === "message_subagent" && !!flow.review || name === "approve_subagent" && !!flow.review || REVIEW_READS.has(name) && !!flow.review;
   return name !== "done" && name !== "request_input";
 }

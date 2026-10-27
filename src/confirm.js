@@ -112,9 +112,15 @@ export async function decideConfirm(res, a, decision) {
   if (!YES.has(decision) && !NO.has(decision)) return { error: "decision must be confirm (once) or cancel (deny)" };
   const sql = res.sql, now = Date.now();
   if (a.status !== "pending") return { error: `already ${a.status}` };
-  if (now - Number(a.at) > CONFIRM_TTL) { sql.exec("UPDATE approvals SET status='expired', decided_at=? WHERE id=? AND status='pending'", now, a.id); return { error: "expired", status: "expired" }; }
+  if (now - Number(a.at) > CONFIRM_TTL) {
+    sql.exec("UPDATE approvals SET status='expired', decided_at=? WHERE id=? AND status='pending'", now, a.id);
+    if (a.session && res.cardHandoff) { try { res.cardHandoff(a.session, a.turn, { text: `(Platform event: the confirm card "${viewOf(a).title || a.what || ""}" expired before the person decided, so nothing was done. Say in your done response that it was not done.)`, from: { type: "confirm", id: a.id, title: "Card expired" } }, { helperOnly: true }); } catch {} }
+    return { error: "expired", status: "expired" };
+  }
   if (NO.has(decision)) {
     sql.exec("UPDATE approvals SET status='denied', decision='deny', decided_at=? WHERE id=? AND status='pending'", now, a.id);
+    // A routed worker paused on this card is told; a held call or an ended Primary turn already read the denial.
+    if (!res._confirmHeld?.has(a.id) && a.session && res.cardHandoff) { const v = viewOf(a); try { res.cardHandoff(a.session, a.turn, { text: cancelled(v.title || a.what || ""), from: { type: "confirm", id: a.id, title: "Cancelled" } }, { helperOnly: true }); } catch (e) { console.log("confirm cancel", e.message); } }
     return { ok: true, approval: res.approvalView(sql.exec("SELECT * FROM approvals WHERE id=?", a.id).one()) };
   }
   const held = !!res._confirmHeld?.has(a.id), token = held ? null : newToken();
@@ -122,7 +128,7 @@ export async function decideConfirm(res, a, decision) {
   // Nobody is holding the call (the turn ended): the task carries on with a one-time token for exactly this action.
   if (!held && a.session && res.session(a.session)) {
     const v = viewOf(a), call = v.call || {};
-    try { res.handoff(a.session, { text: resumeText(v.title || a.what || "", call.tool, call.args || {}, token), from: { type: "confirm", id: a.id, title: `Confirmed: ${String(v.title || a.what || "").replace(/\?$/, "").slice(0, 80)}` } }); }
+    try { (res.cardHandoff ? res.cardHandoff.bind(res, a.session, a.turn) : (x) => res.handoff(a.session, x))({ text: resumeText(v.title || a.what || "", call.tool, call.args || {}, token), from: { type: "confirm", id: a.id, title: `Confirmed: ${String(v.title || a.what || "").replace(/\?$/, "").slice(0, 80)}` } }); }
     catch (e) { console.log("confirm handoff", e.message); }
   }
   return { ok: true, approval: res.approvalView(sql.exec("SELECT * FROM approvals WHERE id=?", a.id).one()) };

@@ -263,7 +263,6 @@ export const pomoMethods = {
   async pomoTool(ctx = {}, a = {}) {
     const action = String(a.action || "").trim().toLowerCase(), session = ctx.session, now = this.pomoClock();
     let scope = String(a.scope || "").trim().toLowerCase(); if (scope && scope !== "task" && scope !== "global") return 'error: scope must be "task" or "global".';
-    if (ctx.kind === "helper") return "error: pomodoro isn't available to a helper.";
     if (!session) { if (scope === "task") return "error: this run isn't in a task, so there's no task timer. Use scope global."; if (action === "offer") return "error: this run isn't in a task, so there's no timer to offer."; scope = "global"; }
     if (action === "status") {
       if (scope === "global") return this.pomoGlobalTool("status", a, now, session);

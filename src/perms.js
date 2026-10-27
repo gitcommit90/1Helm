@@ -262,8 +262,9 @@ export async function decidePerm(res, a, decision) {
   // Nobody is holding the call any more (the turn ended with NEEDS PERMISSION): an Allow carries the task on.
   if (decision !== "deny" && !res._permHeld?.has(a.id) && a.session && res.session(a.session)) {
     if (decision === "once") sql.exec("INSERT INTO grants (at,host,method,scope,session,uses_left,expires,approval_id) VALUES (?,?,?,?,?,?,?,?)", now, `perm:${a.perm}`, "*", "once", a.session, 1, now + 3600e3, a.id);
-    try { res.handoff(a.session, { text: resumeText(a, decision), from: { type: "permission", id: a.id, title: `Allowed: ${kindName(a.perm)}` } }); } catch (e) { console.log("perm handoff", e.message); }
+    try { (res.cardHandoff ? res.cardHandoff.bind(res, a.session, a.turn) : (x) => res.handoff(a.session, x))({ text: resumeText(a, decision), from: { type: "permission", id: a.id, title: `Allowed: ${kindName(a.perm)}` } }); } catch (e) { console.log("perm handoff", e.message); }
   }
+  if (decision === "deny" && !res._permHeld?.has(a.id) && a.session && res.cardHandoff) { try { res.cardHandoff(a.session, a.turn, { text: `(Not from the person: they did not allow "${kindName(a.perm)}"${a.what ? `, for when you wanted to ${a.what}` : ""}. Do not do it another way. Say in your done response that it was not done.)`, from: { type: "permission", id: a.id, title: `Not allowed: ${kindName(a.perm)}` } }, { helperOnly: true }); } catch (e) { console.log("perm deny", e.message); } }
   return { ok: true, approval: res.approvalView(sql.exec("SELECT * FROM approvals WHERE id=?", a.id).one()) };
 }
 const resumeText = (a, d) => `(Not from the person: they just allowed "${kindName(a.perm)}"${d === "always" ? " from now on" : " once"}${a.what ? `, for when you wanted to ${a.what}` : ""}. Carry on with what you were doing.)`;

@@ -9,8 +9,8 @@ import { boundedJson } from "./bounded-body.js";
 // - "Send answers" locks the card and returns ONE plain message ("Interview answers — <title>:\n1. <question>: <answer>…",
 //   skipped questions marked "(skipped)"). The server posts it once to Primary in the interview's original task. The source
 //   turn binds the answer to any waiting question and worker. Both the app and hosted Messages card use the same operation.
-// - The tool returns at once and tells the model to end its turn and wait. Chat turns only: never background helpers (not in
-//   HELPER_ALLOWED, and HELPER_DENIED names it), never scheduled runs.
+// - The tool returns at once and tells the model to end its turn and wait. Chat turns only: never background helpers (WORKER_DENIED
+//   names it), never scheduled runs.
 // - Texting turn: after the reply goes out by text, the card follows as an iMessage live app card opening /c/<token> (kind
 //   "interview" in D1 cards). If the live card can't be sent, a plain text with the link says what it is.
 // API (index.js): GET /w/<slug>/api/res/<ch>/interviews/<id> → view · POST {op} → view (+ message and posted receipt for op "send").

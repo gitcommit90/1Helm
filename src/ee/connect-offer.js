@@ -6,7 +6,7 @@ import { boundedJson } from "../bounded-body.js";
 //                               No model call. Background helpers may use it (read-only).
 //   offer_connect({ app, why, draft? }) a card (logo, name, the helper's one-line why, Connect / Not now, "See what it can do"). At most one
 //                               offer per app per task, none when the tenant flag connect_offers = "off", never from a background
-//                               helper (HELPER_DENIED) or an unattended run. By text: the reply carries a link to the app's page.
+//                               helper that cannot pause for the person or an unattended run. By text: the reply carries a link to the app's page.
 // The card is a row in this channel's Resident (connect_offers), shown with its task (sessionDetail.offers) and streamed live as
 // {"t":"connect_offer"}. Connect runs the app's normal Composio sign-in with from=offer; /apps/done then marks the offer
 // connected (after checking the app really is connected) and hands a context note back into the task (Resident.handoff), so the
@@ -361,8 +361,7 @@ export function asksForAnother(words = [], x = {}, flagged = false) {
 const acctList = (conns, app) => { const e = conns.filter((c) => c.app === app && c.status === "connected").map((c) => c.email).filter(Boolean); return e.length ? ` (${e.slice(0, 4).join(", ")})` : ""; };
 
 async function offerConnect(res, a, ctx) {
-  if (ctx.kind === "helper") return "error: offer_connect isn't available to a background helper. Say in your report which app would help; the helper who started you can offer it.";
-  if (!ctx.session || ctx.kind !== "chat") return "error: offer_connect only works while you're talking with the person in a task. Mention the app in your report instead.";
+  if (!ctx.session || (ctx.kind !== "chat" && ctx.kind !== "helper")) return "error: offer_connect only works while you're talking with the person in a task. Mention the app in your report instead.";
   const want = String(a.app || "").trim(); if (!want) return "error: which app? Pass its id from find_app (e.g. youtube).";
   if (isCustomSlug(want)) return CUSTOM_DENIED;   // a custom MCP server is added in Settings → Advanced, never through a Connect card
   const list = await catalog(res.env);
@@ -445,6 +444,7 @@ export function offerAct(res, id, op) {
   if (!r) return { error: "no such offer" };
   if (op !== "dismiss") return { error: "op must be dismiss" };
   if (r.status === "pending") res.sql.exec("UPDATE connect_offers SET status='dismissed', decided_at=? WHERE id=?", Date.now(), r.id);
+  if (r.status === "pending" && res.cardHandoff && r.session) { try { res.cardHandoff(r.session, r.turn, { text: `(Not from the person: they tapped Not now on the ${r.name} connect card, so ${r.name} is not connected. Do not offer it again. Do the job another way if you can, or say in your done response what is missing.)`, from: { type: "connect", app: r.app, title: "Not now" } }, { helperOnly: true }); } catch {} }
   if (r.app === SLIDES_APP) declineSlides(res);   // declining Google Slides sets the channel's deck choice to HTML until a message names Google Slides again
   const o = offerView(res.sql.exec("SELECT * FROM connect_offers WHERE id=?", r.id).one());
   res.liveTurn?.(r.session)?.emit?.({ t: "connect_offer_done", offer: o });
@@ -500,7 +500,7 @@ export async function offerConnected(res, id, app) {
   res.sql.exec("UPDATE connect_offers SET status='connected', decided_at=? WHERE id=?", Date.now(), r.id);
   const o = offerView(res.sql.exec("SELECT * FROM connect_offers WHERE id=?", r.id).one());
   res.liveTurn?.(r.session)?.emit?.({ t: "connect_offer_done", offer: o });
-  let h = null; try { h = res.handoff(r.session, { text: o.app === "composio" ? composioNote() : connectedNote(o, accounts), from: { type: "connect", app: o.app, title: o.app === "composio" ? "Signed in to Composio" : o.another ? `${o.already ? "Already connected" : "Connected"}: ${o.email || `another ${o.name} account`}` : `${o.name} connected` } }); } catch (e) { console.log("connect offer handoff", e.message); }
+  let h = null; try { h = (res.cardHandoff ? res.cardHandoff.bind(res, r.session, r.turn) : (x) => res.handoff(r.session, x))({ text: o.app === "composio" ? composioNote() : connectedNote(o, accounts), from: { type: "connect", app: o.app, title: o.app === "composio" ? "Signed in to Composio" : o.another ? `${o.already ? "Already connected" : "Connected"}: ${o.email || `another ${o.name} account`}` : `${o.name} connected` } }); } catch (e) { console.log("connect offer handoff", e.message); }
   return { ok: true, offer: o, session: r.session, handoff: h?.mode || null };
 }
 

@@ -37,7 +37,10 @@ export async function setSshPermission(env, tenant, mode, channels) {
 export function nativeInit(sql) {
   try { sql.exec('ALTER TABLE approvals ADD COLUMN ssh_data TEXT'); } catch {}
   sql.exec(`CREATE TABLE IF NOT EXISTS native_sessions (id TEXT PRIMARY KEY, task TEXT NOT NULL, turn TEXT NOT NULL, request_id TEXT NOT NULL, route TEXT NOT NULL, created INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'active');`);
+  try { sql.exec('ALTER TABLE native_sessions ADD COLUMN helper INTEGER'); } catch {}
 }
+// A card's outcome goes to the worker that raised it, or else to Primary (resident.js cardHandoff). Residents without it hand the task back directly.
+const handBack = (res, task, turn, input, opts) => res.cardHandoff ? res.cardHandoff(task, turn, input, opts) : opts?.helperOnly ? null : res.handoff(task, input);
 const parse = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
 const owner = (res) => ({ tenant: res.get('tenant'), channel: res.get('channel') });
 const touchTask = (res, task) => { if (task) res.sql.exec('UPDATE sessions SET updated=MAX(COALESCE(updated,0)+1,?) WHERE id=?', Date.now(), task); };
@@ -75,8 +78,10 @@ const unavailable = () => ({ ok: false, available: false, state: 'unavailable', 
 export const COMPUTER_NETWORK_LINK = '#settings/computer-network';
 // The result of an SSH request that cannot start yet. The person gets the steps for exactly what is missing and a link to Settings, Computer connections.
 // Nothing here opens a connection, and the next request checks the state again before any SSH attempt.
-export const setupNeeded = (missing, steps, extra = {}) => ({ ok: false, state: 'setup_needed', missing, settings_link: COMPUTER_NETWORK_LINK, settings_page: 'Settings, Computer connections', steps, ...extra,
-  next: 'SSH cannot start yet. Show the person a card in the chat that links to settings_link and lists these steps in plain words, then end the turn without any other SSH attempt, probe or workaround. When the person says it is done, call ssh_connect again; it checks the state first.' });
+export const setupNeeded = (missing, steps, extra = {}, worker = false) => ({ ok: false, state: 'setup_needed', missing, settings_link: COMPUTER_NETWORK_LINK, settings_page: 'Settings, Computer connections', steps, ...extra,
+  next: worker
+    ? 'SSH cannot start yet. Call request_input with these steps in plain words and the settings_link page (Settings, Computer connections), so the person sees them in the task, without any other SSH attempt, probe or workaround. You continue in this same session when they say it is done, and then call ssh_connect again; it checks the state first.'
+    : 'SSH cannot start yet. Show the person a card in the chat that links to settings_link and lists these steps in plain words, then end the turn without any other SSH attempt, probe or workaround. When the person says it is done, call ssh_connect again; it checks the state first.' });
 export function tailnetSetupSteps(tailscale = {}, key = null) {
   const steps = [], state = tailscale.state || 'disconnected', name = tailscale.device_name;
   if (state === 'awaiting_user_approval' || state === 'joining') steps.push(`Open Settings, Computer connections, approve ${name ? `the device ${name}` : 'this computer'} in Tailscale, then press Check connection.`);
@@ -115,7 +120,7 @@ const str = (description) => ({ type: 'string', description });
 const tool = (name, description, properties, required) => ({ type: 'function', function: { name, description, parameters: objectSchema(properties, required) } });
 export const NATIVE_TOOLS = [
   tool('native_network', 'Inspect native SSH/Tailscale state or manage this computer identity/enrollment. Call status before claiming connected OR not signed in; unchecked, sleeping or timed-out state is unknown, not disconnected. Read the native-network skill. Login links stay in Settings, never chat.', { operation: { type: 'string', enum: ['status','key','tailscale_status','tailscale_connect','tailscale_disconnect'] } }, ['operation']),
-  tool('ssh_connect', 'Open a managed SSH session. Deny blocks requests; Ask each time requires human approval. Allow trusted servers reconnects only an explicitly remembered matching server; new or changed targets require a native card. Connected returns session_id; awaiting approval means end this turn, do not retry. Commands/SFTP share the session. SSH originates from this 1HC computer through its trusted transport. The computer\'s shell cannot reach tailnet addresses or port 22, so run_command, curl, ssh clients and libraries cannot replace this tool. If the tailnet is not joined or approved, the result is setup_needed with steps for the person.', { host: str('Server hostname or IP, no URL'), port: { type: 'integer', minimum: 1, maximum: 65535 }, username: str('Remote account username'), route: { type: 'string', enum: ['public','tailnet'] } }, ['host','username','route']),
+  tool('ssh_connect', 'Open a managed SSH session. Deny blocks requests; Ask each time requires human approval. Allow trusted servers reconnects only an explicitly remembered matching server; new or changed targets require a native card. Connected returns session_id; awaiting approval means end this turn, do not retry (a worker pauses until the person decides and resumes in the same session). Commands/SFTP share the session. SSH originates from this 1HC computer through its trusted transport. The computer\'s shell cannot reach tailnet addresses or port 22, so run_command, curl, ssh clients and libraries cannot replace this tool. If the tailnet is not joined or approved, the result is setup_needed with steps for the person.', { host: str('Server hostname or IP, no URL'), port: { type: 'integer', minimum: 1, maximum: 65535 }, username: str('Remote account username'), route: { type: 'string', enum: ['public','tailnet'] } }, ['host','username','route']),
   tool('ssh_session', 'Run commands or SFTP inside an existing approved SSH session belonging to this task, or close it. No forwarding or reconnect. For a closed/lost session call ssh_connect; the actual SSH setting and remembered server identity determine whether approval is required.', { session_id: str('Approved managed session ID'), operation: { type: 'string', enum: ['exec','sftp','close'] }, command: str('Remote shell command for exec'), sftp_operation: { type: 'string', enum: ['list','read','write','mkdir','remove','rename','stat'] }, path: str('Remote SFTP path'), destination: str('New remote path for rename'), data: str('Content for SFTP write, at most 1 MiB per chunk'), encoding: { type: 'string', enum: ['utf8','base64'] }, offset: { type: 'integer', minimum: 0, description: 'Byte offset for chunked reads/writes. Write without offset truncates; explicit offset preserves other bytes unless truncate is true.' }, length: { type: 'integer', minimum: 1, maximum: 1048576, description: 'Maximum bytes returned by a read chunk' }, truncate: { type: 'boolean', description: 'Explicitly truncate destination before writing this chunk' } }, ['session_id','operation']),
 ];
 export const NATIVE_TOOL_NAMES = new Set(NATIVE_TOOLS.map(t => t.function.name));
@@ -123,7 +128,8 @@ export const NATIVE_TOOL_NAMES = new Set(NATIVE_TOOLS.map(t => t.function.name))
 export function nativeExpire(res) {
   for (const a of res.sql.exec("SELECT id,ssh_data FROM approvals WHERE perm IN ('ssh','ssh_hostkey') AND status='pending'").toArray()) {
     const d = parse(a.ssh_data);
-    if (d.expires <= Date.now()) { res.sql.exec("UPDATE approvals SET status='expired',decided_at=? WHERE id=? AND status='pending'", Date.now(), a.id); touchTask(res, d.task); }
+    if (d.expires <= Date.now()) { res.sql.exec("UPDATE approvals SET status='expired',decided_at=? WHERE id=? AND status='pending'", Date.now(), a.id); touchTask(res, d.task);
+      handBack(res, d.task, d.turn, { text: `(Platform event: the SSH request to ${d.user}@${d.host} expired before the person decided. No connection was opened. Call ssh_connect again for a fresh request, or say in your done response that SSH did not happen.)`, from: { type: 'ssh', id: a.id, title: 'SSH request expired' } }, { helperOnly: true }); }
   }
 }
 function addRequest(res, d, tc, perm = 'ssh', silent = false) {
@@ -156,13 +162,14 @@ export async function nativeTool(res, name, a, tc) {
       return { ok: false, error: 'Unknown native network operation.' };
     }
     const permission = await sshPermission(res.env, own.tenant);
-    if (permission.mode === 'deny') return setupNeeded(['ssh_permission'], ['Open Settings, Permissions, Direct network protocols, and set Outbound SSH to Ask each time or Allow trusted servers.'], { state: 'denied', error: 'Outbound SSH is Deny. No connection was opened.' });
+    const worker = !!tc.helper?.dynamic_routing;
+    if (permission.mode === 'deny') return setupNeeded(['ssh_permission'], ['Open Settings, Permissions, Direct network protocols, and set Outbound SSH to Ask each time or Allow trusted servers.'], { state: 'denied', error: 'Outbound SSH is Deny. No connection was opened.' }, worker);
     if (name === 'ssh_connect' && ['tailnet'].includes(a.route)) {
       // Check the current state before any connection attempt, so a missing tailnet membership is reported at once.
       const st = await res.nativeStatus(false), ts = st.tailscale || {};
       if (['disconnected','awaiting_user_approval','joining','expired'].includes(ts.state || 'disconnected')) {
         let key = st.key; if (!key) { try { key = publicKey(await broker.identity(own)); } catch {} }
-        return setupNeeded(['tailscale'], tailnetSetupSteps(ts, key), { tailscale: { state: ts.state || 'disconnected', ...(ts.device_name ? { device_name: ts.device_name } : {}) }, key: key || null });
+        return setupNeeded(['tailscale'], tailnetSetupSteps(ts, key), { tailscale: { state: ts.state || 'disconnected', ...(ts.device_name ? { device_name: ts.device_name } : {}) }, key: key || null }, worker);
       }
     }
     if (name === 'ssh_connect') {
@@ -171,10 +178,10 @@ export async function nativeTool(res, name, a, tc) {
       if (!host || host.length > 253 || /[\s/@?#\\]/.test(host) || !/^[a-zA-Z0-9_.-]{1,64}$/.test(user) || !Number.isInteger(port) || port < 1 || port > 65535 || !['public','tailnet'].includes(route)) return { ok: false, error: 'Supply a hostname/IP, valid username, port 1–65535, and public or tailnet route. URLs and proxy commands are unsupported.' };
       // Repeated calls in the same initiating run re-use one pending card only.
       const pending = res.sql.exec("SELECT * FROM approvals WHERE perm IN ('ssh','ssh_hostkey') AND status='pending' AND turn=? AND session=?", tc.turn, tc.session).toArray().find(x => { const d = parse(x.ssh_data); return d.host === host && d.user === user && d.port === port && d.route === route; });
-      if (pending) return { ok: false, state: 'awaiting_approval', approval_id: pending.id, next: 'The native approval card is waiting. End this turn; approval resumes this task.' };
+      if (pending) return { ok: false, state: 'awaiting_approval', approval_id: pending.id, next: worker ? 'The native approval card is waiting in the person\'s task. Your worker pauses until they decide, and approval resumes this same worker.' : 'The native approval card is waiting. End this turn; approval resumes this task.' };
       const pinned = await broker.prepareSsh({ ...own, host, port, user, route });
       if (pinned.ok === false || pinned.error) return pinned;
-      const d = { ...pinned, ...own, host, port, user, route, task: tc.session, turn: tc.turn, requestId: crypto.randomUUID(), expires: Date.now() + SSH_TTL, permissionGeneration: permission.generation, rememberAllowed: permission.mode === 'trusted' };
+      const d = { ...pinned, ...own, host, port, user, route, task: tc.session, turn: tc.turn, ...(tc.helper?.id != null ? { helper: tc.helper.id } : {}), requestId: crypto.randomUUID(), expires: Date.now() + SSH_TTL, permissionGeneration: permission.generation, rememberAllowed: permission.mode === 'trusted' };
       // Recheck cancellation and generation after the resolver await.
       const after = await sshPermission(res.env, own.tenant);
       if (tc.abort === 'hard' || !res.session(tc.session) || after.mode === 'deny' || after.generation !== permission.generation) return { ok: false, state: 'cancelled', error: 'Task or SSH permission changed while preparing the request.' };
@@ -188,10 +195,10 @@ export async function nativeTool(res, name, a, tc) {
         if (res.sql.exec('SELECT status FROM approvals WHERE id=?',card.id).one()?.status !== 'consumed' || tc.abort === 'hard' || !res.session(tc.session)) return {ok:false,state:'cancelled',error:'Task or trust changed while connecting.'};
         res.sql.exec("UPDATE approvals SET status='pending',decision=NULL,decided_at=NULL,ssh_data=? WHERE id=?",JSON.stringify(d),card.id);
         tc.emit?.({t:'approval',approval:res.approvalView({...card,ssh_data:JSON.stringify(d)})});
-        return {ok:false,state:'awaiting_approval',approval_id:card.id,next:'This server is not remembered. End this turn; the person can approve once or explicitly trust it in the native card.'};
+        return {ok:false,state:'awaiting_approval',approval_id:card.id,next:worker ? 'This server is not remembered. Your worker pauses until the person decides; they can approve once or explicitly trust it in the native card, and approval resumes this same worker.' : 'This server is not remembered. End this turn; the person can approve once or explicitly trust it in the native card.'};
       }
       const card = addRequest(res, d, tc);
-      return { ok: false, state: 'awaiting_approval', approval_id: card.id, next: 'End this turn. The person must approve the native card; approval resumes this task. The computer can sleep while waiting.' };
+      return { ok: false, state: 'awaiting_approval', approval_id: card.id, next: worker ? 'The person must approve the native card shown in their task. Your worker pauses until they decide, and approval resumes this same worker. The computer can sleep while waiting.' : 'End this turn. The person must approve the native card; approval resumes this task. The computer can sleep while waiting.' };
     }
     if (name === 'ssh_session') {
       const s = res.sql.exec("SELECT * FROM native_sessions WHERE id=? AND task=? AND status='active'", String(a.session_id || ''), tc.session).toArray()[0];
@@ -210,7 +217,7 @@ export async function decideSsh(res, a, decision) {
   nativeExpire(res);
   const current = res.sql.exec('SELECT * FROM approvals WHERE id=?', a.id).one();
   if (current.status !== 'pending') return { error: `Request is ${current.status}.`, status: current.status };
-  if (decision === 'deny') { res.sql.exec("UPDATE approvals SET status='denied',decision='deny',decided_at=? WHERE id=? AND status='pending'", Date.now(), a.id); touchTask(res, current.session); return { ok: true, approval: res.approvalView({ ...current, status: 'denied', decision: 'deny' }) }; }
+  if (decision === 'deny') { res.sql.exec("UPDATE approvals SET status='denied',decision='deny',decided_at=? WHERE id=? AND status='pending'", Date.now(), a.id); touchTask(res, current.session); handBack(res, current.session, current.turn, { text: `(Platform event: the person denied SSH to ${parse(current.ssh_data).user}@${parse(current.ssh_data).host}. No connection was opened. Do not try another way to reach that server. Say in your done response that the person declined.)`, from: { type: 'ssh', id: a.id, title: 'SSH denied' } }, { helperOnly: true }); return { ok: true, approval: res.approvalView({ ...current, status: 'denied', decision: 'deny' }) }; }
   if (!nativeAvailable(res.env)) return unavailable();
   const d = parse(current.ssh_data), own = owner(res), p = await sshPermission(res.env, own.tenant);
   if (!(await res.computer().nativeGuardStatus()).guarded) return { error: 'This computer must restart with Sentinel before connecting.' };
@@ -219,6 +226,7 @@ export async function decideSsh(res, a, decision) {
     const status = Date.now() >= d.expires ? 'expired' : 'cancelled';
     res.sql.exec("UPDATE approvals SET status=?,decision='deny',decided_at=? WHERE id=? AND status='pending'", status, Date.now(), a.id);
     touchTask(res, current.session);
+    handBack(res, current.session, current.turn, { text: `(Platform event: the SSH request to ${d.user}@${d.host} is no longer valid (${status}). No connection was opened. Call ssh_connect again for a fresh request, or say in your done response that SSH did not happen.)`, from: { type: 'ssh', id: a.id, title: 'SSH request ended' } }, { helperOnly: true });
     return { error: 'Request is no longer valid. Create a new request.', status };
   }
   // Re-read after await, then consume synchronously before any network operation.
@@ -253,13 +261,13 @@ async function completeSsh(res,current,d,r) {
     return { ok: false, state: r.state || 'error', error: r.error || 'SSH did not open. Use ssh_connect for a fresh connection.' };
   }
   const session = r.session || r.session_id;
-  res.sql.exec('INSERT INTO native_sessions (id,task,turn,request_id,route,created) VALUES (?,?,?,?,?,?)', session, d.task, d.turn, d.requestId, d.route, Date.now());
+  res.sql.exec('INSERT INTO native_sessions (id,task,turn,request_id,route,created,helper) VALUES (?,?,?,?,?,?,?)', session, d.task, d.turn, d.requestId, d.route, Date.now(), d.helper ?? null);
   res.sql.exec("UPDATE approvals SET status='approved' WHERE id=?", a.id);
   touchTask(res, current.session);
   d.trust_saved = r.trust_saved === true;
   if (d.auto) return {ok:true,state:'connected',session_id:session,authorization:'trusted_server'};
   let handoff, resume_error;
-  try { handoff=res.handoff(d.task, { text: `(Platform event: the person approved SSH to ${d.user}@${d.host}:${d.port} through ${d.route}. The verified session is ${session}. Use ssh_session with this session_id for commands/SFTP. ${d.trust_saved ? 'This verified server was explicitly remembered; future matching ssh_connect requests can reconnect while Allow trusted servers is enabled.' : 'This was a one-session approval.'} Inspect actual results before claiming readiness.)`, from: { type: 'ssh', id: a.id, title: 'SSH session approved' } }); }
+  try { handoff=handBack(res, d.task, d.turn, { text: `(Platform event: the person approved SSH to ${d.user}@${d.host}:${d.port} through ${d.route}. The verified session is ${session}. Use ssh_session with this session_id for commands/SFTP. ${d.trust_saved ? 'This verified server was explicitly remembered; future matching ssh_connect requests can reconnect while Allow trusted servers is enabled.' : 'This was a one-session approval.'} Inspect actual results before claiming readiness.)`, from: { type: 'ssh', id: a.id, title: 'SSH session approved' } }); }
   catch { resume_error='SSH was approved, but the task could not resume. Check Computer connections and send a follow-up if needed.'; }
   if(['gone','full'].includes(handoff?.mode))resume_error='SSH was approved, but the task could not accept the continuation. Check its status before continuing.';
   const resumed={...d,...(handoff?.card?.id?{resume_card:handoff.card.id,resume_at:Date.now()}:{}),...(resume_error?{resume_error}:{})};
@@ -340,6 +348,13 @@ export const nativeMix = (Resident) => Object.assign(Resident.prototype, {
       if (a.op === 'terminate') { const session = String(a.session_id || ''); const s = this.sql.exec('SELECT * FROM native_sessions WHERE id=?', session).toArray()[0]; if (!s) return { error: 'No such managed session.' }; const r = closedAck(await b.closeSsh({ ...own, task: s.task, turn: s.turn }, { session })); this.sql.exec("UPDATE native_sessions SET status='closed' WHERE id=?", session); return r; }
       return { error: 'Unknown network operation.' };
     } catch { return safeError(); }
+  },
+  // A worker's SSH sessions end with the worker (approved, failed or stopped).
+  async nativeCloseHelper(helper) {
+    const rows = this.sql.exec("SELECT * FROM native_sessions WHERE status='active' AND helper=?", Number(helper)).toArray();
+    if (this.env.NATIVE_TRANSPORT) { const own = owner(this), b = nativeBroker(this.env, own.tenant, own.channel); for (const s of rows) closedAck(await b.closeSsh({ ...own, task: s.task, turn: s.turn }, { session: s.id })); }
+    for (const s of rows) this.sql.exec("UPDATE native_sessions SET status='closed' WHERE id=?", s.id);
+    return { ok: true, closed: rows.length };
   },
   async nativeCancel(task = null, reason = 'Task stopped', route = null) {
     const rows = this.sql.exec("SELECT * FROM approvals WHERE perm IN ('ssh','ssh_hostkey') AND status IN ('pending','consumed')").toArray();

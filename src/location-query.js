@@ -36,7 +36,7 @@ const distance = (a, b) => {
 };
 
 export async function locationQuery(res, args = {}, ctx = {}) {
-  if (res.get("channel") !== "main" || ctx?.kind === "helper") return fail("unavailable_scope", "Location recall is available only to the person's helper in General.");
+  if (res.get("channel") !== "main") return fail("unavailable_scope", "Location recall is available only to the person's helper in General.");
   if (res.memoryMode && res.memoryMode() !== "on") return fail("memory_disabled", "Personal memory is not enabled; saved location evidence was not searched.");
   const tenant = res.get("tenant");
   if (!tenant) return fail("unavailable", "The account's location evidence cannot be checked here.");

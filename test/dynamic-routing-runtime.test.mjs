@@ -28,7 +28,7 @@ assert.equal(START_HELPER_TOOL.function.parameters.properties.role,undefined);
 assert.equal(HELPER_MAX_RUNNING_PER_SESSION,6);assert.equal(HELPER_MAX_PER_DAY,200);
 assert(!helperAllowed("start_helper",{dynamic_routing:1,required_delegation:1}));
 assert(helperAllowed("app_run",{dynamic_routing:1,required_delegation:1}));
-assert(!helperAllowed("app_run",{dynamic_routing:1,required_delegation:0}));
+assert(helperAllowed("app_run",{dynamic_routing:1,required_delegation:0}), "a routed worker has app_run whether or not the category required delegation");
 const fileCalls=[], workerFileScope={id:7,dynamic_routing:1};
 const guarded=Object.assign(Object.create(Resident.prototype),{syncFiles:async()=>{},libFile:path=>path==="/workspace/files/report.pdf"?{id:"existing"}:null,computer:()=>({exec:async command=>{fileCalls.push(command);return{code:0,out:"done"};}})});
 assert.equal(workerOutputPath(guarded,workerFileScope,"nested/report.pdf"),"/workspace/workspace/helpers/7/nested/report.pdf");

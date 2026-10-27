@@ -136,7 +136,7 @@ export const tzOf = (res) => (typeof res?.tz === "function" ? res.tz() : null);
 const failure = (status, message) => ({ status, error: message, items: [], coverage: { incomplete: true, searched: false } });
 export async function ambientQuery(res, args = {}, ctx = {}) {
   if (res.env?.ONEHELM_EE !== "1hc") return failure("disabled", "Ambient memory is unavailable in this installation.");
-  if (res.get("channel") !== "main" || ctx?.kind === "helper") return failure("unavailable_scope", "Ambient memory is available to the person's helper in General. This channel or background helper cannot read it.");
+  if (res.get("channel") !== "main") return failure("unavailable_scope", "Ambient memory is available to the person's helper in General. This channel or background helper cannot read it.");
   if (res.memoryMode && res.memoryMode() !== "on") return failure("memory_disabled", "Personal memory is not enabled in this channel, so ambient memory was not searched.");
   const tenant = res.get("tenant");
   if (!tenant || !res.env.BEE_SYNC) return failure("unavailable", "Ambient memory cannot be checked here right now. This is not evidence that no recordings or items exist.");
