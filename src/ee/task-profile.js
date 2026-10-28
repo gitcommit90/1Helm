@@ -7,6 +7,7 @@ import { configuredHosts } from "./model-jobs.js";
 import { taskModelCatalog, validCatalogRecord, effectiveTaskCatalog, catalogUnavailable, isLatestAlias } from "./model-catalog.js";
 import { privacyOf, enforceRequest, PrivacyBlocked } from "../privacy.js";
 import { dynamicRoutingOn, generalRoutingChain } from "./routing-config.js";
+import { customRouting } from "./custom-models.js";
 
 export const TASK_PROFILE_KEY = (session) => `task-profile:${session}`;
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -45,7 +46,8 @@ export async function bindBackgroundRuntime(R, tc, { resumed = false, stats = nu
     return true;
   }
   if (!dynamicRoutingOn(R.env) || R.env.BYOK) return false;
-  const env = await modelSettingsEnv(R.env), level = await privacyOf(env, R.get("tenant"));
+  const base = await modelSettingsEnv(R.env), level = await privacyOf(base, R.get("tenant"));
+  const env = (await customRouting(base, R.get("tenant")))?.env || base;   // Custom Model Selection: the account's own General, or CustomModelsRequired (custom-models.js)
   const profile = await routingProfile(R, generalRoutingChain(env.MODEL_SETTINGS, level), {
     category: "general", session: JSON.stringify(["background", workflowId, tc.turn]), env });
   profile.backgroundGeneral = true;
@@ -60,10 +62,11 @@ export async function ensureTaskRuntime(R, tc, args = {}) {
     const restored = tc.route?.taskProfile;
     if (restored?.dynamicRouting) return bindTaskProfile(R, tc, restored, args.stats);
     const { route } = await routeTwoTurn(R, tc, { ...args, hist: args.hist?.length ? args.hist : R.compactHistory?.(tc.session) || [] });
-    const profile = await routingProfile(R, route.chain, { category: "general", session: tc.session, env: settingsEnv });
+    const routeEnv = (await customRouting(settingsEnv, R.get("tenant")))?.env || settingsEnv;   // Custom Model Selection: the facts of the account's own models
+    const profile = await routingProfile(R, route.chain, { category: "general", session: tc.session, env: routeEnv });
     profile.dynamicRouting = true;
     profile.dispatch = { category: route.category, requiredDelegation: route.requiredDelegation, steer: route.steer || null,
-      workerProfile: route.category === "general" ? { ...clone(profile), cacheSession: JSON.stringify([R.get("tenant"), R.get("channel"), tc.session, "worker"]) } : await routingProfile(R, route.workerChain, { category: route.category, session: `${tc.session}:worker`, env: settingsEnv }) };
+      workerProfile: route.category === "general" ? { ...clone(profile), cacheSession: JSON.stringify([R.get("tenant"), R.get("channel"), tc.session, "worker"]) } : await routingProfile(R, route.workerChain, { category: route.category, session: `${tc.session}:worker`, env: routeEnv }) };
     R.put(TASK_PROFILE_KEY(tc.session), JSON.stringify(profile));
     return bindTaskProfile(R, tc, profile, args.stats);
   }
@@ -134,7 +137,7 @@ export async function routingProfile(R, entries, { category = "general", session
       hosts: cf ? ["cloudflare"] : configuredHosts({ catalog: { [model]: catalog } }, model, level), catalog,
       contextLength: catalog.context_length, maxOutput: Math.min(catalog.max_output, catalog.context_length - 1),   // the model's own ceiling; the limit a step uses is the saved job's max_output (model.js taskPayload)
       cacheSession: JSON.stringify([R.get("tenant"), R.get("channel"), session]), settingsRevision: env.MODEL_SETTINGS_REVISION || 0,
-      createdAt: Date.now(), transitions: [] });
+      createdAt: Date.now(), transitions: [], ...(env.MODEL_SETTINGS_CUSTOM ? { custom: true } : {}) });   // custom: the models come from the account's Custom Model Selection (turn-trace.js marks it)
   }
   if (!poolChain.length) {
     if (unavailableChoices.length) throw Object.assign(new TaskAffinityBlocked("The configured task models have no verified capabilities available right now. Retry shortly; your conversation is saved and no task request was sent.", "model-unavailable"), { code: "model_chain_unavailable", status: 503, orStatus: 503, unavailableChoices });

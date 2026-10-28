@@ -26,11 +26,16 @@ import { boundedJson } from "./bounded-body.js";
 //   - "switch" (Switch to the $10 plan with my key when this billing period ends): plan-change.js's downgrade path (price swap, no
 //     proration, from the next bill; its storage check). Until then nothing changes; the renewal invoice makes tenants.plan "byok".
 //     Stripe is the truth for whether a switch is pending (a switch made in Change plan counts too); Undo puts the plan's price back.
+//   - "switch now" (Captain 10-28: "why can't i just apply whatever dollar amount i have left to credits?"): switchNow() below. It is what
+//     the second option does now, and what Change plan does for the byok plan. Order: working key (Test connection again) → Stripe price
+//     swap (the same changePlan, no proration, billing date unchanged, no invoice now) → the Ledger turns the unused plan usage into
+//     credits (ledgerByok.byokPlanToCredits, once, never created money) → tenants.plan = "byok". Every step is safe to run twice, so a
+//     failure part way is finished by trying again. The mode "switch" (scheduled for the renewal) stays for accounts that already have
+//     one: Undo as before, or Switch now. A later invoice.paid for the plan the account left is handled in index.js (stale invoice).
 //   - Removing the key ends fallback (the row goes); with a switch pending, the app asks whether to cancel the switch too.
 // On the byok plan there's no choice: the key is simply their AI.
 import { sealSecret, openSecret } from "./sentinel.js";
-import { enabled as eeEnabled } from "./ee/index.js";
-import { changePlan, nextPlan } from "./ee/index.js";
+import { enabled as eeEnabled, effortBody, ownChorePlan, changePlan, nextPlan } from "./ee/index.js";
 import { OR_SOURCE, OR_BASE, orDdl, orPendingKey, orForget, orView, orModels } from "./byok-openrouter.js";
 import { byokPrivacyFields, isOpenRouterBase, POLICY_REFUSAL_RE, byokPrivacyText } from "./privacy.js";   // AI data privacy on Sign in with OpenRouter keys   // Sign in with OpenRouter: the same key path, filled in
 
@@ -230,9 +235,28 @@ async function firstEventOk(cfg, stream) {
 // privacy: the account's AI data privacy level (privacy.js). Sign in with OpenRouter keys get it as OpenRouter's per-request data policy
 // (their chosen model is kept; if none of its endpoints qualify, OpenRouter refuses and the person is told why, never moved to another
 // model or to 1Helm's own models). Other endpoints can't be steered: their provider's terms apply (Settings says so).
-export async function byokChat(cfg, body, { fast = false, signal = null, fetchImpl = globalThis.fetch, privacy = null } = {}) {
+// Custom Model Selection on an own key (byok-custom.js): `model` is the chain entry to try instead of the main model, `effort` its reasoning level and
+// `facts` the saved facts of the model (the same as on a full plan), `maxPrice` the category's max price. Without them the call is exactly as before.
+// Effort goes the way the endpoint takes it: OpenRouter gets reasoning.effort (effortBody, as for a full plan), any other endpoint gets
+// reasoning_effort, and only a level its model's facts listed can be saved, so none is ever sent that the model did not say it supports.
+export function effortFields(cfg, effort, model, facts = null) {
+  if (!effort || effort === "default") return {};
+  if (isOpenRouterBase(cfg?.base)) return effortBody(effort, model, { catalog: facts ? { [model]: facts } : {} });
+  return { reasoning_effort: effort };
+}
+export async function byokChat(cfg, body, { fast = false, signal = null, fetchImpl = globalThis.fetch, privacy = null, model: pick = null, effort = null, facts = null, maxPrice = null } = {}) {
   if (!cfg || cfg.missing || typeof cfg.key !== "string") throw new ByokError(missingText(cfg));   // "" = no key (Ollama, LM Studio, vLLM…)
-  const model = fast ? (cfg.fast || cfg.model) : cfg.model, req = { ...byokBody(body, model), ...byokPrivacyFields(cfg, privacy) };
+  // Chores while Custom Model Selection is on: Background jobs' models in order, a failing one hands the call to the next (a bad key and the person's Stop do not).
+  if (fast && !pick && cfg.background?.length) {
+    let last;
+    for (const e of cfg.background) {
+      try { return await byokChat(cfg, body, { signal, fetchImpl, privacy, model: e.model, effort: e.effort, facts: e.facts }); }
+      catch (err) { if (signal?.aborted || err?.http === 401 || !(err instanceof ByokError)) throw err; last = err; console.log("byok background: model failed", e.model, String(err.detail || "").slice(0, 100)); }
+    }
+    throw last;
+  }
+  const model = pick || (fast ? (cfg.fast || cfg.model) : cfg.model), req = { ...byokBody(body, model), ...byokPrivacyFields(cfg, privacy), ...(pick ? effortFields(cfg, effort, model, facts) : {}) };
+  if (pick && maxPrice && isOpenRouterBase(cfg.base) && Number.isFinite(maxPrice.prompt) && Number.isFinite(maxPrice.completion)) req.provider = { ...req.provider, max_price: { prompt: maxPrice.prompt, completion: maxPrice.completion } };
   if (body.response_format?.type === "json_schema" && isOpenRouterBase(cfg.base)) {
     req.provider = { ...req.provider, require_parameters: true };
     // Strict parameter filtering leaves no endpoint when a temperature is sent (see withoutTemperatureWhenStrict in model.js), whatever the model is.
@@ -252,6 +276,28 @@ export async function byokChat(cfg, body, { fast = false, signal = null, fetchIm
   j.usage = { ...(j.usage || {}), cost: 0 };   // their provider bills them; 1Helm charges nothing for the AI
   j.model ||= model;
   return new Response(JSON.stringify(j), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+// The models the person's endpoint serves: GET <base>/models with their key, under the same rules as every other call (HTTPS only, no redirects, a timeout, a size cap, the key never
+// echoed). Returns the parsed JSON, or throws ByokError.
+export const MODELS_MS = 15e3, MAX_MODELS_BYTES = 4 << 20;
+export async function byokModelsJson(cfg, { fetchImpl = globalThis.fetch, signal = null } = {}) {
+  if (!cfg || cfg.missing || typeof cfg.key !== "string") throw new ByokError(missingText(cfg));
+  const chk = checkBase(cfg.base); if (!chk.ok) throw fail(cfg, chk.error.replace(/\.$/, ""));
+  const u = new URL(chk.base); u.pathname = `${u.pathname.replace(/\/+$/, "")}/models`;
+  const ac = new AbortController(), onAbort = () => ac.abort(signal?.reason);
+  if (signal) { if (signal.aborted) ac.abort(signal.reason); else signal.addEventListener("abort", onAbort, { once: true }); }
+  const timer = setTimeout(() => ac.abort(new Error("timeout")), MODELS_MS);
+  try {
+    let r;
+    try {
+      r = await fetchImpl(u.href, { method: "GET", redirect: "manual", signal: ac.signal, headers: { ...(cfg.key ? { authorization: `Bearer ${cfg.key}` } : {}), accept: "application/json", "user-agent": "1Helm" } });
+    } catch (e) { throw fail(cfg, ac.signal.aborted ? `no model list within ${Math.round(MODELS_MS / 1000)} seconds` : `couldn't connect${e?.message ? `: ${redact(e.message, cfg.key, 100)}` : ""}`); }
+    if (r.type === "opaqueredirect" || (r.status >= 300 && r.status < 400)) { r.body?.cancel?.().catch?.(() => {}); throw fail(cfg, `error ${r.status || 302}: it redirected to another address; use the final address`, r.status || 302); }
+    if (!r.ok) { const { detail } = await errorDetail(cfg, r); throw fail(cfg, `error ${r.status}${detail ? `: ${detail}` : ""}`, r.status); }
+    const text = await readCapped(cfg, r.body, MAX_MODELS_BYTES, "model list");
+    try { return JSON.parse(text); } catch { throw fail(cfg, "the model list wasn't JSON"); }
+  } finally { clearTimeout(timer); if (signal) signal.removeEventListener("abort", onAbort); }
 }
 
 // ---- Test connection: reach + tool calling (main model), streaming (main model), and the fast model if it's different ----
@@ -304,7 +350,10 @@ export async function loadByok(env, tenantId) {
   if (r.key_sealed == null || !r.base_url || !r.model) return onPlan ? { missing: true, settings } : null;
   const chk = checkBase(r.base_url);
   let key = ""; if (r.key_sealed) try { key = await openSecret(env, r.key_sealed); } catch { return onPlan ? { missing: true, unreadable: true, settings } : null; }   // never fall back to 1Helm's AI
-  return withKey({ base: r.base_url, host: chk.host || "", model: r.model, fast: r.fast_model || r.model, last4: r.key_last4 || "", settings, credits, helper: r.helper_name || "", ...(onPlan ? {} : { fallback: true }) }, key);
+  const o = { base: r.base_url, host: chk.host || "", model: r.model, fast: r.fast_model || r.model, last4: r.key_last4 || "", settings, credits, helper: r.helper_name || "", ...(onPlan ? {} : { fallback: true }) };
+  // Custom Model Selection on: the chores use Background jobs' chain (byokChat, fast: true). Before migration 080 there is nothing to read.
+  if (eeEnabled(env)) try { const c = ownChorePlan(await env.DB.prepare("SELECT custom_models_own_on, custom_models_own FROM tenants WHERE id=?").bind(tenantId).first(), o); if (c) o.background = c; } catch {}
+  return withKey(o, key);
 }
 // The Ledger side of fallback (mixed into the per-tenant Ledger in index.js, next to spendguard's ledgerGuard: its guardKv, sql,
 // totals, expire). One episode at a time: kv byok_fb = when it started. It ends when credits come back: any new positive grant
@@ -323,6 +372,37 @@ export const ledgerByok = {
     if (notice) this.guardKv("notice_pending", JSON.stringify({ kind: "byok", text: notice, at: since }));
     return { active: true, since, started: true };
   },
+  // The plan usage still unspent: the unexpired part of the "included" grants (renewals and upgrades), counted the way grantIncluded
+  // counts what a renewal expires (included + included_expire - everything spent), less open reservations, and never more than the
+  // balance. Credits bought (top-ups) are never in it. Reads only, apart from expire() settling stale reservations as the Ledger always does.
+  byokUnusedPlan() {
+    this.expire();
+    const sum = (q) => Number(this.sql.exec(q).toArray()[0].n);
+    const inc = sum("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE kind IN ('included','included_expire')");
+    const spent = sum("SELECT COALESCE(SUM(nano),0) n FROM spend"), reserved = sum("SELECT COALESCE(SUM(nano),0) n FROM res");
+    const balance = sum("SELECT COALESCE(SUM(nano),0) n FROM grants") - spent - reserved;
+    return Math.max(0, Math.min(inc - spent - reserved, balance));
+  },
+  // Switch now: the unused plan usage becomes prepaid credits (kind "topup": never expires, spent after the plan usage like any credit).
+  // Two rows, one transaction: the plan usage expires (included_expire, -X) and the same X is granted as credits. The balance doesn't
+  // change, so no money is created. Once per plan grant: the key names the latest included grant, so a retry or a double click finds
+  // its own rows and moves nothing again; a second switch later (after an upgrade) follows a newer grant and has its own key.
+  // A new period starts for the usage meter (guardMarkPeriod), so the card on the byok plan measures the credits, not the old plan.
+  byokPlanToCredits() {
+    const last = this.sql.exec("SELECT key FROM grants WHERE kind='included' AND nano>0 ORDER BY at DESC, rowid DESC LIMIT 1").toArray()[0];
+    const key = `unused-plan-balance-to-credits:${last?.key || "none"}`;
+    const had = this.sql.exec("SELECT nano FROM grants WHERE key=?", key).toArray()[0];
+    if (had) return { moved_nano: Number(had.nano), duplicate: true, balance_nano: this.totals().balance_nano };
+    const x = Math.floor(this.byokUnusedPlan());
+    this.guardMarkPeriod(); this.guardKv("switch_now_at", Date.now());
+    if (x > 0) this.ctx.storage.transactionSync(() => {
+      this.sql.exec("INSERT INTO grants (key,nano,kind,at) VALUES (?,?,?,?)", `${key}:expire`, -x, "included_expire", Date.now());
+      this.sql.exec("INSERT INTO grants (key,nano,kind,at) VALUES (?,?,?,?)", key, x, "topup", Date.now());
+    });
+    return { moved_nano: x, duplicate: false, balance_nano: this.totals().balance_nano };
+  },
+  // When the last switch now happened (ms), or 0. index.js's invoice.paid compares it with the invoice's creation time.
+  byokSwitchAt() { return Number(this.guardKv("switch_now_at")) || 0; },
   // Turn start: on the key already, or nothing left at all (balance ≤ 0) → start now, before any routing call.
   byokFbCheck(notice = "") {
     const s = this.byokFbState(); if (s.active) return { ...s, started: false };
@@ -334,6 +414,20 @@ export function byokEnv(env, cfg) {
   const base = env?.__byokBase || env;
   if (!cfg) return base;
   return Object.create(base, { BYOK: { value: cfg, enumerable: false }, __byokBase: { value: base, enumerable: false } });
+}
+
+// Is this account's chat answered by its own key right now? The byok plan: always. A full plan with a backup key (mode "fallback"): while the Ledger's
+// episode is active (byokFbState, a read that changes nothing). Used by the account routes and the boot payload (Custom Model Selection's status); a read
+// that fails answers false. t: the tenants row.
+export async function answersOnOwnKey(env, t) {
+  if (!t?.id) return false;
+  if (t.plan === BYOK_PLAN) return true;
+  try {
+    const r = await env.DB.prepare("SELECT mode FROM byok WHERE tenant_id=?").bind(String(t.id)).first();
+    if (r?.mode !== "fallback") return false;
+    const L = ledgerOf(env, t.id), f = typeof L?.byokFbState === "function" ? await L.byokFbState() : null;
+    return !!f?.active;
+  } catch { return false; }
 }
 
 // ---- Settings API (/api/byok…) ----
@@ -383,12 +477,65 @@ const RATE_MSG = "That's a lot of tests in a few minutes. Wait a few minutes and
 // ---- the two options on a full plan ----
 const setMode = (env, tid, mode) => env.DB.prepare("UPDATE byok SET mode=? WHERE tenant_id=?").bind(mode, tid).run().catch((e) => { if (!/no such column/i.test(String(e?.message))) throw e; });
 const ledgerOf = (env, tid) => { try { return env.LEDGER.get(env.LEDGER.idFromName(`tenant:${tid}`)); } catch { return null; } };
+// ---- switch now ----
+const usdText = (nano) => `$${(Math.max(0, Number(nano) || 0) / 1e9).toFixed(2)}`;
+const SWITCH_TEST_FAIL = "Your AI key didn't pass the connection test, so your plan wasn't changed. Check it in Settings → Use my own AI key, then try again.";
+// What the confirm dialog says before a switch now: the unused plan usage that becomes credits, and when the next bill is. Reads only.
+export async function switchPreview(env, t, d) {
+  if (!isFullPlan(t.plan)) return { error: "You're on the Bring your own key plan already.", status: 409 };
+  const L = ledgerOf(env, t.id); let unused = 0;
+  try { unused = Math.floor(Number(await L.byokUnusedPlan()) || 0); } catch (e) { console.log("byok: unused plan", String(e?.message || e).slice(0, 120)); return { error: "Couldn't read your balance. Try again in a minute.", status: 503 }; }
+  let at = null;
+  if (d?.stripe && t.stripe_subscription) try {
+    const sub = await d.stripe(env, `subscriptions/${t.stripe_subscription}`, {}, "GET"), item = (sub.items?.data || []).find((i) => d.planOfPrice(env, i.price?.id));
+    at = 1000 * Number(item?.current_period_end || sub.current_period_end || 0) || null;
+  } catch (e) { console.log("byok: subscription", String(e?.message || e).slice(0, 120)); }
+  return { ok: true, unused_nano: unused, unused: usdText(unused), price: d?.PLANS?.[BYOK_PLAN]?.price ?? 10, next_bill_at: at };
+}
+// Move the account to the byok plan right now (see the header). t: the tenants row. Returns { ok, plan, moved_nano, moved, next_bill_at } or { error, status }.
+export async function switchNow(env, t, d, { fetchImpl = globalThis.fetch } = {}) {
+  if (t.plan === BYOK_PLAN) return { ok: true, plan: BYOK_PLAN, already: true, moved_nano: 0, moved: usdText(0) };
+  if (!d?.stripe || !d.PLANS?.[t.plan]) return { error: "Plans can't be changed right now. Try again in a minute.", status: 503 };
+  if (!t.stripe_subscription) return { error: "No active plan to change yet.", status: 409 };
+  const row = await savedRow(env, t.id);
+  if (!row || row.key_sealed == null || !row.base_url || !row.model) return { error: "Save your AI key first, then switch.", status: 409 };
+  const chk = checkBase(row.base_url); if (!chk.ok) return { error: SWITCH_TEST_FAIL, status: 409 };
+  let key = ""; if (row.key_sealed) try { key = await openSecret(env, row.key_sealed); } catch { return { error: "1Helm couldn't read your saved key. Save it again in Settings → Use my own AI key, then switch.", status: 409 }; }
+  if (!(await rateOk(env, t.id))) return { error: RATE_MSG, rate_limited: true, status: 429 };
+  const cfg = withKey({ base: row.base_url, host: chk.host, model: row.model, fast: row.fast_model || row.model, last4: row.key_last4 || "" }, key);
+  const test = await testByok(cfg, { fetchImpl });
+  if (!test.ok) return { error: SWITCH_TEST_FAIL, test, status: 409 };
+  // 1. Stripe: the byok price on the same subscription, no proration (nothing charged or refunded), billing date unchanged. Already
+  //    there (a switch scheduled for the renewal, or a retry after a later step failed)? Leave it.
+  const next = await nextPlan(env, t, d).catch(() => null);
+  let end = next?.plan === BYOK_PLAN ? next.at : null;
+  if (next?.plan !== BYOK_PLAN) { const r = await changePlan(env, t, BYOK_PLAN, d); if (r.error) return r; end = r.from || null; }
+  // 2. The Ledger: the unused plan usage becomes credits, once.
+  const L = ledgerOf(env, t.id); if (!L) return { error: "Couldn't reach your balance. Try again in a minute.", status: 503 };
+  const moved = await L.byokPlanToCredits();
+  // 3. The plan. From here the next model call goes to their endpoint (loadByok reads the plan on every turn).
+  await env.DB.prepare("UPDATE tenants SET plan=?, updated_at=? WHERE id=?").bind(BYOK_PLAN, now(), t.id).run();
+  try { await setMode(env, t.id, ""); } catch (e) { if (!/no such column/i.test(String(e?.message))) throw e; }
+  return { ok: true, plan: BYOK_PLAN, moved_nano: moved.moved_nano, moved: usdText(moved.moved_nano), next_bill_at: end };
+}
+
 // What the page shows. d: index.js's plan deps ({ stripe, PLANS, planPrices, planOfPrice }); without them (tests, sandbox) Stripe isn't read.
 // next: a pending plan change already known (after a change), else read from Stripe. Stripe is the truth for a pending switch:
 // one scheduled in Change plan counts too, and a stored "switch" that Stripe no longer has (undone in Change plan, or it happened) is cleared.
+// While Custom Model Selection is on for the own key (byok-custom.js), General's first model is the one that answers, so Settings shows the main model as set there:
+// { on, model } where model is General's first model (null until something is saved, then the main model below is the one in use).
+async function ownMain(env, tid) {
+  try {
+    const r = await env.DB.prepare("SELECT custom_models_own_on, custom_models_own FROM tenants WHERE id=?").bind(String(tid)).first();
+    if (Number(r?.custom_models_own_on) !== 1) return { on: false, model: null };
+    let model = null, fast = null; try { const c = JSON.parse(r.custom_models_own); model = c?.categories?.find((x) => x.id === "general")?.chain?.[0]?.model || null; fast = c?.background?.chain?.[0]?.model || null; } catch {}
+    if (!fast) { const b = await env.DB.prepare("SELECT model, fast_model FROM byok WHERE tenant_id=?").bind(String(tid)).first().catch(() => null); fast = b?.fast_model || b?.model || null; }
+    return { on: true, model, fast };
+  } catch { return { on: false, model: null }; }
+}
 async function stateOf(env, t, d, row, next) {
   const onPlan = !eeEnabled(env) || t.plan === BYOK_PLAN, full = !onPlan, o = { on_plan: onPlan, full, plan: t.plan || "", plan_name: eeEnabled(env) ? d?.PLANS?.[t.plan]?.name || "" : "Self-hosted", price: eeEnabled(env) ? 10 : 0, warning: ZDR_WARNING, saved: view(row), mode: "",
-    openrouter: await orView(env, t.id, row).catch(() => ({ pending: null, manage: "" })) };
+    openrouter: await orView(env, t.id, row).catch(() => ({ pending: null, manage: "" })), custom: eeEnabled(env) ? await ownMain(env, t.id) : { on: false, model: null } };
   if (onPlan) return o;
   if (next === undefined && d?.stripe && t.stripe_subscription) next = await nextPlan(env, t, d).catch((e) => { console.log("byok: subscription", String(e?.message || e).slice(0, 120)); return undefined; });
   const stored = row?.mode || "";
@@ -425,14 +572,16 @@ async function chooseMode(env, t, d, mode, row) {
 // t: the tenant row. Returns a Response, or null when `sub` isn't a BYOK route.
 // deps: { json, fetchImpl, stripe, PLANS, planPrices, planOfPrice } (the plan deps come from index.js, for the two options).
 export async function byokApi(req, env, t, sub, { json, fetchImpl = globalThis.fetch, ...d } = {}) {
-  if (!/^\/api\/byok(\/(test|save|delete|mode|models|openrouter\/forget))?$/.test(sub)) return null;
+  if (!/^\/api\/byok(\/(test|save|delete|mode|switch-now|models|switch-preview|openrouter\/forget))?$/.test(sub)) return null;
   const onPlan = !eeEnabled(env) || t.plan === BYOK_PLAN;
-  if (!eeEnabled(env) && sub === "/api/byok/mode") return json({ error: "not found" }, 404);
+  if (!eeEnabled(env) && (sub === "/api/byok/mode" || sub === "/api/byok/switch-now" || sub === "/api/byok/switch-preview")) return json({ error: "not found" }, 404);
   await orDdl(env);
   if (sub === "/api/byok" && req.method === "GET") return json(await stateOf(env, t, d, await savedRow(env, t.id)));
   // OpenRouter's model list for the model fields (only models with tool calling; public, no key involved).
   if (sub === "/api/byok/models" && req.method === "GET") { try { return json({ models: await orModels({ fetchImpl }) }); } catch (e) { console.log("byok: openrouter models", String(e?.message || e).slice(0, 80)); return json({ models: [], error: "Couldn't load OpenRouter's model list. You can still type a model name." }); } }
+  if (sub === "/api/byok/switch-preview" && req.method === "GET") { const r = await switchPreview(env, t, d); return json(r, r.error ? r.status || 400 : 200); }
   if (req.method !== "POST") return json({ error: "method" }, 405);
+  if (sub === "/api/byok/switch-now") { const r = await switchNow(env, t, d, { fetchImpl }); return json(r, r.error ? r.status || 400 : 200); }
   if (sub === "/api/byok/mode") {
     const b = await boundedJson(req), row = await savedRow(env, t.id);
     const r = await chooseMode(env, t, d, String(b.mode ?? ""), row);

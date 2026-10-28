@@ -87,7 +87,7 @@ export const SEED_FACTS = {
   [STT_BEST]: { name: "AssemblyAI Universal-3.6 Pro", kinds: ["speech", "speech_live"], efforts: [], formats: ["wav"], sec_nano: 83334 },
   [STT]: { name: "Qwen3 ASR 0.6B", kinds: ["speech"], efforts: [] },
   [STT_FALLBACK]: { name: "Whisper Large v3 Turbo", kinds: ["speech"], efforts: [] },
-  [STT_WAI]: { name: "Whisper Large v3 Turbo (Cloudflare)", kinds: ["speech_cloudflare"], efforts: [] },
+  [STT_WAI]: { name: "Whisper Large v3 Turbo (Cloudflare)", kinds: ["speech", "speech_cloudflare"], efforts: [] },
   [LIVE_STT]: { name: "Deepgram Nova 3 (Cloudflare)", kinds: ["speech_live"], efforts: [] },
   // Speech models in the 1Helm speech container (selfhost-speech.js), measured 2026-10-22 on Cloudflare standard-4. They take any audio format (the container converts it).
   // sec_nano: nano-dollars per audio second for reservations, the planned real time factor (Qwen 0.7, Nemotron 0.45, diarization 0.15) times $0.0001114 a second for the instance.

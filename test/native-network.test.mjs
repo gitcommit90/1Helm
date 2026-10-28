@@ -256,3 +256,54 @@ assert.equal(egressRule({host:'site.example',method:'GET',headers:{upgrade:'webs
 await progressTests();
 await trustedTests();
 console.log('Native SSH control plane: defaults, HTTP isolation, exact binding, human-only one-use, concurrency, expiry, cancellation, host verification, restart, durable native approval progress and URL redaction passed. Transport is mocked here.');
+
+async function dedupeTests() {
+  const count = r => r.sql.exec("SELECT COUNT(*) n FROM approvals").one().n;
+  const expire = (r, id) => { const d = JSON.parse(row(r, id).ssh_data); r.sql.exec('UPDATE approvals SET ssh_data=? WHERE id=?', JSON.stringify({ ...d, expires: Date.now() - 1 }), id); };
+  await ask();
+  { // pending: same id, no new row, even from another turn of the same task
+    const r = resident(), first = await nativeTool(r, 'ssh_connect', args, tc('task-1', 'turn-1'));
+    const again = await nativeTool(r, 'ssh_connect', args, tc('task-1', 'turn-2'));
+    assert.equal(again.state, 'awaiting_approval'); assert.equal(again.approval_id, first.approval_id); assert.match(again.next, /already waiting on approval 1/);
+    assert.equal(count(r), 1);
+    // different host and different task get their own cards; other route/port/user too
+    assert.notEqual((await nativeTool(r, 'ssh_connect', { ...args, host: 'other.example' }, tc())).approval_id, first.approval_id);
+    assert.notEqual((await nativeTool(r, 'ssh_connect', args, tc('task-2', 'turn-3'))).approval_id, first.approval_id);
+    assert.notEqual((await nativeTool(r, 'ssh_connect', { ...args, username: 'root' }, tc())).approval_id, first.approval_id);
+    assert.notEqual((await nativeTool(r, 'ssh_connect', { ...args, port: 22 }, tc())).approval_id, first.approval_id);
+    assert.equal(count(r), 5);
+  }
+  { // connecting: the same call arrives while the approved request is being opened
+    const r = resident(), first = await nativeTool(r, 'ssh_connect', args, tc());
+    let during;
+    r.broker.openSsh = async d => { during = await nativeTool(r, 'ssh_connect', args, tc()); return { ok: true, session_id: 's1' }; };
+    assert.equal((await decideSsh(r, row(r, first.approval_id), 'once')).state, 'connected');
+    assert.equal(during.state, 'connecting'); assert.equal(during.approval_id, first.approval_id); assert.equal(count(r), 1);
+    // once connected, a new call is a new request
+    assert.notEqual((await nativeTool(r, 'ssh_connect', args, tc())).approval_id, first.approval_id);
+  }
+  { // host key wait: one trust card, and trusting it finishes the original connection with no second connect card
+    const r = resident(), first = await nativeTool(r, 'ssh_connect', args, tc());
+    r.broker.openSsh = async d => d.fingerprint ? { ok: true, session_id: 'verified' } : { state: 'host_key_confirmation_required', fingerprint: 'SHA256:x' };
+    const hk = await decideSsh(r, row(r, first.approval_id), 'once');
+    assert.equal(row(r, first.approval_id).status, 'host_key_required');
+    const again = await nativeTool(r, 'ssh_connect', args, tc());
+    assert.equal(again.state, 'awaiting_host_key'); assert.equal(again.approval_id, hk.approval.id); assert.equal(count(r), 2);
+    const done = await decideSsh(r, row(r, hk.approval.id), 'once');
+    assert.equal(done.state, 'connected'); assert.equal(done.session_id, 'verified'); assert.equal(count(r), 2, 'no second connect card');
+  }
+  { // expired, denied and failed requests never block a new card
+    const r = resident(), a = await nativeTool(r, 'ssh_connect', args, tc());
+    expire(r, a.approval_id);
+    const b = await nativeTool(r, 'ssh_connect', args, tc()); assert.notEqual(b.approval_id, a.approval_id);
+    await decideSsh(r, row(r, b.approval_id), 'deny');
+    const c = await nativeTool(r, 'ssh_connect', args, tc()); assert.notEqual(c.approval_id, b.approval_id);
+    r.broker.openSsh = async () => ({ ok: false, error: 'refused' });
+    await decideSsh(r, row(r, c.approval_id), 'once'); assert.equal(row(r, c.approval_id).status, 'failed');
+    const d = await nativeTool(r, 'ssh_connect', args, tc()); assert.notEqual(d.approval_id, c.approval_id); assert.equal(d.state, 'awaiting_approval');
+    // a stuck opening past the timeout no longer blocks
+    r.sql.exec("UPDATE approvals SET status='consumed',decided_at=? WHERE id=?", Date.now() - SSH_OPENING_TIMEOUT - 1, d.approval_id);
+    assert.notEqual((await nativeTool(r, 'ssh_connect', args, tc())).approval_id, d.approval_id);
+  }
+}
+await dedupeTests();

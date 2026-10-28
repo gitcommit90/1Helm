@@ -5,7 +5,8 @@
 // Measured 2026-10-22 on Cloudflare standard-4 (tmp-shots/stt-cf, and the proof run in tmp-shots/speech-selfhost/lane1). Nothing here chooses a model: the saved
 // settings do (the Models page), and model-dispatch.js calls these functions for a step whose model ID starts with "@1hc/".
 //
-// A call never waits for a cold container. When no container of the pool is ready, the call starts one in the background and throws an error with
+// A call does not wait for a cold container, unless it is the last model of its job's chain (or the only one) and the job's time limit leaves room for a
+// cold start (speechWaitMs below). Otherwise, when no container of the pool is ready, the call starts one in the background and throws an error with
 // warming set to true within about a second, so the job's next model (a fallback) answers. Cost is the container's measured compute seconds at Cloudflare's
 // published rates (selfhost-models.js dollarsPerSecond), with no markup: the caller adds the usual markup, as it does for the embedding model.
 import { dollarsPerSecond } from "./selfhost-models.js";
@@ -25,6 +26,31 @@ export class SpeechWarmingError extends Error {
   constructor(message = "The speech container is starting. Try again in a minute.") { super(message); this.name = "SpeechWarmingError"; this.warming = true; }
 }
 export const isSpeechWarming = (e) => !!e?.warming;
+
+// ---- waiting for a cold container ----
+// A cold start from the template took 34 to 92 seconds, about 55 typically (docs/MODELS.md). The last model of a chain has no next model to fall back to, so it
+// waits for the pool when the job's limit for one attempt leaves room: the wait is at most SPEECH_WAIT_MAX_MS and ends SPEECH_WAIT_MARGIN_MS before the limit, and a
+// limit that leaves less than SPEECH_WAIT_MIN_MS gets no wait at all. No limit (null or 0) means the full SPEECH_WAIT_MAX_MS.
+export const SPEECH_WAIT_MAX_MS = 90e3, SPEECH_WAIT_MIN_MS = 60e3, SPEECH_WAIT_MARGIN_MS = 10e3;
+export const SPEECH_WAIT_TIMING = { pollMs: 2000 };   // a test shortens it
+export function speechWaitMs({ last = false, limitMs = 0 } = {}) {
+  if (!last) return 0;
+  const limit = Number(limitMs) > 0 ? Number(limitMs) : Infinity;
+  const ms = Math.min(SPEECH_WAIT_MAX_MS, limit - SPEECH_WAIT_MARGIN_MS);
+  return ms >= SPEECH_WAIT_MIN_MS ? ms : 0;
+}
+// Runs fn; while it throws the warming error and waitMs has not passed, tries again every pollMs (each try also nudges the pool to start, as pickSlot does).
+// After waitMs, or when the caller's signal aborts, the warming error goes out as it did before.
+async function whileWarming(fn, { waitMs = 0, signal = null } = {}) {
+  const until = Date.now() + (Number(waitMs) > 0 ? Number(waitMs) : 0);
+  for (;;) {
+    try { return await fn(); }
+    catch (e) {
+      if (!isSpeechWarming(e) || Date.now() + SPEECH_WAIT_TIMING.pollMs >= until || signal?.aborted) throw e;
+      await new Promise((r) => setTimeout(r, SPEECH_WAIT_TIMING.pollMs));
+    }
+  }
+}
 
 // ---- the pool ----
 const binding = (env) => { if (!env?.SPEECH_CONTAINER) throw new Error("No speech container is available on this server."); return env.SPEECH_CONTAINER; };
@@ -73,17 +99,17 @@ export function usageOf(j) {
 }
 
 // ---- the contract (shared with the live notes and the transcription code) ----
-export async function selfTranscribe(env, model, { audio, format = "wav", language = "" } = {}, meta = {}) {
+export async function selfTranscribe(env, model, { audio, format = "wav", language = "" } = {}, meta = {}, wait = {}) {
   const kind = KIND_OF[model];
   if (kind !== "qwen" && kind !== "nemotron") throw new Error(`${model} cannot transcribe`);
   const body = toBuffer(audio), fmt = formatOf(format);
-  const j = await callSlot(await pickSlot(env), { path: `/transcribe?model=${kind}&format=${fmt}${language ? `&lang=${encodeURIComponent(String(language).slice(0, 12))}` : ""}`, body });
+  const j = await whileWarming(async () => callSlot(await pickSlot(env), { path: `/transcribe?model=${kind}&format=${fmt}${language ? `&lang=${encodeURIComponent(String(language).slice(0, 12))}` : ""}`, body }), wait);
   return { model, segs: Array.isArray(j.segs) ? j.segs : [], words: Array.isArray(j.words) ? j.words : [], usage: usageOf(j) };
 }
-export async function selfDiarize(env, model, { audio, format = "wav", num_speakers = 0 } = {}, meta = {}) {
+export async function selfDiarize(env, model, { audio, format = "wav", num_speakers = 0 } = {}, meta = {}, wait = {}) {
   if (KIND_OF[model] !== "diar") throw new Error(`${model} cannot label speakers`);
   const body = toBuffer(audio), fmt = formatOf(format), n = Math.floor(Number(num_speakers)) || 0;
-  const j = await callSlot(await pickSlot(env), { path: `/diarize?format=${fmt}${n > 0 ? `&num_speakers=${Math.min(n, 16)}` : ""}`, body });
+  const j = await whileWarming(async () => callSlot(await pickSlot(env), { path: `/diarize?format=${fmt}${n > 0 ? `&num_speakers=${Math.min(n, 16)}` : ""}`, body }), wait);
   return { model, turns: Array.isArray(j.turns) ? j.turns : [], usage: usageOf(j) };
 }
 
@@ -124,12 +150,14 @@ async function syncSession(env, stub, sessionKey) {
   }
   return found.length;
 }
-export async function selfSessionDiarize(env, sessionKey, model = SPEECH_MODELS.diar, meta = {}) {
+export async function selfSessionDiarize(env, sessionKey, model = SPEECH_MODELS.diar, meta = {}, wait = {}) {
   sessionParts(sessionKey);
   if (KIND_OF[model] !== "diar") throw new Error(`${model} cannot label speakers`);
-  const stub = await pickSlot(env, { prefer: sessionSlot(env, sessionKey) });
-  await syncSession(env, stub, sessionKey);
-  const j = await callSlot(stub, { path: sessionPath(sessionKey, "/diarize") });
+  const j = await whileWarming(async () => {
+    const stub = await pickSlot(env, { prefer: sessionSlot(env, sessionKey) });
+    await syncSession(env, stub, sessionKey);
+    return callSlot(stub, { path: sessionPath(sessionKey, "/diarize") });
+  }, wait);
   const co = coordinator(env), prev = await co.sessionGet(sessionKey).catch(() => null);
   const turns = stabilizeSpeakers(prev, Array.isArray(j.turns) ? j.turns : []);
   await co.sessionPut(sessionKey, turns).catch(() => {});

@@ -23,6 +23,9 @@ export type DelDeps = {
   working?: (slug: string, sid: string) => boolean;
   stop?: (slug: string, sid: string) => void;
   rename?: (slug: string, sid: string, opener?: HTMLElement) => void;
+  /** Move to section (sections.ts): offered while the channel uses custom sections */
+  moveSection?: (slug: string, sid: string, opener: HTMLElement) => void;
+  canMove?: (slug: string) => boolean;
 };
 let D: DelDeps | null = null;
 type ChatDeletion = { slug: string; sid: string; title: string; phase: "confirming" | "deleting" | "failed" };
@@ -115,7 +118,7 @@ export async function deleteAccount() {
 
 // ---- a tiny menu (row ⋯ / channel ⋯) ----
 function closeMenu() { document.getElementById("delmenu")?.remove(); }
-function openMenu(at: HTMLElement, items: [string, string, () => void][]) {
+export function openMenu(at: HTMLElement, items: [string, string, () => void][]) {
   closeMenu();
   const m = document.createElement("div"); m.id = "delmenu"; m.className = "delmenu"; m.setAttribute("role", "menu");
   m.innerHTML = items.map(([label, icon], i) => `<button type="button" role="menuitem" class="delmi${label.startsWith("Delete") ? " bad" : ""}" data-mi="${i}">${icon}<span>${esc(label)}</span></button>`).join("");
@@ -131,7 +134,7 @@ export function delInit(deps: DelDeps) {
   D = deps;
   const act = (t: HTMLElement, e: Event) => {
     const rm = t.closest<HTMLElement>("[data-rowmenu]");
-    if (rm) { e.preventDefault(); e.stopImmediatePropagation(); const [slug, sid] = rm.dataset.rowmenu!.split("|"); if (deleting(slug, sid)) return true; openMenu(rm, [...(D?.working?.(slug, sid) && D?.stop ? [["Stop", STOPSQ, () => D!.stop!(slug, sid)] as [string, string, () => void]] : []), ...(D?.rename ? [["Rename task", svg('<path d="m16 3 5 5L8 21H3v-5Z"/>'), () => D!.rename!(slug, sid, rm)] as [string, string, () => void]] : []), ["Delete chat", TRASH, () => void deleteChat(slug, sid)]]); return true; }
+    if (rm) { e.preventDefault(); e.stopImmediatePropagation(); const [slug, sid] = rm.dataset.rowmenu!.split("|"); if (deleting(slug, sid)) return true; openMenu(rm, [...(D?.working?.(slug, sid) && D?.stop ? [["Stop", STOPSQ, () => D!.stop!(slug, sid)] as [string, string, () => void]] : []), ...(D?.rename ? [["Rename task", svg('<path d="m16 3 5 5L8 21H3v-5Z"/>'), () => D!.rename!(slug, sid, rm)] as [string, string, () => void]] : []), ...(D?.moveSection && D.canMove?.(slug) ? [["Move to section", svg('<path d="M3 7h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>'), () => D!.moveSection!(slug, sid, rm)] as [string, string, () => void]] : []), ["Delete chat", TRASH, () => void deleteChat(slug, sid)]]); return true; }
     const cm = t.closest<HTMLElement>("[data-chmenu]");
     if (cm) { e.preventDefault(); e.stopImmediatePropagation(); const slug = cm.dataset.chmenu!; openMenu(cm, [["Delete channel", TRASH, () => void deleteChannel(slug)]]); return true; }
     const dc = t.closest<HTMLElement>("[data-delchat]");

@@ -8,7 +8,10 @@
 @import "./activity-orb.css";
 @import "./dialog.css";
 @import "./task-rename.css";
+@import "./sections.css";
+@import "./ee/bee-library.css";
 @import "./ee/custom-mcp.css";
+@import "./ee/custom-models.css";
 @import "./delete.css";
 @import "./newchannel.css";
 @import "./dictate.css";
@@ -387,10 +390,10 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 #nbox::placeholder{color:var(--faint)}
 .nrow{display:flex;align-items:center;gap:2px}.nrow .grow{flex:1}
 .npick{position:relative;margin-left:4px}
-.nwho{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 10px 0 5px;border-radius:999px;background:var(--abub);font-size:13.5px;font-weight:600;color:var(--ink2)}.nwho:hover{background:var(--hover)}.nwho svg{color:var(--faint)}
+.nwho{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 10px 0 5px;border-radius:999px;background:var(--abub);font-size:13.5px;font-weight:600;color:var(--ink2)}.nwho:hover{background:var(--hover)}.nwho svg{color:var(--faint);flex:none}.nwho span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nlist{position:absolute;left:0;top:40px;min-width:230px;background:var(--sheet);border:1px solid var(--line);border-radius:18px;box-shadow:var(--lift);padding:6px;z-index:2}.nlist:empty{display:none}
 .nopt{width:100%;display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:12px;text-align:left;font-size:14px}.nopt:hover{background:var(--abub)}
-.nopt b{font-weight:600}.nopt span{flex:1;color:var(--mute);font-size:13px}.nopt svg{color:var(--accent)}
+.nopt b{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nopt span{color:var(--mute);font-size:13px}.nopt svg{color:var(--accent);margin-left:auto}
 .nkbd{font-size:12px;color:var(--faint);margin-right:6px;display:inline-flex;align-items:center;gap:5px}
 .ngo{height:40px;padding:0 18px;margin-left:4px;border-radius:999px;background:var(--ink);color:var(--sheet);font-weight:600;font-size:14px;transition:opacity .15s}.ngo:disabled{opacity:.35;cursor:default}
 #toast{position:fixed;right:22px;bottom:96px;z-index:70;display:flex;align-items:center;gap:10px;max-width:440px;padding:10px 10px 10px 14px;background:var(--sheet);border:1px solid var(--line);border-radius:20px;box-shadow:var(--lift);opacity:0;transform:translateY(14px);pointer-events:none;transition:opacity .22s,transform .3s cubic-bezier(.2,.8,.2,1)}
@@ -1687,3 +1690,10 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .spkpop .spkp:hover,.spkpop .spkclr:hover,.spkpop .spkp:focus-visible,.spkpop .spkclr:focus-visible{background:var(--hover)}
 .spkpop .spkerr{margin:2px 4px;font-size:13px;color:var(--warn)}
 .lzh{margin:22px 0 8px;font-size:15px;font-weight:600;color:var(--ink2)}.lzh:first-child{margin-top:4px}
+
+/* Back and Forward arrows: the top row of the channel rail, either side of the logo (nav-history.ts). The row is as tall as the logo row was, so nothing moves. */
+.navh{display:flex;align-items:center;justify-content:center;width:80px;padding:0 2px;box-sizing:border-box;height:40px;margin-bottom:10px}
+.navh .brand{margin:0;flex:none}
+.navhb{display:grid;place-items:center;flex:none;width:18px;height:30px;padding:0;border-radius:8px;color:var(--mute)}
+.navhb:hover:not(:disabled){background:var(--hover);color:var(--ink)}
+.navhb:disabled{opacity:.35;cursor:default}

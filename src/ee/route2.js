@@ -20,6 +20,7 @@ import { askDecider, usesSystemone } from "./text-decision.js";
 import { modelSettingsEnv } from "./model-settings.js";
 import { settingsOf, jobSetting, entriesOf, allowedEntries, configuredHosts, choreRouteOf, jobRoute, factsOf, jobTimeoutMs, quirkOf } from "./model-jobs.js";
 import { privacyOf, normalizePrivacy, eligibleHosts, ineligibleWhy } from "../privacy.js";
+import { customRouting } from "./custom-models.js";
 import { CATEGORIES, CATEGORY_LABEL, DEFAULT_CATEGORY, MAX_MODELS, normalizeCategory, guessCategory } from "./pool.js";
 
 // A bare go-on ("Keep going.", "continue", "ok, go ahead") that carries on work already under way keeps the task's category, no decider call.
@@ -177,6 +178,9 @@ export function jevGate(env, { kind = "chat", text, prevTools = 0, openWork = []
 export async function chooseTwo(env, { kind = "chat", text, hist, prevTools = 0, openWork = [], openAgents = [], prevCategory = null, level = "zdr" }, opts = {}) {
   env = await modelSettingsEnv(env);
   const g = jevGate(env, { kind, text, prevTools, openWork, prevCategory, level }); if (g) return { route: g, jev: null };
+  // Custom Model Selection with General alone: there is nothing to choose between, so the request sorter is not asked (unless a helper is open and the message may be for it).
+  if (dynamicRoutingOn(env) && kind === "chat" && env.MODEL_SETTINGS?.routing?.custom && routingCategories(env.MODEL_SETTINGS).length === 1 && !openAgents.length)
+    return { route: { ...policyRoute(settingsOf(env), DEFAULT_CATEGORY, level, "custom", { dynamic: true }), steer: null }, jev: null };
   const state = { ...jevState({ hist, text, prevTools, openWork, prevCategory }), ...(dynamicRoutingOn(env) ? { open_subagents: openAgents } : {}) }, jevP = jevAsk(env, state, opts);   // the decider's request is on its way first
   const jev = await jevP, d = routeFromAnswers(env, text, jev, { level, prevCategory });
   if (dynamicRoutingOn(env)) d.route.steer = jev.steer !== "none" && openAgents.some(h => String(h.id) === jev.steer) ? Number(jev.steer) : null;
@@ -205,8 +209,10 @@ const BROWSER_BACK_RE = /^I'm done in the browser\b/i;
 // Returns the decision for turn stats; never throws (any failure → the task's category, else general).
 export async function routeTwoTurn(R, tc, { kind, text, hist, stats, audioContext = tc }) {
   let d; const otelStart = Date.now();
-  const env = await modelSettingsEnv(R.env);   // unreadable settings stop the turn here, with a clear error, before anything is sent
-  const tenant = R.get?.("tenant"), level = await privacyOf(env, tenant), prevCategory = sessionCategory(R, tc?.session);
+  let env = await modelSettingsEnv(R.env);   // unreadable settings stop the turn here, with a clear error, before anything is sent
+  const tenant = R.get?.("tenant");
+  { const custom = await customRouting(env, tenant); if (custom) env = custom.env; }   // the account's own categories, or CustomModelsRequired before anything is sent (custom-models.js)
+  const level = await privacyOf(env, tenant), prevCategory = sessionCategory(R, tc?.session);
   if (audioContext?.audioSources?.length && audioContext.abort === "hard") throw Object.assign(new Error("The recording's task was stopped."), { code: "audio_source_removed", audioReason: "The recording's task was stopped." });
   R.sidecarAudioCurrent?.(audioContext);   // settings/privacy reads must not outlive the attached recording or its task
   try { d = await chooseTwo(env, { kind, text, hist, prevTools: prevToolsOf(R, tc?.session), openWork: openWorkOf(R, tc?.session), openAgents: dynamicRoutingOn(env) ? R.sql.exec("SELECT id,name,task FROM helpers WHERE session=? AND dynamic_routing=1 AND status IN ('running','awaiting_review','waiting_input') ORDER BY id", tc?.session || "").toArray().map(h => ({...h,task:h.task.slice(0,300)})) : [], prevCategory, level }, { meta: { tenant, channel: R.get?.("channel") } }); }

@@ -1,0 +1,54 @@
+/* Custom sections (sections.ts). Colors: one fixed set, each defined for the light and the dark theme. */
+:root{--sc-red:#dc2626;--sc-orange:#ea580c;--sc-yellow:#ca8a04;--sc-green:#16a34a;--sc-teal:#0d9488;--sc-blue:#2563eb;--sc-purple:#7c3aed;--sc-pink:#db2777}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--sc-red:#f87171;--sc-orange:#fb923c;--sc-yellow:#facc15;--sc-green:#4ade80;--sc-teal:#2dd4bf;--sc-blue:#60a5fa;--sc-purple:#a78bfa;--sc-pink:#f472b6}}
+:root[data-theme=dark]{--sc-red:#f87171;--sc-orange:#fb923c;--sc-yellow:#facc15;--sc-green:#4ade80;--sc-teal:#2dd4bf;--sc-blue:#60a5fa;--sc-purple:#a78bfa;--sc-pink:#f472b6}
+.sc-red{--sc:var(--sc-red)}.sc-orange{--sc:var(--sc-orange)}.sc-yellow{--sc:var(--sc-yellow)}.sc-green{--sc:var(--sc-green)}.sc-teal{--sc:var(--sc-teal)}.sc-blue{--sc:var(--sc-blue)}.sc-purple{--sc:var(--sc-purple)}.sc-pink{--sc:var(--sc-pink)}
+.secswatch{display:inline-block;flex:none;width:9px;height:9px;border-radius:50%;background:var(--sc,var(--faint))}
+.secswatch.none{background:none;box-shadow:inset 0 0 0 1.5px var(--line2)}
+.delmi .secswatch{width:12px;height:12px;margin:0 2px}
+
+/* the plus beside the first header; the first header leaves room for it */
+.sessions,.dl{position:relative}
+.secplus{position:absolute;top:9px;right:6px;z-index:2;width:26px;height:26px;border-radius:8px;display:grid;place-items:center;color:var(--faint);transition:background .12s,color .12s}
+.secplus:hover,.secplus:focus-visible{background:var(--line);color:var(--ink)}
+.sessions>.fold:first-child,.dl>.fold:first-child{padding-right:36px}
+
+/* a section: header (fold button, menu) then its tasks */
+.cgrp{border-radius:12px;transition:background .12s}
+.csech{display:flex;align-items:center;position:relative}
+.csech .fold{flex:1;min-width:0;width:auto}
+.csech .sect{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.sessions>.cgrp:first-of-type .csech,.dl>.cgrp:first-of-type .csech{padding-right:34px}
+.secmenu{flex:none;width:26px;height:26px;margin-right:2px;border-radius:8px;display:grid;place-items:center;color:var(--faint);opacity:0;transition:opacity .12s,background .12s,color .12s}
+.csech:hover .secmenu,.secmenu:focus-visible{opacity:1}.secmenu:hover{background:var(--line);color:var(--ink)}
+@media (hover:none){.secmenu{opacity:.55}}
+.sessions>.cgrp:first-of-type .secmenu,.dl>.cgrp:first-of-type .secmenu{margin-right:0}
+.secren{flex:1;min-width:0;margin:10px 8px 2px 12px;height:28px;padding:0 8px;border-radius:8px;border:1px solid var(--line2);background:var(--sheet);color:var(--ink);font:inherit;font-size:13px;font-weight:600;outline:0}
+.secren:focus{border-color:var(--ink2)}
+.csech[draggable=true]{cursor:grab}
+
+/* a task row in a section: a faint tint of the section color and a thin edge on the left */
+.sess.csr,.ds.csr{position:relative}
+.sess.csr[class*=" sc-"]:not(.on),.ds.csr[class*=" sc-"]:not(.on){background:color-mix(in srgb,var(--sc) 5%,transparent)}
+.sess.csr[class*=" sc-"]:not(.on):hover,.ds.csr[class*=" sc-"]:not(.on):hover{background:color-mix(in srgb,var(--sc) 10%,transparent)}
+.sess.csr[class*=" sc-"].on,.ds.csr[class*=" sc-"].on{background:color-mix(in srgb,var(--sc) 12%,var(--chip))}
+.sess.csr[class*=" sc-"]::before,.ds.csr[class*=" sc-"]::before{content:"";position:absolute;left:0;top:11px;bottom:11px;width:3px;border-radius:2px;background:var(--sc);opacity:.5}
+.sess.csr[draggable=true]{cursor:grab}
+
+/* dragging */
+.secdragging{opacity:.45}
+.cgrp.dropon{background:color-mix(in srgb,var(--sc,var(--ink)) 10%,transparent);box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--sc,var(--ink2)) 45%,transparent)}
+.cgrp.dropbefore{box-shadow:inset 0 2px 0 var(--ink2)}
+
+/* the inline new section row */
+.secnew{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 4px 4px;padding:8px;border-radius:12px;background:var(--chip);box-shadow:var(--shadow)}
+.secin{flex:1 1 100%;min-width:0;height:32px;padding:0 10px;border-radius:8px;border:1px solid var(--line2);background:var(--sheet);color:var(--ink);font:inherit;font-size:14px;outline:0}
+.secin:focus{border-color:var(--ink2)}
+.secsw{display:flex;gap:2px;flex:1}
+.secdot{width:24px;height:24px;border-radius:50%;display:grid;place-items:center}
+.secdot i{width:14px;height:14px;border-radius:50%;background:var(--sc)}
+.secdot.on{box-shadow:inset 0 0 0 2px var(--ink2)}.secdot.on i{width:12px;height:12px}
+.secdot:focus-visible{outline:2px solid var(--ink2);outline-offset:1px}
+.secadd{height:30px;padding:0 14px;border-radius:9px;background:var(--ink);color:var(--sheet);font-size:13px;font-weight:600}
+@media (max-width:767px){.secplus{top:10px;right:4px;width:32px;height:32px}.secmenu{width:32px;height:32px}.secin{height:40px;font-size:16px}.secdot{width:30px;height:30px}.secadd{height:36px}
+  .dl .csech .fold{min-height:34px}}

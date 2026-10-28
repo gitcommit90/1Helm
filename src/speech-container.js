@@ -3,7 +3,7 @@
 //
 // Why a class of its own and not a PrepContainer template: the prep class keeps one object per account, runs one job at a time by copying a file in and
 // executing a command, and stops ten seconds after the last job. Speech needs the opposite: containers that several accounts share, keep three models in
-// memory for ten minutes, and answer HTTP requests (many at once). It reuses everything else from job-template.js (the template build, the snapshot rules).
+// memory while they are in use, and answer HTTP requests (many at once). It reuses everything else from job-template.js (the template build, the snapshot rules).
 //
 // Objects: "speech:coordinator" builds and keeps the snapshot template and the speaker numbers of live sessions, and never runs a request. "speech:0" to
 // "speech:<cap - 1>" each own one container. The cap is the variable SPEECH_MAX_INSTANCES, because the durable_object scheduling policy has no max_instances
@@ -12,10 +12,15 @@
 import { DurableObject } from "cloudflare:workers";
 import { bounded, delay, templateVersion, templateUsable, readJson, buildTemplate, withCurlRetry } from "./job-template.js";
 import { speechSetup, SPEECH_VERIFY, SPEECH_ROOT, SPEECH_INSTANCE, SPEECH_MAX_INFLIGHT } from "./speech-setup.js";
+const SPEAKER_EVERY_MS = 3 * 60e3;   // how often Live notes labels a running meeting (SPEAKER_EVERY_MS in the licensed src/ee/speaker-labels-core.js; test/speech-selfhost.test.mjs checks they match)
 
 export { SPEECH_INSTANCE, SPEECH_MAX_INFLIGHT };
 export const SPEECH_PORT = 8080;
-export const SPEECH_IDLE_MS = 10 * 60e3;       // a container stops this long after its last request
+// A container stops this long after its last request. Live notes labels a running meeting every SPEAKER_EVERY_MS (3 minutes), and every audio chunk of the
+// meeting is also a request, so the longest quiet stretch of a live session is one pass interval. The idle time is that interval plus one minute (the pass itself
+// and the 30 second alarm), so the container is not stopped and restarted (about a minute of loading) between two passes. Speech to text and live dictation call it
+// as a fallback only, so a longer idle would pay for compute that nobody uses.
+export const SPEECH_IDLE_MS = SPEAKER_EVERY_MS + 60e3;
 export const SPEECH_BOOT_MS = 10 * 60e3;       // the longest a restore plus model load may take
 export const SPEECH_ALARM_MS = 30e3;
 export const SPEECH_TIMING = { templatePollMs: 5000, healthPollMs: 500 };   // a test shortens them

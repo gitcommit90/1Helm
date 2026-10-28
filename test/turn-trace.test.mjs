@@ -3,7 +3,7 @@
 // The real Resident (node:sqlite) runs real turns with a scripted model (callModelOnceInner) and a scripted tool (localTool).
 import assert from "node:assert"; import { DatabaseSync } from "node:sqlite";
 import { Resident } from "../src/resident.js";
-import { TurnTrace, buildOtlp, ALLOWED_KEYS, GEN_KEYS, usageOf, toolVerdict, modelErrorCode, sendOtlp, newTraceId, newSpanId } from "../src/turn-trace.js";
+import { TurnTrace, buildOtlp, modelsMark, ALLOWED_KEYS, GEN_KEYS, usageOf, toolVerdict, modelErrorCode, sendOtlp, newTraceId, newSpanId } from "../src/turn-trace.js";
 import { orFetchPath } from "../src/model.js";
 
 const CANARY = "CANARY-7f3a91-do-not-send";
@@ -195,5 +195,26 @@ ok("endpoint down, failing or hanging: the turn replies normally and never waits
   R.otelRouting(tc, { model: "vendor/decider-1", cost: 0.00001, ms: 40 }, Date.now()); R.otelRouting(tc, null, Date.now()); R.otelRouting({}, { model: "m" }, 0); R.otelRouting(null, null, 0);
   const sp = tc.otel.drain().resourceSpans[0].scopeSpans[0].spans; assert.deepEqual(sp.map((x) => [x.name, val(x, "langfuse.observation.type")]), [["decider", "generation"], ["routing", "span"]]);
   ok("routing hook: generation with the decider's model and cost, or a span when it did not run");
+}
+
+// ---- Custom Model Selection marker: short ids only, on the step generation and the root, canary clean ----
+{
+  assert.deepEqual(modelsMark(null), {}); assert.deepEqual(modelsMark({ category: "general" }), { models_from: "ours", category: "general" });
+  assert.deepEqual(modelsMark({ custom: true, category: "general", dispatch: { category: "c_ab12cd34" } }), { models_from: "custom", category: "c_ab12cd34" });
+  assert.equal(modelsMark({ custom: true, dispatch: { category: `Coding ${CANARY}` } }).category, "unknown", "a title or any text is never sent");
+  const t = new TurnTrace({ name: "chat turn", tenant: "tenant-1", session: "s", channel: "main", task: "t", turnNo: 1, kind: "chat", start: 1000 });
+  const mark = modelsMark({ custom: true, dispatch: { category: "c_ab12cd34" } });
+  const s1 = t.stepOpen(null, false, mark); t.stepClose(s1, { model: "vendor/model-x", inTok: 5, outTok: 1 });
+  const s2 = t.stepOpen(null, false, mark); t.stepClose(s2, null, Object.assign(new Error(CANARY), { orStatus: 502 }));
+  t.finish({ outcome: "replied", charge: 0, mark });
+  const body = t.drain(), spans = body.resourceSpans[0].scopeSpans[0].spans, g = (x, k) => x.attributes.find((a) => a.key === k)?.value.stringValue;
+  for (const x of spans) { assert.equal(g(x, "langfuse.observation.metadata.models_from"), x.name === "chat turn" || x.name === "chat" ? "custom" : undefined); }
+  assert.equal(g(spans[0], "langfuse.observation.metadata.category"), "c_ab12cd34"); assert.equal(g(spans[1], "langfuse.observation.metadata.models_from"), "custom", "the failed step is marked too");
+  const root = spans.find((x) => x.name === "chat turn"); assert.equal(g(root, "langfuse.trace.metadata.models_from"), "custom"); assert.equal(g(root, "langfuse.trace.metadata.category"), "c_ab12cd34");
+  for (const x of spans) for (const a of x.attributes) assert.ok(ALLOWED_KEYS.has(a.key) || a.key === "service.name", a.key);
+  assert.ok(!JSON.stringify(body).includes(CANARY), "no canary");
+  const o = new TurnTrace({ name: "chat turn", tenant: "t", session: "s", kind: "chat" }), s3 = o.stepOpen(null, false, modelsMark({ category: "general" })); o.stepClose(s3, { model: "m", inTok: 1, outTok: 1 });
+  assert.equal(g(o.drain().resourceSpans[0].scopeSpans[0].spans[0], "langfuse.observation.metadata.models_from"), "ours");
+  ok("custom marker: models_from and category on the step and root, ids only");
 }
 console.log = log0; log0("turn-trace: all passed");

@@ -1,0 +1,54 @@
+/* General's Library: Bee conversations (bee-library.ts). Every class starts with beelib. */
+.beelib{margin-top:40px}
+.beelib.only{margin-top:6px}
+.beelib-bar{display:flex;align-items:center;justify-content:space-between;margin:0 0 12px}
+.beelib-bar h2{margin:0;font-family:var(--serif);font-weight:400;font-size:24px;letter-spacing:-.005em}
+.beelib-rows{display:flex;flex-direction:column}
+.beelib-row{display:grid;grid-template-columns:150px minmax(0,1fr) auto;align-items:center;gap:14px;padding:11px 12px;margin:0 -12px;border-radius:16px;text-align:left;color:inherit;font:inherit}
+.beelib-row:hover,.beelib-row:focus-visible{background:var(--abub);outline:0}
+.beelib-row+.beelib-row{box-shadow:0 -1px 0 var(--line)}.beelib-row:hover,.beelib-row:hover+.beelib-row,.beelib-row:focus-visible,.beelib-row:focus-visible+.beelib-row{box-shadow:none}
+.beelib-when{display:flex;flex-direction:column;gap:2px;min-width:0}
+.beelib-when b{font-size:14px;font-weight:600;white-space:nowrap}
+.beelib-when span{font-size:12.5px;color:var(--mute);white-space:nowrap}
+.beelib-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.beelib-sum{font-size:15px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.beelib-sum.none,.beelib-title.none{color:var(--mute);font-weight:400}
+.beelib-place{font-size:13px;color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.beelib-dur{font-size:13px;color:var(--mute);white-space:nowrap;justify-self:end}
+.beelib-more{display:block;margin:12px auto 0;height:36px;padding:0 18px;border-radius:999px;font-size:13.5px;font-weight:600;color:var(--ink2);background:var(--abub)}
+.beelib-more:hover:not(:disabled){background:var(--hover)}.beelib-more:disabled{opacity:.6;cursor:default}
+
+/* an open conversation */
+.beelib-view{padding-bottom:8px}
+.beelib-vbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:6px 0 18px;flex-wrap:wrap}
+.beelib-back{display:inline-flex;align-items:center;gap:4px;height:34px;padding:0 12px 0 6px;margin-left:-6px;border-radius:999px;font-size:14px;font-weight:600;color:var(--ink2)}
+.beelib-back:hover{background:var(--abub)}
+.beelib-acts{display:flex;gap:8px}
+.beelib-btn{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 14px;border-radius:999px;font-size:13.5px;font-weight:600;color:var(--ink2);background:var(--abub)}
+.beelib-btn:hover:not(:disabled){background:var(--hover)}.beelib-btn:disabled{opacity:.55;cursor:default}
+.beelib-btn.bad{color:#dc2626}.beelib-btn.bad:hover:not(:disabled){background:color-mix(in srgb,#dc2626 10%,transparent)}
+:root[data-theme=dark] .beelib-btn.bad{color:#ff6b6b}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .beelib-btn.bad{color:#ff6b6b}}
+.beelib-title{margin:0;font-family:var(--serif);font-weight:400;font-size:26px;line-height:1.25;letter-spacing:-.005em;overflow-wrap:anywhere}
+.beelib-meta{margin:8px 0 22px;font-size:14px;line-height:1.45;color:var(--mute);min-height:20px;overflow-wrap:anywhere}
+.beelib-lines{display:flex;flex-direction:column;gap:2px;min-height:160px}
+.beelib-line{display:grid;grid-template-columns:84px minmax(0,1fr);gap:12px;padding:7px 0;align-items:baseline}
+.beelib-t{font-size:12.5px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+.beelib-text{font-size:15px;line-height:1.55;overflow-wrap:anywhere;white-space:pre-wrap}
+.beelib-who{font-weight:600;margin-right:8px}
+
+@media (max-width:767px){
+  .beelib{margin-top:30px}
+  .beelib-bar h2{font-size:21px}
+  .beelib-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"when dur" "main main";gap:4px 12px;margin:0 -8px;padding:12px 8px}
+  .beelib-when{grid-area:when;flex-direction:row;flex-wrap:wrap;gap:0 8px;align-items:baseline}
+  .beelib-dur{grid-area:dur}
+  .beelib-main{grid-area:main}
+  .beelib-sum{font-size:16px;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .beelib-more{height:40px;font-size:15px}
+  .beelib-title{font-size:22px}
+  .beelib-btn{height:38px}
+  .beelib-line{grid-template-columns:minmax(0,1fr);gap:1px;padding:8px 0}
+  .beelib-t{font-size:12px}
+}
+.beelib-first{margin-top:26px}

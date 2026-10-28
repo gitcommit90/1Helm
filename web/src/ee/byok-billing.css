@@ -47,12 +47,15 @@ h3.bykh{margin:22px 6px 8px}
 /* Settings → Usage: which AI is in use, a pending switch */
 .bykuse{display:flex;align-items:center;gap:8px;margin:10px 0 0!important;font-size:13.5px;font-weight:600;color:var(--ink)!important}
 .bykuse.on i{flex:none;width:8px;height:8px;border-radius:50%;background:var(--live);box-shadow:0 0 0 3px color-mix(in srgb,var(--live) 22%,transparent)}
-.bykuse.sw{justify-content:space-between;padding:6px 6px 6px 12px;border-radius:12px;background:color-mix(in srgb,var(--accent) 10%,transparent)}
-.bykuse.sw .sa{margin:0}
+.bykuse.bykpend{justify-content:space-between;padding:6px 6px 6px 12px;border-radius:12px;background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.bykuse.bykpend span{flex:1 1 auto;min-width:0}
+.bykuse.bykpend .sa{margin:0}
+.bykswbtns{flex:none!important;display:flex;gap:2px}.bykplan .bykswbtns .sa{margin:-4px 0 0 0}
 @media (max-width:767px){
-  .bykuse.sw{flex-wrap:wrap}
   .bykopts .bykopt .srt span{font-size:14px}
   .bykplan{margin:0 0 12px;font-size:14px;flex-wrap:wrap}.bykplan span{flex:1 1 calc(100% - 30px)}.bykplan .sa{margin:0 0 0 18px}
+  .bykplan .bykswbtns{margin-left:18px}.bykplan .bykswbtns .sa{margin:0}
+  .bykuse.bykpend{flex-wrap:wrap}
   .bykwarn p,.bykack{font-size:14.5px}
   #bykf .sbtns{flex-wrap:wrap}#bykf .sbtns .sprim{flex:1 1 100%}
 }
@@ -84,3 +87,4 @@ h3.bykh{margin:22px 6px 8px}
   .bykml{max-height:240px}
   .bykml li b{font-size:15px}.bykml li>span{font-size:13px}
 }
+.bykset p{margin:0 4px}

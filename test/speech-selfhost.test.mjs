@@ -14,9 +14,10 @@ import { plan } from "../src/ee/model-plan.js";
 import { dispatch } from "../src/ee/model-dispatch.js";
 import { JOB_KINDS, JOB_IDS, jobDef } from "../src/ee/model-jobs.js";
 import { dollarsPerSecond } from "../src/selfhost-models.js";
-import { SPEECH_MODELS, SPEECH_PLAN_RTF, speechSecNano, selfTranscribe, selfDiarize, selfSessionAppend, selfSessionDiarize, selfSessionEnd, isSpeechWarming, SpeechWarmingError, stabilizeSpeakers, sessionPrefix, sessionParts, usageOf, speechSlots, SPEECH_MAX_BYTES } from "../src/selfhost-speech.js";
+import { speechWaitMs, SPEECH_WAIT_TIMING, SPEECH_WAIT_MAX_MS, SPEECH_MODELS, SPEECH_PLAN_RTF, speechSecNano, selfTranscribe, selfDiarize, selfSessionAppend, selfSessionDiarize, selfSessionEnd, isSpeechWarming, SpeechWarmingError, stabilizeSpeakers, sessionPrefix, sessionParts, usageOf, speechSlots, SPEECH_MAX_BYTES } from "../src/selfhost-speech.js";
 import { speechSetup, SPEECH_WEIGHTS, SPEECH_REQS, SPEECH_VERIFY, SPEECH_INSTANCE, LLAMA_SHA } from "../src/speech-setup.js";
 import { SPEECH_PY } from "../src/speech-server-py.js";
+import { SPEAKER_EVERY_MS } from "../src/ee/speaker-labels-core.js";
 import { SpeechContainer, SPEECH_TIMING, SPEECH_ENTRYPOINT, SPEECH_IDLE_MS } from "../src/speech-container.js";
 import { stt } from "../src/transcribe.js";
 import { speakerLabels } from "../src/ee/speaker-labels.js";
@@ -143,6 +144,35 @@ test("selfTranscribe sends the audio to a ready slot and returns segments, words
   await assert.rejects(() => selfTranscribe(n.env, QWEN, { audio: new Uint8Array(SPEECH_MAX_BYTES + 1) }), /too large/);
   assert.equal(n.calls.length, 0);
   await assert.rejects(() => selfTranscribe({}, QWEN, { audio: WAV }), /No speech container is available/);
+});
+// ---- the wait of a last model ----
+test("speechWaitMs: only the last model of a chain waits, never past the job's limit, and a limit too short for a cold start gets no wait", () => {
+  assert.equal(speechWaitMs({ last: false, limitMs: 180000 }), 0, "a model with a next model never waits");
+  assert.equal(speechWaitMs({ last: true, limitMs: 180000 }), SPEECH_WAIT_MAX_MS, "a long limit gets the longest wait (90 s)");
+  assert.equal(speechWaitMs({ last: true, limitMs: 0 }), SPEECH_WAIT_MAX_MS, "no limit set: the longest wait");
+  assert.equal(speechWaitMs({ last: true, limitMs: 80000 }), 70000, "the wait ends 10 s before the limit");
+  assert.equal(speechWaitMs({ last: true, limitMs: 70000 }), 60000);
+  assert.equal(speechWaitMs({ last: true, limitMs: 30000 }), 0, "the 30 s limit of stt cannot fit a cold start of about a minute");
+  assert.equal(speechWaitMs({ last: true, limitMs: 6000 }), 0, "the 6 s limit of live dictation cannot either");
+  assert.equal(speechWaitMs({}), 0);
+});
+test("a call with a wait polls the cold pool until a slot is ready, then answers; without a wait, or after the wait, it throws the warming error", async () => {
+  const keep = SPEECH_WAIT_TIMING.pollMs; SPEECH_WAIT_TIMING.pollMs = 5;
+  try {
+    const p = fakePool({ ready: [] }); let polls = 0;
+    const orig = p.env.SPEECH_CONTAINER.get; p.env.SPEECH_CONTAINER.get = (n) => { const o = orig(n); if (n === "speech:0") { const st = o.speechState; o.speechState = async () => { if (++polls === 4) p.st[0].state = "ready"; return st(); }; } return o; };
+    const r = await selfTranscribe(p.env, QWEN, { audio: WAV }, {}, { waitMs: 2000 });
+    assert.equal(r.segs[0].t, "hello there"); assert.ok(polls >= 4, "it waited for the slot"); assert.deepEqual(p.warmed, [0], "one start, not one per poll"); assert.equal(p.calls.length, 1);
+    const q = fakePool({ ready: [] }); const t0 = Date.now();
+    await assert.rejects(() => selfTranscribe(q.env, QWEN, { audio: WAV }, {}, { waitMs: 60 }), isSpeechWarming); assert.ok(Date.now() - t0 >= 40, "it waited up to the bound");
+    const n = fakePool({ ready: [] }); const t1 = Date.now();
+    await assert.rejects(() => selfTranscribe(n.env, QWEN, { audio: WAV }, {}, { waitMs: 0 }), isSpeechWarming); await assert.rejects(() => selfDiarize(n.env, DIAR, { audio: WAV }), isSpeechWarming);
+    assert.ok(Date.now() - t1 < 40, "no wait asked, none taken");
+    const a = fakePool({ ready: [] }), ctl = new AbortController(); ctl.abort();
+    await assert.rejects(() => selfTranscribe(a.env, QWEN, { audio: WAV }, {}, { waitMs: 2000, signal: ctl.signal }), isSpeechWarming);
+    const f = fakePool({ ready: [0], handler: () => ({ state: "ok", status: 500, body: JSON.stringify({ error: "boom" }) }) });
+    await assert.rejects(() => selfTranscribe(f.env, QWEN, { audio: WAV }, {}, { waitMs: 2000 }), /failed \(500/); assert.equal(f.calls.length, 1, "only the warming error is waited out");
+  } finally { SPEECH_WAIT_TIMING.pollMs = keep; }
 });
 test("a cold pool throws the warming error at once and starts exactly one slot in the background", async () => {
   const p = fakePool({ ready: [] });
@@ -370,7 +400,8 @@ test("a slot restores from the template without internet, becomes ready when the
   await s.o.alarm(); assert.equal(s.ctx.container.running, true);
   s.o.put("last", String(Date.now() - SPEECH_IDLE_MS - 1)); await s.o.alarm();
   assert.equal(s.ctx.container.running, false); assert.deepEqual(s.destroys, ["speech idle"]); assert.equal((await s.o.speechState()).state, "cold");
-  assert.equal(SPEECH_IDLE_MS, 10 * 60e3);
+  assert.equal(SPEECH_IDLE_MS, SPEAKER_EVERY_MS + 60e3, "idle = one live speaker pass interval plus a minute, so a live session never restarts the container between two passes");
+  assert.ok(SPEECH_IDLE_MS > SPEAKER_EVERY_MS && SPEECH_IDLE_MS < 10 * 60e3);
   // an object that was evicted while its container ran asks the server instead of assuming
   s.setRunning(true); const fresh = new SpeechContainer(s.ctx, x.env); assert.equal((await fresh.speechState()).state, "ready");
 });

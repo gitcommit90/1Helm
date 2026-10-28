@@ -2,9 +2,11 @@
 import { ask, dialogOpen } from "./dialog";   // first: its Esc handler must run before every other one
 import { createAmbientCue } from "./ee/ambient-cue";
 import { openTaskRename } from "./task-rename";   // modal keys stay out of app shortcuts
+import { navInit, navButtons, navKey } from "./nav-history";   // address history record + the arrows (stamps history.state; its replaceState patch must be in place before the app starts)
 import { registerShortcut, scInit, scPage, scLabel, scLabelN, scReset } from "./shortcuts";   // third: the one key handler + Settings → Keyboard shortcuts (registers its capture listener before every app one but the dialog's)
 import { installAutoReload } from "./auto-reload";
 import { micInfo } from "./ee/livemic";
+import { draftsInit, draftGet, draftSet, draftClear } from "./drafts";   // unsent message text kept per composer
 import { unsavedKind, guarded } from "./unsaved";   // second: "Save changes?" before leaving an edit (its hashchange listener must be the first one)
 import { dedupeProgress, splitParts, finishReply } from "./progress-dedupe";
 import { progressSlot, progressWorked, progressReset, progressSnapshot, progressBefore, progressAfter } from "./progress-slot";
@@ -16,10 +18,13 @@ import { beeInit, beeOverview, beeSec, beeMark } from "./ee/bee";
 import { notebookBeeUnread } from "./ee/notebook-bee-unread";
 import { wkMdFromHtml, wkRichOk } from "./wk-rich";
 import { dpInit, dpSec, dpSheetMaybe, dpSheetOpen, dpLoc, dpShareNow, DP_ICON } from "./devperm";   // location + mic, asked once up front (its sheet's Esc, too)   // Settings → Ambient → Bee: the card and the Connect sheet (its sheet's Esc, too)
+import { beeLibInit, beeLibParts, beeLibReset, beeLibEnsure } from "./ee/bee-library";   // General's Library: the saved Bee conversations (a filter and a section)
+import { secInit, secPlus, secList, secRow, secOf, moveMenu, canMove, type CS } from "./sections";   // custom sections of the task list
 import { delInit, rowMore, headDelete, channelMore, sheetRows, MORE } from "./delete";   // deleting a chat / channel / the account
 import { openNewChannel, createViaApi, type NewChannel } from "./newchannel";   // second, for the same reason (New channel sheet)
 import { shInit, shFiles, shCards, shEvent, shCardHtml, shFold, shFileBtn, shViewerBtns, shBadge, shLibHtml, shFileGone } from "./share";   // share links + published pages (its sheet's Esc, too)
 import { orb } from "./activity-orb";
+import { cmodelsInit, cmodelsCard, cmodelsPrivacy } from "./ee/custom-models";   // Settings → Advanced → Custom Model Selection (chat categories of this account; licensed)
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { fileUrl as fileResUrl } from "./file-url.mjs";
@@ -82,15 +87,15 @@ import { maInit, maActs, maOpenCls, maQuote, rqHtml, rqTake, rqPut, rqClear, ref
 import { createRankedSearch, rankedRows } from "./task-search";   // sidebar and drawer Search: the server ranks every task after a pause
 import { sgInit, pauseSet, usageSet, usageAdd, usageNote } from "./spendguard";   // core runaway guard and per-task usage
 import { sgBillingInit, monthLine, noticeShow } from "./ee/spendguard-billing";   // 1HC monthly plan meter and credit notices
+navInit();   // before anything calls history.replaceState
 
 // Live mode: served by 1Helm Cloud at /w/<slug>/app with window.__1HC = { api, slug, classic }. Same UI, real channels and tasks.
 const LIVE: { v?: string; api: string; slug: string; classic: string; person?: string; email?: string; support?: string; helper?: string; avatar?: number } | null = (window as any).__1HC || null;
 const supportEmail = LIVE?.support || "support@example.com";
 const supportHtml = supportEmail.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 const LNAME: Record<string, string> = { main: "General" };
-const titleCase = (slug: string) => { const t = slug.replace(/-/g, " "); return t.charAt(0).toUpperCase() + t.slice(1); };
-// A channel made in 1HC has a real name ("Taxes 2026"); imported ones only have their slug as a name, so those get title case.
-const liveName = (c: { slug: string; name?: string }) => LNAME[c.slug] ?? (c.name && c.name !== c.slug ? c.name : titleCase(c.slug));
+// A channel name is shown exactly as the person wrote it ("llms", "finances"); the app never changes its capitalization. Only a channel with no name falls back to its slug.
+const liveName = (c: { slug: string; name?: string }) => LNAME[c.slug] ?? (c.name || c.slug);
 // The page HTML starts this request before the script downloads (proto src/index.js BOOT_EARLY); use it once, else ask now.
 const earlyBoot: Promise<any> | undefined = (window as any).__1HC_BOOT; (window as any).__1HC_BOOT = undefined;
 const BOOT: any = LIVE ? await (earlyBoot || fetch(`${LIVE.api}/app/boot?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "")}`, { credentials: "same-origin" }).then(r => r.json()).catch(() => ({ channels: [] }))) : null;
@@ -106,6 +111,8 @@ const bykEditing = () => byok().bykEditing();
 const bykDiscard = () => byok().bykDiscard();
 const bykUsageNote = () => byok().bykUsageNote();
 const bykSwitched = () => byok().bykSwitched();
+const bykSbOn = () => hasFeature("billing") && billingByok.bykSbOn();   // design sandbox only: a pretend switch now
+const bykSbCredits = () => billingByok.bykSbCredits();
 const storCard = () => hasFeature("billing") ? billingStorage.storCard() : coreStorage.storCard();
 const storPlans = () => hasFeature("billing") ? billingStorage.storPlans() : "";
 const storPlansOpen = () => hasFeature("billing") && billingStorage.storPlansOpen();
@@ -124,7 +131,9 @@ let PERSON = LIVE?.person?.trim() || "Joseph Yaksich";   // let: Settings → Yo
 let EMAIL = LIVE?.email?.trim() || "you@example.com";
 const initialsOf = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map(x => x[0]).join("").toUpperCase() || "ME";
 let INITIALS = initialsOf(PERSON);
-const seed: any = BOOT ? { captured: Date.now(), channels: BOOT.channels.map((c: any) => ({ id: c.id, slug: c.slug, name: c.name, purpose: c.purpose, memory: c.memory || [], notes: c.notes || [], jobs: c.jobs || [],
+// Custom sections of a channel (sections.ts): what the server says, or off with none.
+function csOf(v: any): CS { return { on: !!v?.on, sections: Array.isArray(v?.sections) ? v.sections.map((x: any) => ({ id: String(x.id), title: String(x.title), color: String(x.color) })) : [] }; }
+const seed: any = BOOT ? { captured: Date.now(), channels: BOOT.channels.map((c: any) => ({ id: c.id, slug: c.slug, name: c.name, purpose: c.purpose, memory: c.memory || [], notes: c.notes || [], jobs: c.jobs || [], cs: csOf(c.sections),
   sessions: c.sessions.map((v: any) => ({ id: v.id, title: v.title, status: v.state === "waiting" ? "waiting" : v.state === "watching" ? "open" : "resolved", state: v.state === "working" ? "working" : "idle", updated: v.updated, messages: [], srv: v, pinned: v.pinned, done: v.done, unread: v.unread })) })) } : seedMock;
 
 type Msg = { id: number; role: "user" | "agent"; body: string; at: number; steps: string[]; pre?: string[]; prog?: string[]; progressOmitted?: number; cards?: any[]; input_request?: InputRequest; files?: FileV[]; saved?: Saved[] };
@@ -132,13 +141,13 @@ type Msg = { id: number; role: "user" | "agent"; body: string; at: number; steps
 type Saved = { to: "notebook" | "contact" | "memory" | "account"; channel?: string; sec?: string; text?: string; name?: string; fields?: string[] };
 type FileV = { id: string; name: string; mime: string; bytes: number; at: number; source?: string; session?: string | null; image?: boolean; tags?: string[]; tx?: string };
 type Session = { id: any; srv?: any; loaded?: boolean; loading?: boolean; streaming?: boolean; attached?: boolean; tmp?: string; rawLine?: string; title: string; status: string; state: string; updated: number; messages: Msg[]; line?: string; unread?: boolean; fresh?: boolean; pinned?: boolean; done?: boolean };
-type Channel = { id: number; slug: string; name: string; purpose: string; memory: string[]; notes?: any[]; jobs: any[]; sessions: Session[] };
+type Channel = { id: number; slug: string; name: string; purpose: string; memory: string[]; notes?: any[]; jobs: any[]; sessions: Session[]; cs?: CS };
 type Art = { tx?: string; name: string; kind: "doc" | "sheet" | "pdf" | "image" | "link" | "code"; sid: any; at: number; size: string; fresh?: boolean; fid?: string; you?: boolean; mime?: string; bytes?: number; tags?: string[] };
 
 const NAMES: Record<string, string> = { main: "General", "weather-watch": "Weather", "family-schedule": "Family", "home-finances": "Finances", "trip-planning": "Japan trip", "side-project": "Side project" };
 const NOW = Date.now(), SHIFT = NOW - (seed as any).captured;
 const channels: Channel[] = (seed as any).channels.map((c: any) => ({
-  id: c.id, slug: c.slug, name: LIVE ? liveName(c) : NAMES[c.slug] ?? c.slug, purpose: c.purpose, memory: c.memory, notes: c.notes, jobs: (c.jobs || []).map((j: any) => j.ended ? { ...j, ended: j.ended + SHIFT } : j),   // seed ended jobs move with the clock
+  id: c.id, slug: c.slug, name: LIVE ? liveName(c) : NAMES[c.slug] ?? c.slug, purpose: c.purpose, memory: c.memory, notes: c.notes, cs: c.cs, jobs: (c.jobs || []).map((j: any) => j.ended ? { ...j, ended: j.ended + SHIFT } : j),   // seed ended jobs move with the clock
   sessions: c.sessions.map((s: Session) => ({ ...s, updated: s.updated + SHIFT, messages: s.messages.map(m => ({ ...m, at: m.at + SHIFT })) })),
 }));
 if (LIVE && !channels.length) {
@@ -256,10 +265,12 @@ const md = (s: string) => DOMPurify.sanitize(marked.parse(s, { async: false, bre
 const live = (s: Session) => s.status === "open" || s.status === "waiting";
 // The one place the unread / needs-you dot lives: a fixed-width slot at the far right of a task row, after the pin and more buttons.
 // The slot holds the time (rows that show one) or the dot, never both, and keeps its width, so nothing moves when the dot appears or clears.
-// needsYou is the one rule for "this task waits on the person": the rail dot, the phone channel list, the phone menu dot, the row dot and Home's
-// "All clear" all read it, so a dot only shows when the list it leads to has a row with a dot. A done task never counts.
+// needsYou is the rule for "this task waits on the person" (Home's "All clear" reads it). rowLit adds a finished reply nobody has opened yet. The row dot,
+// the rail dot, the phone channel list and the phone menu dot all read rowLit, so a dot only shows when the list it leads to has a row with a dot.
+// A done task never counts.
 const needsYou = (x: Session) => !x.done && x.status === "waiting";
-const rowDot = (x: Session) => (needsYou(x) || (!x.done && x.unread)) ? `<i class="dot" title="${x.unread ? "New result" : "Needs you"}"></i>` : "";
+const rowLit = (x: Session) => needsYou(x) || (!x.done && !!x.unread);
+const rowDot = (x: Session) => rowLit(x) ? `<i class="dot" title="${x.unread ? "New result" : "Needs you"}"></i>` : "";
 const rowTail = (x: Session, when = true) => `<span class="tail">${rowDot(x) || (when ? `<span class="when">${ago(x.done ? doneAt(x) : x.updated)}</span>` : "")}</span>`;
 function ago(t: number) {
   const m = Math.round((Date.now() - t) / 60e3);
@@ -291,15 +302,40 @@ function route(): { ch: Channel; s: Session | null } {
 const phone = () => matchMedia("(max-width: 767px)").matches;
 const go = (slug: string, sid?: number | "new") => { location.hash = `/${slug}${sid !== undefined ? `/s/${sid}` : ""}`; };
 
-// The computer: one icon, top-right of every screen. A dot means the helper is using it right now.
-function pcFab(ch: Channel) { const busy = ch.sessions.some(x => x.state === "working");
+// The computer: one icon, top-right of every screen. A dot means this channel's computer is running a browser step or a command right now
+// (or a few seconds ago), or you have taken over its browser. A task that is only thinking or writing does not light it. The channel
+// computer reports this (/ch/<channel>/browser/activity, polled by pcActivityTick), so a reload or reconnect reads the same answer.
+const pcLit: Record<string, { on: boolean; at: number }> = {};
+const pcOn = (slug: string) => !!pcLit[slug]?.on && Date.now() - pcLit[slug].at < 8000;   // an answer from a channel you left goes stale
+function pcFab(ch: Channel) { const busy = pcOn(ch.slug);
   return `<button class="pcfab${busy ? " busy" : ""}" data-watch="${esc(ch.slug)}" title="${esc(who(ch))}'s computer" aria-label="Open ${esc(who(ch))}'s computer">${ic.screen}${busy ? `<i class="pcdot"></i>` : ""}</button>`; }
+// Polls the open channel's computer while one of its tasks is working (or its dot is still lit), and moves the dot on the desktop button and
+// the phone header button without repainting the page. Nothing is polled for an idle channel.
+function pcPaintDot(slug: string, on: boolean) {
+  document.querySelectorAll<HTMLElement>(`[data-watch="${CSS.escape(slug)}"]`).forEach(b => {
+    if (b.classList.contains("pcfab")) { b.classList.toggle("busy", on); const d = b.querySelector(".pcdot"); if (on && !d) b.insertAdjacentHTML("beforeend", `<i class="pcdot"></i>`); else if (!on) d?.remove(); }
+    else if (b.classList.contains("cb")) b.classList.toggle("busy", on);
+  });
+}
+let pcActBusy = false;
+async function pcActivityTick() {
+  const ch = route().ch;
+  if (!LIVE || pcActBusy || document.hidden || !(ch.sessions.some(x => x.state === "working") || pcOn(ch.slug))) return;
+  pcActBusy = true;
+  try {
+    const st: any = await api(`/ch/${ch.slug}/browser/activity`);
+    const on = !!(st && (st.busy || st.controlled));
+    const was = pcOn(ch.slug); pcLit[ch.slug] = { on, at: Date.now() }; if (on !== was) pcPaintDot(ch.slug, on);
+  } catch {} finally { pcActBusy = false; }
+}
+setInterval(pcActivityTick, 2500);
 // The channel rail (desktop): every channel, then New channel. railWire keeps its scroll spot and bottom fade.
 function railHtml(ch: Channel) {
-  return `<div class="chs"><div class="brand" title="1Helm"><img src="/1helm-icon.png" alt="1Helm"></div>${sidebarRestoreButton()}${channels.map((c, i) => {
-    const n = c.sessions.filter(needsYou).length;
+  const nb = navButtons(`Back${scLabel("nav-back") ? `  ${scLabel("nav-back")}` : ""}`, `Forward${scLabel("nav-forward") ? `  ${scLabel("nav-forward")}` : ""}`);
+  return `<div class="chs"><div class="navh">${nb[0]}<div class="brand" title="1Helm"><img src="/1helm-icon.png" alt="1Helm"></div>${nb[1]}</div>${sidebarRestoreButton()}${channels.map((c, i) => {
+    const n = c.sessions.filter(rowLit).length, pipTitle = c.sessions.some(needsYou) ? "Needs you" : "New result";
     return `<button class="ch${c === ch ? " on" : ""}" data-ch="${c.slug}" title="${esc(c.name)}${scLabel("jump") ? `  ${scLabelN("jump", i + 1)}` : ""}">
-      <span class="tile">${c.slug === "main" ? av(c) : mono(c)}${n ? `<i class="pip" title="Needs you"></i>` : ""}</span><span class="lbl">${esc(c.name)}</span></button>`;
+      <span class="tile">${c.slug === "main" ? av(c) : mono(c)}${n ? `<i class="pip" title="${pipTitle}"></i>` : ""}</span><span class="lbl">${esc(c.name)}</span></button>`;
   }).join("")}<button class="ch add" title="New channel" aria-label="New channel" data-newch><span class="tile">${ic.plus}</span></button></div>
     <div class="foot">${LIVE ? pomoGlobalBtn(true) : ""}${hasFeature("connected_apps") ? `<button class="iconbtn apico" data-apps title="Apps${scLabel("apps") ? `  ${scLabel("apps")}` : ""}" aria-label="Apps">${I('<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><path d="M17.5 14v7M14 17.5h7"/>', 20)}</button>` : ""}<button class="me" data-sgo="general" title="${esc(PERSON)} · Settings" aria-label="Settings">${esc(INITIALS)}</button><button class="iconbtn" data-smenu title="Menu" aria-label="Menu" aria-haspopup="menu">${ic.menu}</button></div>`;
 }
@@ -326,6 +362,14 @@ function autoFocus(el: HTMLElement | null | undefined, opts?: FocusOptions, care
 // The message box is rebuilt with the screen, so its text, caret and focus are put back when it is the same composer: the same task, or
 // the same channel Home. Another task's composer starts empty, so a draft never lands in the wrong task.
 let boxOwner: object | null = null, keepDepth = 0;
+// Drafts: one per message box, keyed by channel and task ("home" for the channel Home box); the new-task box is keyed by the channel it opened from.
+draftsInit(LIVE?.slug || "sandbox");
+const boxKey = () => { const { ch, s } = route(); return `box|${ch.slug}|${s ? s.id : "home"}`; };
+function boxRestore(box: HTMLTextAreaElement) {
+  const d = draftGet(boxKey()); if (!d) return;
+  box.value = d.t; box.dispatchEvent(new Event("input", { bubbles: true }));   // the same height and Send button as typing
+  box.setSelectionRange(d.t.length, d.t.length); box.scrollTop = box.scrollHeight;
+}
 function keepDraft(paint: () => void) {
   if (keepDepth) { paint(); return; }
   const { ch, s } = route(), owner = s ?? ch, was = document.getElementById("box") as HTMLTextAreaElement | null;
@@ -334,6 +378,7 @@ function keepDraft(paint: () => void) {
   keepDepth++; try { paint(); } finally { keepDepth--; }
   const now = route(); boxOwner = now.s ?? now.ch;
   const box = document.getElementById("box") as HTMLTextAreaElement | null;
+  if (box && box !== was && !box.value && !(kept && boxOwner === owner)) { boxRestore(box); return; }   // another channel or task, or a reload: the draft that belongs to this box
   if (!kept || !box || box === was || (box.value && box.value !== kept.v) || boxOwner !== owner) return;
   box.value = kept.v; box.dispatchEvent(new Event("input", { bubbles: true }));   // the same size and Send button as typing
   box.scrollTop = kept.top;
@@ -374,6 +419,7 @@ function renderStage() {
 
   if (isSch()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + schPage(ch.slug); schAfter(schSec()); return; }
   if (isLib()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + libPage(ch); return; }
+  beeLibReset();   // left the Library: an open Bee conversation closes
   if (isNb()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + nbPage(ch); nbAfter(); nbSync(ch); void nbpLoad(ch); return; }
   if (isCt()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + ctPage(); ctAfter(); return; }
   $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + (s ? `
@@ -583,12 +629,15 @@ function collHtml() {
 }
 function libBody() {
   const ch = route().ch, one = L.scope === "ch";
+  const bee = beeLibParts(!!LIVE && one && ch.slug === "main", L.type);   // General's own Library only; nothing at all unless it has a stored Bee conversation
+  if (bee.reset) L.type = "all";
+  if (bee.view) return bee.view;
   return `${one ? "" : `<div class="lsec"><h2>Folders</h2><p>One folder for each channel. Everything ${esc(who(main))} makes, and everything you add.</p></div>
     <div class="colls" id="colls">${collHtml()}</div>`}
-    <div class="lbar${one ? " first" : ""}"><h2>${one ? `${lib(ch).length} ${lib(ch).length === 1 ? "file" : "files"}` : L.coll === "all" ? "All files" : L.coll === "recent" ? "Recent" : esc(channels.find(c => c.slug === L.coll)?.name ?? "")}</h2>
-      <div class="vt"><button class="${L.view === "list" ? "on" : ""}" data-view="list" aria-label="List">${ic.list}</button><button class="${L.view === "grid" ? "on" : ""}" data-view="grid" aria-label="Grid">${ic.grid}</button></div></div>
-    <div class="chips">${TYPES.filter(t => LIVE || t[0] !== "zone").map(([k, n]) => `<button class="fchip${L.type === k ? " on" : ""}" data-type="${k}">${n}</button>`).join("")}</div>
-    ${LIVE ? shLibHtml(one ? ch.slug : null) : ""}<div id="lfiles">${libFilesHtml()}</div>`;
+    ${bee.only ? "" : `<div class="lbar${one ? " first" : ""}"><h2>${one ? `${lib(ch).length} ${lib(ch).length === 1 ? "file" : "files"}` : L.coll === "all" ? "All files" : L.coll === "recent" ? "Recent" : esc(channels.find(c => c.slug === L.coll)?.name ?? "")}</h2>
+      <div class="vt"><button class="${L.view === "list" ? "on" : ""}" data-view="list" aria-label="List">${ic.list}</button><button class="${L.view === "grid" ? "on" : ""}" data-view="grid" aria-label="Grid">${ic.grid}</button></div></div>`}
+    <div class="chips${bee.only ? " beelib-first" : ""}">${TYPES.filter(t => LIVE || t[0] !== "zone").map(([k, n]) => `<button class="fchip${L.type === k ? " on" : ""}" data-type="${k}">${n}</button>`).join("")}${bee.chip}</div>
+    ${bee.only ? "" : `${LIVE ? shLibHtml(one ? ch.slug : null) : ""}<div id="lfiles">${libFilesHtml()}</div>`}${bee.section}`;
 }
 function libHead(ch: Channel) {
   const one = L.scope === "ch";
@@ -603,7 +652,7 @@ function libPage(ch: Channel) {
     <div id="lbody">${libBody()}</div></div></div>`;
 }
 function libUpdate(head = false) { const b = document.getElementById("lbody"); if (b) { b.innerHTML = libBody(); if (phone()) document.querySelector(".chips .fchip.on")?.scrollIntoView({ block: "nearest", inline: "nearest" }); } const h = document.getElementById("lhd"); if (head && h) h.innerHTML = libHead(route().ch); }
-function openLib(ch: Channel, coll?: string) { L.scope = "ch"; L.coll = coll ?? "all"; L.type = "all"; L.q = ""; const h = `#/${ch.slug}/library`; if (location.hash === h) render(); else location.hash = h; }
+function openLib(ch: Channel, coll?: string) { beeLibReset(); L.scope = "ch"; L.coll = coll ?? "all"; L.type = "all"; L.q = ""; const h = `#/${ch.slug}/library`; if (location.hash === h) render(); else location.hash = h; }
 
 // ---------- Files: attach in chat (button, drag and drop, paste) and Library "Add file". Uploads start at once; chips show progress. ----------
 // lib: picked from the channel's Library (+ → Library picker). Already a Library file, so removing the chip never deletes it.
@@ -1186,17 +1235,20 @@ if (LIVE) {
   }, { passive: true });
 }
 // ---------- New task modal: start the next task without leaving the one you're in; toast confirms ----------
-const NT = { open: false, to: "", pick: false };
+const NT = { open: false, to: "", pick: false, from: "" };
+const nboxSave = (v: string) => draftSet(`new|${NT.from}`, v, NT.to);
 function paintNew() {
   const w = document.getElementById("nt")!, to = channels.find(c => c.slug === NT.to) ?? route().ch;
-  w.querySelector(".nwho")!.innerHTML = `${av(to, "av sm")}<span>${esc(who(to))}</span>${I('<path d="m6 9 6 6 6-6"/>', 14)}`;
-  w.querySelector(".nlist")!.innerHTML = NT.pick ? channels.map(c => `<button class="nopt${c === to ? " on" : ""}" data-nwho="${c.slug}">${av(c, "av sm")}<b>${esc(who(c))}</b><span>${esc(c.name)}</span>${c === to ? ic.check : ""}</button>`).join("") : "";
+  w.querySelector(".nwho")!.innerHTML = `${av(to, "av sm")}<span>${esc(to.name)}</span>${I('<path d="m6 9 6 6 6-6"/>', 14)}`;
+  const mixed = new Set(channels.map(who)).size > 1;   // the helper name is only extra text when channels have different helpers
+  w.querySelector(".nlist")!.innerHTML = NT.pick ? channels.map(c => `<button class="nopt${c === to ? " on" : ""}" data-nwho="${c.slug}">${av(c, "av sm")}<b>${esc(c.name)}</b>${mixed ? `<span>${esc(who(c))}</span>` : ""}${c === to ? ic.check : ""}</button>`).join("") : "";
   (w.querySelector("#nbox") as HTMLTextAreaElement).placeholder = `What should ${who(to)} do next?`;
   w.querySelector(".ngo-l")!.textContent = phone() ? "Start" : "Start task";
   if (!NT.pick) (w.querySelector("#nbox") as HTMLTextAreaElement).focus();
 }
 function openNew() {
-  NT.open = true; NT.to = route().ch.slug; NT.pick = false; hideToast();
+  NT.open = true; NT.to = NT.from = route().ch.slug; NT.pick = false; hideToast();
+  const nd = draftGet(`new|${NT.from}`); if (nd?.to && channels.some(c => c.slug === nd.to)) NT.to = nd.to;
   let w = document.getElementById("nt"); if (!w) { w = document.createElement("div"); w.id = "nt"; document.body.appendChild(w); }
   w.innerHTML = `<div class="nback" data-nclose></div><form class="nmodal" id="nsend" role="dialog" aria-label="New task">
     ${phone() ? '<button type="button" class="grab" data-nclose aria-label="Close new task"></button>' : ""}<div class="ups" id="ups-nbox">${upsHtml("nbox")}</div><textarea id="nbox" rows="2" autocomplete="off"></textarea>
@@ -1207,9 +1259,11 @@ function openNew() {
   if (phone()) dragToClose(w.querySelector<HTMLElement>(".nmodal")!, () => {
     const draft = (document.getElementById("nbox") as HTMLTextAreaElement | null)?.value.trim();
     if (!draft && !UP.nbox.length) { closeNew(); return; }
-    ask({ title: "Discard this task draft?", body: "Your message and attached files haven't been sent.", confirm: "Discard", cancel: "Keep editing", danger: true }).then(ok => { if (ok) closeNew(); });
+    ask({ title: "Discard this task draft?", body: "Your message and attached files haven't been sent.", confirm: "Discard", cancel: "Keep editing", danger: true }).then(ok => { if (ok) { draftClear(`new|${NT.from}`); closeNew(); } });
   });
-  paintNew(); requestAnimationFrame(() => requestAnimationFrame(() => w!.classList.add("on")));
+  const nb = w.querySelector<HTMLTextAreaElement>("#nbox")!; if (nd) nb.value = nd.t;
+  paintNew(); if (nd) { nb.dispatchEvent(new Event("input", { bubbles: true })); nb.setSelectionRange(nd.t.length, nd.t.length); nb.scrollTop = nb.scrollHeight; }
+  requestAnimationFrame(() => requestAnimationFrame(() => w!.classList.add("on")));
 }
 function closeNew() { const w = document.getElementById("nt"); NT.open = false; if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!NT.open) w.innerHTML = ""; }, 220); }
 function sendNew() {
@@ -1217,6 +1271,7 @@ function sendNew() {
   if (upBusy("nbox")) { note(ic.clock, "Still uploading", "Your files are almost there. Send again in a moment.", ""); return; }
   const sl = LIVE ? slGate("nbox") : "send"; if (sl === "stop") return;
   const files = upTake("nbox", to); if (!text && !files.length) return;
+  draftClear(`new|${NT.from}`);
   if (sl === "schedule") { slSchedule("nbox", to.slug, "new", text, files); closeNew(); return; }   // send later (send-later.ts)
   const x = startTask(to, text, files);
   closeNew(); refresh(); toast(to, x);
@@ -1305,7 +1360,7 @@ function paintMobileStatus(ch: Channel, s: Session | null) {
     if (!stop) { stop = document.createElement("button"); stop.className = "cb mstop"; stop.setAttribute("aria-label", "Stop this task"); stop.title = "Stop"; stop.innerHTML = SQ; h.insertBefore(stop, done?.parentElement || h.querySelector("[data-mtools]")); }
     stop.dataset.stop = `${ch.slug}|${s.id}`; stop.disabled = stopBusy(ch.slug, s.id);
   } else stop?.remove();
-  h.querySelector("[data-watch]")?.classList.toggle("busy", ch.sessions.some(x => x.state === "working"));
+  h.querySelector("[data-watch]")?.classList.toggle("busy", pcOn(ch.slug));
 }
 // Done lists sort by when the task was marked done (server done_at), newest first; older rows without it fall back to updated.
 function doneAt(x: Session) { return Number(x.srv ? x.srv.done_at : (x as any).doneAt) || x.updated; }
@@ -1377,15 +1432,18 @@ const rankSearch = (slug: string, q: string) => { if (LIVE) RS.input(slug, q); }
 function sideList(ch: Channel, s: Session | null, q: string) {
   const ql = q.toLowerCase(), ranked = LIVE ? RS.ranked(ch.slug, q) : null;
   const list = ranked ? rankedRows(ch.sessions, ranked) : ch.sessions.filter(x => !ql || x.title.toLowerCase().includes(ql) || x.messages.some(m => m.body.toLowerCase().includes(ql)));
-  const row = (x: Session) => `<a class="sess${x === s ? " on" : ""}${freshOnce("sess", x, x.fresh)}${x.done ? " isdone" : ""}" href="#/${ch.slug}/s/${x.id}">${box(x, true)}
-      <span class="t">${esc(x.title)}</span>${LIVE && hasFeature("ambient") ? lnDot(ch.slug, x.id) : ""}${rowStop(ch.slug, x.id, x.title, stWorking(x))}${pinBtn(x)}${LIVE && x.srv ? rowMore(ch.slug, x.id, x.title) : ""}${rowTail(x)}</a>`;
+  const row = (x: Session) => { const sr = secRow(ch.slug, x, true); return `<a class="sess${x === s ? " on" : ""}${freshOnce("sess", x, x.fresh)}${x.done ? " isdone" : ""}${sr.c}"${sr.a} href="#/${ch.slug}/s/${x.id}">${box(x, true)}
+      <span class="t">${esc(x.title)}</span>${LIVE && hasFeature("ambient") ? lnDot(ch.slug, x.id) : ""}${rowStop(ch.slug, x.id, x.title, stWorking(x))}${pinBtn(x)}${LIVE && x.srv ? rowMore(ch.slug, x.id, x.title) : ""}${rowTail(x)}</a>`; };
   // Searching shows every match: folded sections open while there's a query (the saved choice comes back when it's cleared).
   const group = (key: string, label: string, items: Session[], nc = false) => { if (!items.length) return ""; const shut = !ql && folded(ch, `side-${key}`);
     return `${foldHead("grp", `side-${key}`, label, nc ? 0 : items.length, shut, !!ql)}${shut ? "" : items.map(row).join("")}`; };
   const rest = list.filter(x => !x.pinned);
   if (ranked) return list.length ? list.map(row).join("") : `<div class="empty">Nothing matches.</div>`;   // a ranked answer is one flat list, most likely first, with no sections
-  return `${group("pinned", `${ic.pin}Pinned`, list.filter(x => x.pinned))}${group("texts", "Texts", rest.filter(x => !x.done && isTexts(x)))}${stateGroups(rest, group)}${group("done", "Done", rest.filter(x => x.done).sort(byDone))}${!list.length ? `<div class="empty">${q ? "Nothing matches." : "No tasks yet."}</div>` : ""}`;
+  if (csOn(ch)) return secList(ch.slug, list, { row, head: (k, l, n, shut, srch) => foldHead("grp", `side-${k}`, l, n, shut, srch), shut: k => folded(ch, `side-${k}`), searching: !!ql, empty: `<div class="empty">Nothing matches.</div>` }) + secPlus(ch.slug, !!ql);
+  return `${secPlus(ch.slug, !!ql)}${group("pinned", `${ic.pin}Pinned`, list.filter(x => x.pinned))}${group("texts", "Texts", rest.filter(x => !x.done && isTexts(x)))}${stateGroups(rest, group)}${group("done", "Done", rest.filter(x => x.done).sort(byDone))}${!list.length ? `<div class="empty">${q ? "Nothing matches." : "No tasks yet."}</div>` : ""}`;
 }
+const csOf2 = (ch: Channel): CS => ch.cs ??= { on: false, sections: [] };
+const csOn = (ch: Channel) => csOf2(ch).on;
 function clearFresh(ch: Channel) { if (ch.sessions.some(x => x.fresh) || lib(ch).some(a => a.fresh)) setTimeout(() => { ch.sessions.forEach(x => x.fresh = false); lib(ch).forEach(a => a.fresh = false); }, 600); }
 function titleOf(t: string) {
   let x = t.trim().replace(/^(hey|hi|ok|okay)[,!\s]+/i, "").replace(/^(can|could|would) you (please )?/i, "").replace(/^please /i, "").replace(/[?.!]+$/, "");
@@ -1577,7 +1635,7 @@ document.addEventListener("click", e => {
   if (t.closest("[data-new]")) { e.preventDefault(); go(route().ch.slug); ($("#box") as HTMLTextAreaElement | null)?.focus(); }
   if (t.closest("[data-ntask]")) { e.preventDefault(); openNew(); }
   if (t.closest("[data-nclose]")) closeNew();
-  const nw = t.closest<HTMLElement>("[data-nwho]"); if (nw) { NT.to = nw.dataset.nwho!; NT.pick = false; paintNew(); }
+  const nw = t.closest<HTMLElement>("[data-nwho]"); if (nw) { NT.to = nw.dataset.nwho!; NT.pick = false; paintNew(); nboxSave((document.getElementById("nbox") as HTMLTextAreaElement).value); }
   if (t.closest("[data-npick]")) { NT.pick = !NT.pick; paintNew(); }
   const tv = t.closest<HTMLElement>("[data-tview]"); if (tv) { e.preventDefault(); hideToast(); mState.drawer = false; location.hash = tv.dataset.tview!; }
   if (t.closest("[data-tclose]")) hideToast();
@@ -1593,8 +1651,8 @@ document.addEventListener("input", e => {
   if (t.id === "lq") { L.q = (t as HTMLInputElement).value; $("#lfiles").innerHTML = libFilesHtml(); }
   if (t.id === "chq") $("#chlist").innerHTML = chRows((t as HTMLInputElement).value);
   if (t.id === "dq") { const { ch, s } = route(); $("#dlist").innerHTML = sessRows(ch, s, (t as HTMLInputElement).value); rankSearch(ch.slug, (t as HTMLInputElement).value); }
-  if (t.id === "nbox") { const b = t as HTMLTextAreaElement; b.style.height = "auto"; b.style.height = Math.min(b.scrollHeight, 260) + "px"; ($("#ngo") as HTMLButtonElement).disabled = !b.value.trim() && !(LIVE && UP.nbox.some(u => u.f)); }
-  if (t.id === "box") { const b = t as HTMLTextAreaElement; b.style.height = "auto"; b.style.height = Math.min(b.scrollHeight, 220) + "px"; const has = !!b.value.trim() || !!(LIVE && UP.box.some(u => u.f)); ($("#go") as HTMLButtonElement).disabled = !has; $("#send").classList.toggle("has", has); }
+  if (t.id === "nbox") { const b = t as HTMLTextAreaElement; nboxSave(b.value); b.style.height = "auto"; b.style.height = Math.min(b.scrollHeight, 260) + "px"; ($("#ngo") as HTMLButtonElement).disabled = !b.value.trim() && !(LIVE && UP.nbox.some(u => u.f)); }
+  if (t.id === "box") { const b = t as HTMLTextAreaElement; draftSet(boxKey(), b.value); b.style.height = "auto"; b.style.height = Math.min(b.scrollHeight, 220) + "px"; const has = !!b.value.trim() || !!(LIVE && UP.box.some(u => u.f)); ($("#go") as HTMLButtonElement).disabled = !has; $("#send").classList.toggle("has", has); }
 });
 document.addEventListener("keydown", e => {
   const t = e.target as HTMLElement;
@@ -1612,6 +1670,7 @@ document.addEventListener("submit", e => {
   if (upBusy("box")) { note(ic.clock, "Still uploading", "Your files are almost there. Send again in a moment.", ""); return; }
   const sl = LIVE ? slGate("box") : "send"; if (sl === "stop") return;
   const files = LIVE ? upTake("box", ch) : []; if (!text && !files.length) return;
+  draftClear(boxKey());
   const rp = s ? rqTake(rqKey()) : null;   // a reply pinned above the box (msgreply.ts) goes with this message; the bar clears
   if (rp?.role === "zone") zoneMod?.zoneSent();   // the selection was sent with it
   if (sl === "schedule") {   // send later (send-later.ts): it's kept and goes out at the picked time
@@ -1626,6 +1685,7 @@ document.addEventListener("submit", e => {
     if (!phone()) b.focus(); return;
   }
   if (LIVE) { liveReply(ch, s, text, files, false, undefined, rp); return; }
+  { const b = $("#box") as HTMLTextAreaElement; b.value = ""; b.style.height = "auto"; ($("#go") as HTMLButtonElement).disabled = true; $("#send").classList.remove("has"); }   // the sandbox empties the box on send, as the live reply does
   sandReply(ch, s, text, rp);
 });
 function sandReply(ch: Channel, s: Session, text: string, rp: Pin | null = null) {
@@ -1687,21 +1747,22 @@ function chRows(q: string) {
   return list.map(c => {
     const last = latest(c), m = last?.messages.filter(x => x.body).at(-1);
     const prev = LIVE ? (plainPreview(last?.srv?.preview || "") || c.purpose) : m ? (m.role === "user" ? "You: " : "") + plain(m.body) : c.purpose;
-    return `<a class="chr${c === cur ? " on" : ""}" href="#/${c.slug}" data-mch>${c.sessions.some(needsYou) ? `<i class="udot"></i>` : ""}<span class="chtile">${chTile(c)}</span>
+    return `<a class="chr${c === cur ? " on" : ""}" href="#/${c.slug}" data-mch>${c.sessions.some(rowLit) ? `<i class="udot"></i>` : ""}<span class="chtile">${chTile(c)}</span>
       <span class="ctext"><span class="ctop"><b>${esc(c.name)}</b><span>${c === cur ? ic.check : last ? day(last.updated) : ""}</span></span><span class="cprev">${esc(prev || "")}</span></span></a>`;
   }).join("") || `<div class="mempty">Nothing matches “${esc(q)}”.</div>`;
 }
 function sessRows(ch: Channel, s: Session | null, q: string) {
   const ql = q.trim().toLowerCase(), ranked = LIVE ? RS.ranked(ch.slug, q) : null;
   const list = ranked ? rankedRows(ch.sessions, ranked) : [...ch.sessions].sort((a, b) => b.updated - a.updated).filter(x => !ql || x.title.toLowerCase().includes(ql) || x.messages.some(m => m.body.toLowerCase().includes(ql)));
-  const one = (x: Session) => `<a class="ds${x === s ? " on" : ""}${x.done ? " isdone" : ""}" href="#/${ch.slug}/s/${x.id}" data-mgo>${box(x)}<span>${esc(x.title)}</span>${rowStop(ch.slug, x.id, x.title, stWorking(x))}${pinBtn(x)}${LIVE && x.srv ? rowMore(ch.slug, x.id, x.title) : ""}${rowTail(x, false)}</a>`;
+  const one = (x: Session) => { const sr = secRow(ch.slug, x, false); return `<a class="ds${x === s ? " on" : ""}${x.done ? " isdone" : ""}${sr.c}" href="#/${ch.slug}/s/${x.id}" data-mgo>${box(x)}<span>${esc(x.title)}</span>${rowStop(ch.slug, x.id, x.title, stWorking(x))}${pinBtn(x)}${LIVE && x.srv ? rowMore(ch.slug, x.id, x.title) : ""}${rowTail(x, false)}</a>`; };
   // The same sections as the desktop side panel (sideList): Pinned, Texts, the task-state sections, Done, each folding with its caret. Same fold keys,
   // so a section folded here is folded there too (in this browser). Searching opens every section.
   const group = (key: string, label: string, items: Session[], nc = false) => { if (!items.length) return ""; const shut = !ql && folded(ch, `side-${key}`);
     return `${foldHead("dsub", `side-${key}`, label, nc ? 0 : items.length, shut, !!ql)}${shut ? "" : items.map(one).join("")}`; };
   const rest = list.filter(x => !x.pinned);
   if (ranked) return list.length ? list.map(one).join("") : `<div class="mempty">No tasks match.</div>`;   // one flat list, most likely first
-  return list.length ? `${group("pinned", `${ic.pin}Pinned`, list.filter(x => x.pinned))}${group("texts", "Texts", rest.filter(x => !x.done && isTexts(x)))}${stateGroups(rest, group)}${group("done", "Done", rest.filter(x => x.done).sort(byDone))}` : `<div class="mempty">${ql ? "No tasks match." : "No tasks yet."}</div>`;
+  if (csOn(ch)) return secList(ch.slug, list, { row: one, head: (k, l, n, shut, srch) => foldHead("dsub", `side-${k}`, l, n, shut, srch), shut: k => folded(ch, `side-${k}`), searching: !!ql, empty: `<div class="mempty">No tasks match.</div>` }) + secPlus(ch.slug, !!ql);
+  return list.length ? `${secPlus(ch.slug, !!ql)}${group("pinned", `${ic.pin}Pinned`, list.filter(x => x.pinned))}${group("texts", "Texts", rest.filter(x => !x.done && isTexts(x)))}${stateGroups(rest, group)}${group("done", "Done", rest.filter(x => x.done).sort(byDone))}` : `<div class="mempty">${ql ? "No tasks match." : "No tasks yet."}</div>`;
 }
 function renderM() { keepPaneFloats(() => keepDraft(renderPhone)); }
 function renderPhone() {
@@ -1711,7 +1772,7 @@ function renderPhone() {
   // No channel-list page on phone: "#/" opens the last channel (its drawer header switches channels).
   if (isHome()) history.replaceState(null, "", `#/${channels.some(c => c.slug === mState.last) ? mState.last : main.slug}`);
   const { ch, s } = route(); mState.last = ch.slug;
-  const other = ch.sessions.some(x => x !== s && needsYou(x)), elsewhere = channels.some(c => c !== ch && c.sessions.some(needsYou));
+  const other = ch.sessions.some(x => x !== s && rowLit(x)), elsewhere = channels.some(c => c !== ch && c.sessions.some(rowLit));
   const head = `<header class="mh"><button class="cb" data-mdrawer aria-label="Tasks and channels" aria-controls="mobile-tasks" aria-expanded="${mState.drawer}">${ic.menu}${other || elsewhere ? `<i class="udot"></i>` : ""}</button>
     ${s && canRename(s) ? `<div class="mpill task-pill"><button class="task-about" data-msheet="about" aria-label="About ${esc(ch.name)}" title="About ${esc(ch.name)}">${av(ch, "av sm")}</button><button class="task-title" data-rename="${esc(ch.slug)}|${esc(s.id)}" aria-label="Rename task" title="Rename task"><span data-task-title>${esc(s.title)}</span></button></div>` : `<button class="mpill" data-msheet="about">${isSch() ? `<span class="pico">${ic.clock}</span>` : isLib() ? `<span class="pico">${ic.lib}</span>` : isCt() ? `<span class="pico">${ic.people}</span>` : isNb() ? `<span class="pico">${ic.nb}</span>` : av(ch, "av sm")}<span>${esc(isSch() ? "Scheduled" : isCt() ? (ctSel() ? ctSel()!.name : "Contacts") : isNb() ? `${who(ch)}'s notebook` : isLib() ? `${ch.name} Library` : s ? s.title : `${ch.name} Home`)}</span></button>`}<span class="grow"></span>${LIVE ? pomoGlobalBtn(true) : ""}${LIVE && s ? `<span class="mo" data-mo="3">${hasFeature("ambient") ? lnBtn(ch.slug, s.id, true) : ""}${pomoBtn(ch.slug, s.id, true)}</span><span class="mo" data-mo="5">${todoBtn(ch.slug, s.id, true)}</span><span class="mo" data-mo="4">${tkBtn(ch.slug, s.id, true)}</span>` : ""}${LIVE ? `<span class="mo" data-mo="2"><button class="cb${ch.sessions.some(x => x.state === "working") ? " busy" : ""}" data-watch="${esc(ch.slug)}" aria-label="Open ${esc(who(ch))}'s computer">${ic.screen}</button></span>` : ""}${s && stWorking(s) ? `<button class="cb mstop" data-stop="${esc(ch.slug)}|${esc(s.id)}" aria-label="Stop this task" title="Stop">${SQ}</button>` : ""}${s ? `<span class="mo" data-mo="4"><button class="cb mdone${s.done ? " on" : ""}" data-done="${s.id}" aria-label="${s.done ? "Reopen" : "Mark done"}">${box(s).replace(/ data-done="[^"]+"/, "").replace('role="checkbox" tabindex="0"', 'aria-hidden="true"')}</button></span>` : ""}<span class="mo" data-mo="1"><button class="cb" data-ntask aria-label="New task">${ic.newS}</button></span><button class="cb mmore" data-mmore aria-label="More actions" aria-haspopup="dialog" hidden>${MORE}</button></header>`;
   if (s) { if (LIVE && s.unread) livePatch(ch, s, { seen: true }); s.unread = false; if (LIVE && !s.loaded && !s.loading) liveLoad(ch, s); }
@@ -2326,6 +2387,7 @@ function apSend(lv: string) {
   AP.sending = true; AP.next = "";
   kyApi("account/privacy", { level: lv }).then(d => {
     AP.ok = d?.ai_privacy?.level || lv; if (BOOT?.account) BOOT.account.ai_privacy = { ...(BOOT.account.ai_privacy || {}), ...(d?.ai_privacy || { level: AP.ok }) };
+    cmodelsPrivacy(d?.custom_models);   // Custom Model Selection: models that the new level doesn't allow must be replaced before chat continues
     if (!AP.next) { AP.level = AP.ok; AP.st = "saved"; clearTimeout(apTimer); apTimer = window.setTimeout(() => { if (AP.st === "saved") { AP.st = ""; apPaint(); } }, 2200); }
   }).catch(err => {
     if (!AP.next) { AP.level = AP.ok; AP.st = "err"; AP.err = `Couldn't save that, so it's still ${apLabel()}. ${err instanceof TypeError ? "Check your connection and try again." : err.message || "Try again in a minute."}`; }
@@ -2409,11 +2471,12 @@ function radio(area: string, v: string, title: string, sub: string) {
 function usageCard() {
   if (LIVE && !hasFeature("billing")) return `<div class="sc"><div class="susage"><div class="sut"><b>Your own AI key</b></div><p>AI calls use the key in your account settings. ${esc(who(main))} pauses and asks before a task runs long.</p></div></div>`;
   const ml = monthLine(LIVE ? BOOT?.account?.month : { pct: 12, used: "$2.40", allowance: "$20.00" }, Math.max(0, Math.min(100, Number(BOOT?.account?.usagePercent || 0))));
-  const pct = ml.pct;
+  const pct = bykSbOn() ? 0 : ml.pct;
   const guard = `If a task runs long, ${who(main)} pauses and asks before going on.`;
-  const detail = LIVE && BOOT?.account?.byok ? `AI runs on your own key. ${BOOT?.account?.balance || "$0.00"} in credits for the computer, browser, web search and memory. ${guard}`   // Bring your own key plan
+  const detail = bykSbOn() ? `AI runs on your own key. ${bykSbCredits()} in credits for the computer, browser, web search and memory. ${guard}`   // sandbox: after a pretend switch now
+    : LIVE && BOOT?.account?.byok ? `AI runs on your own key. ${BOOT?.account?.balance || "$0.00"} in credits for the computer, browser, web search and memory. ${guard}`   // Bring your own key plan
     : LIVE ? `${ml.text ? `${ml.text} ` : ""}${BOOT?.account?.balance || "$25.00"} available. ${guard}` : `${ml.text} Resets Oct 22. ${guard}`;
-  const planName = LIVE ? String(BOOT?.account?.plan || "Plus") : "Plus";
+  const planName = LIVE ? String(BOOT?.account?.plan || "Plus") : bykSbOn() ? "Bring your own key" : "Plus";
   return `<div class="sc"><div class="susage"><div class="sut"><b>${esc(planName)} plan</b><span>${pct}% used</span></div><p>${esc(detail)}</p><div class="sbar"><i style="width:${pct}%"></i></div>${bykUsageNote()}</div>
     <div class="sfoot">${sa("Change plan", `data-stplans aria-expanded="${storPlansOpen()}"`, "blue")}${LIVE ? sa("Add credits", "data-crt", "blue") : sa("Add credits", 'data-snote="credits"', "blue")}${bcxUsage("foot")}</div>${storPlans()}${bcxUsage("card")}
     ${LIVE && CR.open ? `<div class="crpick">${[10, 25, 50].map(n => `<button class="crb${CR.pick === n ? " on" : ""}" data-crp="${n}"${CR.busy ? " disabled" : ""}>${CR.busy === n ? "Adding…" : `$${n}`}</button>`).join("")}<div class="crask"><span>${crAsk()}</span>${CR.pick && CR.info ? `<button class="crb" data-crgo${CR.busy ? " disabled" : ""}>${CR.info.card ? "Confirm" : "Continue"}</button><button class="crb crx" data-crno${CR.busy ? " disabled" : ""}>Cancel</button>` : ""}</div></div>` : ""}</div>`;
@@ -2603,7 +2666,7 @@ function secHtml(sec: string): string {
       <div class="sc">${touchy() ? "" : srow(g("kbd"), "Keyboard shortcuts", "", `${scLabel("shortcuts", false) ? `<kbd>${scLabel("shortcuts", false)}</kbd>` : ""}${chev()}`, nav("shortcuts"))}${srow(g("bug"), "Report an issue", "Tell us what happened. A screenshot helps.", chev(), ' role="button" tabindex="0" data-rpopen')}
         <a class="sr" href="${esc(rpMailto(LIVE?.slug || "", supportEmail))}">${g("msg")}<span class="srt"><b>Contact us</b><span>${esc(supportEmail)}</span></span>${chev()}</a></div>`;
     case BYK_SEC: return bykPage();
-    case CMCP_SEC: return cmcpPage();
+    case CMCP_SEC: return hasFeature("smart_routing") ? `${cmcpPage()}${cmodelsCard()}` : cmcpPage();
     case AP_SEC: return apPage();
     case NETWORK_SEC: return LIVE ? networkHtml() : "";
     case "account": return accountSec();
@@ -2897,6 +2960,7 @@ document.addEventListener("submit", e => {
   }
 }, true);
 window.addEventListener("keydown", e => {
+  if (e.key === "Escape" && document.querySelector(".cmback")) return;   // the model picker (custom-models.ts) closes first; Settings stays open behind it
   if (e.key === "Escape" && S.menu) { e.preventDefault(); e.stopImmediatePropagation(); closeMenu(); return; }
   if (e.key === "Escape" && S.open) { e.preventDefault(); e.stopImmediatePropagation(); const form = S.adding || KY.addkey || KY.edit || AC.edit || ((PI.plan || PI.err) && !PI.busy), sec = S.sec;
     guarded(() => { if (form) { S.adding = KY.addkey = false; KY.edit = null; AC.edit = ""; piDrop(); sRender(); } else if (phone() && sec) sGo(secParent(sec)); else closeSettings(); }); return; }
@@ -2948,8 +3012,13 @@ if (LIVE) ivInit({ api, phone, helper: () => who(main), avatar: () => av(main, "
   removed: sid => { const i = main.sessions.findIndex(x => String(x.id) === sid); if (i >= 0) main.sessions.splice(i, 1); location.hash = `/${main.slug}`; render(); note(ic.check, "Get to know you removed", "Your answers stay in the Notebook.", ""); } });
 // Deleting (delete.ts): a chat, a channel, the account. The server deletes; here the app forgets what's gone.
 hInit();
+if (hasFeature("ambient")) beeLibInit({ live: !!LIVE, api, url: path => `${LIVE!.api}${path}`, repaint: () => { if (isLib()) libUpdate(); } }, t => { L.type = t; libUpdate(); });
+secInit({ live: !!LIVE, api, tasks: slug => channels.find(c => c.slug === slug)?.sessions ?? [], cs: slug => csOf2(channels.find(c => c.slug === slug)!),
+  setCs: (slug, cs) => { const c = channels.find(y => y.slug === slug); if (c) c.cs = cs; }, repaint: slug => { const c = channels.find(y => y.slug === slug); if (c) repaint(c); },
+  patch: (slug, sid, body) => { const c = channels.find(y => y.slug === slug), x = c?.sessions.find(y => String(y.id) === String(sid)); if (c && x) livePatch(c, x, body); }, current: () => route().ch.slug });
 if (LIVE) delInit({ api, note: (t, sub) => note(ic.trash, t, sub, ""), closeSheet: () => { if (mState.sheet) closeSheet(); },
   ...(!BOOT?.look ? { rename: renameTask } : {}),
+  moveSection: (slug, sid, opener) => moveMenu(slug, sid, opener), canMove,
   working: (slug, sid) => { const x = channels.find(c => c.slug === slug)?.sessions.find(y => String(y.id) === sid); return !!x && stWorking(x); }, stop: (slug, sid) => void stopTask(slug, sid),
   chat: (slug, sid) => { const x = channels.find(c => c.slug === slug)?.sessions.find(y => String(y.id) === sid); return x ? { title: x.title, jobs: Number(x.srv?.jobs || 0) } : null; },
   channelName: slug => channels.find(c => c.slug === slug)?.name ?? null,
@@ -2963,7 +3032,7 @@ if (hasFeature("billing")) pdInit({ api: LIVE ? api : null, boot: () => BOOT, no
 storInit({ api: LIVE ? api : null, repaint: () => sRender(), note: (t, s, good) => note(good ? ic.check : g("help", 14), t, s, ""),
   openUsage: () => { if (phone()) { if (!S.open) openSettings(""); else sGo(""); } else if (!S.open) openSettings("general"); else sGo("general"); },
   planName: () => String(BOOT?.account?.plan || "Plus"), boot: () => BOOT?.account?.storage || null,
-  reload: () => location.assign(`${location.pathname}?plan=changed${location.hash}`) });
+  reload: () => location.assign(`${location.pathname}?plan=changed${location.hash}`), switchToByok: () => { void billingByok.bykSwitchNow(); } });
 document.addEventListener("click", e => { if ((e.target as HTMLElement).closest("[data-stplans]")) { e.preventDefault(); storTogglePlans(); } }, true);
 if (hasFeature("ambient")) beeInit({ live: LIVE, repaint: () => { if (S.open && S.sec === "ambient") sRender(); }, shown: () => S.open && S.sec === "ambient", note: (t, s, bad) => note(bad ? g("help", 14) : ic.check, t, s, ""), srow, helper: () => who(main), phone });
 // Keyboard shortcuts (shortcuts.ts): the registry. Defaults, the old key that still works where the browser delivers it, what each does.
@@ -2973,6 +3042,8 @@ registerShortcut({ id: "search", label: "Search", def: "Mod+K", run: () => { if 
 registerShortcut({ id: "home", label: "Channel Home", def: "Mod+Shift+H", run: () => { go(route().ch.slug); ($("#box") as HTMLTextAreaElement | null)?.focus(); } });
 registerShortcut({ id: "library", label: "Library", def: "Mod+Shift+L", run: () => { openLib(route().ch); } });
 if (hasFeature("connected_apps")) registerShortcut({ id: "apps", label: "Apps", def: "Mod+Shift+A", run: () => { AS.open ? closeApps() : S.open ? guarded(() => openApps()) : openApps(); } });   // Apps closes Settings: ask about an unsaved form first
+registerShortcut({ id: "nav-back", label: "Back", def: "Mod+[", note: "Alt+Left also goes back.", run: e => { navKey(e, "back"); } });
+registerShortcut({ id: "nav-forward", label: "Forward", def: "Mod+]", note: "Alt+Right also goes forward.", run: e => { navKey(e, "forward"); } });
 registerShortcut({ id: "jump", label: "Jump to a channel", def: "Mod+1-9", digits: true, run: (_e, n) => { const x = channels[(n || 0) - 1]; if (!x) return false; go(x.slug); } });
 registerShortcut({ id: "settings", label: "Settings", def: "Mod+,", run: () => { S.open ? guarded(closeSettings) : openSettings("general"); } });
 // Pomodoro (pomodoro.ts, pomodoro-global): start / pause-resume / stop. Option+letter types a symbol on a Mac, so these match the physical key (shortcuts.ts does that).
@@ -2986,6 +3057,10 @@ scInit({ live: LIVE, boot: BOOT?.account?.shortcuts, slug: LIVE?.slug || "sandbo
   relabel: () => { render(); }, note: (t, sub, bad) => note(bad ? g("help", 14) : ic.check, t, sub, ""), srow, sa });
 nfInit({ live: LIVE, look: !!BOOT?.look, blocked: () => dpSheetOpen(), texting: hasFeature("texting"), ambient: hasFeature("ambient"), repaint: () => { if (S.open && S.sec === "notif") sRender(); }, note: (t, s, bad) => note(bad ? g("help", 14) : ic.check, t, s, ""), srow, helper: () => who(main) });
 rpInit({ live: LIVE, before: () => { closeMenu(); if (mState.sheet === "set") closeSheet(); } , note: (t, s) => note(ic.check, t, s, "") });
+if (hasFeature("smart_routing")) cmodelsInit({ api: LIVE ? (path, init) => fetch(`${LIVE.api}/${path}`, { method: init?.method || "GET", credentials: "same-origin", cache: "no-store", ...(init?.body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) } : {}) })
+    .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok || d?.error) throw new Error(typeof d?.error === "string" ? d.error : `Something went wrong (${r.status}).`); return d; }) : null,
+  repaint: () => sRender(), shown: () => S.open && S.sec === CMCP_SEC, srow: (i, t, s, r, a = "") => srow(i, t, s, r, a), ask: o => ask(o),
+  openAdvanced: () => { if (S.open) sGo(CMCP_SEC); else openSettings(CMCP_SEC); }, version: String((LIVE as any)?.v || ""), noteBoot: v => { if (BOOT?.account) BOOT.account.custom_models = v; } }, BOOT?.account?.custom_models);
 if (hasFeature("connected_apps")) cmcpInit({ api: LIVE ? (path, init) => fetch(`${LIVE.api}/${path}`, { method: init?.method || "GET", credentials: "same-origin", ...(init?.body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) } : {}) })
     .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) { const er = d?.error, e: any = new Error((typeof er === "string" ? er : er?.message) || `Something went wrong (${r.status}).`); e.status = r.status; e.code = er?.code; throw e; } return d; }) : null,
   repaint: () => sRender(), shown: () => S.open && S.sec === CMCP_SEC, srow: (i, t, s, r, a = "") => srow(i, t, s, r, a), icon: (k, z = 17) => G[k] ? g(k, z) : (ic as any)[k] || "",
@@ -3094,7 +3169,7 @@ function addStartedSessions(list: any[]) {
   }
   repaint(route().ch);
 }
-if (LIVE) planInit({ api, helper: slug => { const c = channels.find(x => x.slug === slug); return c ? who(c) : ""; }, chName: slug => channels.find(x => x.slug === slug)?.name || (LNAME[slug] ?? titleCase(slug)),
+if (LIVE) planInit({ api, helper: slug => { const c = channels.find(x => x.slug === slug); return c ? who(c) : ""; }, chName: slug => channels.find(x => x.slug === slug)?.name || (LNAME[slug] ?? slug),
   hasChannel: slug => channels.some(x => x.slug === slug), repaint: () => apRepaint(),
   working: (slug, sid) => { const x = channels.find(c => c.slug === slug)?.sessions.find(y => String(y.id) === sid); return !!x && stWorking(x); }, stopMany: list => stopMany(list),
   send: (slug, sid, text) => { const c = channels.find(x => x.slug === slug), x = c?.sessions.find(y => String(y.id) === sid); if (c && x) liveReply(c, x, text, [], true); },
@@ -3557,6 +3632,7 @@ if (LIVE) {
     for (const c of d.channels) {
       let ch = channels.find(x => x.slug === c.slug);
       if (!ch) { ch = addChannel(c); added = true; }   // a channel made elsewhere (the helper's delegation, another tab) joins the rail
+      if (c.sections) ch.cs = csOf(c.sections);   // sections added, renamed, moved or switched on another device
       ch.jobs = c.jobs || []; if (c.files && setFiles(ch, c.files)) changed = true;
       slSet(c.slug, c.later);
       for (const v of c.sessions) {
@@ -3570,7 +3646,7 @@ if (LIVE) {
     }
     if (added) { if (!phone()) { const top = document.querySelector("#rail .chs")?.scrollTop ?? 0; if (document.querySelector("#rail .chs")) { $("#rail").innerHTML = railHtml(route().ch); railWire(top); } }
       else { const cl = document.getElementById("chlist"); if (cl) cl.innerHTML = chRows((document.getElementById("chq") as HTMLInputElement | null)?.value ?? ""); } }
-    const nsig = JSON.stringify(d.channels.map((c: any) => c.sessions.map((v: any) => [v.id, v.state, v.line, v.done, v.pinned, v.unread, v.updated, v.texts, v.helpers, v.title, v.title_revision])));
+    const nsig = JSON.stringify(d.channels.map((c: any) => c.sessions.map((v: any) => [v.id, v.state, v.line, v.done, v.pinned, v.unread, v.updated, v.texts, v.helpers, v.title, v.title_revision, v.section])).concat([d.channels.map((c: any) => c.sections || null)]));
     if (changed || nsig !== sig) { sig = nsig; const { ch, s } = route(); if (s) { repaint(ch); paintHeadDone(s); } else refresh(); stNow(); }
     schPaint();   // the Scheduled count and view: jobs (and Send later) may have changed
     { const os = route().s; nfSeen(d.channels, os ? String(os.id) : null); }   // a task started waiting on you or finished: a soft chime (Settings → Notifications → Sounds)
@@ -3925,6 +4001,11 @@ if (LIVE && hasFeature("connected_apps") && new URLSearchParams(location.search)
 if (LIVE && new URLSearchParams(location.search).get("plan") === "changed") {
   const u = new URL(location.href); u.searchParams.delete("plan"); history.replaceState(null, "", u.pathname + u.search + u.hash);
   setTimeout(() => note(ic.check, `You're on ${String(BOOT?.account?.plan || "your new")} plan`, "Upgrades apply right away. A smaller plan starts on your next bill.", ""), 400);
+}
+// Back from Switch now (byok.ts): the new plan is in the boot data. Say what happened, then show the usage card.
+if (LIVE && new URLSearchParams(location.search).get("plan") === "byok") {
+  const u = new URL(location.href), moved = u.searchParams.get("moved") || "", bill = Number(u.searchParams.get("bill")) || 0; u.searchParams.delete("plan"); u.searchParams.delete("moved"); u.searchParams.delete("bill"); history.replaceState(null, "", u.pathname + u.search + u.hash);
+  setTimeout(() => { openSettings(phone() ? "" : "general"); note(ic.check, "You're on the Bring your own key plan", `${moved && moved !== "$0.00" ? `${moved} of unused plan usage is now credits. ` : ""}Your next bill is $10${bill ? ` on ${new Date(bill).toLocaleDateString("en-US", { month: "long", day: "numeric" })}` : ""}.`, ""); }, 400);
 }
 // Back from Stripe (Manage billing, Add credits, Fix payment) or an email link: 1HC sends ?settings=<section> (usage: Settings → Usage),
 // plus ?topup=1 / ?resubscribed=1 after a payment. Open that section, say what happened, then drop the flags so a refresh doesn't repeat it.
@@ -4544,7 +4625,8 @@ function nbPrefetch() {
 }
 const nbPrefetchNow = () => { try { nbPrefetch(); } catch {} };   // boot data is already in when this file runs, so the read starts at once
 const nbPrefetchLater = () => { const go = () => { try { nbPrefetch(); } catch {} }; if ("requestIdleCallback" in window) (window as any).requestIdleCallback(go, { timeout: 4000 }); else setTimeout(go, 1500); };
-if (LIVE) { setTimeout(nbPrefetchNow, 0); window.addEventListener("hashchange", () => setTimeout(nbPrefetchLater, 800)); }
+if (LIVE) { if (hasFeature("ambient")) setTimeout(() => beeLibEnsure(true), 1500); setTimeout(nbPrefetchNow, 0);   // the Bee conversation list is read before the Library opens, so its filter never appears under a Library that is already drawn
+  window.addEventListener("hashchange", () => setTimeout(nbPrefetchLater, 800)); }
 function nbRefresh() { const b = document.getElementById("nbody"); if (b) { b.innerHTML = nbWiki(route().ch); nbAfter(); } }
 // "Added to …" under a reply: one chip per place a remember really saved (m.saved, from the tool's result; never guessed from
 // the step line, which said Notebook even when it went to Dana's contact). The design sandbox's scripted "remember:" steps are

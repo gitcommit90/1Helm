@@ -1,6 +1,6 @@
 // node test/byok-options.test.mjs: 1HC Settings → Use my own AI key (src/ee/byok-billing.ts) on its sandbox data. The two options ("Keep my plan, use
 // my key as a backup" / "Switch to the $10 plan with my key when this billing period ends") show only on a full plan with a saved key,
-// never on the Bring your own key plan; the Usage note says which AI is in use (a backup key in use, a switch pending with Undo).
+// never on the Bring your own key plan; the Usage note says which AI is in use (a backup key in use, a switch pending with Switch now and Undo).
 // The billing module is bundled with esbuild and run against a tiny fake DOM (the page is plain HTML strings).
 import assert from "node:assert"; import { build } from "esbuild"; import { mkdtempSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -22,8 +22,8 @@ async function page(search) {
 const opts = (html) => [...html.matchAll(/data-bykmode="(\w*)"/g)].map((x) => x[1]);
 
 let p = await page("?byoksaved");
-assert.deepStrictEqual(opts(p.html), ["fallback", "switch"]);
-assert.match(p.html, /Keep my plan, use my key as a backup/); assert.match(p.html, /Switch to the \$10 plan with my key when this billing period ends/);
+assert.deepStrictEqual(opts(p.html), ["fallback"]);
+assert.match(p.html, /Keep my plan, use my key as a backup/); assert.match(p.html, /data-bykswitchnow/); assert.match(p.html, /Switch now to the \$10 plan with my key/); assert.match(p.html, /Your unused Personal usage becomes credits/);
 assert.match(p.html, /Your key is saved but not in use yet/); assert.match(p.html, /Zero data retention: while your key is in use/);
 assert.strictEqual(p.usage, "", "nothing in Usage until a choice is made");
 ok("Personal plan with a saved key: the two options, nothing picked yet, the ZDR line");
@@ -41,6 +41,6 @@ ok("backup key in use: the Usage note, the option ticked, Add credits on the pag
 
 p = await page("?byokswitch");
 assert.match(p.usage, /Switching to Use your own AI key on .+data-bykundo/s); assert.match(p.html, /Switching to Use your own AI key on/); assert.match(p.html, />Undo</);
-assert.match(p.html, /aria-checked="true" data-bykmode="switch"/);
+assert.match(p.html, /data-bykswitchnow[^>]*>Switch now</); assert.match(p.usage, /data-bykswitchnow/);
 ok("switch pending: 'Switching to Use your own AI key on <date>' with Undo, in Usage and on the page");
 console.log("byok options: all passed");

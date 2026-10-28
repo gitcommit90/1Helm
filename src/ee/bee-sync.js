@@ -39,6 +39,7 @@ import { hsRetainNano, hsRawNano } from "../byok-meter.js";
 import { scrubSecrets } from "../secrets-scrub.js";
 import { beeSyncJob, beeFactsJob, beeEvent } from "./bee.js";
 import { AmbientStore, ambientLines, ambientLocation } from "./ambient.js";
+import { libMeta, libLines, namer } from "./bee-library.js";   // General's Library: the saved conversations (list, read, delete)
 import { speakersMix } from "./bee-speakers.js";   // HS_ENVELOPE: the new speaker review (one row per speaker per recording)
 
 export const EVERY_MS = 5 * 60e3, MANUAL_GAP_MS = 15e3, MAX_PER_RUN = 25, OVERLAP_MS = 10 * 60e3, STALE_CURSOR_MS = 6 * 86400e3, MAX_BACKOFF_MS = 60 * 60e3;
@@ -169,6 +170,11 @@ export class BeeSync extends DurableObject {
     if (!cols.has("try_at")) this.sql.exec("ALTER TABLE facts ADD COLUMN try_at INTEGER");
     if (!new Set(this.sql.exec("PRAGMA table_info(convs)").toArray().map((c) => c.name)).has("raw_v")) this.sql.exec("ALTER TABLE convs ADD COLUMN raw_v INTEGER");
     if (!cols.has("stuck")) this.sql.exec("ALTER TABLE facts ADD COLUMN stuck TEXT");
+    // General's Library (bee-library.js): what its list shows is kept in the row (lines, summary, place; meta_v is 1 once they are set, so an older row is filled from its R2 copy the first time the list reaches it).
+    // conv_gone: conversations the person deleted in the Library. No sync, catch-up or backfill imports one of them again.
+    this.sql.exec("CREATE TABLE IF NOT EXISTS conv_gone (id INTEGER PRIMARY KEY, at INTEGER NOT NULL)");
+    const cc = new Set(this.sql.exec("PRAGMA table_info(convs)").toArray().map((c) => c.name));
+    for (const [c, ty] of [["lines", "INTEGER"], ["summary", "TEXT"], ["place", "TEXT"], ["meta_v", "INTEGER"]]) if (!cc.has(c)) this.sql.exec(`ALTER TABLE convs ADD COLUMN ${c} ${ty}`);
   }
   get(k) { return this.sql.exec("SELECT v FROM kv WHERE k=?", k).toArray()[0]?.v; }
   put(k, v) { if (v == null) this.sql.exec("DELETE FROM kv WHERE k=?", k); else this.sql.exec("INSERT INTO kv VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", k, String(v)); }
@@ -340,6 +346,7 @@ export class BeeSync extends DurableObject {
     this.sql.exec(`INSERT INTO convs (id,start_time,end_time,updated_at,retained_at,r2_key,bytes,chars,at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
       start_time=excluded.start_time,end_time=excluded.end_time,updated_at=excluded.updated_at,retained_at=excluded.retained_at,r2_key=excluded.r2_key,bytes=excluded.bytes,chars=excluded.chars,at=excluded.at`,
       id, msOf(conv.start_time), msOf(conv.end_time), conv.updated_at ?? null, now(), key, bytes, chars, now());
+    this.libStamp(id, conv);
     return { ...(r || {}), conversation: id, r2_key: key, stored: { convs: true, r2: true }, speakers: this.pendingSpeakers().filter((x) => String(x.rec) === String(id)).length };
   }
   // The two calls below run General's Resident inside this object. A Durable Object stub cannot be returned to the caller over RPC
@@ -453,7 +460,7 @@ export class BeeSync extends DurableObject {
     let queued = 0;
     if (r.reset && !r.catchup) { gap = gap ?? (cAt || this.num("live_since") || 0); this.put("gap_from", gap); }   // the walk didn't run: next run
     if (r.catchup) {
-      const have = new Set(this.sql.exec("SELECT id FROM convs").toArray().map((x) => Number(x.id))), waiting = new Set(this.sql.exec("SELECT id FROM pending").toArray().map((x) => Number(x.id)));
+      const have = new Set(this.sql.exec("SELECT id FROM convs UNION SELECT id FROM conv_gone").toArray().map((x) => Number(x.id))), waiting = new Set(this.sql.exec("SELECT id FROM pending").toArray().map((x) => Number(x.id)));
       for (const c of r.catchup.items || []) { const id = Number(c.id); if (id > 0 && !have.has(id) && !waiting.has(id)) { this.pend(id, "catch-up"); queued++; } }
       const done = Array.isArray(r.catchup.items) && !!r.catchup.complete;
       if (done) { this.put("gap_from", null); since = Math.min(since, r.catchup.from); } else this.put("gap_from", r.catchup.from);
@@ -478,6 +485,7 @@ export class BeeSync extends DurableObject {
   // → "gone" | "failed" | "live" | "same" | "waiting" | "new" | "updated" (null: not a conversation id).
   async ingestOne(c, st) {
     const env = this.env, tid = this.tid(), id = Number(c.id); if (!(id > 0)) return null;
+    if (this.libGone(id)) { this.unpend(id); return "same"; }   // the person deleted it in the Library: it stays deleted, whatever Bee still lists
     const row = this.sql.exec("SELECT * FROM convs WHERE id=?", id).toArray()[0];
     if (c.status === 404) {   // deleted in Bee
       this.ambient.remove("bee", id);
@@ -528,8 +536,70 @@ export class BeeSync extends DurableObject {
       start_time=excluded.start_time,end_time=excluded.end_time,updated_at=excluded.updated_at,retained_at=excluded.retained_at,r2_key=excluded.r2_key,bytes=excluded.bytes,chars=excluded.chars,at=excluded.at`,
       id, msOf(conv.start_time), msOf(conv.end_time), conv.updated_at ?? null, retainedAt, key, bytes, item.content.length, now());
     this.sql.exec("UPDATE convs SET raw_v=? WHERE id=?", rawV, id);
+    this.libStamp(id, conv);
     if (rawOk) this.unpend(id);
     return row ? "updated" : "new";
+  }
+
+  // ---------------- General's Library (bee-library.js): the saved conversations, read from the copies kept here (convs, R2, the speaker rows), never from Bee ----------------
+  libGone(id) { return !!this.sql.exec("SELECT 1 x FROM conv_gone WHERE id=?", id).toArray()[0]; }
+  // What the list shows, kept in the convs row. Called with the conversation Bee sent, right after the row is written.
+  libStamp(id, conv) { const m = libMeta(conv); this.sql.exec("UPDATE convs SET lines=?, summary=?, place=?, meta_v=1 WHERE id=?", m.lines, m.summary, m.place, id); }
+  // A saved conversation as Bee sent it: the R2 copy, else null (the lines then come from the stored chunks, libStoredLines).
+  async libDoc(row) {
+    try { const o = await this.env.WS.get(row.r2_key || r2Key(this.tid(), row.id)); return o ? JSON.parse(await o.text()) : null; } catch { return null; }
+  }
+  // The lines kept for the model passes (ambient_chunks), used only when the R2 copy is missing.
+  libStoredLines(id) {
+    const out = []; for (const c of this.ambient.rows("SELECT lines FROM ambient_chunks WHERE source='bee' AND source_id=? AND active=1 ORDER BY ordinal", String(id))) { try { for (const l of JSON.parse(c.lines)) out.push({ at: l.at ?? null, speaker: l.speaker || null, speaker_id: l.speaker_id ?? null, is_user: !!l.is_user, text: String(l.text ?? "") }); } catch {} }
+    return out;
+  }
+  // One page, newest first. cursor is "<start_time>:<id>" of the last row of the page before (keyset, so a new conversation never shifts a page).
+  async libList({ cursor = null, limit = 25 } = {}) {
+    limit = Math.max(1, Math.min(50, Math.floor(Number(limit)) || 25));
+    const ok = "(meta_v IS NULL OR lines > 0)", key = /^(\d{1,16}):(\d{1,16})$/.exec(String(cursor || ""));
+    const total = Number(this.sql.exec(`SELECT COUNT(*) n FROM convs WHERE ${ok}`).toArray()[0]?.n || 0);
+    const rows = key ? this.sql.exec(`SELECT * FROM convs WHERE ${ok} AND (COALESCE(start_time,0) < ? OR (COALESCE(start_time,0) = ? AND id < ?)) ORDER BY COALESCE(start_time,0) DESC, id DESC LIMIT ?`, Number(key[1]), Number(key[1]), Number(key[2]), limit + 1).toArray()
+      : this.sql.exec(`SELECT * FROM convs WHERE ${ok} ORDER BY COALESCE(start_time,0) DESC, id DESC LIMIT ?`, limit + 1).toArray();
+    const page = rows.slice(0, limit), more = rows.length > limit, items = [];
+    for (const r of page) {
+      let m = r;
+      if (r.meta_v == null) {   // saved before the list existed: read its R2 copy once
+        const d = await this.libDoc(r); if (d) { const x = libMeta(d); this.sql.exec("UPDATE convs SET lines=?, summary=?, place=?, meta_v=1 WHERE id=?", x.lines, x.summary, x.place, r.id); m = { ...r, ...x }; }
+        else m = { ...r, lines: this.libStoredLines(r.id).length, summary: null, place: null };
+      }
+      if (r.meta_v == null && !(Number(m.lines) > 0)) continue;   // an older row with no words in it is left out, like a new one
+      items.push({ id: Number(r.id), start: r.start_time ?? null, end: r.end_time ?? null, duration_ms: r.start_time != null && r.end_time != null ? Math.max(0, r.end_time - r.start_time) : null, summary: m.summary || null, place: m.place || null, lines: Number(m.lines || 0) });
+    }
+    const last = page[page.length - 1];
+    return { items, next: more && last ? `${Number(last.start_time || 0)}:${last.id}` : null, total };
+  }
+  async libGet(id) {
+    id = Number(id); const row = Number.isSafeInteger(id) && id > 0 ? this.sql.exec("SELECT * FROM convs WHERE id=?", id).toArray()[0] : null;
+    if (!row) return { error: "That conversation isn't here." };
+    const doc = await this.libDoc(row), raw = doc ? libLines(doc) : this.libStoredLines(id);
+    this.spkInit();
+    const name = namer(this.speakerLinks(id), this.sql.exec("SELECT k, person_name FROM speaker_map").toArray()), lines = raw.map((l) => ({ at: l.at, ...(({ who, linked }) => ({ who, ...(linked ? { linked: true } : {}) }))(name(l)), text: l.text }));
+    const m = doc ? libMeta(doc) : { summary: row.summary || null, place: row.place || null };
+    return { id: Number(row.id), start: row.start_time ?? null, end: row.end_time ?? null, duration_ms: row.start_time != null && row.end_time != null ? Math.max(0, row.end_time - row.start_time) : null, summary: m.summary, place: m.place, lines };
+  }
+  // Delete one conversation everywhere: the memory document (vectors with it, the way a disconnect removes them), the R2 copy, the stored lines and what was
+  // extracted from them, the speaker rows and the convs row. The id goes in conv_gone first, so a sync that runs meanwhile cannot bring it back. The convs row
+  // goes last, so a step that failed leaves the row in the list and Delete can be tried again.
+  async libDelete(id) {
+    id = Number(id); const tid = this.tid(); if (!tid || !Number.isSafeInteger(id) || id <= 0) return { error: "That conversation isn't here." };
+    const row = this.sql.exec("SELECT * FROM convs WHERE id=?", id).toArray()[0];
+    if (!row) return { error: "That conversation isn't here." };
+    this.sql.exec("INSERT INTO conv_gone (id, at) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET at=excluded.at", id, now());
+    await forgetMemoryDocs(this.env, tid, GENERAL, [docId(id)]);
+    await stDelete(this.env, [row.r2_key || r2Key(tid, id)]);
+    this.ambient.remove("bee", id); this.unpend(id); this.sql.exec("DELETE FROM bf_queue WHERE id=?", id);
+    try { this.spkInit(); this.sql.exec("DELETE FROM speakers WHERE rec=?", String(id)); } catch {}
+    this.sql.exec("DELETE FROM convs WHERE id=?", id);
+    await this.hsInboxSync().catch((e) => console.log("bee inbox memory", String(e?.message || e).slice(0, 120)));   // the voice inbox items made from it lose their memory documents
+    await this.ev(`library: deleted conversation ${id} (memory, transcript and stored lines)`);
+    this.bump({ library_deleted: 1 }); await this.mirror().catch(() => {});
+    return { ok: true, id };
   }
 
   // ---------------- Backfill (§6): import past conversations ----------------
@@ -589,7 +659,7 @@ export class BeeSync extends DurableObject {
       return { error: "Bee isn't answering right now. Try again in a minute.", detail: why, status: r?.status ?? 0, ms: r?.ms ?? null };
     }
     const gaps = subtractRanges([[from, to]], this.covered());
-    const have = new Set(this.sql.exec("SELECT id FROM convs").toArray().map((x) => Number(x.id)));
+    const have = new Set(this.sql.exec("SELECT id FROM convs UNION SELECT id FROM conv_gone").toArray().map((x) => Number(x.id)));
     const items = r.list.items || [], pick = items.filter((c) => (c.end_time != null || c.state === "COMPLETED") && c.start_time != null && c.start_time >= from && c.start_time <= to && !have.has(Number(c.id)) && gaps.some(([x, y]) => c.start_time >= x && c.start_time <= y));
     const live = items.filter((c) => c.end_time == null && c.state !== "COMPLETED").length;
     if (dry) { const per = this.perConv(), n = pick.length;   // /_ops/bee?backfill=count (dev): the estimate only, nothing stored
@@ -692,7 +762,7 @@ export class BeeSync extends DurableObject {
     this.put("remove_r2", "1"); await this.removeTranscripts().catch((e) => console.log("bee remove r2", String(e?.message || e).slice(0, 120)));
     const r2Left = this.get("remove_r2") === "1";
     await this.ev(`sync: off (disconnected; removed ${ids.length} conversation${ids.length === 1 ? "" : "s"} from memory${r2Left ? "; transcripts retried in 1 min" : " and their transcripts"}${notes ? `; ${notes} From-Bee note${notes === 1 ? "" : "s"} removed from the Notebook` : ""})`);
-    if (r2Left) { this.sql.exec("DELETE FROM convs"); this.sql.exec("DELETE FROM pending"); this.sql.exec("DELETE FROM facts"); try { this.spkInit(); this.sql.exec("DELETE FROM speakers"); this.sql.exec("DELETE FROM speaker_map"); this.sql.exec("DELETE FROM speaker_answer"); } catch {} await this.ctx.storage.setAlarm(now() + 60e3); return { memories: "removed", removed: ids.length }; }
+    if (r2Left) { this.sql.exec("DELETE FROM convs"); this.sql.exec("DELETE FROM conv_gone"); this.sql.exec("DELETE FROM pending"); this.sql.exec("DELETE FROM facts"); try { this.spkInit(); this.sql.exec("DELETE FROM speakers"); this.sql.exec("DELETE FROM speaker_map"); this.sql.exec("DELETE FROM speaker_answer"); } catch {} await this.ctx.storage.setAlarm(now() + 60e3); return { memories: "removed", removed: ids.length }; }
     await this.ctx.storage.deleteAll(); this.init(); this.ambient = new AmbientStore(this);
     return { memories: "removed", removed: ids.length };
   }

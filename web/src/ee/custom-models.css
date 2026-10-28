@@ -1,0 +1,49 @@
+/* Settings → Advanced → Custom Model Selection (custom-models.ts). Reuses the settings rows, toggle and button looks. */
+[data-cmrow] .tg:disabled{opacity:.5;cursor:default}
+.cmerr{margin:10px 4px 0;font-size:13px;line-height:1.4;color:#d14343;overflow-wrap:anywhere}
+.cmx{margin-top:12px}
+.cmcat{padding:14px 18px 16px;min-width:0}.cmcat+.cmcat{box-shadow:0 -1px 0 var(--line)}
+.cmhead{display:flex;align-items:center;gap:10px;min-height:34px;margin-bottom:6px}
+.cmname{font-size:15px}
+.cmtitle{flex:1;min-width:0;height:34px;padding:0 10px;border-radius:10px;background:var(--sheet);box-shadow:0 0 0 1px var(--line);font:inherit;font-weight:600;color:var(--ink)}
+.cmslot{display:grid;grid-template-columns:104px minmax(0,1fr) 120px;align-items:center;gap:6px 10px;padding:6px 0}
+.cmlab{font-size:13px;color:var(--mute)}
+.cmmodel{min-width:0;height:36px;padding:0 30px 0 12px;border-radius:10px;background:var(--sheet);box-shadow:0 0 0 1px var(--line);text-align:left;font:inherit;font-size:14px;color:var(--ink);position:relative}
+.cmmodel span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmmodel::after{content:"";position:absolute;right:12px;top:50%;width:6px;height:6px;margin-top:-5px;border-right:2px solid var(--mute);border-bottom:2px solid var(--mute);transform:rotate(45deg)}
+.cmmodel:hover{background:color-mix(in srgb,var(--hover) 70%,var(--sheet))}
+.cmeff{height:36px;padding:0 8px;border-radius:10px;background:var(--sheet);box-shadow:0 0 0 1px var(--line);font:inherit;font-size:13.5px;color:var(--ink);min-width:0;width:100%}.cmeff:disabled{opacity:.6;cursor:default}
+.cmslot.bad .cmmodel{box-shadow:0 0 0 2px #d14343}
+.cmhasrm{grid-template-columns:104px minmax(0,1fr) 120px 58px}.cmhasrm .cmrmgap{display:block}
+.cmrm{height:32px;padding:0 6px;border-radius:8px;font:inherit;font-size:13px;color:var(--mute)}.cmrm:hover{background:var(--hover);color:var(--ink)}
+.cmrmgap{display:none}
+.cmfbrow{padding:4px 0 2px}
+.cmwhy{grid-column:2 / -1;font-size:12.5px;color:#d14343}
+.cmprice{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:8px}
+.cmprice label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mute);min-width:0}
+.cmusd{display:flex;align-items:center;gap:4px;height:36px;padding:0 10px;border-radius:10px;background:var(--sheet);box-shadow:0 0 0 1px var(--line);color:var(--mute)}
+.cmusd input{flex:1;min-width:0;border:0;background:transparent;font:inherit;font-size:14px;color:var(--ink);outline:0}
+.cmusd:focus-within,.cmtitle:focus-visible{box-shadow:0 0 0 2px var(--accent)}
+.cmadd{padding:10px 18px 14px;box-shadow:0 -1px 0 var(--line)}
+.cmcat button:focus-visible,.cmcat select:focus-visible,.cmadd button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+/* the model picker (a separate layer, not part of Settings) */
+.cmback{position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.38)}
+.cmpick{width:min(520px,100%);max-height:min(640px,88vh);display:flex;flex-direction:column;gap:8px;padding:16px;border-radius:20px;background:var(--sheet);color:var(--ink);box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.cmph{display:flex;align-items:center;justify-content:space-between;gap:10px}.cmph h3{margin:0;font-size:16px}
+.cmx2{width:32px;height:32px;border-radius:50%;font-size:20px;line-height:1;color:var(--mute)}.cmx2:hover{background:var(--hover)}
+.cmpl{margin:0;font-size:13px;color:var(--mute)}
+.cmq{height:38px;padding:0 12px;border-radius:10px;background:var(--abub);box-shadow:0 0 0 1px var(--line);font:inherit;font-size:14.5px;color:var(--ink)}
+.cmq:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.cmlist{overflow:auto;min-height:120px;display:flex;flex-direction:column;gap:2px}
+.cmitem{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;min-height:56px;gap:1px;padding:9px 12px;border-radius:10px;text-align:left;width:100%}
+.cmitem:hover,.cmitem.on{background:var(--hover)}
+.cmin{font-size:14.5px;font-weight:600;color:var(--ink)}.cmis{font-size:12.5px;color:var(--mute)}
+@media (max-width:767px){
+  .cmcat{padding:14px 16px 16px}
+  .cmslot,.cmhasrm{grid-template-columns:minmax(0,1fr) 120px}.cmlab{grid-column:1 / -1}.cmwhy{grid-column:1 / -1}
+  .cmhasrm .cmrmgap{display:none}
+  .cmrmb .cmlab{grid-row:1;grid-column:1}
+  .cmhasrm .cmrm{grid-row:1;grid-column:2;justify-self:end}
+  .cmback{align-items:flex-end;padding:0}.cmpick{width:100%;border-radius:20px 20px 0 0;max-height:86vh}
+}
+.cmbg{box-shadow:0 -1px 0 var(--line)}.cmbgnote{margin:0 0 8px;font-size:13px;line-height:1.4;color:var(--mute);max-width:60ch}

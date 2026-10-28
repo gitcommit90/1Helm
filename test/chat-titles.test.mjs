@@ -147,5 +147,13 @@ await test("send-later: a new chat is named, a replayed send pays once, an exist
   await R.updateSession(named, { title: "My exact chosen name" }); await R.laterSend(keep.id); await W.settle();
   assert.equal(R.session(named).title, "My exact chosen name"); assert.equal(W.titleCalls.length, 2);
 });
+await test("an 8 word model answer (release 65) is dropped by design and the placeholder stays at revision 0", async () => {
+  const answer = "Choose compact pots with drainage and water often.";
+  assert.equal(cleanChatTitle(answer), null);
+  const W = fixture(), R = W.R, id = newAutoChat(R, MESSAGE), claim = claimChatTitle(R, id);
+  applyChatTitle(R, claim, answer);
+  assert.equal(R.session(id).title_revision, 0); assert.equal(R.session(id).title, claim.title);
+  applyChatTitle(R, claim, "Choose compact pots and water daily"); assert.equal(R.session(id).title_revision, 1);
+});
 console.log(`PASS chat titles: ${checks} groups`);
 process.exit(0);

@@ -5,8 +5,10 @@
 //   - Keep my plan, use my key as a backup (mode "fallback"): 1Helm credits first; once they're used up, chat goes to the key until
 //     they refill. The computer, browser, web search and memory still need credits. Usage shows "Using your own AI key (1Helm credits
 //     used up)" while it's on; the switch itself is announced once (the stream event byok_switch → bykSwitched, and the boot notice).
-//   - Switch to the $10 plan with my key when this billing period ends (mode "switch"): scheduled in Stripe, no charge now, Undo
-//     (keep my plan) until then; refused in plain words (with Add storage) when the account uses more than the $10 plan holds.
+//   - Switch now to the $10 plan with my key (POST /byok/switch-now, Captain 10-28): the plan changes at once, the unused plan usage becomes
+//     credits, no charge or refund; the confirm dialog (from /byok/switch-preview) says so. Change plan → Bring your own key does the same
+//     (bykSwitchNow, called by storage.ts). A switch already scheduled for the renewal (mode "switch") keeps Undo and gets Switch now next to it.
+//     Refused in plain words (with Add storage) when the account uses more than the $10 plan holds, and without a working saved key.
 //   Changing the option works both ways; removing the key with a switch pending asks whether to cancel the switch too.
 // 1HC: src/byok.js (GET /api/byok, POST /api/byok/test|save|delete|mode).
 //   - Fields: the service's address (an OpenAI-compatible base URL), the key, the main model, an optional fast model for small jobs.
@@ -39,7 +41,7 @@ type Saved = { base: string; host: string; model: string; fast: string; last4: s
 type OrInfo = { pending: { last4: string; at: number | null } | null; manage: string };
 type OrModel = { id: string; name: string; ctx: number; in: number | null; out: number | null };
 type Mode = "" | "fallback" | "switch";
-type St = { on_plan: boolean; full: boolean; plan_name: string; price: number; saved: Saved | null; mode: Mode; switch_at?: number | null; fallback?: { active: boolean; since: number | null }; openrouter?: OrInfo };
+type St = { on_plan: boolean; full: boolean; plan_name: string; price: number; saved: Saved | null; mode: Mode; switch_at?: number | null; fallback?: { active: boolean; since: number | null }; openrouter?: OrInfo; custom?: { on: boolean; model: string | null; fast?: string | null } };
 type Deps = {
   api: ((path: string, body?: any) => Promise<any>) | null;   // null: design sandbox
   repaint: () => void;                                        // Settings, when this page or General is showing
@@ -53,8 +55,12 @@ type Deps = {
   orStart: string | null;                                     // /w/<slug>/byok/openrouter/start (null: design sandbox)
 };
 let D: Deps | null = null;
+// Custom Model Selection on this key (custom-models.ts): while it is on, General's first model answers, so the main model is shown as set there and not edited here.
+// The same for the fast model (Background jobs there): it is read-only here while the setting is on.
+const setFast = () => (B.st?.custom?.on && B.st.custom.fast ? B.st.custom.fast : "");
+const setThere = () => (B.st?.custom?.on && B.st.custom.model ? B.st.custom.model : "");
 const B: { st: St | null; loading: boolean; err: string; field: string; busy: "" | "test" | "save" | "del" | "or"; test: Test | null; edit: boolean; eye: boolean;
-  f: { base: string; model: string; fast: string; ack: boolean }; key: string; ch: { busy: "" | Mode | "undo"; err: string; storage: boolean };
+  f: { base: string; model: string; fast: string; ack: boolean }; key: string; ch: { busy: "" | Mode | "undo" | "now"; err: string; storage: boolean };
   manual: boolean; orErr: string; models: OrModel[] | null; mLoading: boolean; mErr: string } =
   { st: null, loading: false, err: "", field: "", busy: "", test: null, edit: false, eye: false, f: { base: "", model: "", fast: "", ack: false }, key: "", ch: { busy: "", err: "", storage: false },
     manual: false, orErr: "", models: null, mLoading: false, mErr: "" };
@@ -100,6 +106,12 @@ async function mock(path: string, body?: any): Promise<any> {
   if (path === "/byok/models") return { models: MOCK_MODELS };
   if (path === "/byok/openrouter/forget") { mockSt = { ...mockSt, openrouter: { pending: null, manage: OR_KEYS } }; return { ok: true, ...mockSt }; }
   if (path === "/byok/delete") { mockSt = { ...mockSt, saved: null, openrouter: { pending: null, manage: OR_KEYS }, ...(body?.cancel_switch ? { mode: "" as Mode, switch_at: null } : mockSt.mode === "fallback" ? { mode: "" as Mode } : {}) }; return { ok: true, ...mockSt }; }
+  if (path === "/byok/switch-preview") return mockSt.on_plan ? { error: "You're on the Bring your own key plan already." } : { ok: true, unused_nano: 14.2e9, unused: "$14.20", price: 10, next_bill_at: MOCK_RENEW };
+  if (path === "/byok/switch-now") {
+    if (QP.has("byokstorage")) return { error: "You're using 128 GB, and Bring your own key includes 100 GB. Delete files you don't need, or add 1 block of extra storage first.", storage: { used: 128e9, limit: 100e9, need: 1 } };
+    mockSt = { ...mockSt, on_plan: true, full: false, plan_name: "Bring your own key", mode: "", switch_at: null, fallback: undefined }; sbCredits = "$" + (14.2 + 5).toFixed(2);
+    return { ok: true, plan: "byok", moved_nano: 14.2e9, moved: "$14.20", next_bill_at: MOCK_RENEW };
+  }
   if (path === "/byok/mode") {
     const m = String(body?.mode ?? "") as Mode;
     if (m === "switch" && QP.has("byokstorage")) return { error: "You're using 128 GB, and Bring your own key includes 100 GB. Delete files you don't need, or add 1 block of extra storage first.", storage: { used: 128e9, limit: 100e9, need: 1 } };
@@ -122,6 +134,10 @@ async function mock(path: string, body?: any): Promise<any> {
     openrouter: { pending: null, manage: or ? MOCK_OR : OR_KEYS } };
   return { ok: true, test, ...mockSt };
 }
+let sbCredits = "$5.00";   // sandbox only: what the usage card says in credits after a pretend switch
+/** Sandbox only (no 1HC): the pretend account is on the Bring your own key plan, so the usage card can say so. */
+export const bykSbOn = () => !D?.api && !!B.st?.on_plan;
+export const bykSbCredits = () => sbCredits;
 const call = (path: string, body?: any) => (D?.api || mock)(path, body);
 
 // The page's state from any /byok answer (GET, save, mode, delete all return it).
@@ -129,7 +145,8 @@ function stOf(d: any): St {
   const m: Mode = d.mode === "fallback" || d.mode === "switch" ? d.mode : "";
   return { on_plan: !!d.on_plan, full: d.full ?? !d.on_plan, plan_name: String(d.plan_name || ""), price: Number(d.price) || 10, saved: d.saved || null, mode: m,
     switch_at: d.switch_at ?? null, ...(d.fallback ? { fallback: { active: !!d.fallback.active, since: d.fallback.since ?? null } } : {}),
-    openrouter: { pending: d.openrouter?.pending || null, manage: /^https:\/\/openrouter\.ai\//.test(String(d.openrouter?.manage || "")) ? d.openrouter.manage : OR_KEYS } };
+    openrouter: { pending: d.openrouter?.pending || null, manage: /^https:\/\/openrouter\.ai\//.test(String(d.openrouter?.manage || "")) ? d.openrouter.manage : OR_KEYS },
+    ...(d.custom?.on ? { custom: { on: true, model: typeof d.custom.model === "string" ? d.custom.model : null, fast: typeof d.custom.fast === "string" ? d.custom.fast : null } } : {}) };
 }
 const planName = () => B.st?.plan_name || "your plan";
 const fbOn = () => !!B.st && B.st.mode === "fallback" && !!B.st.fallback?.active;
@@ -148,7 +165,7 @@ export function bykRow(): string {
   const s = B.st, sv = s?.saved;
   const use = !s || !sv || s.on_plan ? "" : fbOn() ? "in use: your 1Helm credits are used up" : s.mode === "fallback" ? "backup when your 1Helm credits run out"
     : s.mode === "switch" ? `the $10 plan from ${dateText(s.switch_at) || "your next bill"}` : "choose how to use it";
-  const sub = !s ? "Checking…" : sv ? `${esc(sv.host)} · ${esc(sv.model)}${use ? ` · ${esc(use)}` : ""}`
+  const sub = !s ? "Checking…" : sv ? `${esc(sv.host)} · ${esc(setThere() || sv.model)}${use ? ` · ${esc(use)}` : ""}`
     : s.on_plan ? "Your plan uses your own key. Add it here." : s.mode === "switch" ? `Switching to the $10 plan on ${esc(dateText(s.switch_at) || "your next bill")}: add your key` : "Use your own AI service, as a backup or on the $10 plan";
   const val = !s ? "" : sv && s.on_plan ? "On" : s.on_plan ? "Needed" : fbOn() ? "In use" : sv && s.mode === "fallback" ? "Backup" : s.mode === "switch" ? (sv ? "Switching" : "Needed") : sv ? "Saved" : "Off";
   return D.srow(D.icon("spark"), BYK_TITLE, sub, `${val ? `<span class="sval${val === "Needed" ? " bykneed" : val === "In use" ? " bykon" : ""}">${val}</span>` : ""}<span class="schev">${D.icon("chev", 16)}</span>`, ` role="button" tabindex="0" data-sgo="${BYK_SEC}" data-bykrow`);
@@ -160,7 +177,7 @@ export function bykUsageNote(): string {
   bykLoad();
   const s = B.st; if (!s || !s.full) return "";
   if (fbOn()) return `<p class="bykuse on" role="status"><i aria-hidden="true"></i>Using your own AI key (1Helm credits used up)</p>`;
-  if (s.mode === "switch") return `<div class="bykuse sw" role="status"><span>Switching to Use your own AI key on ${esc(dateText(s.switch_at) || "your next bill")}</span><button type="button" class="sa blue" data-bykundo${B.ch.busy ? " disabled" : ""}>${B.ch.busy === "undo" ? "One moment…" : "Undo"}</button></div>`;
+  if (s.mode === "switch") return `<div class="bykuse bykpend" role="status"><span>Switching to Use your own AI key on ${esc(dateText(s.switch_at) || "your next bill")}</span><span class="bykswbtns"><button type="button" class="sa blue" data-bykswitchnow${B.ch.busy ? " disabled" : ""}>${B.ch.busy === "now" ? "One moment…" : "Switch now"}</button><button type="button" class="sa blue" data-bykundo${B.ch.busy ? " disabled" : ""}>${B.ch.busy === "undo" ? "One moment…" : "Undo"}</button></span></div>`;
   return "";
 }
 
@@ -173,6 +190,8 @@ function testHtml(t: Test | null, compact = false): string {
     return `<li class="${c.ok ? "ok" : "no"}"><span class="bykdot">${c.ok ? D!.icon("check", 13) : D!.icon("x", 13)}</span><span><b>${l}</b>${c.ok ? (k === "reach" && c.ms ? ` <i>${(c.ms / 1000).toFixed(1)} s</i>` : "") : c.error ? `<span class="bykwhy">${esc(c.error)}</span>` : ""}</span></li>`; }).join("");
   return `<div class="byktest ${t.ok ? "pass" : "fail"}${compact ? " small" : ""}" role="status"><div class="byktt">${t.ok ? "Connection works" : "Connection test didn't pass"}${t.at ? `<i>${ago(t.at)}</i>` : ""}</div><ul>${rows}</ul></div>`;
 }
+const setFastNote = () => `<div class="sf bykset"><span>Fast model</span><p class="sfine">${esc(setFast())}, set in Custom Model Selection.</p></div>`;
+const setNote = (who: string) => `<div class="sf bykset"><span>Model</span><p class="sfine">${esc(setThere())}, set in Settings, Advanced, Custom Model Selection. ${esc(who)} uses it as the main model.</p></div>`;
 // ---- Sign in with OpenRouter: the model fields (a searchable list + free typing) and the boxes around the form ----
 const ctxText = (n: number) => !n ? "" : n >= 1e6 ? `${Math.round(n / 1e5) / 10}M context` : `${Math.round(n / 1000)}K context`;
 const priceText = (m: OrModel) => m.in === 0 && m.out === 0 ? "free" : m.in != null && m.out != null ? `$${m.in} in / $${m.out} out per 1M` : "";
@@ -201,11 +220,11 @@ export function bykPage(): string {
   const top = s.on_plan ? (sv ? "" : `<div class="bykplan need">${D.icon("help", 16)}<span>You're on the Bring your own key plan, so ${who} needs your key to answer. Add it below.</span></div>`)
     : s.mode === "switch" ? switchBanner(sv)
     : fbOn() ? `<div class="bykplan bykfb">${D.icon("spark", 16)}<span><b>${esc(FALLBACK_NOTE)}</b>${who} is using your key for chat until your credits refill: when ${plan} renews, or when you add credits. The computer, browser, web search and memory need 1Helm credits, so they're paused until then.</span><button class="sa blue" data-bykcredits>Add credits</button></div>`
-    : sv ? "" : `<div class="bykplan">${D.icon("spark", 16)}<span><b>Two ways to use it on ${plan}</b>Add your key below, then choose: keep ${plan} and use your key only when your 1Helm credits run out, or switch to the $${s.price} plan with your key when this billing period ends.</span></div>`;
+    : sv ? "" : `<div class="bykplan">${D.icon("spark", 16)}<span><b>Two ways to use it on ${plan}</b>Add your key below, then choose: keep ${plan} and use your key only when your 1Helm credits run out, or switch now to the $${s.price} plan with your key.</span></div>`;
   const status = s.on_plan ? `<span class="sok">${D.icon("check", 14)}In use</span>` : fbOn() ? `<span class="sok">${D.icon("check", 14)}In use</span>`
     : s.mode === "fallback" ? `<span class="sval">Backup</span>` : s.mode === "switch" ? `<span class="sval">From ${esc(dateText(s.switch_at) || "next bill")}</span>` : `<span class="sval">Not in use yet</span>`;
   const savedCard = sv && !editing ? `<div class="sc">
-      ${D.srow(D.icon("spark"), orSaved ? "OpenRouter" : esc(sv.host), `${esc(sv.model)}${sv.fast && sv.fast !== sv.model ? ` · fast: ${esc(sv.fast)}` : ""}`, status)}
+      ${D.srow(D.icon("spark"), orSaved ? "OpenRouter" : esc(sv.host), `${esc(setThere() || sv.model)}${setFast() ? (setFast() !== (setThere() || sv.model) ? ` · fast: ${esc(setFast())}` : "") : sv.fast && sv.fast !== sv.model ? ` · fast: ${esc(sv.fast)}` : ""}`, status)}
       ${D.srow(D.icon("key"), orSaved ? "Connected to OpenRouter" : "Key", `${orSaved ? "Signed in with OpenRouter · " : ""}<span class="bykmask">••••${esc(sv.last4)}</span>${sv.saved_at ? ` · saved ${ago(sv.saved_at)}` : ""}`, "")}
       ${testHtml(B.test || sv.test, true)}
       <div class="sfoot bykacts"><button class="sa blue" data-byktest${B.busy ? " disabled" : ""}>${B.busy === "test" ? "Testing…" : "Test connection"}</button><button class="sa blue" data-bykedit${B.busy ? " disabled" : ""}>${orSaved ? "Change models" : "Change"}</button><button class="sa mute" data-bykrm${B.busy ? " disabled" : ""}>${B.busy === "del" ? (orSaved ? "Disconnecting…" : "Removing…") : orSaved ? "Disconnect" : "Remove"}</button></div></div>
@@ -221,8 +240,8 @@ export function bykPage(): string {
   const orForm = orOn ? `<form class="sc sform" id="bykf" novalidate data-unsaved="byok" data-unsaved-key="or"><div class="sfh">${D.icon("spark")}<b>${pend ? "Pick your models" : "Change your models"}</b></div>
       <div class="bykorcon" role="status"><span class="bykdot">${D.icon("check", 13)}</span><span class="bykort"><b>Connected to OpenRouter</b><span>Key <span class="bykmask">••••${esc(orLast4)}</span>, made for 1Helm in your OpenRouter account</span></span><button type="button" class="sa mute" data-bykordis${B.busy ? " disabled" : ""}>${B.busy === "del" ? "Disconnecting…" : "Disconnect"}</button></div>
       ${B.field === "or" && B.err ? `<p class="bykerr" role="alert">${esc(B.err)}</p>` : ""}
-      ${combo("model", "Model", B.f.model, "Search, or type a model name", `${who}'s main model. The list shows OpenRouter's models that can call tools, which ${who} needs.`)}
-      ${combo("fast", "Fast model (optional)", B.f.fast, "Same as the main model", "For small jobs like task titles and hand-off notes. Leave it empty to use the main model.")}
+      ${setThere() ? setNote(who) : combo("model", "Model", B.f.model, "Search, or type a model name", `${who}'s main model. The list shows OpenRouter's models that can call tools, which ${who} needs.`)}
+      ${setFast() ? setFastNote() : combo("fast", "Fast model (optional)", B.f.fast, "Same as the main model", "For small jobs like task titles and hand-off notes. Leave it empty to use the main model.")}
       ${warn}
       ${B.err && !B.field ? `<p class="bykerr" role="alert">${esc(B.err)}</p>` : ""}
       ${testHtml(B.test)}
@@ -232,8 +251,8 @@ export function bykPage(): string {
   const form = editing && orOn ? orForm : editing ? `${orBox()}<form class="sc sform" id="bykf" novalidate data-unsaved="byok"><div class="sfh">${D.icon("spark")}<b>${sv && !orSaved ? "Change your AI service" : "Your AI service"}</b></div>
       ${field("base", "Service address", B.f.base, "https://api.openai.com/v1", "The address that ends before /chat/completions.", ' inputmode="url"')}
       <label class="sf${B.field === "key" ? " bykbad" : ""}"><span>Key</span><span class="spw"><input id="byk-key" data-bykf="key" type="${B.eye ? "text" : "password"}" placeholder="${esc(keyPh)}" autocomplete="new-password" autocapitalize="none" spellcheck="false"><button type="button" class="seye${B.eye ? " on" : ""}" data-bykeye aria-label="Show key">${D.icon("eye", 17)}</button></span>${B.field === "key" && B.err ? `<em class="bykerr" role="alert">${esc(B.err)}</em>` : ""}</label>
-      ${field("model", "Model", B.f.model, "gpt-4o-mini", `${who}'s main model. It must support tool calling.`)}
-      ${field("fast", "Fast model (optional)", B.f.fast, "Same as the main model", "For small jobs like task titles and hand-off notes. Leave it empty to use the main model.")}
+      ${setThere() ? setNote(who) : field("model", "Model", B.f.model, "gpt-4o-mini", `${who}'s main model. It must support tool calling.`)}
+      ${setFast() ? setFastNote() : field("fast", "Fast model (optional)", B.f.fast, "Same as the main model", "For small jobs like task titles and hand-off notes. Leave it empty to use the main model.")}
       ${warn}
       ${B.err && !B.field ? `<p class="bykerr" role="alert">${esc(B.err)}</p>` : ""}
       ${testHtml(B.test)}
@@ -245,7 +264,7 @@ export function bykPage(): string {
 // A full plan with a switch to the $10 plan pending (made here or in Change plan).
 function switchBanner(sv: Saved | null): string {
   const plan = esc(planName()), when = esc(dateText(B.st?.switch_at) || "your next bill");
-  return `<div class="bykplan bykswitch" role="status">${D!.icon("clock", 16)}<span><b>Switching to Use your own AI key on ${when}</b>You keep ${plan} until then. From then on it's $${B.st?.price || 10}/month with 100 GB of storage, ${esc(D!.who())} runs on your key, and credits you add pay for the computer, browser and memory.${sv ? "" : ` <em class="bykneedt">Add your key before then, or ${esc(D!.who())} can't answer after the switch.</em>`}</span><button class="sa blue" data-bykundo${B.ch.busy ? " disabled" : ""} aria-label="Undo: keep ${plan}">${B.ch.busy === "undo" ? "One moment…" : "Undo"}</button></div>`;
+  return `<div class="bykplan bykswitch" role="status">${D!.icon("clock", 16)}<span><b>Switching to Use your own AI key on ${when}</b>You keep ${plan} until then. From then on it's $${B.st?.price || 10}/month with 100 GB of storage, ${esc(D!.who())} runs on your key, and credits you add pay for the computer, browser and memory.${sv ? "" : ` <em class="bykneedt">Add your key before then, or ${esc(D!.who())} can't answer after the switch.</em>`}</span><span class="bykswbtns"><button class="sa blue" data-bykswitchnow${B.ch.busy ? " disabled" : ""}>${B.ch.busy === "now" ? "One moment…" : "Switch now"}</button><button class="sa blue" data-bykundo${B.ch.busy ? " disabled" : ""} aria-label="Undo: keep ${plan}">${B.ch.busy === "undo" ? "One moment…" : "Undo"}</button></span></div>`;
 }
 // The two options (a full plan with a saved key).
 function choiceHtml(): string {
@@ -253,9 +272,9 @@ function choiceHtml(): string {
   const opt = (m: Mode, title: string, sub: string) => { const on = s.mode === m, busy = B.ch.busy === m;
     return `<button type="button" class="sr sradio bykopt${on ? " on" : ""}" role="radio" aria-checked="${on}" data-bykmode="${m}"${B.ch.busy ? " disabled" : ""}><span class="srt"><b>${title}</b><span>${sub}</span></span><span class="rck">${busy ? `<i class="apspin"></i>` : D!.icon("check", 18)}</span></button>`; };
   return `<h3 class="bykh">How ${who} uses your key</h3>${s.mode ? "" : `<p class="bykpick">Your key is saved but not in use yet. Choose one:</p>`}
-    <div class="sc bykopts" role="radiogroup" aria-label="How ${who} uses your key">
+    <div class="sc bykopts" role="group" aria-label="How ${who} uses your key">
       ${opt("fallback", `Keep my plan, use my key as a backup`, `${who} uses your ${plan} credits first, as now. If they run out before your plan renews, chat switches to your key on its own until they refill. The computer, browser, web search and memory still need 1Helm credits, so they pause until then; plain chat keeps working.`)}
-      ${opt("switch", `Switch to the $${s.price} plan with my key when this billing period ends`, `${plan} continues until ${when}. Then it's $${s.price}/month with 100 GB of storage, ${who} runs on your key, and credits you add pay for the computer, browser and memory (cost + 15%). Nothing is charged now.`)}
+      <button type="button" class="sr sradio bykopt" role="button" data-bykswitchnow${B.ch.busy ? " disabled" : ""}><span class="srt"><b>Switch now to the $${s.price} plan with my key</b><span>Your plan changes now. It's $${s.price}/month with 100 GB of storage, ${who} runs on your key, and credits you add pay for the computer, browser and memory (cost + 15%). Your unused ${plan} usage becomes credits.</span></span><span class="rck">${B.ch.busy === "now" ? `<i class="apspin"></i>` : ""}</span></button>
       ${B.ch.err ? `<div class="bykcherr" role="alert"><p>${esc(B.ch.err)}</p>${B.ch.storage ? `<button type="button" class="sa blue" data-stnadd>Add storage</button>` : ""}</div>` : ""}
     </div>
     <p class="sfine bykzdr">${esc(BYK_ZDR_OPTS)}</p>`;
@@ -271,7 +290,7 @@ function startEdit() {
   const sv = B.st?.saved, or = sv?.source === "openrouter";
   B.edit = true; B.err = B.field = ""; B.test = null; B.key = ""; B.eye = false;
   // Switching from OpenRouter to a typed service starts from an empty address (its key isn't offered for another one).
-  B.f = { base: or && B.manual ? "" : sv?.base || "", model: or && B.manual ? "" : sv?.model || "", fast: !(or && B.manual) && sv?.fast && sv.fast !== sv.model ? sv.fast : "", ack: false };
+  B.f = { base: or && B.manual ? "" : sv?.base || "", model: setThere() || (or && B.manual ? "" : sv?.model || ""), fast: !(or && B.manual) && sv?.fast && sv.fast !== sv.model ? sv.fast : "", ack: false };
 }
 const body = () => orMode() ? { source: "openrouter", model: B.f.model.trim(), fast: B.f.fast.trim() } : { base: B.f.base.trim(), model: B.f.model.trim(), fast: B.f.fast.trim(), key: B.key.trim() };
 function test() {
@@ -339,6 +358,28 @@ async function pickMode(m: Mode | "undo") {
     }
   } catch { B.ch.err = "Couldn't change that. Check your internet and try again."; }
   B.ch.busy = ""; D?.repaint();
+}
+// Switch now: the plan changes at once and the unused plan usage becomes credits. Used by this page, the usage note and Change plan (storage.ts).
+export async function bykSwitchNow() {
+  if (!D || B.ch.busy) return;
+  const end = (err = "", storage = false) => { B.ch = { busy: "", err, storage }; D?.repaint(); };
+  B.ch = { busy: "now", err: "", storage: false }; D.repaint();
+  try {
+    if (!B.st) { const d0 = await call("/byok"); if (d0 && !d0.error) B.st = stOf(d0); }
+    const st = B.st; if (!st) return end("Couldn't load your AI key settings. Try again in a minute.");
+    if (!st.full) return end();
+    if (!st.saved) { end(); D.note(false, "Add your AI key first", "Save it in Use my own AI key, then switch."); D.open(); return; }
+    const pv = await call("/byok/switch-preview");
+    if (!pv || pv.error) { end(pv?.error || ""); D.note(false, "Your plan didn't change", pv?.error || "Try again in a minute."); return; }
+    const plan = planName(), when = dateText(pv.next_bill_at) || "your next bill date";
+    const ok = await ask({ title: `Switch to the $${pv.price} plan now?`, body: `Your plan changes now. ${Number(pv.unused_nano) > 0 ? `${pv.unused} of unused ${plan} usage becomes credits.` : `You have no unused ${plan} usage to move to credits.`} Your next bill is $${pv.price} on ${when}. There's no refund.`, confirm: "Switch now" });
+    if (!ok) return end();
+    const d = await call("/byok/switch-now", {});
+    if (d?.error) { end(d.error, !!d.storage); D.note(false, "Your plan didn't change", d.error); return; }
+    if (D.api) { location.assign(`${location.pathname}?plan=byok&moved=${encodeURIComponent(String(d.moved || ""))}&bill=${encodeURIComponent(String(d.next_bill_at || ""))}${location.hash}`); return; }   // the app reloads so the plan, usage and storage are the new ones
+    B.st = stOf(await call("/byok")); end();
+    D.note(true, "You're on the Bring your own key plan", `${d.moved} of unused usage is now credits.`);
+  } catch { end("Couldn't change that. Check your internet and try again."); }
 }
 // ---- Sign in with OpenRouter ----
 function orSignIn() {
@@ -429,6 +470,7 @@ export function bykInit(d: Deps) {
     if (c) { try { const u = new URL(c.href, location.href); if (u.origin === location.origin) { e.preventDefault(); e.stopPropagation(); D?.credits(); return; } } catch {} }
     if (t.closest("[data-bykrow]")) { B.st = null; B.edit = false; B.manual = false; B.orErr = ""; B.test = null; B.err = B.field = ""; B.ch = { busy: "", err: "", storage: false }; }   // fresh state when the page opens (v3 handles data-sgo)
     const mb = t.closest<HTMLElement>("[data-bykmode]"); if (mb) { e.preventDefault(); pickMode(mb.dataset.bykmode as Mode); return; }
+    if (t.closest("[data-bykswitchnow]")) { e.preventDefault(); bykSwitchNow(); return; }
     if (t.closest("[data-bykundo]")) { e.preventDefault(); pickMode("undo"); return; }
     if (t.closest("[data-bykcredits]")) { e.preventDefault(); D?.credits(); return; }
     if (t.closest("[data-byktest]")) { e.preventDefault(); test(); return; }

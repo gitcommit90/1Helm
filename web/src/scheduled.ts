@@ -28,6 +28,8 @@ type Deps = {
   changed: () => void;                                   // jobs changed here: repaint counts + the view
 };
 let D: Deps | null = null;
+// Which items the view shows: this channel's (default) or every channel's. Kept in memory like the Library's L.scope.
+let scope: "ch" | "all" = "ch";
 
 export const SECS = ["repeats", "events", "coming-up", "send-later", "past"] as const;
 type Sec = typeof SECS[number];
@@ -47,9 +49,9 @@ let seq = 0;
 
 // ---------- what's scheduled ----------
 type JRow = { slug: string; ch: Ch; j: Job; ref: string };
-function jobs() {
+function jobs(here: string, sc: "ch" | "all" = scope) {
   const rep: JRow[] = [], up: JRow[] = [], ev: JRow[] = [], past: JRow[] = [];
-  for (const ch of D?.channels() || []) for (const j of ch.jobs || []) {
+  for (const ch of D?.channels() || []) if (sc === "all" || ch.slug === here) for (const j of ch.jobs || []) {
     if (j.id == null) j.id = -(++seq);   // the design sandbox's seed jobs have no id (and an old server didn't send one)
     const r = { slug: ch.slug, ch, j, ref: `${ch.slug}|${j.id}` };
     if (j.status === "complete" || j.status === "failed") past.push(r);
@@ -59,12 +61,12 @@ function jobs() {
   const by = (a: JRow, b: JRow) => (a.j.status === "paused" ? 1 : 0) - (b.j.status === "paused" ? 1 : 0) || (a.j.next || 9e15) - (b.j.next || 9e15) || a.j.name.localeCompare(b.j.name);
   return { past: past.sort((a, b) => (b.j.ended || 0) - (a.j.ended || 0)), rep: rep.sort(by), up: up.sort(by), ev: ev.sort((a, b) => (a.j.status === "paused" ? 1 : 0) - (b.j.status === "paused" ? 1 : 0) || a.j.name.localeCompare(b.j.name)) };
 }
-export function schCount() { const { rep, up, ev } = jobs(); return rep.length + ev.length + up.length + slAll().length; }
+export function schCount() { const { rep, up, ev } = jobs("", "all"); return rep.length + ev.length + up.length + slAll().length; }
 // Live jobs can be changed only with a real id (an old server's boot sent none). The sandbox changes its own seed jobs in place.
 const can = (j: Job) => !D?.live || (j.id ?? -1) > 0;
 
 // ---------- the view ----------
-const chTag = (slug: string, name: string, here: string) => slug !== here ? `<span class="schch">${esc(name)}</span>` : "";
+const chTag = (slug: string, name: string, here: string) => scope === "all" || slug !== here ? `<span class="schch">${esc(name)}</span>` : "";
 function repRow(r: JRow, here: string) {
   const { j } = r, paused = j.status === "paused", b = BUSY[r.ref], dis = b ? " disabled" : "";
   const when = j.on ? `When ${j.on}` : j.when || every(j.every);
@@ -99,7 +101,7 @@ function section(id: Sec, icon: string, title: string, sub: string, rows: string
   return rows.length ? `<section class="schsec" id="sch-${id}" aria-label="${esc(title)}"><div class="schh"><span class="schi">${icon}</span><h2>${esc(title)}</h2><b>${rows.length}</b></div>${sub ? `<p class="schp">${esc(sub)}</p>` : ""}<div class="schlist">${rows.join("")}</div></section>` : "";
 }
 function body(here: string) {
-  const { rep, up, ev, past } = jobs(), sl = slAll(), who = D?.helper(here) || "Your helper";
+  const { rep, up, ev, past } = jobs(here), sl = slAll().filter(a => scope === "all" || a.slug === here), who = D?.helper(here) || "Your helper";
   const old = section("past", IC.clock(16), "Past", "", past.map(r => pastRow(r, here)));   // ended jobs: below the empty state too
   if (!rep.length && !ev.length && !up.length && !sl.length) return `<div class="schempty"><span class="schei">${IC.clock(26)}</span><h2>Nothing scheduled</h2><p>Ask ${esc(who)} to check something every morning or to follow up later, or tap the clock in the message box to send a message later. It all shows up here.</p></div>` + old;
   return section("repeats", IC.repeat, "Repeats", `Checks and jobs ${who} runs again and again.`, rep.map(r => repRow(r, here)))
@@ -107,13 +109,20 @@ function body(here: string) {
     + section("coming-up", IC.bell, "Coming up", `One-time follow-ups ${who} set for itself.`, up.map(r => upRow(r, here)))
     + section("send-later", IC.send, "Send later", "Messages you wrote that go out at the time you picked.", sl.map(a => slRow(a.slug, a.x, here))) + old;
 }
+// Same two-way switch as the Library header (the shared .scope classes); data-schscope keeps it apart from the Library's data-scope.
+function head(here: string) {
+  const one = scope === "ch", name = D?.channels().find(c => c.slug === here)?.name || here;
+  return `<span class="lh-all">${IC.clock(24)}</span><div class="lht"><h1>Scheduled</h1><p>${one ? `Everything set to happen later in ${esc(name)}.` : "Everything set to happen later, in every channel."}</p></div>
+    <div class="scope" role="tablist"><button class="${one ? "on" : ""}" data-schscope="ch" role="tab">${esc(name)}</button><button class="${one ? "" : "on"}" data-schscope="all" role="tab">All channels</button></div>`;
+}
 export function schPage(here: string) {
-  return `<div class="dhome" id="scroll"><div class="lwrap schwrap"><div class="lhead"><span class="lh-all">${IC.clock(24)}</span><div class="lht"><h1>Scheduled</h1><p>Everything set to happen later, in every channel.</p></div></div>
+  return `<div class="dhome" id="scroll"><div class="lwrap schwrap"><div class="lhead" id="schhd">${head(here)}</div>
     <div id="schbody" data-here="${esc(here)}">${body(here)}</div></div></div>`;
 }
 // The open view follows every change: the poll, Send later, an action here. (Nav entries show no count.)
 export function schPaint() {
   const el = document.getElementById("schbody"); if (!el) return;
+  const hd = document.getElementById("schhd"); if (hd) { const hh = head(el.dataset.here || ""); if (hd.dataset.h !== hh) { hd.innerHTML = hh; hd.dataset.h = hh; } }
   const h = body(el.dataset.here || ""); if (el.dataset.h !== h) { el.innerHTML = h; el.dataset.h = h; }
 }
 // After the view renders: a section link (#/<slug>/scheduled/send-later) scrolls to it and flashes it once.
@@ -159,6 +168,8 @@ export function schInit(deps: Deps) {
   D = deps;
   document.addEventListener("click", async e => {
     const t = e.target as HTMLElement;
+    const sc = t.closest<HTMLElement>("[data-schscope]"); if (sc) { if (sc.dataset.schscope !== scope) { scope = sc.dataset.schscope as "ch" | "all"; schPaint(); } return; }
+    if (t.closest('a[href$="/scheduled"]') && scope !== "ch") { scope = "ch"; schPaint(); }   // opening Scheduled from the side panel, drawer or sheet starts on this channel, like openLib
     const st = t.closest<HTMLElement>("[data-schset]"); if (st) { e.preventDefault(); const v = st.dataset.schset!, i = v.lastIndexOf("|"); setStatus(v.slice(0, i), v.slice(i + 1) as "active" | "paused"); return; }
     const cn = t.closest<HTMLElement>("[data-schcancel]"); if (cn) { e.preventDefault(); setStatus(cn.dataset.schcancel!, "complete"); return; }
     const sp = t.closest<HTMLElement>("[data-schstop]"); if (sp) { e.preventDefault(); const ref = sp.dataset.schstop!, f = findJob(ref); if (!f) return;

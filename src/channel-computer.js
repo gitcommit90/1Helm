@@ -35,6 +35,7 @@ const BROWSER_OWNER_MAX_TTL_MS = 15 * 60e3;
 // operation can still be running. A browser call is short (wake, then one request to Chrome); a shell command may run up to
 // EXEC_TIMEOUT_MS. A row left by a deploy therefore blocks for minutes, never for an hour.
 const COMPUTER_BUSY_TTL_MS = { browser: 3 * 60e3, owner_browser: 3 * 60e3, command: EXEC_TIMEOUT_MS + 60e3 };
+const ACTIVITY_LINGER_MS = 4e3;   // the computer button's dot stays on this long after a computer step ends
 const COMPUTER_BUSY_TTL_DEFAULT_MS = 3 * 60e3;
 // A reservation written by an earlier instance of this object (a deploy or reset ended the call that would have removed it) keeps
 // the computer busy for this long, enough for a browser call already sent to finish, and no longer. Shell commands used to leave a
@@ -290,7 +291,7 @@ export class ChannelComputer extends DurableObject {
     if (!RUN_RE.test(String(run))) return { lost: true, why: "bad id" };
     if (!this.ctx.container?.running) return { lost: true, why: "computer stopped" };
     const f = `/tmp/.1hc-out-${run}`, end = Date.now() + Math.max(5e3, Math.min(Number(timeoutMs) || EXEC_TIMEOUT_MS, EXEC_TIMEOUT_MS)), t0 = Date.now();
-    this.inflight = (this.inflight || 0) + 1;
+    this.inflight = (this.inflight || 0) + 1; this.workOps = (this.workOps || 0) + 1;
     try {
       for (;;) {
         this.put("last_activity", Date.now());
@@ -305,7 +306,7 @@ export class ChannelComputer extends DurableObject {
         }
         await sleep(2000);
       }
-    } finally { this.inflight--; this.put("last_activity", Date.now()); }
+    } finally { this.inflight--; this.workOps--; this.opEnded = Date.now(); this.put("last_activity", Date.now()); }
   }
   // The person's Stop (stop.js): kill the command a turn is running, children first, then its shell.
   async cancel(tag) {
@@ -498,6 +499,7 @@ export class ChannelComputer extends DurableObject {
     const denied = this.#browserOwnerGate(op, ownerToken); if (denied) return denied;
     // Reserve the call before the first await, so a job cannot acquire ownership while Chrome is waking.
     const busyId = op === "status" ? null : this.#busyStart(ownerToken == null ? "browser" : "owner_browser");
+    const counted = op !== "status"; if (counted) this.workOps = (this.workOps || 0) + 1;   // the live pane's status polls are not work
     this.browserInFlight = (this.browserInFlight || 0) + 1;
     if (ownerToken != null) this.ownerBrowserInFlight = (this.ownerBrowserInFlight || 0) + 1;
     this.put("last_activity", Date.now());
@@ -527,6 +529,7 @@ export class ChannelComputer extends DurableObject {
       } finally { this.inflight--; }
     } finally {
       if (busyId) this.#busyEnd(busyId);
+      if (counted) { this.workOps--; this.opEnded = Date.now(); }
       this.browserInFlight--;
       if (ownerToken != null) this.ownerBrowserInFlight--;
       this.put("last_activity", Date.now());
@@ -597,6 +600,13 @@ export class ChannelComputer extends DurableObject {
     const med = w.length ? [...w].sort((x, y) => x - y)[w.length >> 1] : 6e3;
     const gap = Math.max(0, Number(this.get("stopped_at") || 0) + RESTART_GAP_MS - Date.now());
     return Math.round(med + gap);
+  }
+  // What the app's computer button shows: lit while a browser step or a command (which also covers reading and writing computer files)
+  // is running, for ACTIVITY_LINGER_MS after the last one ends (so a short step is still seen by a poll, and the dot doesn't blink between
+  // two steps), and while the person has taken over the browser. Reads memory only: it never wakes the computer.
+  async activity() {
+    const now = Date.now(), until = Number(this.get("lease_until") || 0);
+    return { busy: (this.workOps || 0) > 0 || now - (this.opEnded || 0) < ACTIVITY_LINGER_MS, controlled: !!this.get("lease") && until > now };
   }
   async sleepState() {
     const running = this.ctx.container.running && this.get("ready") === "1", now = Date.now();
@@ -724,7 +734,7 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
     // background browser job owns the shared computer, and reserve before the first await.
     if (this.#browserOwner() || this.ownerBrowserInFlight || this.#busyActive("owner_browser")) return { code: 1, out: "A background browser job is using this channel's computer. Wait for it to finish or take control of the browser.", browser_busy: true };
     const busyId = this.#busyStart("command");
-    this.commandInFlight = (this.commandInFlight || 0) + 1;
+    this.commandInFlight = (this.commandInFlight || 0) + 1; this.workOps = (this.workOps || 0) + 1;
     try {
     const lim = Math.max(5e3, Math.min(Number(timeoutMs) || EXEC_TIMEOUT_MS, EXEC_TIMEOUT_MS));
     if (!/^[0-9a-f-]{36}$/.test(String(tag))) tag = crypto.randomUUID();   // every command can be killed as a tree
@@ -750,7 +760,7 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
     let storage_note = this.storageNote(); if (storage_note && Date.now() - Number(this.get("storage_told") || 0) < 10 * 60e3) storage_note = null;
     if (storage_note) this.put("storage_told", Date.now());
     return { code: r.code, out: tailOutput(r.out, outMax), ms, boot, saved, egress, ...(r.timed_out ? { timed_out: true, limit_ms: lim } : {}), ...(storage_note ? { storage_note } : {}) };
-    } finally { this.#busyEnd(busyId); this.commandInFlight--; }
+    } finally { this.#busyEnd(busyId); this.commandInFlight--; this.workOps--; this.opEnded = Date.now(); }
   }
   // Skill scripts → /opt/1hc/skills/<slug>/scripts/ on the computer's own disk (outside /workspace: never saved into the channel's
   // layers, never counted as storage, rewritten after each start). One command, the files on stdin, swapped in whole. A failure is

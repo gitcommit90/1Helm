@@ -28,7 +28,7 @@ const WORKSPACE = [
   /^\/texting$/, /^\/api\/texting(?:\/|$)/, /^\/api\/google(?:\/|$)/,
   /^\/api\/apps(?:\/|$)/, /^\/api\/apps-used$/, /^\/apps\/done$/, /^\/google\/done$/,
   /^\/composio\/connect$/, /^\/api\/connect-offer$/, /^\/api\/meetings\//,
-  /^\/api\/bee(?:\/|$)/, /^\/api\/link(?:\/|$)/, /^\/api\/plan(?:\/|$)/, /^\/api\/portal$/,
+  /^\/api\/bee(?:\/|$)/, /^\/api\/library\/bee(?:\/|$)/, /^\/api\/account\/custom-models(?:\/|$)/, /^\/api\/link(?:\/|$)/, /^\/api\/plan(?:\/|$)/, /^\/api\/portal$/,
   /^\/api\/fix-payment$/, /^\/api\/topup(?:\/confirm)?$/, /^\/api\/storage\/blocks$/, /^\/api\/test\/(?:cancel|pastdue)/,
   /^\/api\/res\/[^/]+\/sessions\/[^/]+\/livenotes(?:\/|$)/,
   /^\/api\/res\/[^/]+\/(?:event-log|event-workflow)$/,
@@ -95,6 +95,9 @@ export { customMcpRoute, isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED, wit
 
 export { ambientQuery, addLocalTimes, tzOf, AMBIENT_QUERY_TOOL } from "./ambient-query.js";
 
+export { customView, readCustom, saveCustom, pickerModels, statusOfRow, ownChorePlan } from "./custom-models.js";
+export { ownKeyKind, ownKindForStatus, ownViewFor, ownPicker, saveOwn, byokRouteTurn, planForCall, byokChatChain } from "./byok-custom.js";
+export { beeLibraryRoute } from "./bee-library.js";
 export { modelSettingsEnv, readModelSettings, jobModel, jobModels, jobCost, modelFacts } from "./model-settings.js";
 export { MOONDREAM } from "./model-seed.js";
 export { dailyBillingFlag, flagTurns, FLAG_MIN_CHARGE } from "./billing-flag.js";

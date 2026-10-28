@@ -26,7 +26,7 @@
 //                     openrouter makes the body of POST /audio/transcriptions for that model; cloudflare makes the Workers AI input. Returns the transcription Response (JSON).
 //                     self makes the audio for a model of the 1Helm container (source SELF): async () => ({ audio, format, language? }). That answer is JSON with model, text, segments
 //                     ([{ start, end, text }]), words ([{ w, s, e }], empty when the model gives no word times), duration and usage ({ cost, seconds }, cost in dollars of container time).
-//                     A SELF step throws an error with warming set to true when no container is ready (it starts one in the background), so the next step answers.
+//                     A SELF step throws an error with warming set to true when no container is ready (it starts one in the background), so the next step answers; the last step of a chain waits for the container when the job's limit leaves room (speechWaitMs).
 //   transcribe_live   {} . Returns the 101 Response of the live dictation WebSocket (use response.webSocket). A model of the 1Helm container is not a socket: it is planned as "transcribe".
 //   diarize           { audio, format, num_speakers? } or { session }. Says who spoke when with a model of the 1Helm container. Returns JSON { model, turns, usage }: turns are
 //                     [{ s, e, speaker }] in seconds for audio, and [{ start_ms, end_ms, speaker }] for a live session (the session key, speech container).
@@ -44,11 +44,12 @@ import { effortBody, quirkOf, jobTimeoutMs } from "./model-jobs.js";
 import { privacyOf } from "../privacy.js";
 import { boundedText } from "../bounded-body.js";
 import { cappedResponseBytes } from "../bounded-response.js";
+import { customRouting } from "./custom-models.js";
 import { byokChat } from "../byok.js";
 import { orFetch, orFetchPath, firstOk, replayFor, cacheKey, aiOpts, routedChat, byokFast } from "../model.js";
 import { cloudflareChat, cloudflareEmbeddings, cloudflareRerank, authorizeCloudflare, cfOptions, abortable, isCloudflareModel } from "../cloudflare-models.js";
 import { selfHostedEmbeddings } from "../selfhost-models.js";
-import { speechFn } from "../speech-impl.js";   // selfTranscribe, selfDiarize and selfSessionDiarize of selfhost-speech.js (a test puts fakes in their place)
+import { speechFn, speechWaitMs } from "../speech-impl.js";   // selfTranscribe, selfDiarize and selfSessionDiarize of selfhost-speech.js (a test puts fakes in their place)
 export { plan };
 
 const OR_HEADERS = { "x-openrouter-metadata": "enabled" };
@@ -62,6 +63,7 @@ async function hold(r, maxBytes) {
   let json = null; try { if (bytes) json = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch {}
   return { json, response: new Response(bytes || "", { status: r.status, statusText: r.statusText, headers: r.headers }) };
 }
+const shortest = (...ms) => Math.min(...ms.map(Number).filter((x) => x > 0), Infinity);   // the smallest limit that is set; Infinity when none is
 const withTimeout = (signal, ms) => ms ? (signal ? AbortSignal.any([AbortSignal.timeout(ms), signal]) : AbortSignal.timeout(ms)) : signal;
 
 // The Workers AI streaming WebSocket (Deepgram) through our AI Gateway. Logging, payload logging and caching are off: audio and text stay in the socket.
@@ -120,7 +122,7 @@ const ADAPTERS = {
     const signal = withTimeout(c.signal, q.tryMs);
     if (s.source === "SELF") {
       if (!q.self) throw new Error("no audio for the 1Helm container");
-      const r = await abortable(speechFn("selfTranscribe")(c.env, s.model, await q.self(), c.meta), signal);
+      const r = await abortable(speechFn("selfTranscribe")(c.env, s.model, await q.self(), c.meta, { waitMs: speechWaitMs({ last: c.last, limitMs: shortest(c.limitMs, q.tryMs) }), signal }), signal);
       signal?.throwIfAborted();
       return Response.json({ model: r.model, text: r.segs.map((x) => x.t).join(" "), segments: r.segs.map((x) => ({ start: x.s, end: x.e, text: x.t })), words: r.words, duration: r.usage.audio_s, usage: { cost: r.usage.cost, seconds: r.usage.audio_s, container_ms: r.usage.container_ms } });
     }
@@ -150,8 +152,8 @@ const ADAPTERS = {
   // Speaker labels (who spoke when) from the 1Helm container: audio in the call, or a live session whose chunks the container holds.
   async diarize(c, s) {
     if (s.source !== "SELF") throw new Error(`${s.model} cannot label speakers here.`);
-    const q = c.request || {}, signal = c.signal;
-    const r = await abortable(q.session ? speechFn("selfSessionDiarize")(c.env, q.session, s.model, c.meta) : speechFn("selfDiarize")(c.env, s.model, q, c.meta), signal);
+    const q = c.request || {}, signal = c.signal, wait = { waitMs: speechWaitMs({ last: c.last, limitMs: c.limitMs }), signal };
+    const r = await abortable(q.session ? speechFn("selfSessionDiarize")(c.env, q.session, s.model, c.meta, wait) : speechFn("selfDiarize")(c.env, s.model, q, c.meta, wait), signal);
     return Response.json({ model: s.model, turns: r.turns, usage: r.usage });
   },
   // The request sorter's own endpoint on OpenRouter (Perplexity's decider, Jev): { model, provider, state, questions } -> { answers, usage, model }.
@@ -208,9 +210,12 @@ export async function dispatch(env, jobId, request = {}, { meta = {}, signal = n
   if (route) {
     const asked = () => route.served || route.model || route.primary || route.taskProfile?.requestedModel || "";
     // Each routing category keeps its own last-served row: "chat:<category id>" (the category the turn was routed to, General when it names none).
-    const servedJob = servedJobOf(jobId, route);
+    // Custom Model Selection (custom-models.js): an account that turned it on is answered from its own categories (its env carries them), and a
+    // privacy change that made one of its models ineligible stops the call here, before anything is sent. Our "last served" rows are for our own categories only.
+    const custom = await customRouting(env, meta?.tenant);
+    const servedJob = custom ? null : servedJobOf(jobId, route);
     try {
-      const r = await routedChat(env, request, session, route, { ...meta, job: jobId }, signal, fetchImpl || globalThis.fetch);
+      const r = await routedChat(custom ? custom.env : env, request, session, route, { ...meta, job: jobId }, signal, fetchImpl || globalThis.fetch);
       noteServed(env, { job: servedJob, requested: asked(), served: cloudflareServed(route.served || route.taskProfile?.requestedModel) || r?.served || null, ok: true });
       return r;
     } catch (e) { if (!signal?.aborted) noteServed(env, { job: servedJob, requested: asked(), ok: false, error: e?.message }); throw e; }
@@ -227,7 +232,9 @@ export async function dispatch(env, jobId, request = {}, { meta = {}, signal = n
   const timeoutMs = jobTimeoutMs(settings, jobId);
   for (const step of steps) {
     try {
-      let r = await ADAPTERS[step.adapter](timeoutMs && step.adapter !== "transcribe_live" ? { ...ctx, signal: withTimeout(signal, timeoutMs) } : ctx, step);
+      // last: no model comes after this one (the 1Helm speech container then waits for a cold start, when the limit leaves room: speechWaitMs in selfhost-speech.js).
+      const attempt = { ...ctx, last: step === p.steps[p.steps.length - 1], limitMs: timeoutMs || 0 };
+      let r = await ADAPTERS[step.adapter](timeoutMs && step.adapter !== "transcribe_live" ? { ...attempt, signal: withTimeout(signal, timeoutMs) } : attempt, step);
       let served = r?.served || null;
       if (!served) ({ response: r, served } = await servedOf(r, step));
       if (r && typeof r === "object") { try { r.requested = step.model; r.effort = step.effort; } catch {} }   // for callers that record which step answered

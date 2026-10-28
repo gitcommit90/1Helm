@@ -31,6 +31,8 @@ export const ALLOWED_KEYS = new Set([
   "langfuse.observation.metadata.finish", "langfuse.observation.metadata.tools_off", "langfuse.observation.metadata.tool_calls",
   "langfuse.observation.metadata.tool", "langfuse.observation.metadata.ok", "langfuse.observation.metadata.result_bytes",
   "langfuse.observation.metadata.error_type", "langfuse.observation.metadata.error_code", "langfuse.observation.metadata.purpose",
+  // Custom Model Selection marker: models_from is "custom" or "ours", category is the routing category id (never a title, which is user text).
+  "langfuse.trace.metadata.models_from", "langfuse.trace.metadata.category", "langfuse.observation.metadata.models_from", "langfuse.observation.metadata.category",
 ]);
 
 const rand = (bytes) => { const b = new Uint8Array(bytes); crypto.getRandomValues(b); return [...b].map((x) => x.toString(16).padStart(2, "0")).join(""); };
@@ -43,6 +45,15 @@ export const safeName = (s, fallback = "unknown") => SAFE_NAME.test(String(s ?? 
 const SAFE_MODEL = /^[A-Za-z0-9_.:\/~@\-]{1,100}$/;
 const safeModel = (m) => { const s = String(m ?? "").replace(/ \[.*$/, ""); return SAFE_MODEL.test(s) ? s : "unknown"; };
 const safeLabel = (s) => String(s ?? "").replace(/[^\p{L}\p{N} _.\-]/gu, "").slice(0, 64);
+
+// Where a call's models came from: the account's own Custom Model Selection ("custom") or our categories ("ours"), and the routing category id.
+// The id is used only when it looks like one (general, or c_ plus letters and digits); a title or any other text becomes "unknown".
+const CATEGORY_ID = /^(general|[a-z][a-z0-9_]{0,31})$/;
+export function modelsMark(profile) {
+  if (!profile || typeof profile !== "object") return {};
+  const raw = profile.dispatch?.category ?? profile.category, category = raw == null ? null : CATEGORY_ID.test(String(raw)) ? String(raw) : "unknown";
+  return { models_from: profile.custom === true ? "custom" : "ours", ...(category ? { category } : {}) };
+}
 
 const num = (v) => { if (v == null || v === "") return null; const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : null; };
 // usage_details: input is the uncached prompt, so the input* keys add up to the prompt total (cache_read_input_tokens is the cached part).
@@ -103,8 +114,8 @@ export class TurnTrace {
     if (level === "ERROR" && !span.root) this.errors++;
     this.pending.push(span); return span;
   }
-  stepOpen(purpose = null, retry = false) {
-    const n = ++this.stepSeq, s = this.open("generation", retry ? "chat-retry" : "chat", { step: n, ...(purpose ? { purpose } : {}) }); this.last = s; return s;
+  stepOpen(purpose = null, retry = false, mark = {}) {
+    const n = ++this.stepSeq, s = this.open("generation", retry ? "chat-retry" : "chat", { step: n, ...(purpose ? { purpose } : {}), ...mark }); this.last = s; return s;
   }
   // A step is named after the gateway kind of its call ("chat", or "chat-retry" when the call was retried); the step number is the metadata `step`.
   stepClose(span, res, err = null) {
@@ -136,11 +147,11 @@ export class TurnTrace {
     return this.close(s, { ...(failed ? { level: "ERROR", message: "routing_error" } : {}), attrs: { ms: num(jev?.ms) ?? Date.now() - start, ...(failed ? { error_code: "routing_error" } : {}) } });
   }
   // The root observation, built when the turn ends. outcome: replied | error | stopped | paused.
-  finish({ outcome, steps, tools, charge, error = null, end = Date.now() }) {
+  finish({ outcome, steps, tools, charge, error = null, end = Date.now(), mark = {} }) {
     const total = end - this.start, nsteps = steps ?? this.stepSeq, ntools = tools ?? this.tools, ch = Math.max(0, Math.round(Number(charge) || 0));
     const root = { id: this.rootId, parent: null, type: "agent", name: this.name, start: this.start, root: true,
       attrs: { kind: this.kind, channel: this.channel, task: this.task, turn: this.turnNo, outcome, total_ms: total, steps: nsteps, tool_count: ntools, error_count: this.errors + (outcome === "error" ? 1 : 0),
-        charge_nano: ch, charge_usd: Number((ch / 1e9).toFixed(6)), ...(this.resumes ? { resumes: this.resumes } : {}) } };
+        charge_nano: ch, charge_usd: Number((ch / 1e9).toFixed(6)), ...(this.resumes ? { resumes: this.resumes } : {}), ...mark } };
     this.close(root, { end, ...(outcome === "error" ? { level: "ERROR", message: safeName(error, "turn_error").slice(0, 40) } : {}) });
     this.sentRoot = true; return root;
   }
@@ -209,7 +220,7 @@ export const traceMix = (Resident, cacheKey) => Object.assign(Resident.prototype
   },
   async otelModel(tc, purpose, fn) {
     const t = tc?.otel; let span;
-    try { if (!t) return await fn(); t.session = this.otelSession(tc); span = t.stepOpen(purpose, !!tc.otelRetry); tc.otelRetry = false; tc.otelStep = span; } catch (e) { if (!span) return fn(); throw e; }
+    try { if (!t) return await fn(); t.session = this.otelSession(tc); span = t.stepOpen(purpose, !!tc.otelRetry, modelsMark(tc.taskProfile)); tc.otelRetry = false; tc.otelStep = span; } catch (e) { if (!span) return fn(); throw e; }
     let r;
     try { r = await fn(); } catch (e) { try { t.stepClose(span, null, e); } catch {} throw e; }
     try { t.stepClose(span, r); this.otelCheckpoint(tc); } catch {}
@@ -245,7 +256,7 @@ export const traceMix = (Resident, cacheKey) => Object.assign(Resident.prototype
         : tc.pause || tc.inputRequest || tc.helperInputQuestion || tc.orchestration?.waitingInput || r?.input_requested ? "paused" : "replied";
       if (!t.hasWork() && outcome === "replied") return;   // a turn that made no model call and ran no tool (a fixture, a read-only account) leaves nothing to look at
       t.session = this.otelSession(tc);
-      t.finish({ outcome, steps: r?.steps, tools: r?.tool_calls, charge: r?.charge ?? tc.appendStats?.charge ?? 0, error: err ? modelErrorCode(err) : r?.error ? safeName(r.error, "turn_error") : null });
+      t.finish({ outcome, steps: r?.steps, tools: r?.tool_calls, charge: r?.charge ?? tc.appendStats?.charge ?? 0, error: err ? modelErrorCode(err) : r?.error ? safeName(r.error, "turn_error") : null, mark: modelsMark(tc.taskProfile) });
       flushTrace(this.env, t, wu);
     } catch {}
   },

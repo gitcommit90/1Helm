@@ -20,6 +20,7 @@ type Deps = {
   planName: () => string;                                      // the current plan's name (boot)
   boot: () => any;                                             // BOOT.account.storage (summary) for the first paint
   reload: () => void;                                          // after an upgrade: reload with ?plan=changed
+  switchToByok?: () => void;                                   // Change plan → Bring your own key is a switch now (byok-billing.ts asks, with the amounts)
 };
 let D: Deps | null = null;
 let DATA: Data | null = null, loaded = false, loading = false;
@@ -109,7 +110,7 @@ export function storPlans(): string {
         <span class="stpn"><b>${esc(p.name)}</b>${on ? `<em>Current</em>` : pend ? `<em class="pend">Next bill</em>` : ""}</span>
         <span class="stpd">${p.key === "byok" ? "AI on your own key, credits for the rest" : x === 1 ? "The base amount of usage" : `${x}× the usage of Personal`} · <b>${esc(p.storage_text)}</b> storage</span>
         <span class="stpp">$${p.price}<small>/month</small></span></button>`; }).join("")}
-    <p class="stfine">Bigger plans start right away (you're charged the difference for the rest of this month). Smaller plans start on your next bill. ${D?.api ? `<button type="button" class="stlink" data-stbilling>Manage billing</button>` : ""}</p></div>`;
+    <p class="stfine">Bigger plans start right away (you're charged the difference for the rest of this month). Smaller plans start on your next bill, except Bring your own key, which starts right away. ${D?.api ? `<button type="button" class="stlink" data-stbilling>Manage billing</button>` : ""}</p></div>`;
 }
 export const storPlansOpen = () => ST.open === "plans";
 export function storTogglePlans() { ST.open = ST.open === "plans" ? "" : "plans"; ST.err = ""; if (ST.open) load(); D?.repaint(); }
@@ -151,6 +152,8 @@ async function pickPlan(key: string) {
   const plans = d.plans || [], p = plans.find(x => x.key === key), cur = plans.find(x => x.key === d.plan); if (!p || !cur) return;
   const pending = d.next_plan?.plan;
   if (key === cur.key && !pending) return;
+  // Bring your own key from a full plan starts right away and turns the unused plan usage into credits (byok.ts asks, with the amounts).
+  if (key === "byok" && cur.key !== "byok" && D?.switchToByok) { D.switchToByok(); return; }
   const up = p.price > cur.price;
   // Bring your own key (byok.ts): what changes, and the zero-data-retention caveat, before they switch to or from it.
   const byok = key === "byok" ? " The AI then runs on your own key (add it in Settings → Use my own AI key), and the computer, browser and memory are paid from credits you add. 1Helm's zero-data-retention guarantee doesn't cover the AI part on your own key."

@@ -189,7 +189,7 @@ const segsOf = (list, text) => keepSegs(spreadSegs(Array.isArray(list) && list.l
 // Throws when every step failed: err.nano = what timed-out attempts may cost, err.timeout = the last one timed out.
 export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, estSec = 0, prompt = "", models = null, model = null, job = "stt", signal = null, headers = {}, fetchImpl = null } = {}) {
   const size = src.size ?? src.bytes?.byteLength ?? 0, open = src.open || (() => new Response(src.bytes).body);
-  const errs = []; let lost = 0, timeout = false;
+  const errs = []; let lost = 0, timeout = false, triedCf = false;
   let facts = {}; try { facts = await modelFacts(env); } catch {}
   const only = model || (models && models.length === 1 ? models[0] : null);   // run one entry of the job (a live dictation chunk)
   const rateOf = (m) => Number(facts[m]?.sec_nano) || STT_NANO_PER_SEC;
@@ -214,6 +214,7 @@ export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, est
     for (const step of steps) {
       if (one && step.model !== one) continue;
       const why = skip(step); if (why) { errs.push(`${step.model}: ${why}`); continue; }
+      if (step.source === "CF") triedCf = true;
       try { return { r: await dispatch(e, jobId, request, { meta, signal, model: step.model, ...(fetchImpl ? { fetch: fetchImpl } : {}) }), m: step.model }; }
       catch (err) {
         if (signal?.aborted) throw err;
@@ -228,14 +229,14 @@ export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, est
     const j = await cappedResponseJson(res, 8 << 20), rate = rateOf(m);
     if (isCloudflareModel(m)) {
       const segs = segsOf(j?.segments, j?.text), dur = Number(j?.transcription_info?.duration) || estSec;
-      return { segs, text: segs.map(x => x.t).join(" "), dur, model: m, nano: lost + (jobId === "stt_cloudflare" ? waiCost(j, src.bytes?.byteLength || 0) : Math.ceil(dur * rate)) };
+      return { segs, text: segs.map(x => x.t).join(" "), dur, model: m, nano: lost + (jobId === "stt_cloudflare" || !Number(facts[m]?.sec_nano) ? waiCost(j, src.bytes?.byteLength || 0) : Math.ceil(dur * rate)) };   // a Workers AI model with a saved price per audio second (any job) is charged by it; without one, Cloudflare's own rate
     }
     const dur = Number(j?.duration || j?.usage?.seconds) || 0, segs = segsOf(j?.segments, j?.text), words = Array.isArray(j?.words) && j.words.length ? { words: j.words } : {};
     return { segs, ...words, text: segs.map((x) => x.t).join(" "), dur, model: m, nano: lost + (Math.ceil(Number(j?.usage?.cost || 0) * 1e9) || Math.ceil((dur || estSec) * rate)) };
   };
   const first = await answer(job, only);
   if (first.r) return done(first.r, first.m, job);
-  if (job !== "stt" || only || models || !env.AI || !src.bytes || src.bytes.byteLength > WAI_MAX_BYTES) throw Object.assign(new Error(`couldn't transcribe it (${errs.join("; ")})`), { nano: lost, timeout });
+  if (job !== "stt" || only || models || triedCf || !env.AI || !src.bytes || src.bytes.byteLength > WAI_MAX_BYTES) throw Object.assign(new Error(`couldn't transcribe it (${errs.join("; ")})`), { nano: lost, timeout });
   // Every model of the job failed: the saved Workers AI job "stt_cloudflare" (a different provider, so dictation keeps working through an outage).
   console.log("stt: the speech models failed, using the Cloudflare speech job", errs.join("; ").slice(0, 300));
   const wai = await answer("stt_cloudflare", null);

@@ -132,6 +132,24 @@ export function nativeExpire(res) {
       handBack(res, d.task, d.turn, { text: `(Platform event: the SSH request to ${d.user}@${d.host} expired before the person decided. No connection was opened. Call ssh_connect again for a fresh request, or say in your done response that SSH did not happen.)`, from: { type: 'ssh', id: a.id, title: 'SSH request expired' } }, { helperOnly: true }); }
   }
 }
+// Finds the request that is already open for this target (user, host, port, route) in this task:
+// a pending connect card, a pending host key card, or a connect being opened right now.
+// Expired, denied, failed, cancelled and finished requests never match.
+function findOpenRequest(res, task, t) {
+  const now = Date.now();
+  const same = x => { const d = parse(x.ssh_data); return d.host === t.host && d.user === t.user && d.port === t.port && d.route === t.route; };
+  const rows = res.sql.exec("SELECT * FROM approvals WHERE perm IN ('ssh','ssh_hostkey') AND status IN ('pending','consumed') AND session=? ORDER BY id", task).toArray().filter(same);
+  const live = rows.find(x => x.status === 'pending' && x.perm === 'ssh_hostkey' && now <= parse(x.ssh_data).expires)
+    || rows.find(x => x.status === 'pending' && x.perm === 'ssh' && now <= parse(x.ssh_data).expires)
+    || rows.find(x => x.status === 'consumed' && now - Number(x.decided_at || x.at) < SSH_OPENING_TIMEOUT);
+  if (!live) return null;
+  return { row: live, result: worker => {
+    const id = live.id, wait = worker ? 'Your worker pauses until the person decides and resumes in the same session.' : 'End this turn; approval resumes this task.';
+    if (live.status === 'consumed') return { ok: false, state: 'connecting', approval_id: id, next: `This call is already waiting on approval ${id}, which is being opened now. No new approval card was added. ${wait}` };
+    if (live.perm === 'ssh_hostkey') return { ok: false, state: 'awaiting_host_key', approval_id: id, next: `This call is already waiting on approval ${id}, the card asking the person to trust this server's host key. No new approval card was added. ${wait}` };
+    return { ok: false, state: 'awaiting_approval', approval_id: id, next: `This call is already waiting on approval ${id}, a native card the person has not answered yet. No new approval card was added. ${wait}` };
+  } };
+}
 function addRequest(res, d, tc, perm = 'ssh', silent = false) {
   const now = Date.now();
   res.sql.exec('INSERT INTO approvals (at,host,method,path,bytes,keys,turn,session,perm,what,ssh_data) VALUES (?,?,?,?,?,?,?,?,?,?,?)', now, d.host, 'SSH', '', 0, '[]', d.turn, d.task, perm, `${d.user}@${d.host}:${d.port}`, JSON.stringify(d));
@@ -176,9 +194,9 @@ export async function nativeTool(res, name, a, tc) {
       nativeExpire(res);
       const host = String(a.host || '').trim().toLowerCase().replace(/\.$/, ''), user = String(a.username || '').trim(), port = a.port == null ? 22 : Number(a.port), route = a.route;
       if (!host || host.length > 253 || /[\s/@?#\\]/.test(host) || !/^[a-zA-Z0-9_.-]{1,64}$/.test(user) || !Number.isInteger(port) || port < 1 || port > 65535 || !['public','tailnet'].includes(route)) return { ok: false, error: 'Supply a hostname/IP, valid username, port 1–65535, and public or tailnet route. URLs and proxy commands are unsupported.' };
-      // Repeated calls in the same initiating run re-use one pending card only.
-      const pending = res.sql.exec("SELECT * FROM approvals WHERE perm IN ('ssh','ssh_hostkey') AND status='pending' AND turn=? AND session=?", tc.turn, tc.session).toArray().find(x => { const d = parse(x.ssh_data); return d.host === host && d.user === user && d.port === port && d.route === route; });
-      if (pending) return { ok: false, state: 'awaiting_approval', approval_id: pending.id, next: worker ? 'The native approval card is waiting in the person\'s task. Your worker pauses until they decide, and approval resumes this same worker.' : 'The native approval card is waiting. End this turn; approval resumes this task.' };
+      // A repeated call for the same target in the same task re-uses the open request instead of adding a card.
+      const open = findOpenRequest(res, tc.session, { host, user, port, route });
+      if (open) return open.result(worker);
       const pinned = await broker.prepareSsh({ ...own, host, port, user, route });
       if (pinned.ok === false || pinned.error) return pinned;
       const d = { ...pinned, ...own, host, port, user, route, task: tc.session, turn: tc.turn, ...(tc.helper?.id != null ? { helper: tc.helper.id } : {}), requestId: crypto.randomUUID(), expires: Date.now() + SSH_TTL, permissionGeneration: permission.generation, rememberAllowed: permission.mode === 'trusted' };

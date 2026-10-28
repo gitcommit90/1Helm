@@ -18,6 +18,7 @@ import { runTurnPi } from "./pi-engine.js";
 import { TaskTranscript, TASK_ARCHIVE_TOOL, archiveReply, contextBudget, contextSize, estimateTokens, compactionPlan, transcriptGroups, prefixDigest, transcriptDelete, hasTaskTranscript } from "./task-transcript.js";
 import { ensureTaskRuntime, authorizeTaskProfile, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./ee/index.js";
 import { effectiveTaskCatalog } from "./ee/index.js";
+import { byokRouteTurn, planForCall, byokChatChain } from "./ee/index.js";   // Custom Model Selection on an own AI key (licensed)
 import { trackerInit, listCards, cardDetail, stepDetail, SILENT_TOOLS } from "./tracker.js";
 import { contextV2, CONTEXT_TOOLS, CONTEXT_TOOLS_USE, RUNTIME_CONTRACT, toolCatalog, loadedTools, selectedTools, EAGER_TOOLS, contextMessages, contextReceipt, contextData } from "./context.js";
 import { channelLayers } from "./prompt/context-layers.js";
@@ -157,6 +158,7 @@ import { READ_SKILL_TOOL, readSkill } from "./skills/index.js";
 import { SAVE_SKILL_TOOL, saveSkill, listChannelSkills, channelSkillsLine } from "./skills/channel.js";   // this channel's own skills (skill-creator, B4)
 import { forgottenInit, sweepSecretsLocal } from "./forget.js";
 import { scrubSecrets, hasSecret } from "./secrets-scrub.js";   // nosecrets: passwords, keys, card numbers and codes never go into memory
+import { sectionsInit, sectionsState, sectionsAction, sectionExists } from "./sections.js";   // custom sections of the side panel
 import { TODO_TOOL, mergeTodos, todoResult, todoContextNote, publicItems } from "./todos.js";
 import { MARK_DONE_TOOL, personWords, checkQuote, findTask } from "./person-asked.js";
 import { TASK_TOOLS, taskTitle } from "./task-tools.js";
@@ -198,6 +200,7 @@ function publicTurnError(error) {
     const reason = scrubSecrets(String(error.audioReason || "Audio preparation did not finish.")).slice(0, 300);
     return error.code === "audio_preparation_pending" ? reason : `I couldn't process the recording. ${reason}`;
   }
+  if (error?.code === "custom_models_required" && typeof error.message === "string") return error.message;   // Custom Model Selection (custom-models.js): app-written, names the models to replace
   const messages = {
     model_catalog_unavailable: "The model catalog is unavailable, so I couldn't start your task. No task request was sent. Try again shortly.",
     model_capabilities_unavailable: "The selected model's capabilities could not be verified, so I couldn't start your task. No task request was sent. Try again shortly.",
@@ -559,6 +562,7 @@ export class Resident extends DurableObject {
     this.sql.exec("CREATE TABLE IF NOT EXISTS composio_session (task TEXT PRIMARY KEY, trs TEXT NOT NULL, sig TEXT, at INTEGER NOT NULL)");
     if (env.BACKUP_MAINTENANCE !== "1") {
       try { this.sql.exec("DELETE FROM composio_session WHERE at < ?", Date.now() - 30 * 86400e3); } catch {}
+      sectionsInit(this.sql);   // sections.js: additive table and sessions.section
       this.migrateSessions();
     }
     trackerInit(this.sql);
@@ -1207,7 +1211,7 @@ export class Resident extends DurableObject {
       if (!r.ok && !tc?.appendRuntime && r.reason !== "day_limit" && this._byokFb && await this.byokFallbackOn(tc)) { byok = this.env.BYOK; viaOR = false; reserve = 0; }
       else if (!r.ok) throw r.reason === "day_limit" ? Object.assign(new Error(DAY_LIMIT_ERR), { status: 429 }) : Object.assign(new Error("out_of_credits"), { status: 402 });
     }
-    let byokFast = false;
+    let byokFast = false, byokPick = null;
     // Classic lane, a call with the tools off (final report, step-limit report, context checkpoint, a steer answered after the loop):
     // the tools block is part of the cached prefix, so it stays exactly as in the previous call and tool_choice "none" turns the tools
     // off instead (r35-cache-fix; the append lane already does this). Not for the hand-off notes (their own prompt and JSON format),
@@ -1236,7 +1240,11 @@ export class Resident extends DurableObject {
       if (byok) {
         // Hand-off notes are a chore: the fast model. Everything else in the turn: the main model. No other provider is ever tried.
         const last = messages.at(-1); byokFast = noTools && last?.role === "user" && typeof last.content === "string" && last.content.startsWith(HANDOFF_PREFIX);
-        stream = (await byokChat(byok, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true, ...(Number.isFinite(requestMaxOut) ? { max_tokens: requestMaxOut } : {}) }, { fast: byokFast, signal, privacy: await privacyOf(this.env, this.get("tenant")) })).body;
+        const byokBodyIn = { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true, ...(Number.isFinite(requestMaxOut) ? { max_tokens: requestMaxOut } : {}) }, byokPrivacy = await privacyOf(this.env, this.get("tenant"));
+        // Custom Model Selection on an own key (byok-custom.js): the turn's category lists the models to try in order. Chores, and an account with it off, use the one main/fast model.
+        const plan = byokFast || !eeEnabled(this.env) ? null : await planForCall(this, tc);
+        if (plan) { const r = await byokChatChain(byok, byokBodyIn, plan, { signal, privacy: byokPrivacy }); stream = r.response.body; byokPick = { ...r.pick, title: plan.title }; if (r.pick.failed.length) fellBack = `${r.pick.failed[0].model}: ${r.pick.failed[0].error}`; }
+        else stream = (await byokChat(byok, byokBodyIn, { fast: byokFast, signal, privacy: byokPrivacy })).body;
         provider = "byok";
       }
       if (viaOR) {
@@ -1369,7 +1377,7 @@ export class Resident extends DurableObject {
     } else cost = Math.ceil((inTok - cached) * PRICE.in + cached * PRICE.cached + outTok * PRICE.out);
     const charge = Math.ceil(cost * MARKUP);
     if (priceUnknown) await this.notePriceUnknown(rid, priceUnknown);
-    if (provider === "byok") routing = { reason: "byok", floor: byokFast ? "fast" : "main", effort: null };
+    if (provider === "byok") routing = { reason: "byok", floor: byokFast ? "fast" : byokPick ? `${byokPick.title} ${byokPick.slot + 1}` : "main", effort: byokPick?.effort ?? null };
     if (charge > reserve) console.log("charge above reservation", { charge, reserve, served });
     if (!byok) { await this.ledger().settle(rid, charge); this.resClose(rid); } noteCharge(tc, charge);
     this.cardCharge(tc, charge);   // the card's cost so far, live (an interrupted card shows what the Ledger really took)
@@ -1390,7 +1398,7 @@ export class Resident extends DurableObject {
       return { ...c, id: c.id || `call_${i}_${Date.now()}`, function: { ...c.function, arguments: args }, ...(bad != null ? { bad_args: bad } : {}) };
     });
     const reasoning = provider === "openrouter" && rdet.length && (tc?.appendRuntime || route?.replayReasoning) ? { reasoning_details: rdet, _rmodel: tc?.taskProfile?.requestedModel || served || route?.served } : null;
-    return { content: content.trim(), calls, inTok, cached, cacheWrite, outTok, charge, finish, ...(refusal ? { refusal } : {}), model: served || (provider === "workers-ai" ? await jobModel(this.env, "workers_ai_chat") : provider === "byok" ? (byokFast ? byok.fast : byok.model) : null), routing, fellBack: provider === "workers-ai" ? fellBack : null, firstTokenAt, providerCost: provider === "openrouter" ? usage.cost : null, ...(reasoning ? { reasoning } : {}) };
+    return { content: content.trim(), calls, inTok, cached, cacheWrite, outTok, charge, finish, ...(refusal ? { refusal } : {}), model: served || (provider === "workers-ai" ? await jobModel(this.env, "workers_ai_chat") : provider === "byok" ? (byokFast ? (byok.background?.[0]?.model || byok.fast) : byokPick?.model || byok.model) : null), routing, fellBack: provider === "workers-ai" || (provider === "byok" && byokPick?.failed?.length) ? fellBack : null, firstTokenAt, providerCost: provider === "openrouter" ? usage.cost : null, ...(reasoning ? { reasoning } : {}) };
   }
 
   // Computer tool → shell command on this channel's computer. Returns the raw { code, out }.
@@ -3960,6 +3968,8 @@ export class Resident extends DurableObject {
     // ---- Routing policy (route2.js): one decider yes/no per message → Sol (task) or Luna (conversation); sets the turn's route. ----
     // Own AI key: no Jev call and no Sol/Luna; their main model runs the turn, their fast model the chores (callModelOnce).
     if (eeEnabled(this.env) && !nativeWorker && !tc.taskProfile?.backgroundGeneral && !tc.appendRuntime && useOpenRouter(this.env) && !this.env.BYOK && tc.abort !== "hard" && !RS) await routeTwoTurn(this, tc, { kind, text: asked + attNote + fileBody, hist, stats });
+    // Own AI key with Custom Model Selection on (byok-custom.js, licensed): the same step for their categories, with no Sol/Luna route: it picks which of their categories answers.
+    else if (eeEnabled(this.env) && this.env.BYOK && tc.abort !== "hard" && !RS) await byokRouteTurn(this, tc, { kind, text: asked + attNote + fileBody, hist, stats });
     const stepIn = []; let checkpoints = 0;
     const trace = [];
     const memJoin = await this.memUseJoin(memUse, tc).catch((e) => { console.log("memory arm", e?.message); return { block: "", info: null }; });   // never throws, ends by its own deadline
@@ -4524,7 +4534,7 @@ export class Resident extends DurableObject {
     // A task marked done never waits on the person, whatever a stale approval, check-in, question or flag still says (the app counts only open tasks as "Needs you").
     const needs = !row.done && !!(nPend || pending.length || rowWaiting || checkin || browserPause);
     const state = tc || resuming || nativeProgress || routedWork || reviewPending ? "working" : needs ? "waiting" : nJobs ? "watching" : "ready";
-    return { id: row.id, title: row.title, title_manual: !!row.title_manual, title_revision: Number(row.title_revision || 0), pinned: !!row.pinned, done: !!row.done, done_at: row.done_at, state, line: tc ? (tc.line || "thinking") : nativeProgress ? nativeProgress.line : resuming ? "picking up where it left off (1Helm was just updated)" : null, ...(nativeProgress?{native_progress:nativeProgress}:{}), ...(tc?.slotWait ? { queued: true } : {}),
+    return { id: row.id, title: row.title, title_manual: !!row.title_manual, title_revision: Number(row.title_revision || 0), pinned: !!row.pinned, section: row.section || null, done: !!row.done, done_at: row.done_at, state, line: tc ? (tc.line || "thinking") : nativeProgress ? nativeProgress.line : resuming ? "picking up where it left off (1Helm was just updated)" : null, ...(nativeProgress?{native_progress:nativeProgress}:{}), ...(tc?.slotWait ? { queued: true } : {}),
       pending_inputs: pending, waiting: tc || !needs ? null : nPend ? "approval" : pending.length ? "answer" : rowWaiting || (browserPause ? "browser" : null) || (checkin ? "checkin" : null), jobs: nJobs, unread: !!row.last_reply_at && row.last_reply_at > row.seen_at,
       created: row.created, updated: row.updated, preview: row.preview || "", default: row.id === this.getRaw("default_session"), helpers: this.helperCount ? this.helperCount(row.id) : 0, ...this.pomoField(row.id), ...this.lnField(row.id), ...((texts || new Set(this.textsSessions())).has(row.id) ? { texts: true } : {}) };
   }
@@ -4541,6 +4551,9 @@ export class Resident extends DurableObject {
     const texts = new Set(this.textsSessions());
     return this.sql.exec("SELECT * FROM sessions ORDER BY updated DESC LIMIT 300").toArray().map((x) => this.sessionView(x, jobs, pend, texts));
   }
+  // Custom sections (sections.js). Methods are only ever added.
+  async sectionsGet() { return sectionsState(this); }
+  async sectionsDo(b) { return sectionsAction(this, b); }
   async createSession(title, text = "", preview = "") {
     const explicit = String(title || "").trim();
     const id = explicit ? this.newSession(explicit) : newAutoChat(this, text);
@@ -4576,6 +4589,11 @@ export class Resident extends DurableObject {
     const now = Date.now();
     if (hasTitle) { this.sql.exec("UPDATE sessions SET title=?, title_manual=1, title_revision=title_revision+1 WHERE id=?", title, id); this.lnTitleChanged?.(id, title); this.tsTouch(id); }   // live-notes.js: the notes file and transcript files follow the title
     if (typeof b.pinned === "boolean") this.sql.exec("UPDATE sessions SET pinned=? WHERE id=?", b.pinned ? 1 : 0, id);
+    // Moving a task between custom sections: a section id, or null for Uncategorized. Only the person does this, and it never changes the task's activity time.
+    if (Object.prototype.hasOwnProperty.call(b, "section")) {
+      if (b.section !== null && !(typeof b.section === "string" && sectionExists(this, b.section))) return { error: "No such section.", status: 400 };
+      this.sql.exec("UPDATE sessions SET section=? WHERE id=?", b.section, id);
+    }
     // Texting conversations are ongoing threads: they can't be marked done (reopening an old one is fine).
     if(b.done===true) {
       for(const h of this.sql.exec("SELECT id FROM helpers WHERE session=? AND status='waiting_input'",String(id)).toArray())await this.helperStop(id,h.id);

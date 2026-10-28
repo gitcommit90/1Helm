@@ -10,7 +10,7 @@ for (const value of [undefined, "", "true", "1", "1HC"]) {
   assert.equal(enabled(env), false, `ONEHELM_EE=${value}`);
   assert.deepEqual(features(env), []);
   assert.deepEqual(registry(env), { routes: { global: [], workspace: [] }, tools: [], crons: [], durableObjects: {}, skills: [], features: [] });
-  for (const [path, scope] of [["/c/card-token", "global"], ["/composio/webhook", "global"], ["/stripe/webhook", "global"], ["/api/apps", "workspace"], ["/api/portal", "workspace"], ["/api/res/main/sessions/123/livenotes", "workspace"], ["/api/res/main/event-log", "workspace"], ["/api/res/main/event-workflow", "workspace"]])
+  for (const [path, scope] of [["/c/card-token", "global"], ["/composio/webhook", "global"], ["/stripe/webhook", "global"], ["/api/apps", "workspace"], ["/api/library/bee/conversations", "workspace"], ["/api/library/bee/conversations/12/export", "workspace"], ["/api/account/custom-models", "workspace"], ["/api/account/custom-models/catalog", "workspace"], ["/api/portal", "workspace"], ["/api/res/main/sessions/123/livenotes", "workspace"], ["/api/res/main/event-log", "workspace"], ["/api/res/main/event-workflow", "workspace"]])
     assert.equal(routeEnabled(env, path, scope), false, `${scope} ${path}`);
   for (const tool of ["app_run", "gmail_search", "text_person", "browser_task", "start_browser_task", "list_browser_tasks", "stop_browser_task", "buy_with_link"])
     assert.equal(toolEnabled(env, tool), false, tool);
@@ -25,6 +25,7 @@ assert.deepEqual(Object.keys(registry(on).durableObjects).sort(), ["BeeSync", "L
 assert.deepEqual(registry(on).skills, ["gmail", "google-calendar", "google-drive"]);
 assert.ok(registry(on).crons.includes("bee"));
 assert.equal(routeEnabled(on, "/api/apps", "workspace"), true);
+for (const path of ["/api/library/bee/conversations", "/api/account/custom-models", "/api/account/custom-models/catalog"]) assert.equal(routeEnabled(on, path, "workspace"), true, path);
 assert.equal(toolEnabled(on, "app_run"), true);
 for (const tool of ["start_browser_task", "list_browser_tasks", "stop_browser_task"]) assert.equal(toolEnabled(on, tool), true, tool);
 

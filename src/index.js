@@ -50,6 +50,7 @@ export { Sentinel } from "./sentinel.js";
 import { sealSecret, newStandin } from "./sentinel.js";
 import { linkStartConnect, linkStatus, linkDisconnect, linkListPurchases, linkGetPurchase, linkApi } from "./ee/index.js";
 import { beeRoute, beeOps, beeCron, beePendingFacts, beePendingSpeakers, beeNoteEdited, beeNoteDeleted, beeNoteRestored } from "./ee/index.js";   // Settings → Ambient → Bee: pairing, sealed token, /v1/me
+import { beeLibraryRoute, statusOfRow, ownKindForStatus } from "./ee/index.js";   // Bee conversations in the Library, and the Custom Model Selection status (licensed)
 export { BeeSync } from "./ee/index.js";
 export { LiveNotes } from "./ee/index.js";
 export { FilePrep } from "./sidecar.js";   // file sidecars: one object per file version prepares its text in the background
@@ -91,7 +92,7 @@ import { betterDesignView, betterDesignChoice } from "./better-design.js";   // 
 
 const NANO = 1e9;                         // balances in nano-dollars (integers)
 import { PLANS } from "./plans-def.js";
-import { byokApi, BYOK_PLAN, ledgerByok } from "./byok.js";
+import { byokApi, BYOK_PLAN, ledgerByok, switchNow } from "./byok.js";
 import { orStart, orFinish, orCookie, orCookieOf } from "./byok-openrouter.js";   // Sign in with OpenRouter (the BYOK panel's optional button)   // own AI key: the byok plan's settings + routing (+ a backup key on a full plan)
 import { People, aliasesFor } from "./people.js";
 import { seenAdd, seenSet, backfillSeen, seenBackfillAdmin, hsWalls } from "./walls.js";   // HS_WALLS: Contacts visibility per channel, General's front door
@@ -185,7 +186,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "317";
+const APP_V = "331";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -1014,9 +1015,23 @@ export default {
             const lines = o.lines?.data || [], priceOf = (l) => l?.pricing?.price_details?.price || l?.price?.id;
             const isPro = (l) => !!(l.proration || l.parent?.subscription_item_details?.proration), planLines = lines.filter((l) => planOfPrice(env, priceOf(l)));
             const line = planLines.find((l) => !isPro(l)) || planLines.filter((l) => isPro(l) && l.amount > 0).sort((a, b) => b.amount - a.amount)[0];
-            const paidPlan = planOfPrice(env, priceOf(line)) || planKey((await env.DB.prepare("SELECT plan FROM tenants WHERE id=?").bind(tid).first())?.plan);
-            await env.DB.prepare("UPDATE tenants SET plan=? WHERE id=?").bind(paidPlan, tid).run();
-            if (o.billing_reason === "subscription_update") {
+            const curPlan = planKey((await env.DB.prepare("SELECT plan FROM tenants WHERE id=?").bind(tid).first())?.plan);
+            const paidPlan = planOfPrice(env, priceOf(line)) || curPlan;
+            // Switch now (byok.js): an invoice for the plan the account left, created before the switch but delivered after it, must not put that plan
+            // back or grant its usage as plan usage. The Ledger remembers when the switch happened; an invoice Stripe created before then is for the old
+            // plan, and one created after is a real change (an upgrade from byok). What the person paid is kept as credits (same key, so once).
+            let stale = false;
+            if (curPlan === BYOK_PLAN && paidPlan !== BYOK_PLAN && Number(o.created) > 0) {
+              const at = Number(await ledger(env, tid).byokSwitchAt().catch(() => 0)) || 0;
+              if (at && o.created * 1000 <= at) {
+                const paidNano = o.billing_reason === "subscription_update" ? planLines.reduce((a, l) => a + Number(l.amount || 0), 0) * 1e7 : o.amount_paid > 0 ? PLANS[paidPlan].usage * 1e9 : 0;
+                if (paidNano > 0) await ledger(env, tid).grant(`invoice:${o.id}`, paidNano, "topup");
+                console.log("stripe webhook: invoice for a plan the account already left", tid, o.id, paidPlan);
+                stale = true;
+              }
+            }
+            if (!stale) await env.DB.prepare("UPDATE tenants SET plan=? WHERE id=?").bind(paidPlan, tid).run();
+            if (stale) { /* handled above */ } else if (o.billing_reason === "subscription_update") {
               // Upgrade mid-month: every plan is usage + the same $10, so the prorated price difference IS the extra usage. Grant exactly what was paid (before tax); it expires with the period like the rest.
               const net = planLines.reduce((a, l) => a + Number(l.amount || 0), 0);   // before tax; storage lines left out
               if (net > 0) await ledger(env, tid).grant(`invoice:${o.id}`, net * 1e7, "included");
@@ -1099,7 +1114,8 @@ export default {
             const slug = c.slug || c.name, R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:${slug}`));
             await R.bind(t.id, slug, String(c.id), tzIn);
             const [d, sessions, wfs, files, later] = await Promise.all([light ? null : A.channel(c.id, 1), R.listSessions(), R.listWorkflows(), R.listFiles(), R.laterList().catch(() => [])]);
-            return { id: c.id, slug, name: c.name, purpose: c.purpose || c.topic || "", sessions, files, later,
+            const sections = await R.sectionsGet().catch(() => null);   // sections.js: custom sections of the task list
+            return { id: c.id, slug, name: c.name, purpose: c.purpose || c.topic || "", sessions, files, later, ...(sections ? { sections } : {}),
               // Everything on a schedule (the app's one "Scheduled" view): repeating jobs (active or paused) and one-time follow-ups still to come.
               // Plus recently ended ones (status complete / failed, with ended + why) for its Past section (jobs-view.js).
               jobs: jobsView(wfs),
@@ -1116,7 +1132,7 @@ export default {
             used_text: storage.used_text, limit_text: storage.limit_text, counted_at: storage.counted_at, notice: storage.notice };
           if (access.reason === "payment_failed" && !look) await pastdueSeen(env, t.id, tzIn);   // its reminder emails use their time zone
           const account = eeEnabled(env)
-            ? { plan: PLANS[planKey(t.plan)].name, plan_key: planKey(t.plan), price: PLANS[planKey(t.plan)].price, ...(t.plan === BYOK_PLAN ? { byok: true } : {}), ...(storage ? { storage } : {}), balance: usd(ls.balance_nano), usagePercent: month ? month.pct : Math.min(100, Math.round(used / granted * 100)), ...(month ? { month } : {}), ...(notice ? { notice } : {}), spend_pauses: gi?.spend_pauses === true, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t), better_design: betterDesignView(t, await betterDesignChoice(env, t.id)) }
+            ? { plan: PLANS[planKey(t.plan)].name, plan_key: planKey(t.plan), price: PLANS[planKey(t.plan)].price, ...(t.plan === BYOK_PLAN ? { byok: true } : {}), ...(storage ? { storage } : {}), balance: usd(ls.balance_nano), usagePercent: month ? month.pct : Math.min(100, Math.round(used / granted * 100)), ...(month ? { month } : {}), ...(notice ? { notice } : {}), spend_pauses: gi?.spend_pauses === true, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t), custom_models: statusOfRow(t, await ownKindForStatus(env, t)), better_design: betterDesignView(t, await betterDesignChoice(env, t.id)) }
             : { plan: "Self-hosted", plan_key: "byok", price: 0, byok: true, ...(publicStorage ? { storage: publicStorage } : {}), today: ls.today, spend_pauses: gi?.spend_pauses !== false, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t), better_design: betterDesignView(t, await betterDesignChoice(env, t.id)) };
           return json({ tenant: t.slug, features: eeFeatures(env), access, flags: { notebook_pages: hsOn(env) }, contacts, contactDups, person: { name: t.first_name || "", email: user.email }, helper: { name: helperName(t), avatar: Number(t.helper_avatar || 8) }, account, ...(light ? {} : { interview: interviewBoot(iv) }), ...(look ? { look: true } : {}), channels: out, pomodoro_global: await A.pomoGlobalView().catch(() => null) });   // look: a dev "view as" (the app never asks it for location or the mic)
         }
@@ -1590,9 +1606,23 @@ export default {
         }
         // Ranked task search (task-search.js): /api/res/<ch>/search?q=... (GET, owner only) → { results: [{ id, score, snippet }] }, best match first, at most 30.
         { const ts = await searchRoute({ req, env, t, user, sub, url, channels: () => archive(env, t.id).channels() }); if (ts) return ts; }
+        // General's Library, Bee conversations (bee-library.js): /api/library/bee/conversations (GET page) · /<id> (GET transcript) · /<id>/export?format=txt|md (GET download) · /<id>/delete (POST). Owner only; read from the saved copies, no Bee call.
+        { const bl = await beeLibraryRoute({ req, env, t, user, sub, url }); if (bl) return bl; }
         // Tasks: /api/res/<ch>/sessions (GET list, POST create) · /sessions/<id> (GET detail, POST {title,pinned,done,seen}) · /sessions/<id>/attach (NDJSON)
         //   · /sessions/<id>/todos (POST {id, status: "done"|"todo"}: the person ticks or unticks an item on the task's to-do list)
         //   · /sessions/<id>/pomodoro (GET the focus timer + offer prefs; POST {action: start|pause|resume|skip|stop|offer_accept|offer_decline|offers_on, ...}; pomodoro.js)
+        // Custom sections of a channel's task list (sections.js): GET the state · POST {action: enable | disable | create | update | delete | reorder, ...}.
+        const scm = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/sections$/);
+        if (scm) {
+          const chans = await archive(env, t.id).channels(), slugOf = (c) => c.slug || c.name, ch = chans.find((c) => slugOf(c) === scm[1]);
+          if (!ch) return json({ error: "no such channel" }, 404);
+          const R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:${slugOf(ch)}`));
+          await R.bind(t.id, slugOf(ch), String(ch.id));
+          if (req.method === "GET") return json(await R.sectionsGet());
+          if (req.method !== "POST") return json({ error: "method" }, 405);
+          if (access.mode === "read_only") return payRequired(access);
+          const b = await req.json().catch(() => null); const d = await R.sectionsDo(b); return json(d, d.error ? (d.status || 400) : 200);
+        }
         const sp = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/sessions(?:\/([0-9a-f-]{36})(\/attach|\/todos|\/pomodoro)?)?$/);
         if (sp) {
           const chans = await archive(env, t.id).channels(), slugOf = (c) => c.slug || c.name, ch = chans.find((c) => slugOf(c) === sp[1]);
@@ -1865,6 +1895,7 @@ export default {
           if (op.startsWith("browser/novnc/")) { try { return await C.novnc(op.slice(14)); } catch (e) { return new Response(`computer not ready: ${e.message}`, { status: 503, headers: { "cache-control": "no-store" } }); } }
           if (op === "browser/state") return json({ ...(await C.leaseState()), ...(await C.browser("status")) });
           if (op === "browser/sleep-state") return json(await C.sleepState());
+          if (op === "browser/activity") return json(await C.activity());
           if (op === "browser/presence" && req.method === "POST") return json(await C.presence(Math.min(Number(body.hold_ms) || 0, 30 * 60e3)));
           if (op === "browser/control" && req.method === "POST") return json(await C.takeControl(user.id));
           if (op === "browser/release" && req.method === "POST") return json(await C.releaseControl());
@@ -1925,6 +1956,8 @@ export default {
           if (!t.stripe_customer || !t.stripe_subscription) return json({ error: "No active plan to change yet." }, 409);
           // In the app (src/plan-change.js): {plan}. Without one, Stripe's portal as before (it can't change a plan that also has extra storage).
           const pb = await boundedJson(req);
+          // The Bring your own key plan from a full plan is a switch now (byok.js switchNow): needs a working key, takes effect at once. Billing is licensed, so a public install never reaches it.
+          if (eeEnabled(env) && pb.plan === BYOK_PLAN && t.plan !== BYOK_PLAN) { const r = await switchNow(env, t, { stripe, PLANS, planPrices, planOfPrice }); return json(r, r.error ? r.status || 400 : 200); }
           if (pb.plan) { const r = await changePlan(env, t, String(pb.plan), { stripe, PLANS, planPrices, planOfPrice }); return json(r, r.error ? r.status || 400 : 200); }
           const ps = await stripe(env, "billing_portal/sessions", { customer: t.stripe_customer, return_url: appUrl(origin, t, `${USAGE}&plan=changed`),
             flow_data: { type: "subscription_update", subscription_update: { subscription: t.stripe_subscription }, after_completion: { type: "redirect", redirect: { return_url: appUrl(origin, t, `${USAGE}&plan=changed`) } } } });
