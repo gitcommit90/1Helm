@@ -458,7 +458,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 /* pins */
 .pin{flex:none;width:26px;height:26px;margin:0 -4px 0 0;border-radius:8px;display:grid;place-items:center;color:var(--faint);opacity:0;transition:opacity .12s,background .12s,color .12s;cursor:pointer}
 .pin:hover{background:var(--line);color:var(--ink)}
-.pin.on svg{fill:currentColor}
+.pin.on{opacity:1;color:var(--ink2)}.pin.on svg{fill:currentColor}.pin.on:hover{color:var(--ink)}
 .sess:hover .pin,.task:hover .pin,.recent:hover .pin,.pin:focus-visible{opacity:1}
 .sess:hover .when{display:none}
 .task .pin{margin-top:1px}

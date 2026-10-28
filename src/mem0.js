@@ -36,7 +36,6 @@ async function embedBatchOnce(x, miss) {
 }
 async function embedAll(texts) {
   const x = als.getStore(), out = [];
-  if (x.capture) return texts.map(() => new Array(DIMS).fill(0));   // a capture (buildExtraction) makes no model call
   for (let i = 0; i < texts.length; i += EMBED_BATCH) {
     const part = texts.slice(i, i + EMBED_BATCH), miss = part.filter((t) => !x.pre?.has(t));
     if (miss.length) {
@@ -61,9 +60,7 @@ async function rerank(query, facts, topK) {
 }
 // The extraction call. Mem0 keeps only the fields its schema names, so the category of each fact is read from the answer here and put on the stored fact by MemStore.
 async function extract(messages, format) {
-  const x = als.getStore();
-  if (x.capture) { x.capture.push({ messages, response_format: format }); return '{"memory":[]}'; }   // a capture records the request and extracts nothing
-  const r = await dispatch(plain(x.env), "mem_extract", { messages, response_format: format }, { meta: { ...x.meta, kind: "memory-extract" } }), j = await r.json().catch(() => null), text = j?.choices?.[0]?.message?.content ?? "";
+  const x = als.getStore(), r = await dispatch(plain(x.env), "mem_extract", { messages, response_format: format }, { meta: { ...x.meta, kind: "memory-extract" } }), j = await r.json().catch(() => null), text = j?.choices?.[0]?.message?.content ?? "";
   // The input of an add is never empty, so an empty, cut-off or unparseable answer is a failed call (mem0ai issue 4932: a reasoning model can return nothing). Mem0 would read it as "no facts" and report success.
   const bad = !String(text).trim() ? "no content" : j?.choices?.[0]?.finish_reason === "length" ? "cut off at the token limit" : null;
   if (bad) throw new Error(`memory extraction returned ${bad}`);
@@ -72,16 +69,13 @@ async function extract(messages, format) {
   for (const m of facts) if (m?.text) { x.extracted.add(m.text); if (CATEGORIES.includes(m.category)) x.cats.set(m.text, m.category); }
   return text;
 }
-// The stores of a capture: nothing is found and nothing is written.
-const CAPTURE_STORE = { initialize: async () => {}, getUserId: async () => "1hc", setUserId: async () => {}, search: async () => [], keywordSearch: async () => [], get: async () => null, list: async () => [[], 0] };
-const CAPTURE_HISTORY = { addHistory: async () => {}, getHistory: async () => [], reset: async () => {}, close() {} };
 let engine;
 const load = () => engine ||= import("mem0ai/oss").then((m) => {
   m.EmbedderFactory.create = () => ({ embed: async (t) => { try { return (await embedAll([t]))[0]; } catch (e) { als.getStore().embedFailed?.push(String(e?.message || e)); throw e; } }, embedBatch: embedAll });   // Mem0 skips a fact whose embed() throws (and an entity too), so the failure is also recorded for withMemory
   m.RerankerFactory.create = () => ({ rerank });
   m.LLMFactory.create = () => ({ generateResponse: extract, generateChat: async (messages) => ({ role: "assistant", content: await extract(messages) }) });
-  m.VectorStoreFactory.create = (_provider, c) => { const x = als.getStore(); if (x.capture) return CAPTURE_STORE; const main = c.collectionName === x.ns, st = new MemStore(x.env, c.collectionName, x.cats, main ? [] : null); if (main) x.main = st; return st; };   // a capture finds and writes nothing; the fact store buffers its inserts (flushed in withMemory); an entity store writes at once
-  m.HistoryManagerFactory.create = () => als.getStore().capture ? CAPTURE_HISTORY : new MemHistory(als.getStore().env, als.getStore().ns);
+  m.VectorStoreFactory.create = (_provider, c) => { const x = als.getStore(), main = c.collectionName === x.ns, st = new MemStore(x.env, c.collectionName, x.cats, main ? [] : null); if (main) x.main = st; return st; };   // the fact store buffers its inserts (flushed in withMemory); an entity store writes at once
+  m.HistoryManagerFactory.create = () => new MemHistory(als.getStore().env, als.getStore().ns);
   return m.Memory;
 });
 // Mem0's add() drops a fact without an error when its embedding failed (mem0ai issue 5509). Every fact the model extracted must be buffered for writing, or already stored (Mem0 skips a duplicate),
@@ -109,23 +103,8 @@ async function withMemory(env, bank, instructions, fn) {
 // ---- writing ----
 const RAW_CHARS = { "raw-transcript": 800, reference: 3000 };   // chunk sizes of text kept as it is (no model call)
 export const MISSION = `LANGUAGE RULE: write every memory in the language of the source text. Never translate and never switch language. Lines marked (user) are the user's own words and lines marked (assistant) are the assistant's. Attribute every memory to the person who said or did it, and never record something the assistant suggested as a fact about the user. Keep stated message origins with the memory they belong to. When a place is mentioned, write the place name into the memory. Do not record the assistant restating facts it recalled as new facts. An item written by a third party holds what that third party said: record it as what they said, never as a fact about the user. Lines marked [Written by 1Helm ...] were added from the item's metadata: write the place and the people into the memories they belong to. Skip greetings, filler, status notices from 1Helm and tool output. Add a "category" field to every memory with exactly one of: ${CATEGORIES.join(", ")} (identity: who the user is; preference: likes and how they want help; rule: something the assistant must always or never do; decision: a choice made and why; project: work, plans, tasks and commitments; person: someone in their life; place: a place that matters; routine: a recurring habit or schedule).`;
-// The custom instructions of one extraction call: our mission, the item's date as the Observation Date, and the item's context line.
-export const extractInstructions = (day, context = "", mission = MISSION) => `${mission}\n\nThese messages were written on ${day}. Use ${day} as the Observation Date.${context ? `\n\nContext of this item: ${context}` : ""}`;
-// The extraction request that retainV2 sends for one piece of text (at most EXTRACT_CHARS characters), built by Mem0's own add() with nothing found, nothing written and no model call:
-// { messages: [system (Mem0's extraction prompt), user (its sections with the text and our instructions)], response_format }. mission replaces MISSION. system replaces Mem0's prompt.
-// The evaluation route (sandbox-eval.js) sends this request. The existing memories and earlier messages that a real call may find in the channel are left empty.
-export async function buildExtraction(text, { context = "", day, mission, system } = {}) {
-  const Memory = await load(), captured = [], d = day || new Date().toISOString().slice(0, 10);
-  const ctx = { env: {}, ns: "capture", cats: new Map(), fails: [], meta: {}, capture: captured };
-  await als.run(ctx, async () => {
-    const m = new Memory({ embedder: { provider: "1hc", config: { embeddingDims: DIMS } }, llm: { provider: "1hc", config: {} }, vectorStore: { provider: "1hc", config: { collectionName: "capture", dimension: DIMS } },
-      historyStore: { provider: "1hc", config: {} }, customInstructions: extractInstructions(d, context ? scrubSecrets(String(context)) : "", mission ?? MISSION) });
-    await m.add([{ role: "user", content: String(text) }], { userId: "capture" });
-  });
-  if (captured.length !== 1) throw new Error("the extraction request could not be built");
-  const r = captured[0]; if (system !== undefined) r.messages[0] = { ...r.messages[0], content: system };
-  return r;
-}
+// The custom instructions of one extraction call: our mission, the item date as the Observation Date, and the item context line.
+const extractInstructions = (day, context = "", mission = MISSION) => `${mission}\n\nThese messages were written on ${day}. Use ${day} as the Observation Date.${context ? `\n\nContext of this item: ${context}` : ""}`;
 // Splits text at line breaks into pieces of at most `max` characters (a longer line is cut).
 export function pieces(text, max) {
   const out = []; let cur = "";
@@ -145,7 +124,7 @@ export function chunkTimes(parts, fallback) {
   });
 }
 // A conversation (a JSON array of { time, speaker, origin, place, reply_to, text }) as lines, other text as it is.
-export const renderConversation = (c) => Array.isArray(c) ? c.map((e) => `[${e.time || ""}] ${e.speaker || ""}${e.origin ? ` (${e.origin})` : ""}${e.place ? ` at ${e.place}` : ""}: ${e.text}${e.reply_to ? ` (quoting ${e.reply_to.speaker}: ${e.reply_to.text})` : ""}`).join("\n") : String(c);
+const renderConversation = (c) => Array.isArray(c) ? c.map((e) => `[${e.time || ""}] ${e.speaker || ""}${e.origin ? ` (${e.origin})` : ""}${e.place ? ` at ${e.place}` : ""}: ${e.text}${e.reply_to ? ` (quoting ${e.reply_to.speaker}: ${e.reply_to.text})` : ""}`).join("\n") : String(c);
 // items: [{ content (text, or an array of conversation entries), at (ms), context, document_id (required), metadata, strategy, tags, update_mode ("replace" | "append") }].
 // Replace deletes the document's facts first and appends keep them, so a document is written again whole or one turn at a time. Secrets are scrubbed from content, context and metadata.
 // A strategy of reference or raw-transcript keeps the text as chunks, and verbatim as one fact: no extraction call. → { items: n } | null when nothing was left to send.

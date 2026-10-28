@@ -17,7 +17,7 @@ import { contextFor, speakerLabels, fillTemplate } from "../../hindsight-templat
 import { convEntries, turnItem, DOC } from "../../hindsight-writers.js";
 import { chatEnvelope, placeEntries } from "../../adapters/chat.js";
 import { withEnvelope } from "../../memory-envelope.js";
-import { MISSION, renderConversation } from "../../mem0.js";
+import { MISSION } from "../../mem0.js";
 import { HINDSIGHT_SNAPSHOT, FACT_ID, RETAIN, CONSOLIDATION, REFLECT, REFRESH } from "./hindsight-snapshot.js";
 
 const DIR = "/app-static/sandbox/";
@@ -84,7 +84,7 @@ const eventDate = (ms) => `${new Date(ms).toLocaleDateString("en-US", { weekday:
 const metaLines = (m) => Object.entries(m).sort((a, b) => a[0].length - b[0].length || (a[0] < b[0] ? -1 : 1)).map(([k, v]) => `  ${k}: ${v}`).join("\n");
 
 // The retain request of one finished chat turn. The item is made by the same functions the chat writer uses (entries, context, envelope metadata) from an invented turn.
-function sampleItem() {
+function retainBody() {
   const at = Date.UTC(2026, 9, 19, 9, 29, 41), endAt = Date.UTC(2026, 9, 19, 9, 29, 52), session = "5d7c3a1e-8b24-4f60-a9d1-2c4e6f8a0b13", turn = "0e8f2b6a-31c5-4d97-8a40-7b9d1c3e5f27";
   let entries = convEntries({ userText: "", reply: "Added the Maple Street Bakery invoice of $412.00 to your budget sheet. It is due Friday, and I will remind you on Thursday evening.", notes: "", at, endAt, kind: "chat",
     labels: speakerLabels(NAMES), tz: TZ, userMessages: [{ at, text: "Please add the Maple Street Bakery invoice for $412 to my budget sheet. I always pay the bakery on Fridays, and my sister Priya is allergic to walnuts, so no walnut orders.", origin: { surface: "app" } }] });
@@ -93,16 +93,10 @@ function sampleItem() {
   const e = chatEnvelope({ at, endAt, tz: TZ, where: null, session: sid, turn, kind: "chat" });
   entries = placeEntries(entries, e); item = withEnvelope({ ...item, content: entries }, e, { first: FIRST });
   item.metadata.ingested_at = new Date(endAt + 1000).toISOString();   // the envelope stamps the time of the call, the sample stays the same on every build
-  return { item, day, at };
-}
-function retainBody() {
-  const { item, at } = sampleItem();
   const chunk = `Extract facts from the following chunk.\n\nChunk: 1/1\nEvent Date: ${eventDate(at)}\nContext: ${item.context}\nMetadata:\n${metaLines(item.metadata)}\n\nContent:\n${JSON.stringify(item.content)}`;
   return { messages: [system(RETAIN.system), { role: "user", content: RETAIN.userHead + chunk }], response_format: RETAIN.responseFormat };
 }
 
-// The input of the evaluation of Memory: extract (sandbox-eval.js): the text of the same invented turn as the real writer renders it (retainV2), its context line and its day.
-export const memExtractInput = () => { const { item, day } = sampleItem(); return { text: renderConversation(item.content), context: item.context, date: day }; };
 // The extraction call of Memory: extract. Mem0 adds its own long extraction prompt, so the sample is the mission and the lines of the same invented turn.
 const memExtractBody = () => ({ messages: [{ role: "system", content: `${MISSION}\nReply with only JSON: {"memory":[{"id":"0","text":"...","category":"..."}]}` },
   { role: "user", content: `[2026-10-19T09:29:41-07:00] ${FIRST} (user) (app): Please add the Maple Street Bakery invoice for $412 to my budget sheet. I always pay the bakery on Fridays, and my sister Priya is allergic to walnuts, so no walnut orders.\n[2026-10-19T09:29:52-07:00] ${HELPER} (assistant): Added the invoice to your budget sheet. It is due Friday.` }], response_format: { type: "json_object" } });

@@ -58,7 +58,7 @@ export function jobRows(settings, { categories = true } = {}) {
 }
 const chainOf = (cat) => cat?.chains?.unrestricted || Object.values(cat?.chains || {})[0] || [];
 const firstOfChain = (cat) => chainOf(cat)[0] || null;
-export const parseJob = (id, settings) => {
+const parseJob = (id, settings) => {
   id = String(id || "");
   if (id.startsWith("chat:")) { const category = routingCategories(settings).find((c) => c.id === id.slice(5)); if (!category) throw fail(404, "That chat category does not exist."); return { id, category, def: { kind: "chat" } }; }
   const def = jobDef(id); if (!def) throw fail(404, "That job does not exist."); return { id, category: null, def };
@@ -125,7 +125,7 @@ function shownBody(v, files) {
   for (const f of files.values()) { const b64 = toBase64(f.bytes), sh = `<${f.name}, ${f.bytes.length} bytes>`; t = t.split(`data:${f.type};base64,${b64}`).join(sh).split(b64).join(sh); }
   try { return JSON.parse(t); } catch { return t; }
 }
-export function makeRecorder(env, files) {
+function makeRecorder(env, files) {
   const sent = [];
   const hdrs = (h) => { const out = {}; const it = h instanceof Headers ? [...h.entries()] : Object.entries(h || {}); for (const [k, v] of it) if (!SECRET.test(k)) out[String(k).toLowerCase()] = String(v); return out; };
   const wrapped = async (input, init = {}) => {
@@ -146,7 +146,7 @@ export function sandboxDb() {
   const stmt = (q) => { const s = { bind() { return s; }, async first() { return /ai_privacy/.test(q) ? { ai_privacy: "unrestricted" } : null; }, async all() { return { results: [] }; }, async run() { return { meta: { changes: 0 } }; } }; return s; };
   return { prepare: stmt };
 }
-export function sandboxEnv(env, settings, ai) {
+function sandboxEnv(env, settings, ai) {
   return Object.assign(Object.create(env), { DB: sandboxDb(), MODEL_SETTINGS: settings, MODEL_SETTINGS_REVISION: 0, waitUntil() {}, ...(ai ? { AI: ai } : {}) });
 }
 // The saved settings with the one model of this send in place of the job's models. Returns { settings, route }.

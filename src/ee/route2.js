@@ -29,7 +29,7 @@ export const CONTINUE_RE = /^\s*(?:(?:ok(?:ay)?|yes|sure)[,.!]?\s+)?(?:please\s+
 // the model, its reasoning level and its fallbacks. They run on zero-data-retention endpoints at every privacy level.
 
 // A slow decider never holds the reply: its saved timeout (limits.js, 4 seconds to start with) passes, and the task's category or General is used.
-export const JEV_CONVO_BELOW = 0.35, JEV_TASK_FROM = 0.65;   // is_task bands (stats only)
+const JEV_CONVO_BELOW = 0.35, JEV_TASK_FROM = 0.65;   // is_task bands (stats only)
 export const JEV_CONTEXT_MSGS = 4;                      // last few user/assistant messages the decider sees
 export const JEV_MSG_CHARS = 800, JEV_TEXT_CHARS = 2000;
 export const JEV_MARKUP = 1.15;                         // billed like every model call: usage.cost × 1.15 (resident.js MARKUP)
@@ -119,14 +119,13 @@ export function categoryOf(a) {
 }
 
 // One decider call, three questions. Never throws: { p, category, unmet, cost, ms, model, error }.
-// questionDefs: replaces the saved routing questions (the dev decider evaluation, decider-eval.js, tries other wording through the same call).
-export async function jevAsk(env, state, { fetchImpl = globalThis.fetch, timeoutMs, meta = {}, questionDefs = null } = {}) {
+export async function jevAsk(env, state, { fetchImpl = globalThis.fetch, timeoutMs, meta = {} } = {}) {
   const t0 = Date.now(), ac = new AbortController(); let timer = null;
   try {
     env = await modelSettingsEnv(env);
     if (timeoutMs === undefined) timeoutMs = jobTimeoutMs(env.MODEL_SETTINGS, "decider");   // the saved timeout of the decider job; null means none
     if (timeoutMs) timer = setTimeout(() => ac.abort(Object.assign(new Error("timeout"), { name: "TimeoutError" })), timeoutMs);
-    const { questions, localAnswers } = splitChoiceQuestions(questionDefs || routingQuestions(env, state));
+    const { questions, localAnswers } = splitChoiceQuestions(routingQuestions(env, state));
     if (!Object.keys(questions).length) return { p: null, category: routedCategory(localAnswers.category, env), steer: localAnswers.steer?.choice || "none", answers: localAnswers,
       modelAnswers: null, localAnswers, unmet: null, cost: 0, ms: Date.now() - t0, model: null };
     if (!usesSystemone(env.MODEL_SETTINGS, "decider") || jobSetting(env.MODEL_SETTINGS, "decider").fallbacks?.length) {   // any other chat model answers the same questions as strict JSON (text-decision.js)
