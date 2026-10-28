@@ -399,6 +399,7 @@ function renderStage() {
   const railTop = document.querySelector("#rail .chs")?.scrollTop ?? 0;
   $("#rail").innerHTML = railHtml(ch); railWire(railTop);
 
+  const sl = document.querySelector<HTMLElement>("#side .sessions"), sideTop = sl && sl.dataset.ch === ch.slug ? sl.scrollTop : 0;   // the task list keeps its scroll spot across a redraw of the same channel
   const qEl = $("#q") as HTMLInputElement | null, q = qEl && qEl.dataset.ch === ch.slug ? qEl.value : "", focused = document.activeElement === qEl;
 
   $("#side").innerHTML = `
@@ -410,11 +411,12 @@ function renderStage() {
     <a class="navrow${isNb() ? " on" : ""}" href="#/${ch.slug}/notebook">${ic.nb}<span>Notebook</span></a>
     <a class="navrow${isCt() ? " on" : ""}" href="#/${ch.slug}/contacts">${ic.people}<span>Contacts</span></a>
     <label class="search">${ic.search}<input id="q" data-ch="${ch.slug}" placeholder="Search" value="${esc(q)}" autocomplete="off">${scLabel("search") ? `<kbd>${scLabel("search")}</kbd>` : ""}</label>
-    <div class="sessions">${sideList(ch, s, q)}</div>
+    <div class="sessions" data-ch="${ch.slug}">${sideList(ch, s, q)}</div>
     <div class="drawer">
       <a class="drow${isSch() ? " on" : ""}" href="#/${ch.slug}/scheduled" title="Repeats, follow-ups and messages set to send later">${ic.clock}<span>Scheduled</span></a>
     </div><button class="sidesrch" data-sidesrch aria-label="Search tasks">${ic.search}<span>Search</span></button>`;
   sidebarSync();
+  { const l = document.querySelector<HTMLElement>("#side .sessions"); if (l) { l.scrollTop = sideTop; const on = l.querySelector<HTMLElement>(".sess.on"); if (on && (on.offsetTop < l.scrollTop || on.offsetTop + on.offsetHeight > l.scrollTop + l.clientHeight)) on.scrollIntoView({ block: "nearest" }); } }   // only an off-screen selected row moves the list
   if (focused) { const i = $("#q") as HTMLInputElement; i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
 
   if (isSch()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + schPage(ch.slug); schAfter(schSec()); return; }

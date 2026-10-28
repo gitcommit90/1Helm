@@ -2,7 +2,7 @@
 //   Off (default): the standard groups (Pinned, Texts, task states, Done). The plus beside the first group header asks "Switch to Custom sections?".
 //   On: one list per section, Uncategorized first (always there, never renamed or deleted), then the person's sections in their order.
 //   Nothing puts a task in a section but the person: dragging a row onto a section (desktop), or "Move to section" in the row's more menu.
-//   Inside every section: open tasks first, then done tasks, each newest activity first (orderTasks).
+//   Inside every section: pinned tasks first (not while searching), then open tasks, then done tasks, each newest activity first (orderTasks). There is no manual task order, so dragging only moves a task between sections.
 //   Turning it off keeps the sections and where tasks were, so turning it on again brings them back.
 import { ask, tell } from "./dialog";
 import { openMenu } from "./delete";
@@ -13,7 +13,7 @@ export const COLORS = ["red", "orange", "yellow", "green", "teal", "blue", "purp
 const COLOR_NAME: Record<string, string> = { red: "Red", orange: "Orange", yellow: "Yellow", green: "Green", teal: "Teal", blue: "Blue", purple: "Purple", pink: "Pink" };
 export const UNCAT = "Uncategorized";
 
-type Task = { id: any; title: string; updated: number; done?: boolean; srv?: any; section?: string | null };
+type Task = { id: any; title: string; updated: number; done?: boolean; srv?: any; section?: string | null; pinned?: boolean };
 type Deps = {
   live: boolean;
   api: (path: string, body?: any) => Promise<any>;
@@ -75,12 +75,12 @@ export function secList(slug: string, list: Task[], o: ListOpts) {
   const cs = D!.cs(slug), all: { id: string; title: string; color: string }[] = [{ id: "", title: UNCAT, color: "" }, ...cs.sections];
   const by = new Map<string, Task[]>(); for (const x of list) { const k = keyOf(cs, x); (by.get(k) || by.set(k, []).get(k)!).push(x); }
   const body = all.map((sec, i) => {
-    const items = orderTasks(by.get(sec.id) || []);
+    const items = orderTasks(by.get(sec.id) || []), pins = o.searching ? [] : items.filter(x => x.pinned), un = pins.length ? [...pins, ...items.filter(x => !x.pinned)] : items;   // pinned first in their own section (stable), not while searching
     if (o.searching && !items.length) return "";
     const key = `sec-${sec.id || "uncat"}`, shut = !o.searching && o.shut(key), renaming = REN?.slug === slug && REN.id === sec.id && !!sec.id;
     const label = `${sec.color ? sw(sec.color) : ""}<span class="sect">${esc(sec.title)}</span>`;
     const head = renaming ? `<input class="secren" data-secren="${esc(sec.id)}" value="${esc(sec.title)}" maxlength="60" aria-label="Section name">` : o.head(key, label, items.length, shut, o.searching);
-    return `<div class="cgrp${sec.color ? ` sc-${sec.color}` : ""}" data-secdrop="${esc(sec.id)}"><div class="csech"${sec.id && !o.searching ? ` draggable="true" data-secdrag="${esc(sec.id)}"` : ""}>${head}<button type="button" class="secmenu" data-secmenu="${esc(sec.id)}" aria-haspopup="menu" aria-label="Options for ${esc(sec.title)}" title="Section options">${DOTS}</button></div>${shut ? "" : items.map(o.row).join("")}</div>`;
+    return `<div class="cgrp${sec.color ? ` sc-${sec.color}` : ""}" data-secdrop="${esc(sec.id)}"><div class="csech"${sec.id && !o.searching ? ` draggable="true" data-secdrag="${esc(sec.id)}"` : ""}>${head}<button type="button" class="secmenu" data-secmenu="${esc(sec.id)}" aria-haspopup="menu" aria-label="Options for ${esc(sec.title)}" title="Section options">${DOTS}</button></div>${shut ? "" : un.map(o.row).join("")}</div>`;
   }).join("");
   return `${addForm(slug)}${body}${!list.length && !o.searching ? "" : !list.length ? o.empty : ""}`;
 }
