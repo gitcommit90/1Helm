@@ -16,7 +16,7 @@ import { resumeInit, resumeMix, guardIn, JOURNALED, runIdOf } from "./resume.js"
 import { traceMix } from "./turn-trace.js";   // Langfuse turn traces: a root, a span per model step, a TOOL per tool run (no text)
 import { runTurnPi } from "./pi-engine.js";
 import { TaskTranscript, TASK_ARCHIVE_TOOL, archiveReply, contextBudget, contextSize, estimateTokens, compactionPlan, transcriptGroups, prefixDigest, transcriptDelete, hasTaskTranscript } from "./task-transcript.js";
-import { ensureTaskRuntime, authorizeTaskProfile, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./ee/index.js";
+import { usesAppendRuntime, ensureTaskRuntime, authorizeTaskProfile, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./ee/index.js";
 import { effectiveTaskCatalog } from "./ee/index.js";
 import { byokRouteTurn, planForCall, byokChatChain } from "./ee/index.js";   // Custom Model Selection on an own AI key (licensed)
 import { trackerInit, listCards, cardDetail, stepDetail, SILENT_TOOLS } from "./tracker.js";
@@ -1434,6 +1434,7 @@ export class Resident extends DurableObject {
     const raw = String(path || "").trim(), abs = raw.startsWith("/") ? raw : (tc?.kind === "helper" && tc.helper?.id ? helperDir(tc.helper.id) : "/workspace/") + raw.replace(/^\.\//, "");
     if (abs.split("/").includes("..")) return { code: 2, out: "Give the image path without .. in it." };
     if (!(await this.modelSeesImages(tc))) return { code: 0, out: `${raw} is an image, and the model working on this task can't look at images, so its picture was not shown. Work from what you know about the file (its name, size and how it was made), or ask the person to describe it.` };
+    try { await this.syncFiles(); } catch (e) { console.log("file sync", e.message); }
     let f; try { f = await this.computer().readFile(abs, MAX_UPLOAD); } catch (e) { return { code: 1, out: `couldn't read ${raw} (${String(e.message || e).slice(0, 120)}).` }; }
     if (!f?.ok) return { code: 1, out: f?.error || `couldn't read ${raw}.` };
     let bytes = f.bytes, mime = mimeOf(raw);
@@ -3848,9 +3849,10 @@ export class Resident extends DurableObject {
     // Unattended runs don't carry the chat conversation: the workflow prompt + previous run report are the context.
     const resumeExtra = RS ? (() => { try { return JSON.parse(RS.extra || "{}"); } catch { return {}; } })() : {};
     const existingAppend = kind === "chat" && tc.session && (!!this.get(`task-profile:${tc.session}`) || hasTaskTranscript(this.sql, tc.session));
+    const appendFlagOn = this.env.APPEND_TASK_RUNTIME === "on";
     // The rollout flag selects NEW task lanes. Once persisted, a task never
     // silently falls back to reconstructed legacy history during a flag change.
-    tc.appendRuntime = eeEnabled(this.env) && kind === "chat" && !!tc.session && (RS ? !!resumeExtra.appendRuntime : existingAppend || (this.env.APPEND_TASK_RUNTIME === "on" && !this.env.BYOK));
+    tc.appendRuntime = eeEnabled(this.env) && usesAppendRuntime({ kind, session: tc.session, resumed: !!RS, resumedAppend: !!resumeExtra.appendRuntime, existing: !!existingAppend, flagOn: appendFlagOn, byok: !!this.env.BYOK });
     if (tc.appendRuntime) { tc.transcript = new TaskTranscript(this.ctx.storage, tc.session); tc.appendStats = stats;
       const st0 = tc.transcript.state(); tc.appendLazy = st0 ? !!st0.lazy : cutLazy(this.env) && contextV2(this.env);   // payload-cut.js: fixed when the task is created
       if (tc.appendLazy && st0?.loaded) tc.loadedTools = new Set(st0.loaded); }
@@ -4461,6 +4463,7 @@ export class Resident extends DurableObject {
     // (or the reply that shared it) still shows it; this message lists it through turns.files / its card event.
     if (att.length) this.noteFileUse(session, att.map((f) => f.id), "attached");
     if (att.length) this.sql.exec(`UPDATE files SET pending=0, session=COALESCE(session,?), turn=COALESCE(turn,?) WHERE id IN (${att.map(() => "?").join(",")})`, session, turn, ...att.map((f) => f.id));
+    if (att.length) await this.filesReady(att.map((f) => f.id));   // the files are really on the computer before the note says so
     if (att.length && tc) await this.sidecarAudioReady(att, tc);
     if (tc?.abort === "hard") return { att, pics: [], note: "", body: "", sidecar: [] };
     // Pictures: the small JPEG view (or a small original); one with no viewable copy (e.g. HEIC whose view couldn't be made) is named instead.
@@ -4742,6 +4745,7 @@ export class Resident extends DurableObject {
     if (!s.startsWith("/workspace/") && !s.includes("/")) return { error: `there's no "${s.slice(0, 120)}" in this channel's Library. Give its Library name, or a path on your computer like /workspace/report.pdf.` };
     const path = s.replace(/^\/workspace\//, "").replace(/^\.\//, "");
     if (!path || path.startsWith("/") || path.split("/").includes("..")) return { error: "give a path inside /workspace." };
+    try { await this.syncFiles(); } catch (e) { console.log("file sync", e.message); }
     let r; try { r = await this.computer().readFile(path, APP_FILE_MAX); } catch (e) { return { error: `couldn't read /workspace/${path} (${String(e.message || e).slice(0, 120)}).` }; }
     if (!r?.ok) return { error: r?.error || `couldn't read /workspace/${path}.` };
     return { name: safeName(path.split("/").pop()), mime: mimeOf(path), bytes: r.bytes };
@@ -4826,7 +4830,7 @@ export class Resident extends DurableObject {
   // Bring the computer's files/ folder up to date (new uploads in, deleted ones out). Runs before the helper's first computer use in a turn.
   async syncFiles() {
     if (this.getRaw("rm_paths") && this.getRaw("rm_paths") !== "[]") await this.syncRemovals().catch((e) => console.log("file removal", e.message));   // files of deleted chats
-    const todo = this.sql.exec("SELECT * FROM files WHERE (deleted=0 AND pending=0 AND synced=0) OR (deleted=1 AND synced=-1)").toArray(); if (!todo.length) return;
+    const todo = this.sql.exec("SELECT * FROM files WHERE (deleted=0 AND pending=0 AND synced=0) OR (deleted=1 AND synced=-1)").toArray();
     const C = this.computer();
     for (const r of todo) {
       try {
@@ -4834,6 +4838,47 @@ export class Resident extends DurableObject {
         else { const x = await C.putFile(`files/${r.name}`, r.r2key); if (x.ok) this.sql.exec("UPDATE files SET synced=1 WHERE id=?", r.id); else console.log("file sync", r.name, x.error); }
       } catch (e) { console.log("file sync", r.name, e.message); }
     }
+    // synced=1 only says a copy was put on the computer once. The computer's disk comes back from saved layers each time it starts, and
+    // a start that lost the newest layer (a stop or crash before the save, a refused save) has no such file, so once per start of the
+    // computer every Library file marked synced is checked against what is really in /workspace/files.
+    try {
+      const boot = typeof C.bootId === "function" ? await C.bootId() : null;
+      if (!boot || boot !== this.getRaw("files_boot")) {
+        const v = await this.verifyComputerFiles(null);
+        if (v.ok) { const b2 = typeof C.bootId === "function" ? await C.bootId() : null; if (b2 && b2 !== "asleep") this.put("files_boot", b2); }
+      }
+    } catch (e) { console.log("file verify", e.message); }
+  }
+  // Check that Library files are really in the computer's /workspace/files (one directory listing), and put back from storage each one
+  // that is missing, whatever its synced flag says. ids=null checks every file marked synced. → { ok, restored: [names], missing: [names] }
+  // (missing = could not be put back). Never overwrites a file that is present: the computer's copy may hold an edit not saved back yet.
+  async verifyComputerFiles(ids = null) {
+    const rows = (ids ? ids.flatMap((id) => this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(id)).toArray()) : this.sql.exec("SELECT * FROM files WHERE deleted=0 AND pending=0 AND synced=1").toArray());
+    if (!rows.length) return { ok: true, restored: [], missing: [] };
+    const C = this.computer(), snap = await C.filesSnapshot();
+    if (!snap?.ok) return { ok: false, restored: [], missing: [], error: snap?.error || "could not list the computer's files" };
+    const have = parseSnap(snap.out), restored = [], missing = [];
+    for (const r of rows) {
+      if (have.has(r.name)) { if (Number(r.synced) !== 1) this.sql.exec("UPDATE files SET synced=1 WHERE id=?", r.id); continue; }
+      try {
+        const x = await C.putFile(`files/${r.name}`, r.r2key);
+        if (x?.ok) { this.sql.exec("UPDATE files SET synced=1 WHERE id=?", r.id); restored.push(r.name); }
+        else { this.sql.exec("UPDATE files SET synced=0 WHERE id=?", r.id); missing.push(r.name); console.log("file restore", r.name, x?.error); }
+      } catch (e) { this.sql.exec("UPDATE files SET synced=0 WHERE id=?", r.id); missing.push(r.name); console.log("file restore", r.name, e.message); }
+    }
+    return { ok: true, restored, missing };
+  }
+  // Before the model is told a file is on its computer (an attachment, or a file handed to a helper): when the computer is running, make
+  // sure the files are there now. A sleeping computer is not woken for this: the first computer tool of any turn or helper runs syncFiles
+  // first, which checks every file once per start, so no tool can run before the files are back.
+  async filesReady(ids) {
+    if (!this.env.CHANNEL_COMPUTER || !ids?.length) return null;
+    try {
+      const C = this.computer();
+      if (!(await C.sleepState())?.running) return null;
+      await this.syncFiles();
+      return await this.verifyComputerFiles(ids);
+    } catch (e) { console.log("files ready", String(e?.message || e).slice(0, 160)); return null; }
   }
   async shot(id) { return this.sql.exec("SELECT r2key FROM shots WHERE id=?", id).toArray()[0] || null; }
   // Tracker cards (tracker.js): the task's feed, one card, one step's receipts. A card of another task is "not found".

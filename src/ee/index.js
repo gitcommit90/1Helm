@@ -111,7 +111,7 @@ export { speakerJobReady, speakerRate, speakerReserve, diarize, mapSpeakerIds, s
 export { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, START_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput, browserPurchaseGuard, buyControlTargeted } from "./browser-tasks.js";
 
 export { effectiveTaskCatalog } from "./model-catalog.js";
-export { authorizeTaskProfile, TaskAffinityBlocked, ensureTaskRuntime, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./task-profile.js";
+export { usesAppendRuntime, authorizeTaskProfile, TaskAffinityBlocked, ensureTaskRuntime, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./task-profile.js";
 export { backgroundRole, backgroundPolicy, backgroundReserve } from "./background-policy.js";
 export { deliverNativeFallback, dropNativePolls, nativePollDelivered, nativePollInit, nativeVoteNext, receiveNativeVote, recoverNativeSends, recoverNativeVotes, sendNativePoll } from "./native-polls.js";
 export { DONE_TOOL, ORCHESTRATOR_TOOLS, REQUEST_INPUT_TOOL, WORKER_REQUEST_TOOLS, lineRange, orchestrationPolicy, routingToolsAllowed, stepLog, storedMessages } from "./orchestrator.js";

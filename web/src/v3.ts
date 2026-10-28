@@ -931,7 +931,7 @@ if (LIVE) {
     const lx = t.closest<HTMLElement>("[data-lupx]"); if (lx) { e.preventDefault(); const i = LUP.findIndex(u => u.k === +lx.dataset.lupx!); if (i >= 0) { const u = LUP[i]; u.gone = true; if (!u.f && !u.err) u.xhr?.abort(); LUP.splice(i, 1); refresh(); trayPaint(); } return; }
     if (t.closest("[data-utx]")) { e.preventDefault(); for (let i = LUP.length - 1; i >= 0; i--) if (LUP[i].f || LUP[i].err) LUP.splice(i, 1); trayPaint(); return; }
     const rm = t.closest<HTMLElement>("[data-uprm]"); if (rm) { e.preventDefault(); const [key, k] = rm.dataset.uprm!.split("|"); upDrop(key, +k); return; }
-    const dl = t.closest<HTMLElement>("[data-fdl]"); if (dl) { e.preventDefault(); e.stopPropagation(); location.href = dl.dataset.fdl!; return; }
+    if (t.closest("[data-fdl]")) return;   // a Download link is a plain <a href download>: the browser downloads it, so the app never navigates
     const del = t.closest<HTMLElement>("[data-fdel]"); if (del) {
       e.preventDefault(); e.stopPropagation(); const [slug, id] = del.dataset.fdel!.split("|"), a = (LIB[slug] || []).find(x => x.fid === id); if (!a) return;
       if (!(await ask({ title: `Delete “${a.name}”?`, body: `It's removed from the Library and from ${who(channels.find(c => c.slug === slug)!)}'s computer.`, confirm: "Delete", danger: true }))) return;

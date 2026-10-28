@@ -420,6 +420,7 @@ export class ChannelComputer extends DurableObject {
     // Skill scripts (src/skills/README.md): a fresh computer has none, so write this deploy's set before anything runs.
     this.put("skills_v", ""); this.put("skills_fail_at", "0"); this.put("templates_have", "{}"); this.put("templates_fail_at", "0"); await this.installSkills();
     this.put("ready", "1"); this.put("last_activity", Date.now());
+    this.put("boot_id", `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);   // one id per start: the Resident re-checks /workspace/files once per boot (verifyComputerFiles)
     await this.ctx.storage.setAlarm(Date.now() + 30e3);
     // Recent cold-wake times (last 8) feed the live pane's progress estimate.
     { let w = []; try { w = JSON.parse(this.get("wake_hist") || "[]"); } catch {} w.push(wakeMs); this.put("wake_hist", JSON.stringify(w.slice(-8))); }
@@ -615,6 +616,8 @@ export class ChannelComputer extends DurableObject {
     return { running, viewers: this.viewers || 0, busy: !!this.inflight, sleeps_in_ms: running && !this.inflight ? Math.max(0, Math.max(work, human) - now) : null,
       held_by: human > work ? "you" : "work", wake_est_ms: this.wakeEst(), last_stop: this.get("last_stop") || null, stopped_at: Number(this.get("stopped_at") || 0) || null };
   }
+  // The id of this computer's current start, or "asleep" when it is not running. Reads memory only: it never wakes the computer.
+  async bootId() { return this.ctx.container.running && this.get("ready") === "1" ? this.get("boot_id") || "unknown" : "asleep"; }
   // Files (Library / chat attachments): copy one R2 object into this computer, remove one, or read one out to R2.
   async putFile(path, key) {
     if (!/^files\/[^/]+$/.test(path)) return { ok: false, error: "bad path" };

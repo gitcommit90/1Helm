@@ -54,6 +54,13 @@ export async function bindBackgroundRuntime(R, tc, { resumed = false, stats = nu
   bindTaskProfile(R, tc, profile, stats);
   return true;
 }
+// Whether a chat turn runs on the append-only task runtime. An own-key turn never does: that runtime asks the managed routing lists for the task's
+// model (ensureTaskRuntime), and an own-key environment has none, so a task that already had saved append state (a task profile or transcript from
+// before the account answered on its own key) failed with "No saved routing models" before any model call. Own-key turns use the own-key runtime.
+export function usesAppendRuntime({ kind, session, resumed = false, resumedAppend = false, existing = false, flagOn = false, byok = false }) {
+  if (kind !== "chat" || !session || byok) return false;
+  return resumed ? !!resumedAppend : !!existing || !!flagOn;
+}
 export async function ensureTaskRuntime(R, tc, args = {}) {
   if (R.env?.ONEHELM_EE !== "1hc") throw new TaskAffinityBlocked("Managed task routing is unavailable on this deployment.", "ee-disabled");
   if (!tc?.session) throw new TaskAffinityBlocked("A task identity is required before starting the model.", "missing-session");
