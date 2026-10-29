@@ -6,7 +6,6 @@ import { dispatch } from "../src/ee/model-dispatch.js";
 import { orFetch, withoutTemperatureWhenStrict } from "../src/model.js";
 import { structuredFormat, S } from "../src/structured-output.js";
 import { noteServed, servedView, resetServedCache } from "../src/ee/model-served.js";
-import { cleanChatRequest } from "../src/ee/hindsight-llm.js";
 import { SEED, ID, withSettings } from "./helpers/seed-settings.mjs";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -43,8 +42,6 @@ try {
   // A request with no require_parameters keeps what the caller set.
   assert.equal(withoutTemperatureWhenStrict({ temperature: 0, provider: { zdr: true } }).temperature, 0);
   assert.equal(withoutTemperatureWhenStrict({ temperature: 0, provider: { require_parameters: true } }).temperature, undefined);
-  // The memory server's requests never carry one.
-  assert.ok(!("temperature" in cleanChatRequest({ messages: [], temperature: 0 }, SEED, "hs_retain")));
 
   // A saved model that answers 404 while the fallback serves the call is recorded with why.
   resetServedCache();

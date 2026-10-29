@@ -18,7 +18,7 @@ export const LEVELS = ["unrestricted", "no_training", "zdr"];
 export const LEVEL_NAME = { unrestricted: "Unrestricted", no_training: "No training", zdr: "ZDR" };
 export const EFFORT = { none: "None", default: "Default", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Maximum" };
 export const SORT = { "": "Default", price: "Price", throughput: "Throughput", latency: "Latency" };
-export const GROUP_TITLE = { chat: "Chat categories", routing: "Routing", background: "Background jobs", memory: "Memory (Hindsight)", speech: "Speech", search: "Search and media", other: "Other" };
+export const GROUP_TITLE = { chat: "Chat categories", routing: "Routing", background: "Background jobs", speech: "Speech", search: "Search and media", other: "Other" };
 export const EDITABLE_VIEWS = ["all", "attention"];
 const CHAT_PICKS = ["chat", "chore", "classic"];
 

@@ -3,7 +3,7 @@
 // through scrubSecrets() first, which replaces each secret's VALUE with SECRET_MARK and keeps the words around it ("my password is
 // [secret removed]"), so memory still knows a password was shared, not what it was:
 //   - the memory ledger (memory.js Memory.put + its recall receipts), so every row: turns, hand-off notes, facts, Contacts mirror;
-//   - Hindsight retain (hindsight.js retain: content, context, metadata), so every item: turns, facts, upkeep, unfinished work;
+//   - Hindsight retain (the memory retain: content, context, metadata), so every item: turns, facts, upkeep, unfinished work;
 //   - the background memory jobs' input (Resident.memjobTurns) and the hand-off notes when they're written;
 //   - the work log's summaries (worklog.js insertRow, partialText) and recall_history's results;
 //   - Notebook writes (Archive noteAdd/noteEdit scrub; remember and the Notebook API refuse, pointing to Passwords & keys).

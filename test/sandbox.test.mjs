@@ -91,18 +91,14 @@ test("files are bounded to 20 MB in total", async () => {
   assert.equal(small.real.a, "hi"); assert.deepEqual([...small.real.b[0]], [104, 105]); assert.deepEqual(small.shown, { a: "<f, 2 bytes>", b: ["<f, 2 bytes>"] });
 });
 
-test("a chat category runs the main chat's route with its own chain, and the memory server's body is cleaned the way /_hs cleans it", async () => {
+test("a chat category runs the main chat's route with its own chain", async () => {
   const env = envWith(), general = env.MODEL_SETTINGS.routing.categories[0], first = general.chains.unrestricted[0].model;
   const orig = samples.slice();
-  samples.unshift({ job: "chat:general", via: "model-dispatch.js#dispatch", build: async () => ({ request: { messages: [{ role: "user", content: "hi" }], stream: true }, files: [] }) },
-    { job: "hs_retain", via: "hindsight-llm.js#cleanChatRequest", build: async () => ({ request: { messages: [{ role: "user", content: "x" }], user: "dev-bank", model: "evil/model", max_tokens: 5 }, files: [] }) });
+  samples.unshift({ job: "chat:general", via: "model-dispatch.js#dispatch", build: async () => ({ request: { messages: [{ role: "user", content: "hi" }], stream: true }, files: [] }) });
   const n = net((c) => chatOk(c.body.model));
   try {
     let r = await sandboxSend(env, { job: "chat:general", request: { messages: [{ role: "user", content: "hi" }] } }, url);
     assert.equal(r.value.ok, true, JSON.stringify(r.value)); assert.equal(n.calls[0].body.model, first); assert.equal(n.calls[0].meta.kind, "chat"); assert.equal(n.calls[0].meta.sandbox, true); assert.equal(n.calls[0].meta.job, "chat");
-    r = await sandboxSend(env, { job: "hs_retain", request: { messages: [{ role: "user", content: "x" }], user: "dev-bank", model: "evil/model", max_tokens: 5 } }, url);
-    assert.equal(r.value.ok, true, JSON.stringify(r.value)); const b = n.calls[1].body;
-    assert.equal(b.model, env.MODEL_SETTINGS.jobs.hs_retain.model); assert.equal(b.user, undefined); assert.notEqual(b.max_tokens, 5);
     assert.deepEqual(dbCalls, []);
   } finally { n.done(); samples.splice(0, samples.length, ...orig); }
 });
@@ -138,7 +134,7 @@ test("jobs, samples and the admin check work through the route", async () => {
 });
 
 test("every function the Sandbox can send through is a function of a module the jobs use", () => {
-  assert.deepEqual(Object.keys(VIAS).sort(), ["hindsight-llm.js#cleanChatRequest", "media-job.js#dispatchMedia", "model-dispatch.js#dispatch", "text-decision.js#askDecider", "text-decision.js#askJob", "transcribe.js#stt"]);
+  assert.deepEqual(Object.keys(VIAS).sort(), ["media-job.js#dispatchMedia", "model-dispatch.js#dispatch", "text-decision.js#askDecider", "text-decision.js#askJob", "transcribe.js#stt"]);
   assert.ok(jobRows(SEED).length >= JOBS.length + 1);
 });
 
@@ -150,7 +146,6 @@ test("each kind of answer gets its own view", async () => {
   r = await read(j({ choices: [{ message: { content: "x" } }], usage: { completion_tokens: 4856, completion_tokens_details: { reasoning_tokens: 4693 } } }), "label", "text"); assert.equal(r.tokens_out, 4856); assert.equal(r.tokens_reasoning, 4693);
   r = await read(j({ choices: [{ message: { content: "x" } }], usage: { completion_tokens: 5 } }), "label", "text"); assert.equal(r.tokens_reasoning, null);
   r = await read(j({ text: "hello there", duration: 3 }), "stt", "speech"); assert.deepEqual(r.view, { type: "transcript", text: "hello there" });
-  r = await read(j({ answers: { a: { score: 0.2 }, b: { score: 0.9 } } }), "hs_rerank", "rerank"); assert.deepEqual(r.view.order, [{ id: "b", score: 0.9 }, { id: "a", score: 0.2 }]);
   r = await read({ ok: true, results: [{ title: "T", url: "https://x.example", snippet: "S" }] }, "web_search", "search"); assert.deepEqual(r.view.results, [{ title: "T", url: "https://x.example", snippet: "S" }]);
   r = await read({ ok: true, items: [{ title: "T", url: "https://x.example", description: "S" }] }, "web_search", "search"); assert.deepEqual(r.view.results, [{ title: "T", url: "https://x.example", snippet: "S" }], "the web search provider's items list");
   r = await read(j({ answer: "a red button" }), "look", "look"); assert.deepEqual(r.view, { type: "look", answer: "a red button", points: null });

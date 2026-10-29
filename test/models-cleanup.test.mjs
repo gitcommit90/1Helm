@@ -9,7 +9,6 @@ import { seedFresh, SEED_FACTS } from "../src/ee/model-seed.js";
 import { JOBS, JOB_IDS, GROUPS, jobDef, entriesOf, effortBody } from "../src/ee/model-jobs.js";
 import { modelDashboard } from "../src/ee/model-dashboard.js";
 import { outsideModels } from "../src/ee/outside-models.js";
-import { HINDSIGHT_LOCAL, HINDSIGHT_ENV_NAMES, compareHindsightEnv } from "../src/ee/hindsight-models.js";
 import { consoleState, consoleHtml } from "../src/ee/models-console.js";
 import { pageHtml } from "../app-assets/app-static/models-console-core.js";
 import { WAI_NANO_PER_MIN } from "../src/transcribe.js";
@@ -18,6 +17,8 @@ import { ID, SEED, EXTRA_FACTS, withExtraModels } from "./helpers/seed-settings.
 const clone = (x) => JSON.parse(JSON.stringify(x));
 let checks = 0; const test = async (name, fn) => { await fn(); console.log(`ok ${++checks} - ${name}`); };
 const RETIRED = ["memory_summary", "upkeep_write", "upkeep_verify", "people_write", "people_verify", "reflect_write", "reflect_verify", "memory_supersede", "embed_memory"];
+// The five memory jobs of the removed Hindsight server. Settings saved before 2026-10-29 still carry them.
+const HS_JOBS = ["hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank"];
 
 function database() {
   const sql = new DatabaseSync(":memory:");
@@ -26,10 +27,10 @@ function database() {
     all: async () => ({ results: s.all(...a) }), run: async () => ({ meta: { changes: Number(s.run(...a).changes) } }) }; return o; } };
   return { sql, DB };
 }
-await test("the nine retired jobs are not in the registry, and only the memory server's jobs mention memory", () => {
-  for (const id of RETIRED) assert.ok(!JOB_IDS.includes(id), id); assert.equal(JOBS.length, 29);
-  assert.deepEqual(JOBS.filter((j) => /memory/i.test(`${j.label} ${j.description}`)).map((j) => j.id), ["hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank", "mem_extract", "mem_embed", "mem_rerank"], "only the memory jobs describe memory work");
-  const seed = seedFresh({}); for (const id of RETIRED) assert.ok(!(id in seed.jobs), `${id} is not seeded`);
+await test("the retired jobs and the five Hindsight memory jobs are not in the registry, and only the Mem0 jobs mention memory", () => {
+  for (const id of [...RETIRED, ...HS_JOBS]) assert.ok(!JOB_IDS.includes(id), id); assert.equal(JOBS.length, 24);
+  assert.deepEqual(JOBS.filter((j) => /memory/i.test(`${j.label} ${j.description}`)).map((j) => j.id), ["mem_extract", "mem_embed", "mem_rerank"], "only the memory jobs describe memory work");
+  const seed = seedFresh({}); for (const id of [...RETIRED, ...HS_JOBS]) assert.ok(!(id in seed.jobs), `${id} is not seeded`);
 });
 
 await test("tolerant read: a saved version with retired or unknown jobs reads as the current jobs, and the strip version drops them once", async () => {
@@ -93,29 +94,34 @@ await test("a save that leaves a model unused drops it from the catalog, and the
   assert.deepEqual(v2.config.catalog[ID.STT_FALLBACK], { id: ID.STT_FALLBACK, ...SEED_FACTS[ID.STT_FALLBACK] }, "added again with its known facts");
 });
 
-await test("calls chosen elsewhere are listed read only on the page: OCR, web search, page reading, the memory server's local embeddings (the memory models are saved jobs)", async () => {
+await test("calls chosen elsewhere are listed read only on the page: OCR, web search, page reading (the memory models are saved jobs)", async () => {
   const out = outsideModels({ ENV_NAME: "dev" }), by = Object.fromEntries(out.map((g) => [g.id, g]));
-  assert.deepEqual(out.map((g) => g.id), ["ocr", "web_search", "browser_run", "hindsight"]);
+  assert.deepEqual(out.map((g) => g.id), ["ocr", "web_search", "browser_run"]);
   assert.equal(by.ocr.items[0].model, "no hosted model"); assert.match(by.browser_run.items[0].detail, /Browser Run/);
-  assert.deepEqual(by.hindsight.items.map((i) => i.model), HINDSIGHT_LOCAL.map((m) => m.model)); assert.deepEqual(by.hindsight.items.map((i) => i.model), ["BAAI/bge-small-en-v1.5"]); assert.match(by.hindsight.note, /Memory jobs/);
   const { DB } = database(), view = await modelSettingsView({ ONEHELM_EE: "1hc", DB, ENV_NAME: "dev" });
   const state = await consoleState(view, { ONEHELM_EE: "1hc", DB, ENV_NAME: "dev" }), ui = { view: "readonly", q: "", sel: null, level: "unrestricted", env: "dev", live: null };
   const html = pageHtml(state, ui, Date.now()).toString(), json = consoleHtml(state);
-  assert.match(html, /Read only/); assert.match(json, /moondream3\.1/); assert.match(html, /bge-small-en-v1\.5/); assert.match(html, /Cloudflare Browser Run/);
-  // the memory models are ordinary saved jobs in their own group, so they are on the page with pickers
-  assert.ok(GROUPS.some((g) => g.id === "memory")); for (const id of ["hs_retain", "hs_consolidation", "hs_reflect", "hs_refresh", "hs_rerank"]) assert.ok(state.jobs.some((j) => j.id === id && j.group === "memory"), id);
-  assert.match(json, /~openai\/gpt-luna-latest/); assert.match(json, /~perplexity\/pplx-decider-latest/);
+  assert.match(html, /Read only/); assert.match(json, /moondream3\.1/); assert.match(html, /Cloudflare Browser Run/);
+  assert.ok(!GROUPS.some((g) => g.id === "memory"), "the Hindsight memory group is gone"); assert.ok(GROUPS.some((g) => g.id === "mem"));
   assert.ok(!/<select|<input/.test(html.split('class="ro"')[1]), "the section has no picker and no save");
 });
 
-await test("the Hindsight environment check covers the embeddings and the two bank id switches, and reads no secret", () => {
-  const good = (over = {}) => ["HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL=BAAI/bge-small-en-v1.5", "HINDSIGHT_API_LLM_SEND_BANK_AS_USER=true", "HINDSIGHT_API_RERANKER_SEND_BANK_AS_HEADER=true"]
-    .filter((l) => !(l.split("=")[0] in over)).concat(Object.entries(over).map(([k, v]) => `${k}=${v}`)).join("\n");
-  assert.deepEqual(compareHindsightEnv(good()), []);
-  assert.equal(HINDSIGHT_ENV_NAMES.some((n) => /KEY|TOKEN|SECRET|PASSWORD|URL/.test(n)), false, "the check names no secret and no URL");
-  assert.deepEqual(compareHindsightEnv(good({ HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL: "other" })), [{ job: "embeddings", variable: "HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL", expected: "BAAI/bge-small-en-v1.5", actual: "other" }]);
-  assert.deepEqual(compareHindsightEnv(good({ HINDSIGHT_API_LLM_SEND_BANK_AS_USER: "false" })).map((d) => d.variable), ["HINDSIGHT_API_LLM_SEND_BANK_AS_USER"], "the bank id switch");
-  assert.equal(compareHindsightEnv(good().split("\n").slice(1).join("\n")).length, 1, "a missing variable is a difference");
+await test("saved settings that still hold the hs_* jobs: read drops them once, mem_extract keeps its saved value, and a page save works", async () => {
+  const { sql, DB } = database(), env = { ONEHELM_EE: "1hc", DB, ENV_NAME: "dev" };
+  const first = await readModelSettings(env), raw = clone(first.config);
+  for (const id of HS_JOBS) raw.jobs[id] = clone(raw.jobs.handoff);
+  raw.jobs.hs_retain = { ...raw.jobs.hs_retain, model: raw.jobs.handoff.model, effort: raw.jobs.handoff.effort };   // differs from mem_extract
+  raw.jobs.mem_extract = { ...raw.jobs.mem_extract, max_output: 4321 };
+  sql.prepare("INSERT INTO model_job_settings_versions VALUES(?,?,?,?,?,?)").run("dev", 2, JSON.stringify(raw), 1, "fixture", "save");
+  const r = await readModelSettings(env);
+  for (const id of HS_JOBS) assert.ok(!(id in r.config.jobs), `${id} is dropped on read`);
+  assert.deepEqual(r.config.jobs.mem_extract, raw.jobs.mem_extract, "mem_extract keeps its saved setting, whatever hs_retain held");
+  assert.equal(r.revision, 3, "one append only version without the old jobs");
+  assert.equal((await readModelSettings(env)).revision, 3, "reading again writes nothing");
+  const view = await saveModelSettings(env, { revision: 3, config: { version: 3, jobs: r.config.jobs, routing: r.config.routing } }, "admin"); assert.equal(view.revision, 4);
+  // a saved version without mem_extract starts on the model and reasoning level it always copied from a default retain job
+  const bare = clone(r.config); delete bare.jobs.mem_extract;
+  assert.deepEqual([validateModelSettings(bare).jobs.mem_extract.model, validateModelSettings(bare).jobs.mem_extract.effort], ["~openai/gpt-luna-latest", "low"]);
 });
 
 console.log(`PASS models cleanup: ${checks} checks`);

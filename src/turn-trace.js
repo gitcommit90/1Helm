@@ -33,6 +33,8 @@ export const ALLOWED_KEYS = new Set([
   "langfuse.observation.metadata.error_type", "langfuse.observation.metadata.error_code", "langfuse.observation.metadata.purpose",
   // Custom Model Selection marker: models_from is "custom" or "ours", category is the routing category id (never a title, which is user text).
   "langfuse.trace.metadata.models_from", "langfuse.trace.metadata.category", "langfuse.observation.metadata.models_from", "langfuse.observation.metadata.category",
+  // Own AI key marker: true on a step whose model call the person paid for with their own key (byok.js). The collector moves such a step to the environment own-key-dev or own-key-live.
+  "langfuse.observation.metadata.own_key",
 ]);
 
 const rand = (bytes) => { const b = new Uint8Array(bytes); crypto.getRandomValues(b); return [...b].map((x) => x.toString(16).padStart(2, "0")).join(""); };
@@ -221,8 +223,11 @@ export const traceMix = (Resident, cacheKey) => Object.assign(Resident.prototype
   async otelModel(tc, purpose, fn) {
     const t = tc?.otel; let span;
     try { if (!t) return await fn(); t.session = this.otelSession(tc); span = t.stepOpen(purpose, !!tc.otelRetry, modelsMark(tc.taskProfile)); tc.otelRetry = false; tc.otelStep = span; } catch (e) { if (!span) return fn(); throw e; }
+    // Own AI key (byok.js): env.BYOK is set while the person's own key pays for the call. It is read after the call because a backup key can switch on during it.
+    const ownKey = () => { try { if (this.env?.BYOK) span.attrs.own_key = true; } catch {} };
     let r;
-    try { r = await fn(); } catch (e) { try { t.stepClose(span, null, e); } catch {} throw e; }
+    try { r = await fn(); } catch (e) { ownKey(); try { t.stepClose(span, null, e); } catch {} throw e; }
+    ownKey();
     try { t.stepClose(span, r); this.otelCheckpoint(tc); } catch {}
     return r;
   },

@@ -4484,7 +4484,8 @@ export class Resident extends DurableObject {
   async steerMessage(tc, items, { late = false, pics = true } = {}) {
     const files = items.flatMap((x) => x.files || []);
     const ap = files.length ? await this.attachParts(files, tc.session, tc.turn, tc) : { pics: [], note: "", body: "" };
-    if (dynamicRoutingOn(this.env) && tc.kind === "chat") {
+    // An own-key account has no managed routing lists to sort a queued message against (routeTwoTurn would throw "No saved routing models" and fail the whole turn), and no managed workers to steer.
+    if (dynamicRoutingOn(this.env) && !this.env.BYOK && tc.kind === "chat") {
       for (const input of items.filter(item => item.type !== "handoff" && item.type !== "helper" && (item.text || item.files?.length))) {
         const prior = tc.route;
         if (tc.abort === "hard") break;

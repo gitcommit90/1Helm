@@ -66,6 +66,8 @@ export async function ensureTaskRuntime(R, tc, args = {}) {
   if (!tc?.session) throw new TaskAffinityBlocked("A task identity is required before starting the model.", "missing-session");
   const settingsEnv = await modelSettingsEnv(R.env);
   if (dynamicRoutingOn(settingsEnv)) {
+    // Own-key accounts have no managed routing lists; asking routeTwoTurn below would throw "No saved routing models" instead of this clear stop.
+    if (R.env.BYOK) throw new TaskAffinityBlocked("This task uses your own AI service and must continue on the own-key runtime.", "byok-legacy");
     const restored = tc.route?.taskProfile;
     if (restored?.dynamicRouting) return bindTaskProfile(R, tc, restored, args.stats);
     const { route } = await routeTwoTurn(R, tc, { ...args, hist: args.hist?.length ? args.hist : R.compactHistory?.(tc.session) || [] });

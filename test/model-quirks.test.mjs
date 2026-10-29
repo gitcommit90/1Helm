@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import { quirkOf, effortFor, effortBody } from "../src/ee/model-jobs.js";
 import { familyFacts, quirksFromRecord } from "../src/model-quirks.js";
 import { withoutToolsWhenNoneUnsafe, orFetch, poolPayload, taskPayload } from "../src/model.js";
-import { cleanChatRequest } from "../src/ee/hindsight-llm.js";
 import { effectiveTaskCatalog } from "../src/ee/model-catalog.js";
 import { SEED, withSettings } from "./helpers/seed-settings.mjs";
 
@@ -57,10 +56,6 @@ const s2 = { ...clone(SEED), catalog: { ...clone(SEED).catalog, ...clone(catalog
 assert.throws(() => poolPayload({ MODEL_SETTINGS: s2 }, "meta/muse-spark-1.2-contributor", "zdr", { tool_choice: "required", messages: [] }), /only tool_choice auto/);
 assert.throws(() => taskPayload({ requestedModel: "~meta/muse-spark-contributor-latest", effort: null, catalog: {}, category: "general", cacheSession: "s" }, { tool_choice: "required", messages: [] }, { level: "zdr", settings: s2 }), /automatic tool selection/);
 assert.deepEqual(effectiveTaskCatalog({ id: "meta/muse-spark-1.2-contributor", tool_choice: ["auto", "none"] }, "meta/muse-spark-1.2-contributor", settings).tool_choice, ["auto"]);
-
-// the memory server: a forced tool choice is dropped for an alias of an auto-only model
-const s3 = clone(s2); s3.jobs.hs_reflect.model = "meta/muse-spark-1.2-contributor"; s3.catalog["meta/muse-spark-1.2-contributor"] = { name: "m", kinds: ["chat", "chore"], efforts: ["default"] };
-assert.ok(!("tool_choice" in cleanChatRequest({ messages: [], tool_choice: "required" }, s3, "hs_reflect")));
 
 // derived when a model is saved from OpenRouter's record
 assert.deepEqual(quirksFromRecord({ tool_choice: ["auto"], efforts: ["low", "high"], json: false, json_levels: [] }), { auto_tool_choice_only: true, reasoning_mandatory: true, no_json: true });

@@ -2,38 +2,43 @@
 @import "./plan-card.css";
 /* Cards in chat (generative UI): the approved the design sandbox/genui look, ported from src/genui.css. Shared by the app
    (v3.css) and the inside-Messages card page (card.css); both define the color tokens. Markup: src/genui-render.ts. */
-.gu-reply{width:100%;max-width:560px;position:relative}.gu-stack{display:flex;flex-direction:column;gap:10px}
+.gu-reply{width:100%;max-width:min(560px,100%);min-width:0;position:relative}.gu-stack{display:flex;flex-direction:column;gap:10px;min-width:0}
+/* Nothing in a card is ever wider than the column: every child may shrink (min-width:0) and long text breaks anywhere. Content that needs width scrolls in its own box. */
+.gu-stack>*{min-width:0;max-width:100%}
 .gu-in{animation:gin .25s ease both}@keyframes gin{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .gu-say{background:var(--abub);border-radius:22px;padding:12px 18px;max-width:92%;align-self:flex-start;line-height:1.45;overflow-wrap:anywhere}.gu-say p{margin:0}.gu-say p+p{margin-top:.55em}.gu-say b{font-weight:600}
-.gu-tip{display:flex;gap:9px;align-items:flex-start;font-size:13.5px;color:var(--mute);padding:0 6px}.gu-tip svg{flex:none;margin-top:2px}.gu-tip b{color:var(--ink2)}
-.gu-opts{display:flex;flex-direction:column;gap:8px}
-.gu-opt{display:flex;align-items:center;gap:14px;text-align:left;padding:14px 16px;border-radius:18px;background:var(--sheet);box-shadow:0 0 0 1px var(--line2);transition:box-shadow .12s,transform .12s}
+.gu-tip{display:flex;gap:9px;align-items:flex-start;font-size:13.5px;color:var(--mute);padding:0 6px}.gu-tip svg{flex:none;margin-top:2px}.gu-tip b{color:var(--ink2)}.gu-tip span{min-width:0;overflow-wrap:anywhere}
+.gu-say a,.gu-tip a,.gu-ot a,.gu-mb a,.gu-rows a,.gu-big a,.gu-fm a,.gu-meter a{color:var(--accent);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere}
+.gu-opts{display:flex;flex-direction:column;gap:8px;min-width:0}
+.gu-opt{display:flex;flex-wrap:wrap;align-items:center;gap:14px;width:100%;min-width:0;max-width:100%;text-align:left;padding:14px 16px;border-radius:18px;background:var(--sheet);box-shadow:0 0 0 1px var(--line2);transition:box-shadow .12s,transform .12s}
 .gu-opt:hover{box-shadow:0 0 0 1px var(--ink2)}.gu-opt:active{transform:scale(.99)}.gu-opt.on{box-shadow:0 0 0 2px var(--ink)}
 .gu-rad{flex:none;width:20px;height:20px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--line2)}.gu-opt.on .gu-rad{box-shadow:inset 0 0 0 6px var(--ink)}
-.gu-ot{flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}.gu-ot b{font-weight:650}.gu-ot>span{flex-basis:100%;font-size:13px;color:var(--mute)}.gu-ot>span:empty{display:none}
+.gu-ot{flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}.gu-ot b{font-weight:650;min-width:0;overflow-wrap:anywhere}.gu-ot>span{flex-basis:100%;min-width:0;font-size:13px;color:var(--mute);overflow-wrap:anywhere}.gu-ot>span:empty{display:none}
 .gu-ot em{font-style:normal;font-size:11.5px;font-weight:650;color:var(--mute);background:var(--hover);padding:1px 8px;border-radius:999px}.gu-ot em.best{background:color-mix(in srgb,var(--live) 14%,transparent);color:var(--live)}
-.gu-pr{font-size:19px;font-weight:700;letter-spacing:-.01em;font-variant-numeric:tabular-nums;white-space:nowrap}
+.gu-pr{font-size:19px;font-weight:700;letter-spacing:-.01em;font-variant-numeric:tabular-nums;white-space:nowrap;max-width:100%}
+/* A long price (more than 14 characters, class set in genui-render.ts) drops under the title, lined up with the title text, and wraps. */
+.gu-pr.long{flex:1 0 100%;margin-top:-6px;padding-left:34px;font-size:15px;line-height:1.3;text-align:left;white-space:normal;overflow-wrap:anywhere}
 .gu-btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}
-.gu-b{min-height:44px;padding:0 20px;border-radius:999px;font-weight:600;font-size:15px;transition:transform .12s,opacity .12s,background .12s}.gu-b:active{transform:scale(.97)}
+.gu-b{max-width:100%;overflow-wrap:anywhere;min-height:44px;padding:0 20px;border-radius:999px;font-weight:600;font-size:15px;transition:transform .12s,opacity .12s,background .12s}.gu-b:active{transform:scale(.97)}
 .gu-b.primary{background:var(--ink);color:var(--sheet);width:auto;height:auto;margin:0;font-size:15px}/* (v3.css phone sheets style a bare .primary full-width) */.gu-b.primary:hover{opacity:.9}.gu-b.secondary{box-shadow:inset 0 0 0 1px var(--line2);background:var(--sheet)}.gu-b.secondary:hover{box-shadow:inset 0 0 0 1px var(--ink2)}
 .gu-b.ghost{color:var(--mute)}.gu-b.ghost:hover{background:var(--hover);color:var(--ink)}
 .gu-b[disabled]{opacity:.35;pointer-events:none}.gu-b.picked{opacity:1;background:var(--live);color:#fff;box-shadow:none}
 .locked .gu-opt,.locked .gu-chip,.locked .gu-step button,.locked input{pointer-events:none}.locked .gu-opt:not(.on),.locked .gu-form .gu-field,.locked .gu-form .gu-row{opacity:.55}
-.gu-form{background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:6px 18px 16px;display:flex;flex-direction:column}
-.gu-row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:56px;border-bottom:1px solid var(--line);font-weight:550}
+.gu-form{min-width:0;background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:6px 18px 16px;display:flex;flex-direction:column}
+.gu-row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:56px;border-bottom:1px solid var(--line);font-weight:550}.gu-row>span:first-child{min-width:0;overflow-wrap:anywhere}
 .gu-step{display:inline-flex;align-items:center;gap:4px;flex:none}.gu-step b{min-width:28px;text-align:center;font-size:17px;font-variant-numeric:tabular-nums}
 .gu-step button{width:36px;height:36px;border-radius:50%;background:var(--hover);font-size:19px;line-height:1;color:var(--ink2)}.gu-step button:hover{background:var(--line2)}
-.gu-field{display:flex;flex-direction:column;gap:8px;padding:14px 0;border-bottom:1px solid var(--line)}.gu-field>span{font-weight:550}
-.gu-field input{height:46px;border-radius:14px;border:1px solid var(--line2);padding:0 14px;background:var(--sheet);color:var(--ink);outline:0;font:inherit;font-size:16px}.gu-field input:focus{border-color:var(--ink2)}
+.gu-field{display:flex;flex-direction:column;gap:8px;padding:14px 0;border-bottom:1px solid var(--line)}.gu-field>span{font-weight:550;min-width:0;overflow-wrap:anywhere}
+.gu-field input{width:100%;min-width:0;height:46px;border-radius:14px;border:1px solid var(--line2);padding:0 14px;background:var(--sheet);color:var(--ink);outline:0;font:inherit;font-size:16px}.gu-field input:focus{border-color:var(--ink2)}
 .gu-form .gu-field:last-of-type{border-bottom:0}.gu-form .gu-btns{margin-top:6px}
-.gu-chips{display:flex;flex-wrap:wrap;gap:7px}.gu-chip{height:38px;padding:0 14px;border-radius:999px;box-shadow:inset 0 0 0 1px var(--line2);font-size:14.5px;font-weight:550}
+.gu-chips{display:flex;flex-wrap:wrap;gap:7px}.gu-chip{max-width:100%;overflow-wrap:anywhere;min-height:38px;height:auto;padding:0 14px;border-radius:999px;box-shadow:inset 0 0 0 1px var(--line2);font-size:14.5px;font-weight:550}
 .gu-chip:hover{box-shadow:inset 0 0 0 1px var(--ink2)}.gu-chip.on{background:var(--ink);color:var(--sheet);box-shadow:none}
 .gu-big{background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:16px 18px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
-.gu-big b{font-size:34px;font-weight:700;letter-spacing:-.03em;font-variant-numeric:tabular-nums}.gu-big span{color:var(--mute)}.gu-big em{flex-basis:100%;font-style:normal;font-weight:600;color:var(--warn);font-size:14px}
-.gu-bars{display:flex;align-items:flex-end;gap:10px;height:150px;padding:14px 16px 10px;background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2)}
+.gu-big{min-width:0;overflow-wrap:anywhere}.gu-big b{min-width:0;max-width:100%;font-size:34px;font-weight:700;letter-spacing:-.03em;font-variant-numeric:tabular-nums}.gu-big span{color:var(--mute)}.gu-big em{flex-basis:100%;font-style:normal;font-weight:600;color:var(--warn);font-size:14px}
+.gu-bars{min-width:0;display:flex;align-items:flex-end;gap:10px;height:150px;padding:14px 16px 10px;background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2)}
 .gu-bar{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:5px;min-width:0}
 .gu-bar i{display:block;transition:height .35s cubic-bezier(.2,.8,.2,1);width:100%;max-width:38px;border-radius:8px 8px 3px 3px;background:var(--line2);animation:grow .5s cubic-bezier(.2,.8,.2,1) both;transform-origin:bottom}
-.gu-bar em{font-style:normal;font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}.gu-bar span{font-size:12px;color:var(--mute)}
+.gu-bar em{font-style:normal;font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}.gu-bar span{font-size:12px;color:var(--mute);max-width:100%;text-align:center;overflow-wrap:anywhere}
 .gu-bar.hot i{background:var(--warn)}.gu-bar.hot em{color:var(--warn);font-weight:700}.gu-bar.hot span{color:var(--ink);font-weight:600}
 @keyframes grow{from{transform:scaleY(0)}to{transform:none}}
 .gu-rows{background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:4px 18px}
@@ -49,11 +54,11 @@
 a.gu-thumb{transition:transform .12s}a.gu-thumb:hover{transform:scale(1.02)}
 .gu-fm{display:flex;flex-direction:column;gap:3px;min-width:0}.gu-fm b{font-weight:650;overflow-wrap:anywhere}.gu-fm>span{font-size:13px;color:var(--mute)}.gu-fm>span:empty{display:none}
 .gu-links{display:flex;gap:14px;margin-top:6px}.gu-links a{font-weight:600;font-size:14px;color:var(--accent);cursor:pointer;text-decoration:none}.gu-links a:hover{text-decoration:underline}
-.gu-meter{background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:16px 18px}
-.gu-mt{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px}.gu-mt span{color:var(--warn);font-weight:650;white-space:nowrap}
+.gu-meter{min-width:0;background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:16px 18px}
+.gu-mt{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px}.gu-mt b{min-width:0;overflow-wrap:anywhere}.gu-mt span{color:var(--warn);font-weight:650;white-space:nowrap}
 .gu-track{height:12px;border-radius:99px;background:var(--hover);overflow:hidden}.gu-track i{display:block;transition:width .5s cubic-bezier(.2,.8,.2,1);height:100%;border-radius:99px;background:var(--warn);animation:wide .8s cubic-bezier(.2,.8,.2,1) both;transform-origin:left}
 @keyframes wide{from{transform:scaleX(0)}to{transform:none}}
-.gu-meter small{display:block;margin-top:9px;color:var(--mute);font-size:13px}
+.gu-meter small{display:block;overflow-wrap:anywhere;margin-top:9px;color:var(--mute);font-size:13px}
 /* System cards (permission, Link, browser): made by 1HC itself, never by the model (markup: src/approval-card.ts, v3.ts cardHtml).
    Same surface, radius, type and buttons as the cards above. */
 .gu-sys{width:100%;max-width:560px;background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:16px 18px;display:flex;flex-direction:column;gap:6px}
@@ -95,7 +100,7 @@ a.gu-thumb{transition:transform .12s}a.gu-thumb:hover{transform:scale(1.02)}
   transition:max-height .3s ease .25s,opacity .25s ease .3s,margin .3s ease .25s,padding .3s ease .25s,visibility 0s .6s}
 .gu-skiph span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.gu-skiph svg{flex:none;transition:transform .2s}
 .gu-skip .gu-skiph{max-height:40px;opacity:1;visibility:visible;padding:9px 14px}.gu-skip.open .gu-skiph{margin-bottom:8px}.gu-skip.open .gu-skiph svg{transform:rotate(180deg)}.gu-skiph:hover{color:var(--ink2)}
-.gu-skipb{display:grid;grid-template-rows:1fr}.gu-skipi{min-height:0}
+.gu-skipb{display:grid;grid-template-rows:1fr;grid-template-columns:minmax(0,1fr)}.gu-skipi{min-height:0;min-width:0}
 .gu-skip .gu-skipi{overflow:hidden}
 .gu-skip:not(.open) .gu-skipb{grid-template-rows:0fr;opacity:0;visibility:hidden;transition:grid-template-rows .45s cubic-bezier(.4,0,.2,1) .12s,opacity .3s ease .12s,visibility 0s .57s}
 .gu-skip.open .gu-skipb{transition:grid-template-rows .3s ease,opacity .2s ease}

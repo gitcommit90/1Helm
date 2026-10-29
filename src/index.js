@@ -65,7 +65,6 @@ import { releasesPage, pushRelease, undoRelease, isReleaseAdmin } from "./intern
 import { kanbanProxy } from "./internal-shim.js";
 import { AGE_VERSION, AGE_ERROR, ageOf, ageCookie, ageClaim, agePage, ageNext, recordAge } from "./age-gate.js";
 import { modelsRoute } from "./ee/index.js";
-import { hindsightRoute } from "./ee/index.js";   // the memory server model endpoint (Cloud only, 404 without the Cloud switch)
 import { hsOn, sweepMemory, recall as hsRecall, bankId as hsBankId } from "./mem0.js";
 import { privacyBoot, privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // AI data privacy (onboarding step, boot)
 import { sendBackfillSnapshot } from "./backfill-trace.js";   // Mem0 backfill counts for Langfuse (numbers only)
@@ -186,7 +185,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "335";
+const APP_V = "337";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -635,8 +634,6 @@ export default {
           (p === "/kanban" || p.startsWith("/kanban/") || p === "/parity" || p.startsWith("/parity/") || p === "/releases" || p.startsWith("/releases/")) &&
           req.headers.get("origin") !== origin) return json({ error: "forbidden" }, 403);
       if (p === "/health") return json({ ok: true });
-      // The memory server model calls (src/ee/hindsight-llm.js): bearer secret only, served from the saved Models settings. The Cloud route gate above answers 404 on a public install.
-      if (p.startsWith("/_hs/")) return hindsightRoute(req, env, ctx, url);
       if (p === "/api/mobile/compatibility" && req.method === "GET") {
         const users = await env.DB.prepare("SELECT 1 FROM users LIMIT 1").first();
         const ready = await env.DB.prepare("SELECT 1 FROM tenants WHERE status='active' AND onboarding_completed=1 AND (COALESCE(onboard_step,'')='' OR (onboard_step='done' AND slug_chosen=1)) LIMIT 1").first();

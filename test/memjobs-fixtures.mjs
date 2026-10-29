@@ -33,15 +33,6 @@ export async function world() {
   // The Ledger: every reservation and settlement, in order. balance=false refuses reservations.
   const ledgerLog = []; let balanceOk = true;
   const LEDGER = { reserve: async (id, nano) => { ledgerLog.push(["reserve", id, nano]); return balanceOk ? { ok: true } : { ok: false, reason: "out_of_credits" }; }, settle: async (id, nano) => { ledgerLog.push(["settle", id, nano]); return {}; }, state: async () => ({ balance_nano: 1e12 }) };
-  // Hindsight, faked: banks hold retained items; recall returns items sharing a word with the query.
-  const HS = { banks: {}, retains: [], deleted: [] };
-  const HINDSIGHT = { fetch: async (url, init = {}) => {
-    const u = new URL(url), m = u.pathname.match(/^\/v1\/default\/banks\/([^/]+)(\/.*)?$/), bank = m && decodeURIComponent(m[1]), rest = m?.[2] || "", body = init.body ? JSON.parse(init.body) : null;
-    if (init.method === "PUT" && !rest) { HS.banks[bank] ||= []; return Response.json({}); }
-    if (rest === "/memories" && init.method === "POST") { HS.banks[bank] ||= []; for (const it of body.items) { HS.retains.push({ bank, ...it }); HS.banks[bank].push({ id: `hs${HS.retains.length}`, text: it.content, document_id: it.document_id, mentioned_at: it.timestamp, type: "world", context: it.context }); } return Response.json({ success: true }); }
-    if (rest === "/memories/recall") { const qt = new Set(terms(body.query)); const res = (HS.banks[bank] || []).filter((x) => terms(x.text).some((w) => qt.has(w))).map((x) => ({ ...x, scores: { final: 0.9 } })); return Response.json({ results: res }); }
-    if (rest.startsWith("/documents/") && init.method === "DELETE") { const doc = decodeURIComponent(rest.slice(11)); HS.deleted.push({ bank, doc }); const had = (HS.banks[bank] || []).length; HS.banks[bank] = (HS.banks[bank] || []).filter((x) => x.document_id !== doc); return Response.json({ memory_units_deleted: had - HS.banks[bank].length }); }   // like Hindsight: the document's memories go with it
-    return new Response("not found", { status: 404 }); } };
   // OpenRouter, faked at fetch: scripted by which step is asking.
   const orCalls = []; let SCRIPT = {};
   globalThis.fetch = async (url, init = {}) => {
@@ -66,7 +57,7 @@ export async function world() {
   };
   const D = 256, emb = (t) => { const v = new Array(D).fill(0); for (const w of terms(t)) { let h = 7; for (const c of w) h = (h * 31 + c.charCodeAt(0)) >>> 0; v[h % D] += 1; } v[D - 1] += 0.001; return v; };
   const RES = {}, ARCH = {};
-  const env = { ONEHELM_EE: "1hc", DB, ENV_NAME: "dev", MEMORY: "on", MEMORY_BACKEND: "hindsight", HINDSIGHT, HINDSIGHT_API_KEY: "k", OPENROUTER_API_KEY: "or-test", ROUTER_MODE: "two", GENUI: "off", WORKMEM: "off", CLEF_DOORS: "off", MEMORY_SUMMARIES: "off", MEMORY_SUPERSEDE: "off",
+  const env = { ONEHELM_EE: "1hc", DB, ENV_NAME: "dev", MEMORY: "on", OPENROUTER_API_KEY: "or-test", ROUTER_MODE: "two", GENUI: "off", WORKMEM: "off", CLEF_DOORS: "off", MEMORY_SUMMARIES: "off", MEMORY_SUPERSEDE: "off",
     MODEL: "@cf/test/model", APP_HOST: "workspace.example",
     AI: { run: async (_m, b) => { if (b.text) return { data: b.text.map(emb) }; throw new Error("no Workers AI chat in this test"); } },
     LEDGER: { idFromName: (x) => x, get: () => LEDGER },
@@ -83,7 +74,7 @@ export async function world() {
   seed(RM, [turn("t1", 0, "Big news: I'm moving to Denver in March. The new place is in the Highlands neighborhood."), turn("t2", 0, "Dana said she'll lend me her car for the move, I need to call her Thursday."), turn("t3", 0, "My brother Leo is helping me pack, he lives in Boulder.")].map((t, i) => ({ ...t, at: at(i), session: "s-0000aaaa-1111", title: "Moving" })));
   seed(RT, [{ id: "x1", at: at(5), session: "s-0000cccc-3333", title: "Flights", user_text: "Keep it short, two lines max. No emojis.", reply: "OK." }]);
   const outboxBefore = () => [RM, RT, RG].map((R) => ({ out: R.sql.exec("SELECT COUNT(*) n FROM outbox").one().n, sess: R.sql.exec("SELECT COUNT(*) n FROM sessions").one().n, turns: R.sql.exec("SELECT COUNT(*) n FROM turns").one().n, wf: R.sql.exec("SELECT COUNT(*) n FROM workflows").one().n }));
-  return { env, A, RM, RT, RG, d1, HS, ledgerLog, orCalls, seed, settle, outboxBefore, at,
+  return { env, A, RM, RT, RG, d1, ledgerLog, orCalls, seed, settle, outboxBefore, at,
     script: (s) => { SCRIPT = s; }, balance: (v) => { balanceOk = v; } };
 }
 

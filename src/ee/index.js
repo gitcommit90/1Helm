@@ -22,7 +22,7 @@ const EE_TOOL_NAMES = new Set([
 ]);
 export const toolEnabled = (env, name) => enabled(env) || !EE_TOOL_NAMES.has(name);
 
-const GLOBAL = [/^\/models(?:\/|$)/, /^\/_hs\//, /^\/applogo\//, /^\/c\//, /^\/composio\//, /^\/hooks\/photon\//, /^\/stripe\/webhook$/];
+const GLOBAL = [/^\/models(?:\/|$)/, /^\/applogo\//, /^\/c\//, /^\/composio\//, /^\/hooks\/photon\//, /^\/stripe\/webhook$/];
 const WORKSPACE = [
   /^\/api\/ambient(?:\/|$)/, /^\/api\/custom-mcp(?:\/|$)/, /^\/custom-mcp(?:\/|$)/, /^\/apps\/paypal\/setup$/,
   /^\/texting$/, /^\/api\/texting(?:\/|$)/, /^\/api\/google(?:\/|$)/,
@@ -89,7 +89,6 @@ export { ambientSettingsRoute } from "./ambient-settings.js";
 export { paypalSetupRoute } from "./composio-paypal.js";
 
 export { modelsRoute } from "./models-console.js";
-export { hindsightRoute } from "./hindsight-llm.js";
 
 export { customMcpRoute, isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED, withCustomRows, CUSTOM_WORDS } from "./custom-mcp.js";
 

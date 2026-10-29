@@ -12,7 +12,6 @@ import { modelSettingsEnv } from "./model-settings.js";
 import { dispatch } from "./model-dispatch.js";
 import { dispatchMedia } from "./media-job.js";
 import { askJob, askDecider } from "./text-decision.js";
-import { cleanChatRequest } from "./hindsight-llm.js";
 import { stt } from "../transcribe.js";
 import { routingCategories } from "./routing-config.js";
 import { sampleFor } from "./sandbox-samples/index.js";
@@ -34,7 +33,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 // It is marked by two extra tags that change nothing in a request body: sandbox: true and tenant "sandbox" (the tenant also makes the privacy lookup answer "unrestricted").
 // A sample can name its kind with a `meta: { kind }` field next to `via`; otherwise this table (the kind each job's real call site sends) is used.
 const KIND = { label: "card-label", chat_title: "chat-title", sidecar_card: "sidecar-card", notes: "live-notes-note", notes_refine: "live-notes-refine", notes_final: "live-notes-final", ambient_extract: "ambient-extract", ambient_review: "ambient-review",
-  browser: "browser-oss", vision_files: "sidecar-vision-image", hs_retain: "memory-retain", mem_extract: "memory-extract", mem_embed: "memory-embed", mem_rerank: "memory-rerank", hs_consolidation: "memory-consolidation", hs_reflect: "memory-reflect", hs_refresh: "memory-refresh", hs_rerank: "memory-rerank",
+  browser: "browser-oss", vision_files: "sidecar-vision-image", mem_extract: "memory-extract", mem_embed: "memory-embed", mem_rerank: "memory-rerank",
   decider: "decider", web_search: "web-search", "chat": "chat" };
 export const metaFor = (job, sample = {}) => { const kind = sample?.meta?.kind || KIND[job] || null; return { ...(kind ? { kind } : {}), tenant: "sandbox", sandbox: true }; };
 export const VIAS = {
@@ -44,8 +43,6 @@ export const VIAS = {
   // The decision jobs: request is { state, questions } (and an optional timeoutMs).
   "text-decision.js#askJob": (env, job, request, o) => askJob(env, job, { state: request.state, questions: request.questions, meta: o.meta, fetchImpl: o.fetch, ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}) }),
   "text-decision.js#askDecider": (env, job, request, o) => askDecider(env, request.state, request.questions, { job, meta: o.meta, fetchImpl: o.fetch, ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}) }),
-  // The memory server's chat calls: request is the body the memory server sends. It is cleaned the way the /_hs endpoint cleans it and runs at the zero-data-retention level.
-  "hindsight-llm.js#cleanChatRequest": (env, job, request, o) => dispatch(env, job, cleanChatRequest(request, env.MODEL_SETTINGS, job), { meta: o.meta, fetch: o.fetch, level: "zdr" }),
   // Speech: request is { src: { bytes }, format, estSec?, prompt?, job? }, the arguments of stt().
   "transcribe.js#stt": (env, job, request, o) => stt(env, { bytes: request.src?.bytes }, { format: request.format || "wav", meta: o.meta, fetchImpl: o.fetch, estSec: request.estSec || 0, prompt: request.prompt || "", job: request.job || job }),
 };
@@ -179,11 +176,6 @@ function toolCalls(msg) {
     return { id: t?.id ?? null, name: t?.function?.name ?? t?.name ?? null, arguments: args ?? null };
   });
 }
-// The answers of a decision or ranking call as an order, best first, when every answer is a number or names a choice.
-function rankingOf(answers) {
-  const rows = Object.entries(answers || {}).map(([id, a]) => ({ id, score: num(a?.score ?? a?.noul ?? a) })).filter((r) => r.score !== null);
-  return rows.length && rows.length === Object.keys(answers).length ? rows.sort((a, b) => b.score - a.score) : null;
-}
 export async function readReply(r, { jobId, kind, via }) {
   let j = r;
   if (r && typeof r.clone === "function" && typeof r.json === "function") { const text = await r.clone().text().catch(() => ""); try { j = JSON.parse(text); } catch { j = { text }; } }
@@ -201,7 +193,6 @@ export async function readReply(r, { jobId, kind, via }) {
   const vec = j.data?.[0]?.embedding;
   if (Array.isArray(vec)) return { ...out, view: { type: "embedding", size: vec.length, first: vec.slice(0, 8) } };
   if (kind === "rerank_memory" && Array.isArray(j.response)) return { ...out, view: { type: "ranking", order: j.response.map((d) => ({ id: String(d.id), score: d.score })), answers: null } };
-  if (kind === "rerank" || (j.answers && jobId === "hs_rerank")) return { ...out, view: { type: "ranking", order: rankingOf(j.answers), answers: j.answers ?? null } };
   if (j.answers) return { ...out, view: { type: "answers", answers: j.answers } };
   const list = j.results || j.items || j.result?.results || j.data?.results || j.response?.results;
   if (Array.isArray(list) || kind === "search") return { ...out, view: { type: "search", results: (Array.isArray(list) ? list : []).slice(0, 10).map((x) => ({ title: String(x?.title || x?.name || "").slice(0, 200), url: String(x?.url || x?.link || "").slice(0, 400), snippet: String(x?.snippet || x?.description || x?.content || x?.text || "").slice(0, 400) })) } };

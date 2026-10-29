@@ -21,7 +21,6 @@ import { stt, sttModels } from "../src/transcribe.js";
 import { embedTexts, vision, lookMoondream } from "../src/sidecar.js";
 import { transcribeLive } from "../src/transcribe-live.js";
 import { ENDPOINTS } from "../src/privacy.js";
-import { hindsightRoute } from "../src/ee/hindsight-llm.js";
 import { speakerLabels } from "../src/ee/speaker-labels.js";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -110,13 +109,6 @@ probes.vision_files = async (S) => { wire = [];   // the picture goes to the sav
   await vision(envFor(S), { tenant: "t" }, { data: new Uint8Array([1, 2, 3]), mime: "image/png" }, "chat").catch(() => {}); return [lastWire("/chat/completions")?.model]; };
 probes.workers_ai_chat = async (S) => [await jobModel(envFor(S), "workers_ai_chat")];
 probes.web_search = async (S) => [await jobModel(envFor(S), "web_search")];   // dispatch search reads the saved provider
-// The memory server's calls come through the Worker endpoint: the model the server names in its request is a decoy, and the saved job's model is the one sent on.
-const hsCall = async (S, req, env0 = {}) => { const env = envFor(S, { HINDSIGHT_LLM_KEY: "secret-key", ENV_NAME: "dev", ...env0 }); wire = []; const r = await hindsightRoute(req, env, null, new URL(req.url)); assert.equal(r.status, 200, await r.clone().text()); return env; };
-const hsChat = (path) => async (S) => { await hsCall(S, new Request(`https://x.test/_hs/llm/${path}/v1/chat/completions`, { method: "POST", headers: { authorization: "Bearer secret-key", "content-type": "application/json" },
-  body: JSON.stringify({ model: "decoy/memory-model", user: "dev-11111111-2222-3333-4444-555555555555-main", messages: [{ role: "user", content: "hi" }] }) })); return [lastWire("/chat/completions").model]; };
-probes.hs_retain = hsChat("retain"); probes.hs_consolidation = hsChat("consolidation"); probes.hs_reflect = hsChat("reflect"); probes.hs_refresh = hsChat("refresh");
-probes.hs_rerank = async (S) => { await hsCall(S, new Request("https://x.test/_hs/rerank/v1/systemone", { method: "POST", headers: { authorization: "Bearer secret-key", "content-type": "application/json", "x-hindsight-bank-id": "dev-11111111-2222-3333-4444-555555555555-main" },
-  body: JSON.stringify({ model: "decoy/memory-ranker", state: "Question: x", questions: { rank: { type: "choice", instructions: "pick", criteria: { c0: "a", c1: "b" } } } }) })); return [lastWire("/systemone").model]; };
 // Mem0 memory (mem0.js) calls dispatch() for its three jobs.
 probes.mem_extract = async (S) => { wire = []; await dispatch(envFor(S), "mem_extract", { messages: [{ role: "user", content: "hi" }] }, { meta: { tenant: "t" } }); return [lastWire("/chat/completions").model]; };
 probes.mem_embed = async (S) => { const calls = [], env = envFor(S, { AI: { run: async (m) => { calls.push(m); return { data: [[0.1]] }; } } }); await dispatch(env, "mem_embed", { input: ["hi"] }, { meta: { tenant: "t" } }); return [calls[0]]; };

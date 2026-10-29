@@ -241,7 +241,7 @@ export function withoutRetiredJobs(raw) {
   }
   return { ...raw, jobs };
 }
-function configOf(row) {
+export function configOf(row) {
   try { return validateModelSettings(withoutProviderLists(withoutRetiredJobs(JSON.parse(row.config)))); }
   catch { throw new ModelSettingsError("Stored model settings are invalid. Restore an earlier version from Models. Nothing was sent."); }
 }

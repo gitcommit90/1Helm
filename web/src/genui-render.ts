@@ -35,7 +35,21 @@ const isNode = (x: any): x is Node => !!x && typeof x === "object" && x.type ===
 const arr = (x: any): any[] => Array.isArray(x) ? x : [];
 const str = (x: any) => x == null ? "" : typeof x === "string" ? x : typeof x === "number" || typeof x === "boolean" ? String(x) : "";
 const esc = (s: any = "") => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-const inline = (s: string) => esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+// Links in card text: a model writes [text](https://...) or a bare https:// address. Only http and https become links; the link text and the
+// address are escaped, and everything else in the string stays escaped text, so no HTML can get through. Bold (**text**) works around links.
+const LINK = /\[([^\]\n]{1,300})\]\((https?:\/\/[^\s()<>"']{1,2000})\)|(https?:\/\/[^\s<>"'()\[\]]{1,2000})/g;
+const aTag = (url: string, text: string) => `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(text)}</a>`;
+const bold = (t: string) => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+export function inline(s: string) {
+  let out = "", last = 0; s = String(s);
+  for (const m of s.matchAll(LINK)) {
+    out += bold(s.slice(last, m.index));
+    if (m[1] != null) out += aTag(m[2], m[1]);
+    else { const url = m[3].replace(/[.,;:!?]+$/, ""); out += aTag(url, url) + esc(m[3].slice(url.length)); }
+    last = m.index! + m[0].length;
+  }
+  return out + bold(s.slice(last));
+}
 const paras = (s: string) => String(s).split(/\n{2,}/).map((p) => `<p>${inline(p).replace(/\n/g, "<br>")}</p>`).join("");
 const unbold = (s: string) => s.replace(/\*\*(.+?)\*\*/g, "$1");
 
@@ -291,7 +305,7 @@ function r(n: any, c: R): string {
       const def = (opts.find((o) => /best/i.test(str(o.props.tag))) || opts[0]).props.title;
       const cur = c.locked ? c.s.vals[name] : c.s.vals[name] ?? def; if (c.s.vals[name] == null && !n.partial && !c.streaming) c.s.vals[name] = cur;
       return `<div class="gu-opts${IN(c)}" role="radiogroup">${opts.map((o) => { const q = o.props, on = q.title === cur, tag = str(q.tag);
-        return `<button type="button" class="gu-opt${on ? " on" : ""}${IN(c)}" role="radio" aria-checked="${on}" data-gset="${esc(name)}" data-v="${esc(q.title)}"${dis(c)}><i class="gu-rad"></i><span class="gu-ot"><b>${esc(q.title)}</b>${tag ? `<em class="${/best/i.test(tag) ? "best" : ""}">${esc(tag)}</em>` : ""}<span>${esc(str(q.detail))}</span></span><span class="gu-pr">${esc(str(q.price))}</span></button>`; }).join("")}</div>`;
+        return `<button type="button" class="gu-opt${on ? " on" : ""}${IN(c)}" role="radio" aria-checked="${on}" data-gset="${esc(name)}" data-v="${esc(q.title)}"${dis(c)}><i class="gu-rad"></i><span class="gu-ot"><b>${esc(q.title)}</b>${tag ? `<em class="${/best/i.test(tag) ? "best" : ""}">${esc(tag)}</em>` : ""}<span>${inline(str(q.detail))}</span></span><span class="gu-pr${str(q.price).length > 14 ? " long" : ""}">${esc(str(q.price))}</span></button>`; }).join("")}</div>`;
     }
     case "Buttons": { const h = r(arr(p.buttons), c); return h ? `<div class="gu-btns${IN(c)}">${h}</div>` : ""; }
     case "Button": { const label = str(p.label); if (!label) return ""; const on = c.act === `b:${label}`, v = ["primary", "secondary", "ghost"].includes(p.variant) ? p.variant : "secondary";
@@ -307,19 +321,19 @@ function r(n: any, c: R): string {
         return `<button type="button" class="gu-chip${on ? " on" : ""}" data-gchip="${esc(name)}" data-v="${esc(x)}" data-multi="${p.multi ? 1 : ""}"${dis(c)}>${on ? "✓ " : ""}${esc(x)}</button>`; }).join("")}</div></div>`; }
     case "Field": { const name = str(p.name); if (!str(p.label)) return "";
       return `<label class="gu-field${IN(c)}"><span>${esc(str(p.label))}</span><input data-gin="${esc(name)}" value="${esc(c.s.vals[name] || "")}" placeholder="${esc(str(p.placeholder))}"${dis(c)}></label>`; }
-    case "Big": return str(p.value) ? `<div class="gu-big${IN(c)}"><b>${esc(str(p.value))}</b><span>${esc(str(p.label))}</span>${str(p.delta) ? `<em>${esc(str(p.delta))}</em>` : ""}</div>` : "";
+    case "Big": return str(p.value) ? `<div class="gu-big${IN(c)}"><b>${esc(str(p.value))}</b><span>${inline(str(p.label))}</span>${str(p.delta) ? `<em>${esc(str(p.delta))}</em>` : ""}</div>` : "";
     case "Bars": { const L = arr(p.labels), V = arr(p.values).map((x) => typeof x === "number" ? x : NaN); const ok = V.filter((x) => !isNaN(x)); if (!L.length || !ok.length) return "";
       const mx = Math.max(1, ...ok), mark = typeof p.mark === "number" ? p.mark : V.length - 1, f = (x: number) => Number.isInteger(x) ? String(x) : x.toFixed(2).replace(/\.?0+$/, "");
       return `<div class="gu-bars${IN(c)}">${L.map((l, i) => isNaN(V[i]) ? "" : `<div class="gu-bar${i === mark ? " hot" : ""}"><em>${esc(str(p.unit))}${f(V[i])}</em><i style="height:${Math.max(0, Math.round((V[i] / mx) * 100))}%"></i><span>${esc(str(l))}</span></div>`).join("")}</div>`; }
     case "Rows": { const rows = arr(p.rows).filter(Array.isArray); if (!rows.length) return "";
-      return `<div class="gu-rows${IN(c)}">${rows.map((x: any[]) => `<div><span>${esc(str(x[0]))}</span><b>${esc(str(x[1]))}</b></div>`).join("")}</div>`; }
+      return `<div class="gu-rows${IN(c)}">${rows.map((x: any[]) => `<div><span>${esc(str(x[0]))}</span><b>${inline(str(x[1]))}</b></div>`).join("")}</div>`; }
     case "Email": return str(p.to) ? `<div class="gu-mail${IN(c)}"><div class="gu-mh"><span>To</span><b>${esc(str(p.to))}</b></div>${str(p.subject) ? `<div class="gu-mh"><span>Subject</span><b>${esc(str(p.subject))}</b></div>` : ""}${str(p.body) ? `<div class="gu-mb">${paras(str(p.body))}</div>` : ""}</div>` : "";
     case "File": { const name = str(p.name); if (!name) return ""; const f = c.streaming ? null : c.file(name);
       const thumb = f?.image ? `<img src="${esc(f.image)}" alt="" loading="lazy">` : c.icon(name);
-      return f ? `<div class="gu-file${IN(c)}"><a class="gu-thumb" href="${esc(f.href)}" data-fv="${esc(f.fv)}" aria-label="Open ${esc(name)}">${thumb}</a><div class="gu-fm"><b>${esc(name)}</b><span>${esc(str(p.meta))}</span><span class="gu-links"><a href="${esc(f.href)}" data-fv="${esc(f.fv)}">Open</a><a href="${esc(f.dl)}" download data-fdl>Download</a></span></div></div>`
+      return f ? `<div class="gu-file${IN(c)}"><a class="gu-thumb" href="${esc(f.href)}" data-fv="${esc(f.fv)}" aria-label="Open ${esc(name)}">${thumb}</a><div class="gu-fm"><b>${esc(name)}</b><span>${inline(str(p.meta))}</span><span class="gu-links"><a href="${esc(f.href)}" data-fv="${esc(f.fv)}">Open</a><a href="${esc(f.dl)}" download data-fdl>Download</a></span></div></div>`
         : `<div class="gu-file${IN(c)}"><div class="gu-thumb">${thumb}</div><div class="gu-fm"><b>${esc(name)}</b><span>${esc(str(p.meta))}</span></div></div>`; }
     case "Meter": { if (!str(p.label)) return ""; const u = Math.max(0, Math.min(1, +p.used || 0));
-      return `<div class="gu-meter${IN(c)}"><div class="gu-mt"><b>${esc(str(p.label))}</b><span>${Math.round(u * 100)}% used</span></div><div class="gu-track"><i style="width:${u * 100}%"></i></div>${str(p.note) ? `<small>${esc(str(p.note))}</small>` : ""}</div>`; }
+      return `<div class="gu-meter${IN(c)}"><div class="gu-mt"><b>${esc(str(p.label))}</b><span>${Math.round(u * 100)}% used</span></div><div class="gu-track"><i style="width:${u * 100}%"></i></div>${str(p.note) ? `<small>${inline(str(p.note))}</small>` : ""}</div>`; }
   }
   return ""; // unknown component: never show raw code to a person
 }
@@ -425,6 +439,7 @@ export function wireCards(h: { onSend: (ref: any, text: string, meta?: { action?
     const sk = (e.target as HTMLElement).closest<HTMLElement>("[data-gskip]");
     if (sk) { const b = sk.closest<HTMLElement>("[data-guk]"); if (b?.classList.contains("gu-skip")) { const k = b.dataset.guk!, on = !OPEN.has(k); on ? OPEN.add(k) : OPEN.delete(k); b.classList.toggle("open", on); sk.setAttribute("aria-expanded", String(on)); } return; }
     const t = (e.target as HTMLElement).closest<HTMLElement>("[data-gset],[data-gbtn],[data-gsub],[data-ginc],[data-gchip]"); if (!t) return;
+    if ((e.target as HTMLElement).closest("a[href]")) return;   // a link inside an option: the browser opens it, the option is not picked
     const box = t.closest<HTMLElement>("[data-guk]"), g = box && REG.get(box.dataset.guk!); if (!g || SENDING.has(box!.dataset.guk!) || box!.classList.contains("locked") || (t as HTMLButtonElement).disabled) return;
     e.preventDefault(); const s = g.s;
     if (t.dataset.gset) { s.vals[t.dataset.gset] = t.dataset.v; h.onChange(g.ref); return; }

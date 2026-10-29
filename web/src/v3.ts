@@ -564,7 +564,10 @@ function fkind(name: string, mime = ""): Art["kind"] {
 const fileUrl = (slug: string, id: string, dl = false) => fileResUrl(LIVE!.api, slug, id, dl);
 const artHref = (ch: Channel, a: Art) => a.fid ? fileUrl(ch.slug, a.fid) : `#/${ch.slug}/s/${a.sid}`;
 const toArt = (f: FileV): Art => ({ name: f.name, kind: fkind(f.name, f.mime), sid: f.session, at: f.at, size: KB(f.bytes), fid: f.id, you: f.source === "upload", mime: f.mime, bytes: f.bytes, tags: f.tags, tx: f.tx });
+// Library files the person deleted: hidden at once, and kept hidden while the delete request runs, so a reload from the server can't bring them back.
+const FILE_DEL = new Set<string>();
 function setFiles(ch: Channel, files: FileV[]) {
+  if (FILE_DEL.size) files = files.filter(f => !FILE_DEL.has(f.id));
   const was = LIB[ch.slug] || [], sig = (l: Art[]) => l.map(a => a.fid).sort().join(",");
   const next = files.map(toArt); next.forEach(a => { if (was.length && !was.some(w => w.fid === a.fid)) a.fresh = true; });
   const changed = sig(was) !== sig(next); LIB[ch.slug] = next; return changed;
@@ -935,9 +938,12 @@ if (LIVE) {
     const del = t.closest<HTMLElement>("[data-fdel]"); if (del) {
       e.preventDefault(); e.stopPropagation(); const [slug, id] = del.dataset.fdel!.split("|"), a = (LIB[slug] || []).find(x => x.fid === id); if (!a) return;
       if (!(await ask({ title: `Delete “${a.name}”?`, body: `It's removed from the Library and from ${who(channels.find(c => c.slug === slug)!)}'s computer.`, confirm: "Delete", danger: true }))) return;
-      const r = await api(`/res/${slug}/files/${id}/delete`, {}).catch((x: any) => ({ error: x.message }));
-      if (r.error) { note(ic.clock, "Couldn't delete it", r.error, ""); return; }
-      LIB[slug] = (LIB[slug] || []).filter(x => x.fid !== id); shFileGone(id); refresh(); note(ic.check, "Deleted", a.name, "");
+      // Gone from every list at once; the request runs in the background and the file comes back in its place if it fails.
+      const was = LIB[slug] || [], at = was.findIndex(x => x.fid === id); FILE_DEL.add(id); LIB[slug] = was.filter(x => x.fid !== id); refresh();
+      api(`/res/${slug}/files/${id}/delete`, {}).catch((x: any) => ({ error: x.message })).then((r: any) => {
+        if (r?.error) { FILE_DEL.delete(id); const cur = LIB[slug] ||= []; if (!cur.some(x => x.fid === id)) cur.splice(Math.min(Math.max(at, 0), cur.length), 0, a); refresh(); note(ic.clock, "Couldn't delete it", r.error, ""); return; }
+        shFileGone(id); note(ic.check, "Deleted", a.name, "");
+      });
     }
   });
   // Drop files anywhere on a channel screen (chat, Home, Library); paste images or files into the message box.
@@ -4199,10 +4205,10 @@ function beeFactAct(ch: Channel, op: "approve" | "edit" | "deny", id: number, te
 }
 // ---------- Notebook as pages (Memory Overhaul phase 6, DESIGN.md section 8) ----------
 // Design A, "Encyclopedia": a page list on the left, one article in the middle, the portrait and facts box on the right, and one Edit button
-// for the whole page. Live, the pages come from GET /notebook/<channel>/pages (a Hindsight knowledge page per topic, read by its ## headings)
+// for the whole page. Live, the pages come from GET /notebook/<channel>/pages (a memory knowledge page per topic, read by its ## headings)
 // and the screen is always on for a signed-in person (there is no older Notebook). If the pages can't
 // be read, the article area shows "Couldn't load the Notebook." and a Try again button. The one public safeguard: when the server sends
-// boot.flags.notebook_pages === false (the public Worker does that when no Hindsight service is configured), the screen says memory is off
+// boot.flags.notebook_pages === false (the public Worker does that when memory is not set up), the screen says memory is off
 // and makes no pages request. In the design sandbox (LIVE unset) the same screen runs on demo data at #/main/notebook.
 // The Bee review reuses the real handlers (data-bfok, data-spkok, ...) in one queue: a slim row above the article, and on a phone a pill.
 const nbPagesOff = (): boolean => !!LIVE && BOOT?.flags?.notebook_pages === false;
@@ -4448,7 +4454,7 @@ function wkHashPage(ch: Channel, pages: WkPage[]) {
 function nbWiki(ch: Channel): string {
   if (!LIVE && !NBW.seeded) { NBW.seeded = true; queueMicrotask(() => { (window as any).__beeFactsDemo(true); (window as any).__beeSpeakersDemo(true); }); }
   if (NBW.ch !== ch.slug) { NBW.ch = ch.slug; NBW.seen = ""; NBW.edit = ""; NBW.menu = false; NBW.sheet = false; NBW.hash = ""; }
-  if (nbPagesOff()) return `<div class="wk wkfail"><p>The Notebook needs memory, which is off for this deployment. Memory needs a Hindsight service (see docs/configuration.md).</p></div>`;
+  if (nbPagesOff()) return `<div class="wk wkfail"><p>The Notebook needs memory, which is off for this deployment. Memory needs its Vectorize index and AI binding set up (see docs/configuration.md).</p></div>`;
   if (LIVE) { const st = nbpState(ch.slug); if (st.failed || (st.ready && !st.tree.length)) return `<div class="wk wkfail"><p>Couldn't load the Notebook.</p><button class="sa mute" data-wkretry>Try again</button></div>`; if (!st.ready) { void nbpLoad(ch); return `<div class="wk wkcold"></div>`; } }
   const pages = wkPages(ch); wkHashPage(ch, pages);
   const cur = wkCur(ch, pages); if (LIVE && cur.kind === "page" && !cur.ready) void nbpPage(ch, cur.k);

@@ -155,6 +155,22 @@ const val = (s, k) => { const v = s.attributes.find((a) => a.key === k)?.value; 
   assert.ok(spans.some((x) => x.name === "chat" || x.name === "chat-retry" && val(x, "langfuse.observation.level") === "ERROR"));
   ok("tool and model errors: level ERROR, a short code, no text");
 }
+{
+  // own AI key: a step whose call the person's own key paid for carries own_key=true (also a failed step); a step on our key never does; the root and tools are not marked
+  const s = await taskId("Own key task"); sent.length = 0; env.BYOK = { base: "https://example.test/v1", model: "gpt-x" };
+  script = [{ calls: [["web_search", { q: "x" }]] }, { throw: `provider said ${CANARY}`, props: { orStatus: 502 } }];
+  await R.runTurn("t1", "main", "1", "go", null, { session: s }).catch(() => ({})); await flush(); delete env.BYOK;
+  let spans = sent.flatMap((_, i) => spansOf(i));
+  const mine = spans.filter((x) => x.name === "chat" || x.name === "chat-retry");
+  assert.ok(mine.length >= 2 && mine.every((x) => val(x, "langfuse.observation.metadata.own_key") === true), "every step of an own key turn is marked, including the failed one");
+  assert.ok(spans.filter((x) => !mine.includes(x)).every((x) => val(x, "langfuse.observation.metadata.own_key") === undefined), "the root and the tools are not marked");
+  assert.ok(!JSON.stringify(sent.map((x) => x.body)).includes(CANARY));
+  const s2 = await taskId("Our key task"); sent.length = 0; script = ["fine"];
+  await R.runTurn("t1", "main", "1", "hello", null, { session: s2 }); await flush();
+  spans = sent.flatMap((_, i) => spansOf(i)); assert.ok(spans.length > 0 && spans.every((x) => val(x, "langfuse.observation.metadata.own_key") === undefined), "no mark on our key");
+  assert.ok(ALLOWED_KEYS.has("langfuse.observation.metadata.own_key"));
+  ok("own key marker: own_key on the steps paid with the person's key, never on ours");
+}
 for (const mode of ["down", "500", "hang"]) {
   const s = await taskId(`Down ${mode}`); sent.length = 0; endpoint = mode; script = [{ calls: [["web_search", {}]] }, "All good."];
   const t0 = Date.now(); const r = await R.runTurn("t1", "main", "1", "hello", null, { session: s });
