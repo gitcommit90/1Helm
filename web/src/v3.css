@@ -1674,6 +1674,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 /* Notebook pages that could not be read: one quiet line and a button, in the article area (v3.ts nbWiki) */
 .wkfail{min-height:100dvh;padding:48px 4px;font-size:15px;color:var(--mute)}.wkfail p{margin:0 0 12px}
 .wkfail .sa{display:inline-flex;width:auto;margin:0}
+.tkfail{min-height:0;padding:24px 16px;text-align:center}
 /* Speaker labels in transcripts: they sit in the small line beside the time, so a label that arrives or changes later moves nothing. */
 .fvtranscript small{color:var(--mute);font-size:12.5px;line-height:1.4}
 .fvtranscript button.spk{all:unset;box-sizing:border-box;cursor:pointer;color:var(--ink2);font-weight:600;border-radius:4px;padding:0 2px;margin:0 -2px}

@@ -124,13 +124,16 @@ try {
   const xid = Number(moved.out.match(/#(\d+)/)[1]);
   const seen = JSON.parse(await R.browserJobTool("list_browser_tasks", {}, tcX)).jobs;
   assert.equal(seen.length, 1); assert.equal(seen[0].id, xid); assert.equal(seen[0].from_another_task, true); assert.equal(seen[0].task_title, "Plan the trip");
-  const refusedX = await R.browserToolInner("browser_task", { url: "https://example.com/", task: "Mine", values: [] }, tcX);
-  assert.match(refusedX.out, new RegExp(`job #${xid} is still working.*from another task "Plan the trip".*stop_browser_task \\(id ${xid}\\)`));
-  assert.match(await R.browserJobTool("start_browser_task", { url: "https://example.com/", task: "Legacy" }, tcX), /from another task "Plan the trip"/);
-  // the shared computer's refusal of other work says which job holds it and how to stop it
-  const busyNote = R.browserBusyNote({ code: 1, out: "A background browser job is using this channel's computer. Wait for it to finish or take control of the browser.", browser_busy: true }, other);
-  assert.match(busyNote.out, new RegExp(`browser job #${xid} \\(from another task "Plan the trip".*stop_browser_task with id ${xid}`));
-  assert.equal(R.browserBusyNote({ code: 1, out: "some other error" }, other).out, "some other error");
+  // Each task has its own browser tab, so the job holds only its own task's tab: the same task is refused a second job, another task is not.
+  const tcO2 = mkTc({ session: owner, turn: "cardO2" });
+  const refusedO = await R.browserToolInner("browser_task", { url: "https://example.com/", task: "Mine", values: [] }, tcO2);
+  assert.match(refusedO.out, new RegExp(`job #${xid} is still working in this task's browser tab.*from this task.*stop_browser_task \\(id ${xid}\\)`));
+  assert.match(await R.browserJobTool("start_browser_task", { url: "https://example.com/", task: "Legacy" }, tcO2), /already running in this task \(from this task/);
+  // the shared computer's refusal of other work says which job holds it and how to stop it (only the task that owns the job is told)
+  const busyNote = R.browserBusyNote({ code: 1, out: "A background browser job is using this channel's computer. Wait for it to finish or take control of the browser.", browser_busy: true }, owner);
+  assert.match(busyNote.out, new RegExp(`browser job #${xid} \\(from this task.*stop_browser_task with id ${xid}`));
+  assert.equal(R.browserBusyNote({ code: 1, out: "A background browser job is using this channel's computer.", browser_busy: true }, other).out, "A background browser job is using this channel's computer.");
+  assert.equal(R.browserBusyNote({ code: 1, out: "some other error" }, owner).out, "some other error");
   const hCount = handoffs.length;
   assert.match(await R.browserJobTool("stop_browser_task", { id: xid }, tcX), /from another task, "Plan the trip".*reported in that task/);
   assert.equal(browserJobRow(sql, xid).status, "stopping");

@@ -35,6 +35,13 @@ const BROWSER_OWNER_MAX_TTL_MS = 15 * 60e3;
 // operation can still be running. A browser call is short (wake, then one request to Chrome); a shell command may run up to
 // EXEC_TIMEOUT_MS. A row left by a deploy therefore blocks for minutes, never for an hour.
 const COMPUTER_BUSY_TTL_MS = { browser: 3 * 60e3, owner_browser: 3 * 60e3, command: EXEC_TIMEOUT_MS + 60e3 };
+// Each task has its own tab in the channel's Chrome (2026-10-30), so browser admission is per tab. A call names its tab with an extra
+// optional argument; a call without one (an older Worker, or the person's live pane) is the tab-less case and keeps the old, strict rules
+// (it conflicts with any owner). A tab's owner is kept in kv as browser_owner:<tab>; the tab-less owner keeps the old keys.
+const TAB_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const tabOf = (x) => (TAB_RE.test(String(x ?? "")) ? String(x) : "");
+const ownerKeys = (tab) => (tab ? [`browser_owner:${tab}`, `browser_owner_until:${tab}`] : ["browser_owner", "browser_owner_until"]);
+const CLEAR_OWNERS = "DELETE FROM kv WHERE k IN ('browser_owner','browser_owner_until') OR k LIKE 'browser_owner:%' OR k LIKE 'browser_owner_until:%'";
 const ACTIVITY_LINGER_MS = 4e3;   // the computer button's dot stays on this long after a computer step ends
 const COMPUTER_BUSY_TTL_DEFAULT_MS = 3 * 60e3;
 // A reservation written by an earlier instance of this object (a deploy or reset ended the call that would have removed it) keeps
@@ -431,90 +438,115 @@ export class ChannelComputer extends DurableObject {
   // The browser service is only reachable from here: containers have no public ingress, and getTcpPort is DO-only.
   // A reset can leave a container command or browser request running after this object's in-memory counts vanish.
   // Keep a separate durable reservation before each first await. Confirmed completion removes only its own row.
-  #busyStart(kind) { const id = crypto.randomUUID(), now = Date.now(); this.sql.exec("DELETE FROM computer_busy WHERE until<=?", now); this.sql.exec("INSERT INTO computer_busy (id,kind,until,instance,at) VALUES (?,?,?,?,?)", id, kind, now + (COMPUTER_BUSY_TTL_MS[kind] ?? COMPUTER_BUSY_TTL_DEFAULT_MS), this.busyInstance, now); return id; }
+  #busyStart(kind) { const id = crypto.randomUUID(), now = Date.now(); this.sql.exec("DELETE FROM computer_busy WHERE until<=?", now); this.sql.exec("INSERT INTO computer_busy (id,kind,until,instance,at) VALUES (?,?,?,?,?)", id, kind, now + (COMPUTER_BUSY_TTL_MS[String(kind).split("@")[0]] ?? COMPUTER_BUSY_TTL_DEFAULT_MS), this.busyInstance, now); return id; }
   #busyEnd(id) { this.sql.exec("DELETE FROM computer_busy WHERE id=?", id); }
   #busyActive(kind = null) {
     // A row from another instance (or from before the instance column) is an orphan: its start is `at`, or the expiry minus its kind's limit.
     const now = Date.now(), cmd = COMPUTER_BUSY_TTL_MS.command;
     const live = `until>? AND (instance=? OR COALESCE(at, until - CASE kind WHEN 'command' THEN ${cmd} ELSE ${COMPUTER_BUSY_TTL_DEFAULT_MS} END)+?>?)`;
     const args = [now, this.busyInstance, COMPUTER_BUSY_ORPHAN_MS, now];
-    return !!this.sql.exec(`SELECT 1 FROM computer_busy WHERE ${kind ? "kind=? AND " : ""}${live} LIMIT 1`, ...(kind ? [kind, ...args] : args)).toArray().length;
+    return !!this.sql.exec(`SELECT 1 FROM computer_busy WHERE ${kind ? (kind.endsWith("%") ? "kind LIKE ? AND " : "kind=? AND ") : ""}${live} LIMIT 1`, ...(kind ? [kind, ...args] : args)).toArray().length;
   }
-  #browserOwner() {
-    const token = this.get("browser_owner"), until = Number(this.get("browser_owner_until") || 0);
+  // Busy rows that could conflict with a call on this tab: shell commands, rows with no tab (older Workers) and this tab's own rows.
+  #busyActiveFor(tab) {
+    return this.#busyActive("command") || this.#busyActive("browser") || this.#busyActive("owner_browser") || this.#busyActive(`browser@${tab}`) || this.#busyActive(`owner_browser@${tab}`);
+  }
+  #browserOwner(tab = "") {
+    const [kt, ku] = ownerKeys(tab), token = this.get(kt), until = Number(this.get(ku) || 0);
     return token && until > Date.now() ? { token, until } : null;
   }
+  // Is any tab owned (a background job holds it)? The tab-less rules and shell commands ask this.
+  #anyOwner() {
+    if (this.#browserOwner()) return true;
+    const now = Date.now();
+    return this.sql.exec("SELECT v FROM kv WHERE k LIKE 'browser_owner_until:%'").toArray().some((r) => Number(r.v) > now);
+  }
+  // Owner calls in flight on this tab; with no tab, those made without a tab (older Workers), not those of other tabs.
+  #ownerInFlight(tab) { return tab ? (this.ownerInFlightTab?.[tab] || 0) : (this.ownerBrowserInFlight || 0) - Object.values(this.ownerInFlightTab || {}).reduce((a, b) => a + b, 0); }
+  #bump(map, tab, d) { const m = (this[map] ||= {}); m[tab] = (m[tab] || 0) + d; if (m[tab] <= 0) delete m[tab]; }
   // Test route only (resident deployProbe op "computer"): what is holding browser admission, with no tokens. Additive RPC.
   async busyDebug() {
     const now = Date.now();
     return { now, instance: this.busyInstance, in_memory: { browser: this.browserInFlight || 0, owner_browser: this.ownerBrowserInFlight || 0, command: this.commandInFlight || 0 },
-      owner: (() => { const o = this.#browserOwner(); return { owned: !!o, until: o?.until || null }; })(), human_lease_until: Number(this.get("lease_until") || 0) || null,
+      owner: (() => { const o = this.#browserOwner(); return { owned: !!o || this.#anyOwner(), until: o?.until || null }; })(), human_lease_until: Number(this.get("lease_until") || 0) || null,
       rows: this.sql.exec("SELECT kind, until, at, instance FROM computer_busy ORDER BY until").toArray().map((r) => ({ kind: r.kind, until: r.until, at: r.at, age_ms: r.at ? now - r.at : null, expires_in_ms: r.until - now, same_instance: r.instance === this.busyInstance, legacy: r.instance == null })) };
   }
-  async browserOwnerState() {
-    const owner = this.#browserOwner();
-    return { owned: !!owner, in_flight: !!this.ownerBrowserInFlight || this.#busyActive("owner_browser"), human_controlled: !!this.get("lease") && Number(this.get("lease_until") || 0) > Date.now(), lease_until: owner?.until || null }; // Never return the bearer token to the app.
+  // With a tab: that tab's owner. Without: whether any tab is owned (the approval check asks this to attribute a page's request).
+  async browserOwnerState(tab = "") {
+    const t = tabOf(tab), owner = this.#browserOwner(t);
+    return { owned: t ? !!owner : this.#anyOwner(), in_flight: t ? !!this.#ownerInFlight(t) || this.#busyActive(`owner_browser@${t}`) : !!this.ownerBrowserInFlight || this.#busyActive("owner_browser%"), human_controlled: !!this.get("lease") && Number(this.get("lease_until") || 0) > Date.now(), lease_until: owner?.until || null }; // Never return the bearer token to the app.
   }
   // The caller creates and retains a random token. A retry with the same token is safe; a second job is refused.
-  async acquireBrowserOwner(token, ttlMs = BROWSER_OWNER_TTL_MS) {
+  // The optional last argument is the tab (a task's key): a job holds only its own task's tab, and other tabs keep working.
+  async acquireBrowserOwner(token, ttlMs = BROWSER_OWNER_TTL_MS, tab = "") {
     if (!/^[A-Za-z0-9_-]{32,128}$/.test(String(token || ""))) return { ok: false, error: "invalid browser owner token" };
+    tab = tabOf(tab);
     if (this.get("lease") && Number(this.get("lease_until") || 0) > Date.now())
       return { ok: false, error: "The person has control of the browser.", taken_over: true };
-    const owner = this.#browserOwner();
-    if (owner && owner.token !== token) return { ok: false, error: "Another browser task is using this browser.", browser_busy: true };
-    if ((this.browserInFlight || this.commandInFlight || this.#busyActive()) && (!owner || owner.token !== token))
+    const owner = this.#browserOwner(tab), legacy = tab ? this.#browserOwner() : null;
+    if (owner && owner.token !== token || legacy) return { ok: false, error: tab && !legacy ? "Another browser job is already using this task's browser tab." : "Another browser task is using this browser.", browser_busy: true };
+    const busy = tab ? (this.#tabInFlight(tab) || this.#ownerInFlight("") || this.commandInFlight || this.#busyActiveFor(tab)) : (this.browserInFlight || this.commandInFlight || this.#busyActive());
+    if (busy && (!owner || owner.token !== token))
       return { ok: false, error: "The computer is still completing another operation. Try again after it finishes.", browser_busy: true };
-    const until = Date.now() + Math.max(1000, Math.min(Number(ttlMs) || BROWSER_OWNER_TTL_MS, BROWSER_OWNER_MAX_TTL_MS));
-    this.put("browser_owner", token); this.put("browser_owner_until", until);
+    const until = Date.now() + Math.max(1000, Math.min(Number(ttlMs) || BROWSER_OWNER_TTL_MS, BROWSER_OWNER_MAX_TTL_MS)), [kt, ku] = ownerKeys(tab);
+    this.put(kt, token); this.put(ku, until);
     return { ok: true, lease_until: until };
   }
-  async renewBrowserOwner(token, ttlMs = BROWSER_OWNER_TTL_MS) {
-    const owner = this.#browserOwner();
+  #tabInFlight(tab) { return this.browserInFlightTab?.[tab] || 0; }
+  async renewBrowserOwner(token, ttlMs = BROWSER_OWNER_TTL_MS, tab = "") {
+    tab = tabOf(tab); const owner = this.#browserOwner(tab);
     if (!owner || owner.token !== token) return { ok: false, error: "Browser ownership was lost. Stop this task.", owner_lost: true };
     if (this.get("lease") && Number(this.get("lease_until") || 0) > Date.now())
       return { ok: false, error: "The person took control of the browser.", taken_over: true };
     const until = Date.now() + Math.max(1000, Math.min(Number(ttlMs) || BROWSER_OWNER_TTL_MS, BROWSER_OWNER_MAX_TTL_MS));
-    this.put("browser_owner_until", until); return { ok: true, lease_until: until };
+    this.put(ownerKeys(tab)[1], until); return { ok: true, lease_until: until };
   }
-  async releaseBrowserOwner(token) {
-    if (this.get("browser_owner") !== token || !token) return { ok: false, error: "Browser ownership was lost.", owner_lost: true };
-    if (this.ownerBrowserInFlight || this.#busyActive("owner_browser")) return { ok: false, error: "A browser operation is still in progress.", browser_busy: true };
-    this.sql.exec("DELETE FROM kv WHERE k IN ('browser_owner','browser_owner_until')"); return { ok: true };
+  async releaseBrowserOwner(token, tab = "") {
+    tab = tabOf(tab); const [kt, ku] = ownerKeys(tab);
+    if (this.get(kt) !== token || !token) return { ok: false, error: "Browser ownership was lost.", owner_lost: true };
+    if (this.#ownerInFlight(tab) || this.#busyActive(tab ? `owner_browser@${tab}` : "owner_browser%")) return { ok: false, error: "A browser operation is still in progress.", browser_busy: true };
+    this.sql.exec("DELETE FROM kv WHERE k IN (?,?)", kt, ku); return { ok: true };
   }
-  #browserOwnerGate(op, token, reserved = false) {
+  #browserOwnerGate(op, token, reserved = false, tab = "") {
     if (op !== "status" && this.get("lease") && Number(this.get("lease_until") || 0) > Date.now())
       return { ok: false, error: "The person is using the browser right now (they took control). Wait for them to hand it back, then take a snapshot.", taken_over: true };
-    const owner = this.#browserOwner();
+    const owner = this.#browserOwner(tab);
     if (token != null) {
       if (!owner || owner.token !== token) return { ok: false, error: "Browser ownership was lost. Stop this task.", owner_lost: true };
-      if ((this.ownerBrowserInFlight || 0) > (reserved ? 1 : 0) || !reserved && this.#busyActive("owner_browser"))
+      if (this.#ownerInFlight(tab) > (reserved ? 1 : 0) || !reserved && this.#busyActive(tab ? `owner_browser@${tab}` : "owner_browser"))
         return { ok: false, error: "Another browser operation is still in progress.", browser_busy: true };
-    } else if (op !== "status" && (owner || this.ownerBrowserInFlight || this.#busyActive("owner_browser")))
+    } else if (op !== "status" && (tab
+      ? (owner || this.#browserOwner() || this.#ownerInFlight(tab) || this.#ownerInFlight("") || this.#busyActive(`owner_browser@${tab}`) || this.#busyActive("owner_browser"))   // this task's own job, or a tab-less job (older Worker)
+      : (this.#anyOwner() || this.ownerBrowserInFlight || this.#busyActive("owner_browser%"))))
       return { ok: false, error: "A background browser task is using this browser. Wait for it to finish, or take control to stop it.", browser_busy: true };
     // status is also used by the person's live browser pane. It does not change the tab.
     return null;
   }
   // The optional third argument is a bearer token held by a background browser task. Ordinary callers stay unchanged.
-  async browser(op, body = {}, ownerToken = null) {
-    if (!/^(navigate|snapshot|act|back|screenshot|status|record)$/.test(op)) return { ok: false, error: "unknown browser op" };
-    const denied = this.#browserOwnerGate(op, ownerToken); if (denied) return denied;
+  // The optional fourth argument is the tab: the calling task's key. The call acts only on that task's tab and is admitted per tab.
+  // It reaches the browser service as "_tab" in the request body (an older service ignores it and keeps one shared tab).
+  async browser(op, body = {}, ownerToken = null, tabKey = "") {
+    if (!/^(navigate|snapshot|act|back|screenshot|status|record|activate|closetab)$/.test(op)) return { ok: false, error: "unknown browser op" };
+    const tab = tabOf(tabKey || body?._tab); if (tab) body = { ...body, _tab: tab };
+    const denied = this.#browserOwnerGate(op, ownerToken, false, tab); if (denied) return denied;
     // Reserve the call before the first await, so a job cannot acquire ownership while Chrome is waking.
-    const busyId = op === "status" ? null : this.#busyStart(ownerToken == null ? "browser" : "owner_browser");
+    const busyId = op === "status" ? null : this.#busyStart((ownerToken == null ? "browser" : "owner_browser") + (tab ? `@${tab}` : ""));
     const counted = op !== "status"; if (counted) this.workOps = (this.workOps || 0) + 1;   // the live pane's status polls are not work
     this.browserInFlight = (this.browserInFlight || 0) + 1;
-    if (ownerToken != null) this.ownerBrowserInFlight = (this.ownerBrowserInFlight || 0) + 1;
+    if (tab) this.#bump("browserInFlightTab", tab, 1);
+    if (ownerToken != null) { this.ownerBrowserInFlight = (this.ownerBrowserInFlight || 0) + 1; if (tab) this.#bump("ownerInFlightTab", tab, 1); }
     this.put("last_activity", Date.now());
     try {
       const boot = await this.ensureRunning();
       // A human may take control, or the lease may expire, during a cold start.
-      const changed = this.#browserOwnerGate(op, ownerToken, true); if (changed) return changed;
+      const changed = this.#browserOwnerGate(op, ownerToken, true, tab); if (changed) return changed;
       this.inflight = (this.inflight || 0) + 1;
       try {
         const port = this.ctx.container.getTcpPort(6080);
         let r, last;
         for (let i = 0; i < 40; i++) {   // the service starts with the container; give it a moment on a cold wake
           // A failed connection waits before retrying. Ownership may change during that wait.
-          const beforeSend = this.#browserOwnerGate(op, ownerToken, true); if (beforeSend) return beforeSend;
+          const beforeSend = this.#browserOwnerGate(op, ownerToken, true, tab); if (beforeSend) return beforeSend;
           try { r = await port.fetch(`http://browser/cdp/${op}`, { method: "POST", headers: { "content-type": "application/json", "x-1helm-controller": "1" }, body: JSON.stringify(this.env.BROWSER_WAIT === "quiet" ? { ...body, _wait: "quiet" } : body) }); break; }
           catch (e) { last = e; await sleep(250); }
         }
@@ -522,7 +554,7 @@ export class ChannelComputer extends DurableObject {
         const out = await r.json();
         // The operation may have completed before a takeover or expiry. Report uncertainty; do not invite a replay.
         if (ownerToken != null) {
-          const lost = this.#browserOwnerGate(op, ownerToken, true);
+          const lost = this.#browserOwnerGate(op, ownerToken, true, tab);
           if (lost) return { ...lost, operation_may_have_completed: true };
         }
         if (boot.cold) out.computer_woke_ms = boot.wake_ms;
@@ -532,7 +564,8 @@ export class ChannelComputer extends DurableObject {
       if (busyId) this.#busyEnd(busyId);
       if (counted) { this.workOps--; this.opEnded = Date.now(); }
       this.browserInFlight--;
-      if (ownerToken != null) this.ownerBrowserInFlight--;
+      if (tab) this.#bump("browserInFlightTab", tab, -1);
+      if (ownerToken != null) { this.ownerBrowserInFlight--; if (tab) this.#bump("ownerInFlightTab", tab, -1); }
       this.put("last_activity", Date.now());
     }
   }
@@ -580,7 +613,7 @@ export class ChannelComputer extends DurableObject {
     const cur = this.get("lease"), until = Number(this.get("lease_until") || 0);
     if (cur && cur !== who && until > Date.now()) return { ok: false, error: "someone else has control" };
     // A current operation can finish, but its background owner cannot start another one.
-    this.sql.exec("DELETE FROM kv WHERE k IN ('browser_owner','browser_owner_until')");
+    this.sql.exec(CLEAR_OWNERS);
     this.put("lease", who); this.put("lease_until", Date.now() + ms); this.put("last_activity", Date.now());
     return { ok: true, lease_until: Date.now() + ms };
   }
@@ -735,7 +768,7 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
   async exec(cmd, { save = "defer", tag = null, timeoutMs = EXEC_TIMEOUT_MS, run = null, outMax = 20000 } = {}) {   // outMax: how much of the END of the output comes back (read_file asks for more, up to the 200,000 the shell keeps)
     // A shell command can drive Chrome or send network traffic. Do not launch it while a
     // background browser job owns the shared computer, and reserve before the first await.
-    if (this.#browserOwner() || this.ownerBrowserInFlight || this.#busyActive("owner_browser")) return { code: 1, out: "A background browser job is using this channel's computer. Wait for it to finish or take control of the browser.", browser_busy: true };
+    if (this.#anyOwner() || this.ownerBrowserInFlight || this.#busyActive("owner_browser%")) return { code: 1, out: "A background browser job is using this channel's computer. Wait for it to finish or take control of the browser.", browser_busy: true };
     const busyId = this.#busyStart("command");
     this.commandInFlight = (this.commandInFlight || 0) + 1; this.workOps = (this.workOps || 0) + 1;
     try {
@@ -747,7 +780,7 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
     if (this.get("skills_v") !== SKILLS_VERSION && Date.now() - Number(this.get("skills_fail_at") || 0) > 10 * 60e3) await this.installSkills();   // deployed while this computer was up: refresh the skill scripts
     if (DECK_COMMAND.test(cmd) && Date.now() - Number(this.get("templates_fail_at") || 0) > 60e3) await this.installTemplates(cmd);   // the template a deck command uses, only on a computer that makes a deck
     await this.loadStandins();
-    if (this.#browserOwner() || this.ownerBrowserInFlight || this.#busyActive("owner_browser")) return { code: 1, out: "A background browser job took control before this command started. No command was run.", browser_busy: true };
+    if (this.#anyOwner() || this.ownerBrowserInFlight || this.#busyActive("owner_browser%")) return { code: 1, out: "A background browser job took control before this command started. No command was run.", browser_busy: true };
     const t0 = Date.now();
     this.inflight = (this.inflight || 0) + 1;
     let r;
@@ -820,7 +853,7 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
   // (the container is still up and is reused). Only an explicit user sleep is not cancellable.
   async stop(reason, { cancellable = reason !== "user requested sleep" } = {}) {
     // An explicit sleep must not be undone by a background browser job's next action.
-    if (reason === "user requested sleep") this.sql.exec("DELETE FROM kv WHERE k IN ('browser_owner','browser_owner_until')");
+    if (reason === "user requested sleep") this.sql.exec(CLEAR_OWNERS);
     if (cancellable && (this.inflight || Date.now() - Number(this.get("last_activity") || 0) < MIN_AWAKE_AFTER_CMD_MS)) {
       await this.armAlarm(Date.now() + MIN_AWAKE_AFTER_CMD_MS); return { stopped: false, deferred: true, reason };
     }

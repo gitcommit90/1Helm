@@ -4,6 +4,7 @@
 // logs or chat: browser_fill_card types them straight into the checkout form and the outline shows "•••• (filled)".
 // Prototype: link-cli's public client id (Stripe's own device-flow app). Before launch: register 1Helm's own client.
 import { sealSecret, openSecret } from "../sentinel.js";
+import { purchaseOutcome } from "./purchase-state.js";
 
 const AUTH = "https://login.link.com", API = "https://api.link.com";
 const CLIENT_ID = "lwlpk_U7Qy7ThG69STZk";
@@ -110,8 +111,28 @@ export async function linkGetPurchase(env, tenantId, id, withCard = false) {
   const sr = await linkApi(env, tenantId, "GET", `/spend_requests/${encodeURIComponent(own.id)}${withCard ? "?include=card" : ""}`);
   if (!sr) throw new Error("Link no longer has that purchase");
   await env.DB.prepare("UPDATE link_purchases SET status=?, card_last4=COALESCE(?,card_last4), updated_at=? WHERE id=?").bind(sr.status, sr.card_last4 || sr.card?.number?.slice(-4) || null, now(), own.id).run();
-  return withCard ? { public: { ...pub(sr), test: !!own.test }, card: sr.card || null } : { ...pub(sr), test: !!own.test, approval_url: own.approval_url };
+  const fresh = await env.DB.prepare("SELECT * FROM link_purchases WHERE id=?").bind(own.id).first().catch(() => null) || own;
+  const outcome = purchaseOutcome({ ...fresh, status: sr.status });
+  return withCard ? { public: { ...pub(sr), test: !!own.test }, card: sr.card || null } : { ...pub(sr), test: !!own.test, approval_url: own.approval_url, outcome };
 }
 export async function linkListPurchases(env, tenantId) {
-  return (await env.DB.prepare("SELECT id,channel,amount,currency,merchant_name,merchant_url,status,card_last4,test,created_at FROM link_purchases WHERE tenant_id=? ORDER BY created_at DESC LIMIT 20").bind(tenantId).all()).results;
+  const rows = (await env.DB.prepare("SELECT id,channel,amount,currency,merchant_name,merchant_url,status,card_last4,test,created_at,card_filled_at,card_filled_host,fill_failed_at,fill_failed_why,handoff_at FROM link_purchases WHERE tenant_id=? ORDER BY created_at DESC LIMIT 20").bind(tenantId).all()).results;
+  return rows.map((r) => ({ id: r.id, channel: r.channel, amount: r.amount, currency: r.currency, merchant_name: r.merchant_name, merchant_url: r.merchant_url, status: r.status, card_last4: r.card_last4, test: r.test, created_at: r.created_at, outcome: purchaseOutcome(r) }));
+}
+// Facts 1Helm records as they happen. Never any card data: only the site host and a short plain reason.
+// Each write is stamped strictly later than every fact already on the row (a tie in the same millisecond would hide which came last).
+const LATER = "MAX(?, COALESCE(card_filled_at,0)+1, COALESCE(fill_failed_at,0)+1, COALESCE(handoff_at,0)+1)";
+export async function linkNoteFill(env, tenantId, id, { ok, host, why }) {
+  const at = now();
+  try {
+    if (ok) await env.DB.prepare(`UPDATE link_purchases SET card_filled_at=${LATER}, card_filled_host=? WHERE id=? AND tenant_id=?`).bind(at, String(host || "").slice(0, 100) || null, String(id), tenantId).run();
+    else await env.DB.prepare(`UPDATE link_purchases SET fill_failed_at=${LATER}, fill_failed_why=? WHERE id=? AND tenant_id=?`).bind(at, String(why || "").slice(0, 200) || null, String(id), tenantId).run();
+  } catch {}
+}
+// The channel's newest approved purchase that no one has handed off yet (a handoff is not tied to a purchase id).
+export async function linkNoteHandoff(env, tenantId, channel) {
+  try {
+    const at = now();
+    await env.DB.prepare(`UPDATE link_purchases SET handoff_at=${LATER} WHERE id=(SELECT id FROM link_purchases WHERE tenant_id=? AND channel=? AND status='approved' AND updated_at>? ORDER BY created_at DESC LIMIT 1)`).bind(at, tenantId, channel, at - 6 * 3600e3).run();
+  } catch {}
 }

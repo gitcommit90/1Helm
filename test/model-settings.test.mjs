@@ -101,8 +101,9 @@ try {
   assert.equal(sent.at(-1).model, ID.OSS20); assert.equal(sent.at(-1).response_format, undefined, "a model with no JSON mode gets no response format");
   failures.add(ID.OSS20); n = sent.length; await assert.rejects(call({ chore: true }, "ambient-review", e20), /503/); failures.clear();
   assert.ok(sent.slice(n).every((p) => p.model === ID.OSS20), "a job with no fallbacks never substitutes another model");
-  // a test override and an own-key account keep their own precedence
-  const own = { BYOK: { model: "own-model" } }; assert.equal(await modelSettingsEnv(own), own);
+  // a test override keeps its precedence; an own-key account also gets the saved settings (for the jobs with no own-key path) and keeps its key
+  const own = { ...env, BYOK: { model: "own-model" } }, ownSnap = await modelSettingsEnv(own);
+  assert.equal(ownSnap.BYOK, own.BYOK); assert.ok(ownSnap.MODEL_SETTINGS?.jobs, "an own-key env gets the saved settings");
   // restore an earlier version: new revision, the old content, history says so
   const hist = (await modelSettingsView(env)).history, first = hist.filter((h) => h.action === "save").at(-1).revision;
   const restored = await restoreModelSettings(env, { revision, restore_revision: first }, "admin"); revision = restored.revision;

@@ -78,12 +78,12 @@ async function startStack() {
       }
       const ts = await targets(); const keep = fresh ? ts.find((t) => t.id === fresh.id) || ts[0] : ts[0];
       for (const t of ts) if (t.id !== keep?.id) await fetch(`http://127.0.0.1:${CDP_PORT}/json/close/${t.id}`).catch(() => {});
-      currentTarget = keep?.id || null; seenTargets.clear(); if (keep) { seenTargets.add(keep.id); await fetch(`http://127.0.0.1:${CDP_PORT}/json/activate/${keep.id}`).catch(() => {}); }
+      resetTabs(keep?.id || null); if (keep) await fetch(`http://127.0.0.1:${CDP_PORT}/json/activate/${keep.id}`).catch(() => {});
       if (!fresh) log("no tab accepted a test click after start");
     } catch (e) { log("tab reset failed", e.message); }
     // Then reopen the page that was open when the computer went to sleep, in that one tab, and wait for it to load.
     try { const last = fs.readFileSync(LAST_URL, "utf8").trim();
-      if (/^https?:\/\//.test(last)) { const ts1 = await targets(); const t1 = ts1.find((t) => t.id === currentTarget) || ts1[0];
+      if (/^https?:\/\//.test(last)) { const ts1 = await targets(); const t1 = ts1.find((t) => t.id === tabs.get("")?.current) || ts1[0];
         if (t1 && !/^https?:/.test(t1.url)) { const c0 = new CDP(t1.webSocketDebuggerUrl); await c0.open(); await c0.send("Page.enable");
           const loaded = c0.once("Page.loadEventFired", 15e3); await c0.send("Page.navigate", { url: last }).catch(() => {}); await loaded; c0.close(); log(`reopened ${last}`); } } } catch (e) { log("reopen failed", e.message); }
   }
@@ -91,6 +91,7 @@ async function startStack() {
   if (!procs.vncView) run("vncView", "x11vnc", ["-display", DISPLAY, "-localhost", "-rfbport", "5900", "-nopw", "-shared", "-forever", "-viewonly", "-quiet", "-noxdamage", "-cursor", "arrow"]);
   if (!procs.vncCtl) run("vncCtl", "x11vnc", ["-display", DISPLAY, "-localhost", "-rfbport", "5901", "-nopw", "-shared", "-forever", "-quiet", "-noxdamage", "-cursor", "arrow"]);
   await waitFor(async () => (await portOpen(5900)) && (await portOpen(5901)), 10e3, "VNC");
+  await browserConn().catch((e) => log("browser connection failed", e.message));
   log(`stack up in ${Date.now() - t0} ms`);
   return { cold: true, start_ms: Date.now() - t0 };
 }
@@ -115,10 +116,9 @@ async function mouseReaches(c) {
   return false;
 }
 async function targets() { return (await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`)).json()).filter((t) => t.type === "page"); }
-let currentTarget = null;
 // Switch (2026-10-01): "_wait":"quiet" on a request = wait until the page goes quiet (no DOM changes and no requests in
 // flight for QUIET ms, capped) instead of fixed sleeps, and keep one CDP connection open between requests. Same for every page.
-let FAST = false, live = null; const QUIET = 300;
+let FAST = false; const QUIET = 300;
 async function quiet(c, cap = 8e3) {
   const t0 = Date.now(); let last = Date.now(), lastMut = -1;
   while (Date.now() - t0 < cap) {
@@ -130,31 +130,127 @@ async function quiet(c, cap = 8e3) {
   }
   return Date.now() - t0;
 }
-async function page() {
-  if (FAST && live && live.ws.readyState === 1) {   // reuse the open connection unless a new tab appeared or ours is gone
-    const ts0 = await targets();
-    if (!ts0.find((t) => !seenTargets.has(t.id)) && ts0.some((t) => t.id === currentTarget)) return live;
-  }
-  if (live) { clearInterval(live.reset); try { live.close(); } catch {} live = null; }
-  let ts = await targets();
-  if (!ts.length) { await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?about:blank`, { method: "PUT" }); ts = await targets(); }
-  // Follow the newest tab (links that open a new tab), otherwise stay on the one we used last.
-  const known = ts.find((t) => t.id === currentTarget);
-  const t = known && ts[0].id !== currentTarget && !seenTargets.has(ts[0].id) ? ts[0] : known || ts[0];
-  for (const x of ts) seenTargets.add(x.id);
-  currentTarget = t.id;
-  const c = new CDP(t.webSocketDebuggerUrl); await c.open();
+// ---- One tab per task (2026-10-30) ----
+// A request may carry "_tab": the calling task's key. Each key has its own tab (plus any tab that tab opens), created on its first
+// request, and an op acts only on it. The profile (logins, cookies) is shared. A request with no "_tab" (the person's live pane, or an
+// older Worker) acts on the tab that was last brought to the front, as before. The keys, ids and URLs here never leave this computer
+// except the one tab's own page and URL in an op's answer.
+const TAB_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const tabKey = (b) => (TAB_RE.test(String(b?._tab ?? "")) ? String(b._tab) : "");
+const TABS_FILE = "/workspace/.browser/tabs.json";
+const TAB_IDLE_MS = Number(process.env.TAB_IDLE_MS) || 20 * 60e3;   // a task's tabs close after this long with no browser call from it
+const TAB_PIN_MS = 2 * 3600e3;                                       // a tab shown to the person (handoff) is kept this long
+const TAB_MAX = 10;                                                  // most task tabs at once; the least recently used one closes to make room
+const tabs = new Map();    // key -> { key, targets: Set<targetId>, current, last, url }
+const owned = new Map();   // targetId -> key
+const conns = new Map();   // targetId -> CDP (quiet mode keeps one connection per tab)
+const chains = new Map();  // key -> promise: calls on one tab run one after the other
+let front = null, pin = null, bconn = null;   // front: key last brought to the front. pin: { key, at } while a handoff shows that tab.
+const mkTab = (key, id) => { const rec = { key, targets: new Set([id]), current: id, last: Date.now(), url: "" }; tabs.set(key, rec); owned.set(id, key); return rec; };
+function dropTarget(id) {
+  const key = owned.get(id); owned.delete(id);
+  const c = conns.get(id); if (c) { clearInterval(c.reset); try { c.close(); } catch {} conns.delete(id); }
+  const rec = key !== undefined ? tabs.get(key) : null;
+  if (rec) { rec.targets.delete(id); if (rec.current === id) rec.current = [...rec.targets].at(-1) || null; }
+}
+function resetTabs(spareId) {   // Chrome just started: nothing from before exists any more
+  for (const c of conns.values()) { clearInterval(c.reset); try { c.close(); } catch {} }
+  tabs.clear(); owned.clear(); conns.clear(); pin = null; front = null;
+  if (spareId) { mkTab("", spareId); front = ""; }
+}
+// A page that opens a new tab or window (target=_blank, window.open) makes that tab part of the same task: found by its opener, never by "newest tab".
+function onBrowserEvent(d) {
+  const i = d.params?.targetInfo;
+  if (d.method === "Target.targetCreated" && i?.type === "page") {
+    const key = i.openerId ? owned.get(i.openerId) : undefined;
+    if (key !== undefined && !owned.has(i.targetId)) { const rec = tabs.get(key); if (rec) { rec.targets.add(i.targetId); rec.current = i.targetId; owned.set(i.targetId, key); } }
+  } else if (d.method === "Target.targetDestroyed") dropTarget(d.params.targetId);
+}
+async function browserConn() {
+  if (bconn && bconn.ws.readyState === 1) return bconn;
+  const v = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json();
+  const c = new CDP(v.webSocketDebuggerUrl); await c.open();
+  c.ev.push(onBrowserEvent); c.ws.on("close", () => { if (bconn === c) bconn = null; });
+  await c.send("Target.setDiscoverTargets", { discover: true });
+  bconn = c; return c;
+}
+function serial(key, fn) {
+  const run = (chains.get(key) || Promise.resolve()).then(fn);
+  const tail = run.catch(() => {}); chains.set(key, tail);
+  tail.then(() => { if (chains.get(key) === tail) chains.delete(key); });
+  return run;
+}
+const readSaved = () => { try { return JSON.parse(fs.readFileSync(TABS_FILE, "utf8")) || {}; } catch { return {}; } };
+function saveTabs(forget) {   // the last page of each task's tab, so a tab lost to a restart can be reopened where it was
+  try {
+    const now = Date.now(), out = {};
+    for (const [k, v] of Object.entries(readSaved())) if (k !== forget && now - v.at < 24 * 3600e3) out[k] = v;
+    for (const rec of tabs.values()) if (rec.key && rec.url) out[rec.key] = { url: rec.url, at: rec.last };
+    const keep = Object.entries(out).sort((a, b) => b[1].at - a[1].at).slice(0, 60);
+    fs.writeFileSync(TABS_FILE, JSON.stringify(Object.fromEntries(keep)));
+  } catch {}
+}
+async function newTarget() { return await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?about:blank`, { method: "PUT" })).json(); }
+async function closeTab(key, keepSaved) {   // closes this task's tabs only; Chrome keeps at least one page so it never exits
+  const rec = tabs.get(key); if (!rec) return 0;
+  const ids = [...rec.targets];
+  if ((await targets()).filter((t) => !rec.targets.has(t.id)).length === 0) { const t = await newTarget(); mkTab("", t.id); }
+  for (const id of ids) { await fetch(`http://127.0.0.1:${CDP_PORT}/json/close/${id}`).catch(() => {}); dropTarget(id); }
+  tabs.delete(key); if (front === key) front = tabs.has("") ? "" : null; if (pin?.key === key) pin = null;
+  if (!keepSaved) saveTabs(key);
+  return ids.length;
+}
+async function activateTab(rec) {
+  if (pin && pin.key !== rec.key && Date.now() - pin.at < TAB_PIN_MS) return;   // a handoff keeps its tab in front for the person
+  front = rec.key;
+  if (rec.current) await fetch(`http://127.0.0.1:${CDP_PORT}/json/activate/${rec.current}`).catch(() => {});
+}
+async function connectTarget(t) {
+  let c = FAST ? conns.get(t.id) : null;
+  if (c && c.ws.readyState === 1) return c;
+  if (c) { clearInterval(c.reset); conns.delete(t.id); }
+  c = new CDP(t.webSocketDebuggerUrl); await c.open(); c.targetId = t.id;
   await c.send("Page.enable"); await c.send("Runtime.enable");
-  if (t.id !== ts[0].id || !known) await fetch(`http://127.0.0.1:${CDP_PORT}/json/activate/${t.id}`).catch(() => {});
   if (FAST) { const pend = new Set(); c.inflight = 0; await c.send("Network.enable");
     c.ev.push((d) => { if (d.method === "Network.requestWillBeSent" && !/^(EventSource|WebSocket)$/.test(d.params.type || "")) pend.add(d.params.requestId);
       else if (d.method === "Network.loadingFinished" || d.method === "Network.loadingFailed") pend.delete(d.params.requestId); c.inflight = pend.size; });
     c.reset = setInterval(() => { pend.clear(); c.inflight = 0; }, 15e3); c.reset.unref();   // a stuck long-poll never blocks quiet forever
-    c.persistent = true; live = c; }
+    c.persistent = true; conns.set(t.id, c); c.ws.on("close", () => { clearInterval(c.reset); if (conns.get(t.id) === c) conns.delete(t.id); }); }
   return c;
 }
-const seenTargets = new Set();
-async function evalJS(c, expr, sessionId) { const r = await c.send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true }, 30e3, sessionId); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text); return r.result.value; }
+// The tab for this key and a connection to its current page. A task with no tab yet gets a new one; a task whose tab is gone (idle
+// close, Chrome restart) gets a new one that reopens its last page, with a note for the model.
+async function openTab(key, ctx) {
+  let ts = await targets(), rec = tabs.get(key), note = null;
+  if (rec) for (const id of [...rec.targets]) if (!ts.some((t) => t.id === id)) dropTarget(id);
+  if (pin?.key === key && ctx.op !== "activate") pin = null;   // the task is using its tab again
+  if (!rec || !rec.current) {
+    if (key && tabs.size >= TAB_MAX) {
+      const old = [...tabs.values()].filter((r) => r.key && r.key !== pin?.key && !chains.has(r.key)).sort((a, b) => a.last - b.last)[0];
+      if (old) await closeTab(old.key, true);
+    }
+    const t = await newTarget(); rec = tabs.get(key) || mkTab(key, t.id);
+    if (rec.current !== t.id) { rec.targets.add(t.id); rec.current = t.id; owned.set(t.id, key); }
+    ts = [...ts, t];
+    const prev = key ? readSaved()[key] : null;
+    if (prev && /^https?:\/\//.test(prev.url)) {
+      try { const c0 = await connectTarget(t); const loaded = c0.once("Page.loadEventFired", 15e3); await c0.send("Page.navigate", { url: prev.url }).catch(() => {}); await loaded; if (!c0.persistent) c0.close(); } catch {}
+      note = `The browser tab for this task was closed (it sat idle, or the computer restarted), so a new tab opened and loaded the last page again: ${prev.url}. Anything typed on that page, and its scroll position, is gone. Take a browser_snapshot before acting.`;
+    }
+  }
+  const t = ts.find((x) => x.id === rec.current) || (await targets()).find((x) => x.id === rec.current);
+  if (!t) throw new Error("the browser tab closed while it was being opened; try again");
+  const c = await connectTarget(t); if (!c.persistent) ctx.opened.push(c);
+  rec.last = Date.now(); await activateTab(rec);
+  return { rec, c, note };
+}
+setInterval(() => {
+  const now = Date.now(); if (pin && now - pin.at > TAB_PIN_MS) pin = null;
+  for (const rec of [...tabs.values()]) if (rec.key && !chains.has(rec.key) && now - rec.last > (pin?.key === rec.key ? TAB_PIN_MS : TAB_IDLE_MS)) closeTab(rec.key, true).catch(() => {});
+}, 60e3).unref();
+// where: nothing (the tab's page), a CDP session id, or a frame from frames(): { session } for a frame in its own process,
+// { ctx } for a cross-origin frame that shares the page's process (its own execution context, reached through the page's session).
+async function evalJS(c, expr, where) { const w = typeof where === "string" ? { session: where } : (where || {}); const r = await c.send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true, ...(w.ctx ? { contextId: w.ctx } : {}) }, 30e3, w.session); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text); return r.result.value; }
 async function settle(c, ms = 10e3) {
   if (FAST) { await quiet(c, ms); return; }
   await sleep(400);
@@ -169,9 +265,10 @@ const SNAPSHOT_JS = String.raw`(() => {
   document.querySelectorAll('[data-1hc]').forEach((e) => e.removeAttribute('data-1hc'));
   const INTER = 'a[href],button,input:not([type=hidden]),select,textarea,summary,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[role=option],[role=combobox],[role=switch],[role=textbox],[contenteditable=""],[contenteditable=true]';
   const vis = (el) => { const r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; const s = getComputedStyle(el); return s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0'; };
+  const tagOf = (el) => el.tagName.toLowerCase(), IN_FRAME = window.top !== window;
   const clean = (s, m = 120) => (s || '').replace(/\s+/g, ' ').trim().slice(0, m);
   const label = (el) => { const id = el.id && document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
-    return clean(el.getAttribute('aria-label') || (id && id.innerText) || el.closest('label')?.innerText || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('alt') || el.innerText || el.value || el.getAttribute('name') || ''); };
+    return clean(el.getAttribute('aria-label') || (id && id.innerText) || el.closest('label')?.innerText || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('alt') || el.innerText || (tagOf(el) === 'input' && /^(button|submit|reset)$/.test(el.type) ? el.value : '') || el.getAttribute('name') || ''); };
   const push = (s) => { if (len > MAX) return; out.push(s); len += s.length + 1; };
   const walk = (node, depth) => {
     if (len > MAX) return;
@@ -185,10 +282,11 @@ const SNAPSHOT_JS = String.raw`(() => {
         const role = el.getAttribute('role') || (tag === 'a' ? 'link' : tag === 'input' ? (el.type || 'text') + ' input' : tag);
         let extra = '';
         if (tag === 'input' && ['checkbox', 'radio'].includes(el.type)) extra = el.checked ? ' (checked)' : ' (unchecked)';
-        else if (tag === 'input' || tag === 'textarea') { const ac = (el.getAttribute('autocomplete') || '') + ' ' + (el.name || ''); const hide = el.type === 'password' || /cc-|card|cvc|cvv|exp/i.test(ac);
+        else if (tag === 'input' || tag === 'textarea') { const ac = [el.getAttribute('autocomplete'), el.name, el.id, el.getAttribute('placeholder'), el.getAttribute('aria-label')].join(' '); const hide = IN_FRAME || el.type === 'password' || /cc-|card|cvc|cvv|cvn|csc|exp|\bpan\b/i.test(ac) || /^\d[\d\s.-]{11,}$/.test(el.value || '');
           extra = el.value ? ' value="' + (hide ? '•••• (filled)' : clean(el.value, 60)) + '"' : ''; }
         else if (tag === 'select') extra = ' selected="' + clean(el.options[el.selectedIndex]?.text, 60) + '" options: ' + [...el.options].slice(0, 12).map((o) => clean(o.text, 30)).join(' | ');
         if (el.disabled) extra += ' (disabled)';
+        { const acv = (tag === 'input' || tag === 'textarea') && el.getAttribute('autocomplete'); if (acv && /^cc-|postal-code|^name$/.test(acv)) extra += ' autocomplete=' + acv.slice(0, 20); }
         push('[' + ref + '] ' + role + ' "' + label(el) + '"' + extra + (tag === 'a' ? ' → ' + clean(el.getAttribute('href'), 80) : ''));
         if (tag === 'select' || tag === 'a' || tag === 'button') continue;
       } else if (/^h[1-6]$/.test(tag)) { push('#'.repeat(+tag[1]) + ' ' + clean(el.innerText, 160)); continue; }
@@ -217,6 +315,18 @@ async function frames(c) {
   }
   if (!FAST) await sleep(250);   // let frames created by the last action report in
   const out = [...c.frames.values()];
+  // A cross-origin frame on the same site as the page (e.g. secure.shop.com inside www.shop.com) runs in the page's own process, so it is not a
+  // target of its own. Reach it through an execution context made for that frame.
+  try {
+    const walk = async (t) => { for (const ch of t.childFrames || []) { const fr = ch.frame;
+      if (!c.frames.has(fr.id)) {
+        c.worlds ||= new Map(); let w = c.worlds.get(fr.id);
+        if (!w || w.loader !== fr.loaderId) { const r = await c.send("Page.createIsolatedWorld", { frameId: fr.id, worldName: "1hc", grantUniveralAccess: true }).catch(() => null); w = r && { ctx: r.executionContextId, loader: fr.loaderId }; if (w) c.worlds.set(fr.id, w); }
+        if (w) out.push({ id: fr.id, ctx: w.ctx, url: fr.url });
+      }
+      await walk(ch); } };
+    await walk((await c.send("Page.getFrameTree")).frameTree);
+  } catch {}
   for (const f of out) { if (!frameNo.has(f.id)) frameNo.set(f.id, nextFrame++); f.n = frameNo.get(f.id); }
   return out;
 }
@@ -226,9 +336,9 @@ async function snapshot(c) {
   let text = s.text, extra = "";
   for (const f of await frames(c).catch(() => [])) {
     try {
-      const r = await evalJS(c, FRAME_JS(f.n), f.session);
+      const r = await evalJS(c, FRAME_JS(f.n), f);
       if (!r || !r.refs) continue;   // invisible or non-interactive frames (analytics, captcha shells) are left out
-      extra += `\n--- inside frame f${f.n} (${new URL(f.url).host}) ---\n${r.text}`;
+      extra += `\n--- inside frame f${f.n} (${(() => { try { return new URL(f.url).host; } catch { return ""; } })()}) ---\n${r.text}`;
     } catch {}
   }
   if (extra) text = text.replace(/\[iframe ([^\]]*?) — its contents are not readable here; use the live view\]/g, "[iframe $1 — its fields are listed below]") + extra;
@@ -250,14 +360,14 @@ async function box(c, ref) {
   await c.send("DOM.enable").catch(() => {});
   const owner = await c.send("DOM.getFrameOwner", { frameId: f.id });
   await c.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: owner.backendNodeId }).catch(() => {});
-  const r = await evalJS(c, BOX_JS(ref), f.session); if (!r) throw new Error(`no element ${ref} in frame now — take a new snapshot`);
+  const r = await evalJS(c, BOX_JS(ref), f); if (!r) throw new Error(`no element ${ref} in frame now — take a new snapshot`);
   // Content quads are viewport coordinates. A tall iframe (Stripe Checkout is taller than the screen) can leave the
   // field off-screen even after scrolling inside the frame, so scroll the page until the point is visible.
   const at = async () => { const q = (await c.send("DOM.getContentQuads", { backendNodeId: owner.backendNodeId })).quads[0]; return { x: q[0] + r.x, y: q[1] + r.y }; };
   let p = await at();
   const vh = (await c.send("Page.getLayoutMetrics")).cssVisualViewport.clientHeight;
   if (p.y < 20 || p.y > vh - 20) { await evalJS(c, `window.scrollBy(0, ${Math.round(p.y - vh / 2)})`); await sleep(150); p = await at(); }
-  return { ...r, ...p, session: f.session };
+  return { ...r, ...p, session: f.session, fr: f };
 }
 async function click(c, x, y) {
   await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
@@ -267,7 +377,7 @@ async function click(c, x, y) {
 async function clickRef(c, ref) {
   const p = await box(c, ref);
   // Off-screen controls (e.g. Stripe's hidden "AI agent" steering checkbox) can't take a mouse click; click them in the page.
-  if (p.x < 0 || p.y < 0 || p.x > W || p.y > H) await evalJS(c, `(() => { const e = document.querySelector('[data-1hc="${String(ref).replace(/[^a-z0-9]/gi, "")}"]'); e && e.click(); })()`, p.session);
+  if (p.x < 0 || p.y < 0 || p.x > W || p.y > H) await evalJS(c, `(() => { const e = document.querySelector('[data-1hc="${String(ref).replace(/[^a-z0-9]/gi, "")}"]'); e && e.click(); })()`, p.fr);
   else await click(c, p.x, p.y);
 }
 // upload {ref, path | paths}: put files from the computer into a page. The ref is a file input (set directly), or a button or link that opens
@@ -284,12 +394,12 @@ async function upload(c, a) {
     return f;
   });
   const fr = await frameOf(c, a.ref), session = fr?.session, sel = `document.querySelector('[data-1hc="${String(a.ref).replace(/[^a-z0-9]/gi, "")}"]')`;
-  const info = await evalJS(c, `(() => { const e = ${sel}; return e ? { file: e.tagName === 'INPUT' && e.type === 'file', multiple: !!e.multiple } : null; })()`, session);
+  const info = await evalJS(c, `(() => { const e = ${sel}; return e ? { file: e.tagName === 'INPUT' && e.type === 'file', multiple: !!e.multiple } : null; })()`, fr);
   if (!info) throw new Error(`no element ${a.ref} on the page now — take a new snapshot`);
   const word = files.length === 1 ? "1 file" : `${files.length} files`;
   if (info.file) {
     if (files.length > 1 && !info.multiple) throw new Error(`${a.ref} takes one file; ${files.length} were given`);
-    const o = await c.send("Runtime.evaluate", { expression: sel, returnByValue: false }, 30e3, session);
+    const o = await c.send("Runtime.evaluate", { expression: sel, returnByValue: false, ...(fr?.ctx ? { contextId: fr.ctx } : {}) }, 30e3, session);
     if (!o.result?.objectId) throw new Error(`no element ${a.ref} on the page now — take a new snapshot`);
     await c.send("DOM.enable").catch(() => {});
     await c.send("DOM.setFileInputFiles", { files, objectId: o.result.objectId }, 30e3, session);
@@ -306,6 +416,101 @@ async function upload(c, a) {
     await c.send("DOM.setFileInputFiles", { files, backendNodeId: ev.backendNodeId });
     return `attached ${word} through the file chooser that ${a.ref} opened`;
   } finally { await c.send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {}); }
+}
+// ---- Typing into one field, including card fields that live in cross-origin iframes.
+// The field is named by a ref from the outline. It can be on the page, in a frame (refs like f2e5), or a placeholder input that the page swaps for a
+// hosted iframe when it gets focus or its first keystroke (Stripe Elements, Braintree, Adyen and processor tokenizers do this). When the ref's element
+// is replaced, hidden, or does not take the text, the field's replacement is looked up in the page's frames and the text is typed there instead.
+// The typed text only ever goes into Input.insertText; it is never put in an expression, an error, a log line or an outline.
+const FIELD_RE = {
+  number: /cc-number|card.?number|cardnumber|\bpan\b|credit.?card|numero|card.?no\b/i,
+  expiry: /cc-exp|expir|\bexp\b|mm.{0,3}yy|exp.?date|valid.?thru/i,
+  cvc: /cc-csc|cvc|cvv|cvn|\bcsc\b|security.?code|verification/i,
+  name: /cc-name|card.?holder|name.?on.?card|cardholder/i,
+  zip: /postal|zip/i,
+};
+const FIELD_WORDS = { number: "card number", expiry: "expiry", cvc: "security code", name: "cardholder name", zip: "ZIP" };
+const classify = (hint) => Object.keys(FIELD_RE).find((k) => FIELD_RE[k].test(hint || "")) || null;
+const FIND_JS = (n, kind) => `(() => {
+  const RE = ${JSON.stringify(Object.fromEntries(Object.entries(FIELD_RE).map(([k, v]) => [k, v.source])))}, kind = ${JSON.stringify(kind)};
+  const vis = (el) => { const r = el.getBoundingClientRect(); if (r.width < 2 || r.height < 2) return false; const s = getComputedStyle(el); return s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0'; };
+  const all = [...document.querySelectorAll('input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]),textarea,select,[contenteditable=""],[contenteditable=true]')].filter((e) => !e.disabled && vis(e));
+  const hint = (e) => [e.getAttribute('autocomplete'), e.name, e.id, e.getAttribute('placeholder'), e.getAttribute('aria-label'), e.getAttribute('title'), e.getAttribute('data-elements-stable-field-name')].join(' ');
+  let best = null, score = -1;
+  for (const e of all) { const sc = kind && new RegExp(RE[kind], 'i').test(hint(e)) ? 2 : (all.length === 1 ? 1 : 0); if (sc > score) { best = e; score = sc; } }
+  if (!best || score < 1) return null;
+  best.setAttribute('data-1hc', 'f${n}e990'); const r = best.getBoundingClientRect(); return { ref: 'f${n}e990', score, count: all.length, x: r.left, y: r.top };
+})()`;
+async function ownerRect(c, f) {
+  await c.send("DOM.enable").catch(() => {});
+  const owner = await c.send("DOM.getFrameOwner", { frameId: f.id });
+  const q = (await c.send("DOM.getContentQuads", { backendNodeId: owner.backendNodeId })).quads[0];
+  const xs = [q[0], q[2], q[4], q[6]], ys = [q[1], q[3], q[5], q[7]];
+  return { l: Math.min(...xs), r: Math.max(...xs), t: Math.min(...ys), b: Math.max(...ys) };
+}
+// Where is the page's own element for this ref (viewport pixels), and what does it say it is? Never reads its value.
+const ORIG_JS = (ref) => `(() => { const e = document.querySelector('[data-1hc="${String(ref).replace(/[^a-z0-9]/gi, "")}"]'); if (!e) return null; const r = e.getBoundingClientRect();
+  return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, hint: [e.getAttribute('autocomplete'), e.name, e.id, e.getAttribute('placeholder'), e.getAttribute('aria-label'), e.getAttribute('title')].join(' ') }; })()`;
+const STATE_JS = (ref) => `(() => { const e = document.querySelector('[data-1hc="${String(ref).replace(/[^a-z0-9]/gi, "")}"]'); if (!e || !e.isConnected) return { gone: true }; const r = e.getBoundingClientRect(); const s = getComputedStyle(e); return { gone: false, hidden: r.width < 2 || r.height < 2 || s.visibility === 'hidden' || s.display === 'none' || s.opacity === '0' }; })()`;
+// Find the frame field that replaced (or sits where) the page's field was. Returns { ref, fr } or null after waiting up to ms for a frame to appear.
+async function findSwapped(c, kind, orig, ms) {
+  const t0 = Date.now();
+  for (;;) {
+    const fl = await frames(c).catch(() => []), found = [];
+    for (const f of fl) {
+      let hit = null; try { hit = await evalJS(c, FIND_JS(f.n, kind), f); } catch {}
+      if (!hit) continue;
+      let over = false;
+      if (orig) { try { const o = await ownerRect(c, f); over = orig.cx >= o.l - 40 && orig.cx <= o.r + 40 && orig.cy >= o.t - 40 && orig.cy <= o.b + 40; } catch {} }
+      found.push({ ref: hit.ref, fr: f, score: hit.score, over });
+    }
+    const pool = found.some((x) => x.over) ? found.filter((x) => x.over) : found;
+    pool.sort((x, y) => y.score - x.score);
+    if (pool[0] && (pool[0].score > 1 || pool.length === 1 || pool[0].over)) return pool[0];
+    if (Date.now() - t0 > ms) return null;
+    await sleep(300);
+  }
+}
+async function fillField(c, a, kind, secret) {
+  const text = String(a.text ?? "");
+  const q = (r) => String(r).replace(/[^a-z0-9]/gi, "");
+  const isFrameRef = (r) => /^f\d+e\d+$/.test(String(r));
+  let ref = String(a.ref), orig = null, swapped = false, tried = false;
+  const fieldKind = a.field && FIELD_RE[a.field] ? a.field : null;
+  const word = FIELD_WORDS[fieldKind] || (secret ? "secret" : "");
+  const handoff = () => new Error(`could not type the ${word ? word + " " : ""}field ${a.ref}${secret ? `: it is inside a hosted payment frame that this browser cannot type into. Do not retry or take another snapshot. Use browser_handoff so the person enters this field themselves` : "; it may be hidden until an earlier step is done, so take a new snapshot"}`);
+  if (!isFrameRef(ref)) orig = await evalJS(c, ORIG_JS(ref)).catch(() => null);
+  const wantKind = fieldKind || classify(orig?.hint);
+  let p = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { p = await box(c, ref); } catch (e) {
+      if (tried || isFrameRef(ref) && !secret) throw e;
+      tried = true; const sw = await findSwapped(c, wantKind, orig, 3e3); if (!sw) throw secret ? handoff() : e; ref = sw.ref; swapped = true; continue;
+    }
+    const sel = `document.querySelector('[data-1hc="${q(ref)}"]')`;
+    await click(c, p.x, p.y);
+    await evalJS(c, `(() => { const e = ${sel}; if (!e) return; e.focus(); if (${kind === "fill"}) { if ('value' in e) e.select?.(); else document.execCommand('selectAll'); } })()`, p.fr);
+    // A page that swaps its field for a hosted iframe does it on focus: give it a moment, then see whether this field is still there.
+    if (!swapped && !isFrameRef(ref)) {
+      await sleep(FAST ? 150 : 350);
+      const st = await evalJS(c, STATE_JS(ref)).catch(() => null);
+      if (st && (st.gone || st.hidden)) { tried = true; const sw = await findSwapped(c, wantKind, orig, 3e3); if (!sw) throw secret ? handoff() : new Error(`${a.ref} went away when it was focused; take a new snapshot`); ref = sw.ref; swapped = true; continue; }
+    }
+    // Type in the frame's own session when it has one (out-of-process iframe); otherwise in the page, where the focused frame gets the text.
+    if (p.session) { try { await c.send("Input.insertText", { text }, 30e3, p.session); } catch { await c.send("Input.insertText", { text }); } }
+    else await c.send("Input.insertText", { text });
+    await sleep(80);
+    const got = await evalJS(c, `(() => { const e = ${sel}; return e ? ('value' in e ? e.value : e.innerText) : null; })()`, p.fr);
+    const norm = (v) => String(v).toLowerCase().replace(/[^a-z0-9]/gi, "");   // fields format input: "2015550123" → "(201) 555-0123"
+    const masked = got != null && String(got) !== "" && !/[a-z0-9]/i.test(String(got));   // a hosted field that shows only dots took the text
+    const missed = got == null ? !isFrameRef(ref) && !swapped && !tried : (!masked && norm(text) && !norm(got).includes(norm(text).slice(0, 30)));
+    if (!missed) return;
+    // The page may have replaced the field with the first keystroke: look for the frame field once.
+    if (!tried && !isFrameRef(ref)) { tried = true; const sw = await findSwapped(c, wantKind, orig, 2e3); if (sw) { ref = sw.ref; swapped = true; continue; } }
+    if (secret) throw handoff();
+    throw new Error(`typing into ${a.ref} did not take (field shows "${String(got).slice(0, 40)}"). It may be hidden until an earlier step is done; take a new snapshot`);
+  }
+  throw handoff();
 }
 const KEYS = { Enter: [13, "\r"], Tab: [9, "\t"], Escape: [27], Backspace: [8], ArrowDown: [40], ArrowUp: [38], ArrowLeft: [37], ArrowRight: [39], PageDown: [34], PageUp: [33], Home: [36], End: [35], Space: [32, " "] };
 async function press(c, key) {
@@ -434,7 +639,15 @@ async function recStop(b = {}) {
   return { ...out, duration_s: Math.round(dur * 10) / 10, bytes: fs.statSync(st.final).size, frames, fps: REC_FPS, width: W, height: H, codec: "h264 yuv420p" };
 }
 const OPS = {
-  async status() { const up = !!procs.chrome && await portOpen(CDP_PORT); if (!up) return { running: false }; const ts = await targets(); return { running: true, tabs: ts.map((t) => ({ title: t.title, url: t.url })) }; },
+  // With a "_tab" key it answers for that task's tabs only ("tab" is its current page, or null when it has none). Without one, every tab, as before.
+  async status(b = {}) {
+    const key = tabKey(b), up = !!procs.chrome && await portOpen(CDP_PORT); if (!up) return { running: false, ...(key ? { tab: null } : {}) };
+    const ts = await targets(); if (!key) return { running: true, tabs: ts.map((t) => ({ title: t.title, url: t.url })) };
+    const rec = tabs.get(key), mine = rec ? ts.filter((t) => rec.targets.has(t.id)) : [], cur = mine.find((t) => t.id === rec?.current);
+    return { running: true, tabs: mine.map((t) => ({ title: t.title, url: t.url })), tab: cur ? { url: cur.url, title: cur.title } : null };
+  },
+  // Bring this task's tab to the front; pin: keep it there for the person (handoff) until the task uses the browser again.
+  async activate(b, c, ctx) { if (b.pin === true) pin = { key: ctx.key, at: Date.now() }; else if (pin?.key === ctx.key) pin = null; front = ctx.key; await fetch(`http://127.0.0.1:${CDP_PORT}/json/activate/${c.targetId}`).catch(() => {}); return { activated: true, pinned: pin?.key === ctx.key }; },
   async navigate(b, c) {
     let u; try { u = new URL(String(b.url)); } catch { throw new Error("url must be a full http(s) URL"); }
     if (!/^https?:$/.test(u.protocol) || u.username || u.password) throw new Error("only http(s) URLs without embedded credentials");
@@ -442,7 +655,16 @@ const OPS = {
     await settle(c, 15e3); return await snapshot(c);
   },
   async snapshot(b, c) { if (FAST) await quiet(c, 1.5e3); return await snapshot(c); },
-  async back(b, c) { await evalJS(c, "history.back()"); await settle(c); return await snapshot(c); },
+  async back(b, c, ctx) {
+    // A tab a page opened has no history to go back to: close it and return to the task's other tab.
+    const rec = tabs.get(ctx.key);
+    if (rec && rec.targets.size > 1 && (await evalJS(c, "history.length").catch(() => 2)) <= 1) {
+      const id = c.targetId; await fetch(`http://127.0.0.1:${CDP_PORT}/json/close/${id}`).catch(() => {}); dropTarget(id);
+      const t = (await targets()).find((x) => x.id === rec.current);
+      if (t) { const c2 = await connectTarget(t); if (!c2.persistent) ctx.opened.push(c2); await activateTab(rec); await settle(c2); return { ...(await snapshot(c2)), closed_tab: true }; }
+    }
+    await evalJS(c, "history.back()"); await settle(c); return await snapshot(c);
+  },
   async screenshot(b, c) {
     const r = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 78 });
     const loc = await evalJS(c, "({url: location.href, title: document.title, view: {w: innerWidth, h: innerHeight, scroll_x: Math.round(scrollX), scroll_y: Math.round(scrollY), page_h: Math.round(Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0))}})").catch(() => ({}));
@@ -450,9 +672,17 @@ const OPS = {
     if (b.ocr === true) out.ocr = await ocrJpeg(Buffer.from(r.data, "base64"), loc.view?.w);
     return out;
   },
-  async act(b, c) {
+  async act(b, c, ctx = { key: "", opened: [] }) {
     const acts = Array.isArray(b.actions) ? b.actions : []; if (!acts.length || acts.length > 20) throw new Error("actions: 1–20 steps");
-    let done = 0, uploaded = false; const notes = []; const before = await snapshot(c).catch(() => null);
+    let done = 0, uploaded = false, switched = false; const notes = []; const before = await snapshot(c).catch(() => null);
+    // A click can open a new tab or window. The opener relationship (onBrowserEvent) put it in this task's tab set and made it current;
+    // from then on the rest of this call, and the answer, are about that tab.
+    const follow = async () => {
+      const rec = tabs.get(ctx.key); if (!rec?.current || rec.current === c.targetId) return false;
+      const t = (await targets()).find((x) => x.id === rec.current); if (!t) return false;
+      const c2 = await connectTarget(t); if (!c2.persistent) ctx.opened.push(c2);
+      c = c2; await activateTab(rec); await settle(c, 10e3); switched = true; return true;
+    };
     const h0 = (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries.length;
     for (const a of acts) {
       const kind = String(a.kind || "");
@@ -464,22 +694,10 @@ const OPS = {
         await click(c, x, y);
         await settle(c, 8e3);
       }
-      else if (kind === "fill" || kind === "type") {
-        const p = await box(c, a.ref); await click(c, p.x, p.y);
-        // A mouse click can miss (animated or partly hidden forms, tall iframes). Focus the element directly in its own
-        // frame as well, then type, then read the value back so a miss is reported instead of silently ignored.
-        const sel = `document.querySelector('[data-1hc="${String(a.ref).replace(/[^a-z0-9]/gi, "")}"]')`;
-        const text = String(a.text ?? "");
-        await evalJS(c, `(() => { const e = ${sel}; if (!e) return; e.focus(); if (${kind === "fill"}) { if ('value' in e) e.select?.(); else document.execCommand('selectAll'); } })()`, p.session);
-        await c.send("Input.insertText", { text });
-        await sleep(80);
-        const got = await evalJS(c, `(() => { const e = ${sel}; return e ? ('value' in e ? e.value : e.innerText) : null; })()`, p.session);
-        const norm = (v) => String(v).toLowerCase().replace(/[^a-z0-9]/g, "");   // fields format input: "2015550123" → "(201) 555-0123"
-        if (got != null && norm(text) && !norm(got).includes(norm(text).slice(0, 30))) throw new Error(`typing into ${a.ref} did not take${b.secret ? "" : ` (field shows "${String(got).slice(0, 40)}")`}. It may be hidden until an earlier step is done; take a new snapshot`);
-        if (a.submit) { await press(c, "Enter"); await settle(c, 8e3); }
+      else if (kind === "fill" || kind === "type") { await fillField(c, a, kind, !!b.secret); if (a.submit) { await press(c, "Enter"); await settle(c, 8e3); }
       } else if (kind === "select") {
         const fs_ = await frameOf(c, a.ref);
-        const ok = await evalJS(c, `(() => { const e = document.querySelector('[data-1hc="${String(a.ref).replace(/[^a-z0-9]/gi, "")}"]'); if (!e || e.tagName !== 'SELECT') return false; const o = [...e.options].find((o) => o.text.trim() === ${JSON.stringify(String(a.text ?? ""))} || o.value === ${JSON.stringify(String(a.text ?? ""))}); if (!o) return false; e.value = o.value; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`, fs_?.session);
+        const ok = await evalJS(c, `(() => { const e = document.querySelector('[data-1hc="${String(a.ref).replace(/[^a-z0-9]/gi, "")}"]'); if (!e || e.tagName !== 'SELECT') return false; const o = [...e.options].find((o) => o.text.trim() === ${JSON.stringify(String(a.text ?? ""))} || o.value === ${JSON.stringify(String(a.text ?? ""))}); if (!o) return false; e.value = o.value; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`, fs_);
         if (!ok) throw new Error(`could not select "${a.text}" in ${a.ref}`);
       } else if (kind === "press") { await press(c, String(a.key || "Enter")); await settle(c, 8e3); }
       else if (kind === "scroll") { await c.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: W / 2, y: H / 2, deltaX: 0, deltaY: a.direction === "up" ? -600 : 600 }); await sleep(400); }
@@ -487,12 +705,13 @@ const OPS = {
       else if (kind === "upload") { notes.push(await upload(c, a)); uploaded = true; await settle(c, 8e3); }
       else if (kind === "select_or_fill") {   // expiry month/year can be a dropdown or a text box
         const fs_ = await frameOf(c, a.ref), sel = `document.querySelector('[data-1hc="${String(a.ref).replace(/[^a-z0-9]/gi, "")}"]')`;
-        const isSel = await evalJS(c, `(${sel})?.tagName === 'SELECT'`, fs_?.session);
-        if (isSel) { const t = JSON.stringify(String(a.text ?? "")); const ok = await evalJS(c, `(() => { const e = ${sel}; const want = ${t}; const o = [...e.options].find((o) => o.value === want || o.text.trim() === want || o.value === String(Number(want)) || o.value.endsWith(want.slice(-2)) && o.value.length <= 4); if (!o) return false; e.value = o.value; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`, fs_?.session); if (!ok) throw new Error(`could not choose that option in ${a.ref}`); }
+        const isSel = await evalJS(c, `(${sel})?.tagName === 'SELECT'`, fs_);
+        if (isSel) { const t = JSON.stringify(String(a.text ?? "")); const ok = await evalJS(c, `(() => { const e = ${sel}; const want = ${t}; const o = [...e.options].find((o) => o.value === want || o.text.trim() === want || o.value === String(Number(want)) || o.value.endsWith(want.slice(-2)) && o.value.length <= 4); if (!o) return false; e.value = o.value; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`, fs_); if (!ok) throw new Error(`could not choose that option in ${a.ref}`); }
         else { a.kind = "fill"; acts.splice(acts.indexOf(a) + 1, 0, a); done--; }
       }
       else throw new Error(`unknown action kind "${kind}" (click, click_at, fill, type, select, press, scroll, wait, upload)`);
       done++;
+      if (await follow()) { const rest = acts.length - acts.indexOf(a) - 1; notes.push(`this step opened a new tab, and it is now this task's current tab${rest > 0 ? `; the other ${rest} step(s) were not run because their refs belong to the earlier page (use the refs below)` : ""}`); break; }
     }
     // Payment/submit buttons often call an API for several seconds before the page moves on. After clicking one,
     // watch for a navigation for up to 20 s so the result reflects what actually happened.
@@ -505,14 +724,15 @@ const OPS = {
         for (let i = 0; i < 20; i++) { const n = (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries.length; if (n > h0) { await settle(c, 10e3); break; } await sleep(1000); }
       }
     }
+    await follow();   // a tab opened late (a timer, a slow redirect)
     let after = await snapshot(c);
-    for (let i = 0; i < (FAST ? 0 : 6) && before && after.snapshot === before.snapshot && after.url === before.url; i++) { await sleep(2000); after = await snapshot(c); }
+    for (let i = 0; i < (FAST || switched ? 0 : 6) && before && after.snapshot === before.snapshot && after.url === before.url; i++) { await sleep(2000); after = await snapshot(c); }
     // Tell the model plainly when its steps had no visible effect, so it can't narrate a success that didn't happen.
-    const changed = uploaded || !before || before.snapshot !== after.snapshot || before.url.replace(/[?#]$/, "") !== after.url.replace(/[?#]$/, "");
+    const changed = uploaded || switched || !before || before.snapshot !== after.snapshot || before.url.replace(/[?#]$/, "") !== after.url.replace(/[?#]$/, "");
     // Pages passed through during the steps (e.g. /checkout/success before an automatic redirect home).
-    const hist = (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries;
+    const hist = switched ? [] : (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries;
     const visited = hist.slice(Math.max(0, h0 - 1)).map((e) => e.url).filter((u, i, a) => u !== a[i - 1]);
-    return { completed: done, page_changed: changed, ...(notes.length ? { notes } : {}), ...(visited.length > 1 ? { visited } : {}), ...after };
+    return { completed: done, page_changed: changed, ...(switched ? { new_tab: true } : {}), ...(notes.length ? { notes } : {}), ...(visited.length > 1 ? { visited } : {}), ...after };
   },
 };
 
@@ -527,14 +747,26 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "content-type": MIME[path.extname(f)] || "application/octet-stream", "cache-control": "public, max-age=3600" }); return fs.createReadStream(f).pipe(res);
     }
     const m = u.pathname.match(/^\/cdp\/([a-z]+)$/);
-    if (m && req.method === "POST" && (OPS[m[1]] || m[1] === "record")) {
+    if (m && req.method === "POST" && (OPS[m[1]] || m[1] === "record" || m[1] === "closetab")) {
       if (!controllerRequest(req.headers)) return send(403, { error: "forbidden" });
       let body = ""; for await (const ch of req) body += ch; const b = body ? JSON.parse(body) : {};
       if (m[1] === "record") { const r = b.action === "stop" ? await recStop(b) : b.action === "start" ? await recStart(b) : { ok: false, error: "action must be start or stop" }; return send(200, { ok: r.ok !== false, ...r }); }
-      if (m[1] === "status") return send(200, await OPS.status());
+      if (m[1] === "status") return send(200, await OPS.status(b));
       FAST = b._wait === "quiet";
-      const boot = await ensureStack(); const c = await page();
-      try { const out = await OPS[m[1]](b, c); if (out?.url && /^https?:/.test(out.url)) { try { fs.writeFileSync(LAST_URL, out.url); } catch {} } return send(200, { ok: true, ...(boot.cold ? { browser_started_ms: boot.start_ms } : {}), ...out }); } finally { if (!c.persistent) c.close(); }
+      const key = tabKey(b);
+      if (m[1] === "closetab") return send(200, { ok: true, closed: key && (await portOpen(CDP_PORT)) ? await closeTab(key) : 0 });   // a task that is done; other tasks' tabs stay
+      const boot = await ensureStack();
+      const k = key || (front !== null && tabs.has(front) ? front : "");   // no key: the tab in front (the person's view, or an older Worker)
+      const out = await serial(k, async () => {
+        const ctx = { key: k, op: m[1], opened: [] };
+        try {
+          const { rec, c, note } = await openTab(k, ctx);
+          const out = await OPS[m[1]](b, c, ctx);
+          if (out?.url && /^https?:/.test(out.url)) { try { fs.writeFileSync(LAST_URL, out.url); } catch {} if (out.url !== rec.url) { rec.url = out.url; saveTabs(); } }
+          return { ...out, ...(note ? { tab_note: note } : {}) };
+        } finally { for (const c of ctx.opened) c.close(); }
+      });
+      return send(200, { ok: true, ...(boot.cold ? { browser_started_ms: boot.start_ms } : {}), ...out });
     }
     send(404, { error: "not found" });
   } catch (e) { send(500, { ok: false, error: e.message }); }

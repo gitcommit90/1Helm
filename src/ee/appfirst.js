@@ -119,8 +119,15 @@ const stepOf = (tc) => tc.callNo || 0;
 const NOT_A_LIST = /^(error|NOT |ASK FIRST)/m;   // an error, not connected, or ask-first answer (work-log notes may come first)
 export const REPEAT_TAIL = "pick an action and run it with app_run.";
 
+// True when browser_navigate to this address would be refused as a repeat of the page this turn already opened (nothing has changed since).
+// The caller then reads the task's own tab and passes it to repeatBlock, so a reload is never refused while that tab shows something else.
+export function navRepeatPending(tc, a = {}) {
+  const st = tc && rep(tc), url = normUrl(a.url);
+  return !!(st && url && st.nav && st.nav.url === url && !st.moved);
+}
 // Before a call: the nudge (and a "no progress" mark for the runaway watch), or null to run it.
-export function repeatBlock(tc, name, a = {}) {
+// live (browser_navigate only): the task's own tab as it is now, { known: true, url }. Without it, or when the tab could not be read, the turn's own record decides.
+export function repeatBlock(tc, name, a = {}, live = null) {
   if (!tc) return null;
   const st = rep(tc);
   if (name === "app_actions") {
@@ -147,6 +154,7 @@ export function repeatBlock(tc, name, a = {}) {
   if (name === "browser_navigate") {
     const url = normUrl(a.url);
     if (!url || !st.nav || st.nav.url !== url || st.moved) return null;
+    if (live?.known) { const cur = normUrl(live.url); if (!cur || (cur !== st.nav.url && cur !== st.nav.shown)) return null; }   // the tab is on another page (or has none): opening it again is not a repeat
     return noProgress(tc, `You already have this page (from step ${st.nav.n})${st.page ? `: ${st.page}` : ""}. Opening it again shows the same thing: read it with browser_snapshot, act on it, or do the job another way.`);
   }
   return null;
@@ -164,7 +172,7 @@ export function repeatNote(tc, name, a = {}, out = "") {
     if (String(a.open || "").trim()) loaded(tc, st, rootKey(st, a.open), id, 1);
     else { const q = wlQuery(a); if (q.words.size) st.wlq.push({ ...q, n: stepOf(tc), id }); }
   }
-  else if (name === "browser_navigate") { st.nav = { url: normUrl(a.url), n: stepOf(tc) }; st.moved = false; st.page = (/Page: ([^\n]{1,200})/.exec(s) || [])[1] || ""; }
+  else if (name === "browser_navigate") { st.nav = { url: normUrl(a.url), n: stepOf(tc), shown: normUrl((/Page: ([^\n]{1,400})/.exec(s) || [])[1]?.split(" — ").pop()) }; st.moved = false; st.page = (/Page: ([^\n]{1,200})/.exec(s) || [])[1] || ""; }   // shown: where the page ended up (a redirect), the address the tab reports
   else if (/^browser_(act|fill_login|fill_card|task|handoff)$/.test(name)) st.moved = true;
 }
 // Loads of one piece of content in this turn (its first load, a re-open, a bring_back), keyed by its root: a saved work-log result

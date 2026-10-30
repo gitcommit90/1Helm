@@ -191,18 +191,24 @@ async function byokPost(cfg, req, { signal = null, fetchImpl = globalThis.fetch 
 }
 
 // A streamed body with an idle timeout, a total time limit and a size cap. Errors surface as ByokError on read.
+// The idle time counts from the last chunk that carries an event line ("data:"). A chunk with only comment lines (": keep-alive" or
+// ": OPENROUTER PROCESSING", which gateways send every few seconds while a model is still working) does not reset it, so a call that
+// never produces an event ends after IDLE_MS instead of running until TOTAL_MS (a live turn waited that way with nothing on screen).
+const EVENT_LINE = /(^|\n)[ \t]*data:/;
 function guardStream(cfg, body, signal) {
-  const reader = body.getReader(), t0 = Date.now(); let bytes = 0;
+  const reader = body.getReader(), dec = new TextDecoder(), t0 = Date.now(); let bytes = 0, lastEvent = t0, events = 0, tail = "";
   return new ReadableStream({
     async pull(c) {
-      const left = TOTAL_MS - (Date.now() - t0);
+      const now = Date.now(), left = TOTAL_MS - (now - t0), idleLeft = IDLE_MS - (now - lastEvent);
       let timer;
-      const to = new Promise((_, no) => { timer = setTimeout(() => no(fail(cfg, left <= IDLE_MS ? "the answer took too long to finish" : "it stopped sending in the middle of the answer")), Math.max(0, Math.min(IDLE_MS, left))); });
+      const to = new Promise((_, no) => { timer = setTimeout(() => no(fail(cfg, left <= idleLeft ? "the answer took too long to finish" : events ? "it stopped sending in the middle of the answer" : `no answer within ${Math.round(IDLE_MS / 1000)} seconds`)), Math.max(0, Math.min(idleLeft, left))); });
       try {
         const { value, done } = await Promise.race([reader.read(), to]);
         if (done) { c.close(); return; }
         bytes += value.byteLength;
         if (bytes > MAX_STREAM_BYTES) { reader.cancel().catch(() => {}); c.error(fail(cfg, "its answer was too big")); return; }
+        const text = tail + dec.decode(value, { stream: true }); tail = text.slice(-6);   // an event line may start in the previous chunk
+        if (EVENT_LINE.test(text)) { lastEvent = Date.now(); events++; }
         c.enqueue(value);
       } catch (e) { reader.cancel().catch(() => {}); c.error(signal?.aborted ? e : e?.byok ? e : fail(cfg, "the connection dropped in the middle of the answer")); }
       finally { clearTimeout(timer); }

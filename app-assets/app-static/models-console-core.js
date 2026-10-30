@@ -31,9 +31,10 @@ export const effortName = (e) => (e ? EFFORT[e] || e : "");
 export const sortName = (v) => SORT[v || ""] || String(v);
 export const outText = (v) => (v == null ? "Provider max" : num(v));
 export const secText = (ms) => (ms == null ? "None" : (ms % 1000 ? ms / 1000 : num(ms / 1000)) + "s");
-export const priceText = (p) => (p ? `$${p.prompt} / $${p.completion}` : "No cap");
+export const priceText = (p) => (p ? `$${p.prompt} / $${p.completion}` : "Default");
 export const agoText = (ms, now) => { const m = Math.max(0, Math.round((now - ms) / 60000)); return m < 1 ? "just now" : m < 60 ? m + " min ago" : m < 1440 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; };
 export const badge = (src) => { const s = src === "CF" ? "CF" : src === "SELF" ? "SELF" : "OR"; return h`<span class="badge ${s}" title="${s === "OR" ? "OpenRouter" : s === "SELF" ? "Runs in 1Helm's own container" : "Cloudflare"}">${s === "SELF" ? "1H" : s}</span>`; };
+
 // ---------------------------------------------------------------- rows
 // A row is one line of the table: a saved job or a routing category. A category row also carries the limits of its replies (max output, sort, max price, timeout).
 export function rowsOf(state) {
@@ -94,6 +95,8 @@ export function viewOf(state, ui, row, snap) {
 }
 
 // ---------------------------------------------------------------- last served and flags
+// A served row is a record of one call. It is judged against the models that were saved when the call was served, and never against a list saved after it:
+// the row carries `since`, the time the row's models last changed (src/model-changes.js), and a call from before that time is history, shown with no flag.
 // The flag comes from `requested`, the exact list entry the dispatcher recorded as the one that answered. The model and provider the provider reported
 // are shown as information and never decide a flag. Each routing category has its own row, "chat:<category id>".
 export const servedKey = (row) => (row.kind === "cat" ? "chat:" + row.id : row.id);
@@ -104,30 +107,41 @@ export function servedRow(row, served) {
   if (own || row.kind !== "cat" || row.id !== "general" || !all.chat || Object.keys(all).some((k) => k.startsWith("chat:"))) return own || null;
   return { ...all.chat, legacy: true };
 }
+// When the row's last call happened: a failed call is dated by its own time, because a failure keeps the earlier answer's time.
+export const servedAt = (sv) => (sv && sv.last_status && sv.last_status !== "ok" ? sv.last_error_at || sv.last_at : sv && sv.last_at) || null;
+// k: "none" no row or nothing to say, "history" a call from before the row's models last changed (or a row whose change time is unknown), "ok", "fallback", "other", "error".
 export function servedState(state, row, chains, served) {
   const sv = servedRow(row, served);
   if (!sv) return { k: "none" };
+  const at = servedAt(sv);
+  if (sv.legacy || typeof sv.since !== "number" || !at || at < sv.since) return { k: sv.requested || sv.served_model || (sv.last_status && sv.last_status !== "ok") ? "history" : "none", sv };
   if (sv.last_status && sv.last_status !== "ok") return { k: "error", t: "Last call failed", sv };
   if (!sv.requested) return { k: "none", sv };
   const firsts = chains.map((c) => c[0]?.model).filter(Boolean), ids = chains.flat().map((e) => e.model);
   if (firsts.includes(sv.requested)) return { k: "ok", sv };
   if (ids.includes(sv.requested)) return { k: "fallback", t: "Served a fallback", sv };
-  return sv.legacy ? { k: "none", sv } : { k: "other", t: "Served an unlisted model", sv };
+  return { k: "other", t: "Served an unlisted model", sv };
 }
 export function chainsOf(state, row, snap) {
   if (row.kind === "cat") return LEVELS.map((lv) => snap.cats[row.id]?.levels?.[lv] || []);
   return [snap.jobs[row.id]?.chain || []];
 }
+// ctx: { snap, served, now }
+// Each flag is { k: "bad" | "warn", t: short text, d: one sentence that says what is wrong and what it affects }.
 export function flagsOf(state, ui, row, ctx) {
-  // ctx: { snap, served }
   const f = [], jv = row.jv;
-  const ss = servedState(state, row, chainsOf(state, row, ctx.snap), ctx.served);
-  if (ss.t) f.push({ k: ss.k === "fallback" ? "warn" : "bad", t: ss.t });
-  const gone = state.unlisted || [];
-  if (chainsOf(state, row, ctx.snap).flat().some((e) => gone.includes(e.model))) f.push({ k: "warn", t: "A model is no longer offered" });
+  const ss = servedState(state, row, chainsOf(state, row, ctx.snap), ctx.served), sv = ss.sv, now = ctx.now ?? Date.now();
+  if (ss.k === "error") f.push({ k: "bad", s: "served", short: "Failed", t: ss.t, d: `The last call failed ${agoText(servedAt(sv), now)}${sv.last_status && sv.last_status !== "error" ? `: ${sv.last_status}` : ""}.` });
+  else if (ss.k === "fallback") f.push({ k: "warn", s: "served", short: "Fallback served", t: ss.t, d: `${nameOf(state, sv.requested)} answered the last call ${agoText(sv.last_at, now)}${sv.last_error ? `, after ${sv.last_error}` : ", so the main model did not answer"}.` });
+  else if (ss.k === "other") f.push({ k: "bad", s: "served", short: "Unlisted model", t: ss.t, d: `${nameOf(state, sv.requested)} answered the last call ${agoText(sv.last_at, now)}, and it is not in this list.` });
+  const gone = state.unlisted || [], goneHere = [...new Set(chainsOf(state, row, ctx.snap).flat().map((e) => e.model))].filter((m) => gone.includes(m));
+  if (goneHere.length) f.push({ k: "warn", short: "Model removed", t: "A model is no longer offered", d: `${goneHere.map((m) => nameOf(state, m)).join(", ")} ${goneHere.length === 1 ? "is" : "are"} no longer listed by OpenRouter.` });
   if (jv) {
-    for (const w of jv.warnings || []) if (/no allowed model|can't run here/.test(w)) f.push({ k: "bad", t: w });
-    if (jv.limit_note?.level === "warn") f.push({ k: "warn", t: "Max output above what the providers can serve" });
+    for (const w of jv.warnings || []) {
+      if (/no allowed model/.test(w)) f.push({ k: "bad", short: "No model allowed", t: `No allowed model, ${w.split(":")[0]}`, d: w });
+      else if (/can't run here/.test(w)) f.push({ k: "bad", short: "Can't run", t: "A model can't run here", d: w });
+    }
+    if (jv.limit_note?.level === "warn") f.push({ k: "warn", short: "Output too high", t: "Max output above what the providers can serve", d: jv.limit_note.text });
   }
   return f;
 }
@@ -176,7 +190,7 @@ export function applyEdit(config, edit) {
       return cfg;
     }
     case "remove": { const arr = entriesOfJob(job); if (arr.length < 2) return null; arr.splice(edit.idx, 1); cfg.jobs[edit.id] = packJob(job, arr); return cfg; }
-    case "chain": {   // replace a whole list (a whole list): entries are { model, effort, strict? }
+    case "chain": {   // replace a whole list: entries are { model, effort, strict? }
       if (cat) { cat && (cat.chains[edit.level] = edit.entries.map(clean)); return cfg; }
       cfg.jobs[edit.id] = packJob(job, edit.entries.map(clean)); return cfg;
     }
@@ -251,14 +265,24 @@ export function pickerItem(state, m, i, sel, current) {
 }
 
 // ---------------------------------------------------------------- HTML: table
-const ICON = { search: '<path d="M11 18a7 7 0 100-14 7 7 0 000 14zM21 21l-5-5"/>', x: '<path d="M6 6l12 12M18 6L6 18"/>', clip: '<path d="M20 11l-8.5 8.5a5 5 0 01-7-7L13 4a3.5 3.5 0 015 5l-8.5 8.5a2 2 0 01-3-3L14 7"/>', up: '<path d="M6 15l6-6 6 6"/>', down: '<path d="M6 9l6 6 6-6"/>', plus: '<path d="M12 5v14M5 12h14"/>', undo: '<path d="M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>' };
+const ICON = {
+  search: '<path d="M11 18a7 7 0 100-14 7 7 0 000 14zM21 21l-5-5"/>', x: '<path d="M6 6l12 12M18 6L6 18"/>', clip: '<path d="M20 11l-8.5 8.5a5 5 0 01-7-7L13 4a3.5 3.5 0 015 5l-8.5 8.5a2 2 0 01-3-3L14 7"/>',
+  left: '<path d="M15 6l-6 6 6 6"/>', right: '<path d="M5 12h14M13 6l6 6-6 6"/>', up: '<path d="M6 15l6-6 6 6"/>', down: '<path d="M6 9l6 6 6-6"/>', plus: '<path d="M12 5v14M5 12h14"/>', undo: '<path d="M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>', list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  alert: '<path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/>', diff: '<path d="M7 4L3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7"/>',
+  flask: '<path d="M9 3h6M10 3v6L4.5 19a1.5 1.5 0 001.3 2.2h12.4a1.5 1.5 0 001.3-2.2L14 9V3M7.5 14h9"/>', sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 4v6M9 14v6"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>', refresh: '<path d="M20 11a8 8 0 00-14.5-4M4 4v4h4M4 13a8 8 0 0014.5 4M20 20v-4h-4"/>',
+  spin: '<path d="M12 3a9 9 0 019 9"/>',
+};
 export const icon = (n) => raw(`<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`);
+// A time is drawn with its own timestamp so the browser can refresh the words every minute without drawing the page again.
+const timeEl = (ms, now) => (ms ? h`<time data-ts="${ms}">${agoText(ms, now)}</time>` : "");
 
-export function view(state, ui) {
+export function view(state, ui, now = Date.now()) {
   const shown = snapshotFromConfig(state), served = state.served || {};
   const rows = rowsOf(state);
   const info = rows.map((row) => {
-    const flags = flagsOf(state, ui, row, { snap: shown, served });
+    const flags = flagsOf(state, ui, row, { snap: shown, served, now });
     return { row, v: viewOf(state, ui, row, shown), flags, ss: servedState(state, row, chainsOf(state, row, shown), served) };
   });
   return { editable: true, shown, info, served, rows };
@@ -280,94 +304,112 @@ export function visibleInfo(state, ui, V) {
   });
 }
 
-function dot(flags) {
-  const k = flags.find((x) => x.k === "bad") ? "bad" : flags.find((x) => x.k === "warn") ? "warn" : "";
-  return k ? h`<span class="dot ${k}" title="${flags.map((x) => x.t).join(", ")}"></span>` : "";
+// The mark at the end of a row's name: one short word and a dot, red for a problem, amber for a warning.
+function mark(flags) {
+  const f = flags.find((x) => x.k === "bad") || flags.find((x) => x.k === "warn");
+  if (!f) return "";
+  return h`<span class="mk ${f.k}" title="${flags.map((x) => x.t).join(", ")}">${f.short || f.t}</span>`;
 }
-function effortSelect(state, x, ro, extra) {
-  const e0 = x.v.chain[0];
-  if (!e0 || !x.v.hasEffort) return h`<span class="mut2 pad">None</span>`;
-  const efs = effortsOf(state, e0.model);
-  if (!efs.length) return e0.effort ? h`<span class="pad">${effortName(e0.effort)}</span>` : h`<span class="mut2 pad">None</span>`;
-  const opts = efs.includes(e0.effort) || !e0.effort ? efs : [e0.effort, ...efs];
-  return h`<select class="cell" ${ro ? "disabled" : ""} data-f="effort" data-id="${x.row.key}" data-k="${x.row.key}.e" aria-label="Reasoning for ${x.row.label}">${opts.map((e) => h`<option value="${e}" ${e === e0.effort ? "selected" : ""}>${effortName(e)}</option>`)}</select>`;
+const MODE = { text: "text", image: "images", audio: "audio" };
+// Every job reads text, so only a job that also needs pictures or sound gets a mark by its name.
+export const modesHtml = (row) => (row.jv?.inputs || []).filter((m) => m !== "text").map((m) => h`<span class="mod" title="Needs a model that reads ${MODE[m] || m}">${MODE[m] || m}</span>`);
+const modesText = (row) => (row.jv?.inputs || []).map((m) => MODE[m] || m).join(", ");
+
+// The starting value of a field: what a job holds until someone saves another value. A routing category starts with every limit empty.
+export const startOf = (state, row, k) => (row.kind === "job" ? ((state.defaults || {})[row.id] || {})[k] ?? null : null);
+const samePrice = (a, b) => (a ? a.prompt : null) === (b ? b.prompt : null) && (a ? a.completion : null) === (b ? b.completion : null);
+// The limits of a row that were changed from their starting values, shortest text first. Only these stand out on the list.
+export function overridesOf(state, row, v) {
+  const out = [], st = (k) => startOf(state, row, k);
+  if (v.showOut && (v.max_output ?? null) !== st("max_output")) out.push({ k: "max_output", t: v.max_output == null ? "No output limit" : num(v.max_output) + " max output" });
+  if (v.showResults && v.results != null && v.results !== st("results")) out.push({ k: "results", t: v.results + " results" });
+  if (v.showSort && (v.sort || null) !== (st("sort") || null)) out.push({ k: "sort", t: "Sort " + sortName(v.sort).toLowerCase() });
+  if (v.showSort && !samePrice(v.max_price || null, st("max_price"))) out.push({ k: "max_price", t: v.max_price ? `$${v.max_price.prompt}/$${v.max_price.completion} max` : "Default price" });
+  if (v.timeout_ms !== undefined && (v.timeout_ms ?? null) !== (st("timeout_ms") ?? null)) out.push({ k: "timeout_ms", t: v.timeout_ms == null ? "No timeout" : secText(v.timeout_ms) + " timeout" });
+  return out;
 }
-const MODE = { text: ["T", "Needs a model that reads text"], image: ["\u{1F5BC}", "Needs a model that reads images"], audio: ["\u{1F3A4}", "Needs a model that reads audio"] };
-export const modesHtml = (row) => (row.jv?.inputs || []).map((m) => h`<span class="mod" title="${MODE[m][1]}">${MODE[m][0]}</span>`);
-function rowHtml(state, ui, V, x, now) {
-  const { row, v, flags } = x, ro = !V.editable, dis = ro ? "disabled" : "", id = row.key;
-  const m = v.chain[0], fb = v.chain.slice(1);
-  const sv = x.ss.sv, st = x.ss.k;
-  const bad = st === "error" || st === "other" ? "bad" : st === "fallback" ? "warn" : "";
-  const served = !sv ? "" : st === "error" && !sv.served_model ? h`<div class="sv bad"><span class="mut2">Failed ${agoText(sv.last_error_at || sv.last_at, now)}</span></div>`
-    : sv.served_model ? h`<div class="sv ${bad}"><span class="ell">${nameOf(state, sv.served_model)}</span><span class="mut2">${st === "error" ? "Failed " + agoText(sv.last_error_at || sv.last_at, now) : agoText(sv.last_at, now)}</span></div>`
-    : sv.requested ? h`<div class="sv ${bad}" title="The answer named no model, so this is the model that was asked"><span class="ell">${nameOf(state, sv.requested)}</span><span class="mut2">Requested name, ${agoText(sv.last_at, now)}</span></div>` : "";
-  const first = attentionKinds(flags)[0] || flags[0];
-  const phone = first ? h`<span class="tag ${first.k}">${{ warn: "Warning", bad: "Problem" }[first.k]}</span>` : "";
-  const out = v.showOut ? h`<input class="cell r2" ${dis} data-f="max_output" data-id="${id}" data-k="${id}.o" inputmode="numeric" value="${v.max_output ?? ""}" placeholder="Max" title="Empty means the provider's maximum" aria-label="Max output for ${row.label}">` : v.showResults ? h`<span class="mut2 pad r2">${v.results} results</span>` : h`<span class="mut2">n/a</span>`;
-  const sortCell = v.showSort ? h`<select class="cell" ${dis} data-f="sort" data-id="${id}" data-k="${id}.s" aria-label="Provider sort for ${row.label}">${Object.keys(SORT).map((k) => h`<option value="${k}" ${k === (v.sort || "") ? "selected" : ""}>${SORT[k]}</option>`)}</select>` : h`<span class="mut2">n/a</span>`;
-  const priceCell = v.showSort ? h`<div class="pr"><input class="cell r2" ${dis} data-f="price" data-w="prompt" data-id="${id}" data-k="${id}.pi" inputmode="decimal" placeholder="in" value="${v.max_price ? v.max_price.prompt : ""}" aria-label="Max input price for ${row.label}"><input class="cell r2" ${dis} data-f="price" data-w="completion" data-id="${id}" data-k="${id}.po" inputmode="decimal" placeholder="out" value="${v.max_price ? v.max_price.completion : ""}" aria-label="Max output price for ${row.label}"></div>` : h`<span class="mut2">n/a</span>`;
-  const timeout = v.showTimeout && v.timeout_ms !== undefined ? h`<input class="cell r2" ${dis} data-f="timeout" data-id="${id}" data-k="${id}.t" inputmode="decimal" placeholder="None" value="${v.timeout_ms == null ? "" : v.timeout_ms / 1000}" aria-label="Timeout in seconds for ${row.label}">` : h`<span class="mut2">n/a</span>`;
-  const modelCell = !v.hasChain ? "" : m ? h`<div class="mdl"><span class="ell">${nameOf(state, m.model)}</span>${badge(srcOf(state, m.model, m.source))}</div>` : h`<span class="mut2">None</span>`;
-  const fbCell = fb.length ? h`<span class="ell" title="${fb.map((e) => nameOf(state, e.model)).join(", ")}">${fb.map((e) => nameOf(state, e.model)).join(", ")}</span>` : h`<span class="mut2">None</span>`;
-  return h`<div class="rw" role="row" tabindex="0" data-row="${id}" aria-selected="${ui.sel === id}"><div class="cf">${dot(flags)}</div><div class="nm cn"><div class="lb"><b class="ell">${row.label}</b>${modesHtml(row)}</div></div><div class="cm">${modelCell}</div><div>${v.hasChain ? effortSelect(state, x, ro) : ""}</div><div class="fb">${v.hasChain ? fbCell : ""}</div><div>${out}</div><div>${sortCell}</div><div>${priceCell}</div><div>${timeout}</div><div class="cs">${served}</div><div class="cp">${phone}</div></div>`;
+function itemHtml(state, ui, V, x, selKey) {
+  const { row, v, flags } = x, m = v.chain[0], fb = v.chain.length - 1, ov = overridesOf(state, row, v);
+  const eff = m && v.hasEffort && m.effort && effortsOf(state, m.model).length ? effortName(m.effort) : "";
+  const src = m ? srcOf(state, m.model, m.source) : "";
+  const sel = row.key === selKey;
+  const tail = [eff, fb ? `${fb} fallback${fb === 1 ? "" : "s"}` : ""].filter(Boolean);
+  return h`<div class="it" role="option" tabindex="0" data-row="${row.key}" aria-selected="${sel}" aria-current="${sel}"><div class="l1"><b class="ell">${row.label}</b>${modesHtml(row)}<span class="sp"></span>${mark(flags)}</div><div class="l2"><span class="md ell">${m ? h`${src && src !== "OR" ? badge(src) : ""}<span class="ell">${nameOf(state, m.model)}</span>${tail.length ? h`<span class="mut2 nw">${tail.join(" | ")}</span>` : ""}` : h`<span class="mut2">No model</span>`}</span>${ov.length ? h`<span class="chips">${ov.slice(0, 2).map((o) => h`<span class="chip">${o.t}</span>`)}${ov.length > 2 ? h`<span class="chip" title="${ov.slice(2).map((o) => o.t).join(", ")}">+${ov.length - 2}</span>` : ""}</span>` : ""}</div></div>`;
 }
-const HEAD = h`<div class="gh" role="row"><div></div><div>Job</div><div>Model</div><div>Reasoning</div><div>Fallbacks</div><div class="r2">Max output</div><div>Sort</div><div>Max price in / out $</div><div class="r2">Timeout</div><div>Last served</div></div>`;
-function jobsTable(state, ui, V, now) {
+function emptyState(ui, V) {
+  if (ui.q) return h`<div class="empty"><b>No jobs match "${ui.q}"</b><button class="btn sm" data-act="clearq">Clear search</button></div>`;
+  if (ui.view === "attention") return h`<div class="empty"><b>Nothing needs attention</b></div>`;
+  return h`<div class="empty"><b>No jobs</b></div>`;
+}
+// The list: a search box, a filter, and every job in its group with its model, its reasoning level, and only the limits that were changed.
+function jobList(state, ui, V, selKey, counts) {
   const vis = visibleInfo(state, ui, V), groups = groupsOf(state);
   const body = groups.map((g) => {
     const items = vis.filter((x) => x.row.group === g.id);
     if (!items.length) return "";
-    const seg = g.id === "chat" && state.dynamicRouting ? h`<span class="seg ml-auto" role="group" aria-label="Privacy level">${LEVELS.map((l) => h`<button data-lvl="${l}" aria-pressed="${ui.level === l}">${LEVEL_NAME[l]}</button>`)}</span>${V.editable ? h`<button class="btn sm" data-act="catadd" aria-label="Add category" title="Add category">${icon("plus")}<span class="lbl">Add category</span></button>` : ""}` : "";
-    return h`<div class="gtitle">${g.title} <span class="mut2 gc">${items.length}</span>${seg}</div>${items.map((x) => rowHtml(state, ui, V, x, now))}`;
+    const add = g.id === "chat" && state.dynamicRouting && V.editable ? h`<button class="btn sm ghost ico" data-act="catadd" aria-label="Add category" title="Add category">${icon("plus")}</button>` : "";
+    return h`<div class="grp" role="group" aria-label="${g.title}"><div class="gt"><span>${g.title}</span>${add}</div>${items.map((x) => itemHtml(state, ui, V, x, selKey))}</div>`;
   });
-  return h`<div class="tbl" role="table">${HEAD}${body.some((b) => b !== "") ? body : h`<div class="empty">No jobs match</div>`}</div>`;
+  const flt = (v, label, count) => h`<button data-view="${v}" aria-pressed="${ui.view === v}">${label}${count != null ? h`<i>${count}</i>` : ""}</button>`;
+  return h`<section class="listp" aria-label="Jobs"><div class="lhd"><div class="sr"><span class="ico">${icon("search")}</span><input class="inp" data-k="q" data-q placeholder="Search jobs and models" value="${ui.q}" aria-label="Search" autocomplete="off"><span class="kbd">/</span></div><div class="seg flt" role="group" aria-label="Show">${flt("all", "All", V.rows.length)}${flt("attention", "Attention", counts.att)}</div></div><div class="lbody" role="listbox" aria-label="Jobs">${body.some((b) => b !== "") ? body : emptyState(ui, V)}</div></section>`;
 }
 
 // ---------------------------------------------------------------- HTML: limits and read only
+// The text beside a limit's box: the starting value with a way back to it when the value was changed.
+const sideNote = (startText, changed, resetAttrs) => h`${changed ? h`<span class="stn"><span class="mut2 ell">Starting value ${startText}</span><button class="lk" ${raw(resetAttrs)}>Reset</button></span>` : ""}`;
 export function limitsView(state, ui, V) {
   const L = state.limits, ro = !V.editable;
   const vals = L ? L.values : null;
-  if (!L || !vals) return h`<div class="vh"><h1>Limits</h1></div>`;
+  if (!L || !vals) return h`<div class="page narrow"></div>`;
   const tables = L.groups.map((g) => {
     const defs = L.defs.filter((d) => d.group === g.id);
     if (!defs.length) return "";
-    return h`<div class="vh vh2"><h1>${g.title}</h1></div><div class="lim"><div class="lh"><div>Limit</div><div>Value</div><div>Starting value</div></div>${defs.map((d) => {
-      return h`<div class="lr"><div class="ln"><b>${d.label}</b><span class="mut ell" title="${d.description}">${d.description}</span></div><span class="lv-in"><input class="cell r2 box" ${ro ? "disabled" : ""} data-lim="${d.key}" data-k="lim.${d.key}" inputmode="decimal" value="${vals[d.key]}" aria-label="${d.label}, ${d.unit}"><span class="mut2 unit">${d.unit}</span></span><span class="mut2">${num(d.default)}</span></div>`;
-    })}</div>`;
+    return h`<section class="card"><header><h2>${g.title}</h2></header>${defs.map((d) => {
+      const changed = vals[d.key] !== d.default;
+      return h`<div class="lr" role="group" aria-label="${d.label}"><div class="ln"><b>${d.label}</b><span class="mut" title="${d.description}">${d.description}</span></div><span class="lv-in"><input class="inp r box" ${ro ? "disabled" : ""} data-lim="${d.key}" data-k="lim.${d.key}" inputmode="decimal" value="${vals[d.key]}" aria-label="${d.label}, ${d.unit}"><span class="mut2 unit">${d.unit}</span></span><span class="sn">${sideNote(num(d.default), changed && !ro, `data-act="limreset" data-key="${esc(d.key)}"`)}</span></div>`;
+    })}</section>`;
   });
-  return h`<div class="vh"><h1>Limits</h1></div>${tables}`;
+  return h`<div class="page narrow">${tables}</div>`;
 }
 export function readonlyView(state) {
-  return h`<div class="vh"><h1>Read only</h1><span class="tag">Set outside this page</span></div>${(state.outside || []).map((g) => h`<div class="ro"><h3>${g.title}</h3>${g.items.map((i) => h`<div class="lr"><b>${i.label}</b><span class="mono">${i.model}${i.source ? badge(i.source) : ""}</span><span class="mut">${i.detail || ""}</span></div>`)}</div>`)}`;
+  return h`<div class="page narrow">${(state.outside || []).map((g) => h`<section class="card ro"><header><h2>${g.title}</h2></header>${g.items.map((i) => h`<div class="lr"><b>${i.label}</b><span class="mono ell">${i.model}${i.source ? badge(i.source) : ""}</span><span class="mut">${i.detail || ""}</span></div>`)}</section>`)}</div>`;
 }
 
-// ---------------------------------------------------------------- HTML: inspector
+// ---------------------------------------------------------------- HTML: the detail of one job (it stays beside the list)
+const NOTICE_ICON = { bad: "alert", warn: "alert" };
+// One limit: its name, its box, and a note that appears only when the value differs from the starting value.
+const limitRow = (id, label, control, side) => h`<div class="fr"><label for="${id}">${label}</label><div class="fc">${control}</div><div class="sn">${side.note}</div></div>`;
 export function drawerHtml(state, ui, V, now) {
   const x = V.info.find((i) => i.row.key === ui.sel);
-  if (!x) return h``;
-  const { row, v, flags } = x, ro = !V.editable, jv = row.jv, ids = visibleInfo(state, ui, V).map((i) => i.row.key), pos = ids.indexOf(row.key);
+  if (!x) return h`<div class="empty"><b>No job selected</b></div>`;
+  const { row, v, flags } = x, ro = !V.editable, jv = row.jv;
   const ent = v.chain.map((e, i) => {
     const efs = effortsOf(state, e.model), src = srcOf(state, e.model, e.source);
-    const sel = v.hasEffort && efs.length ? h`<div class="rs"><span class="mut">Reasoning</span><select class="sel" ${ro ? "disabled" : ""} data-df="effort" data-i="${i}" aria-label="Reasoning for model ${i + 1}">${(efs.includes(e.effort) || !e.effort ? efs : [e.effort, ...efs]).map((o) => h`<option value="${o}" ${o === e.effort ? "selected" : ""}>${effortName(o)}</option>`)}</select></div>` : "";
+    const sel = v.hasEffort && efs.length ? h`<select class="sel" ${ro ? "disabled" : ""} data-df="effort" data-i="${i}" aria-label="Reasoning for ${i ? "fallback " + i : "the main model"}">${(efs.includes(e.effort) || !e.effort ? efs : [e.effort, ...efs]).map((o) => h`<option value="${o}" ${o === e.effort ? "selected" : ""}>${effortName(o)}</option>`)}</select>` : "";
     const ac = ro ? "" : h`<button class="btn sm" data-act="chg" data-i="${i}">Change</button><button class="btn sm ico ghost" data-act="up" data-i="${i}" aria-label="Move up" ${i === 0 ? "disabled" : ""}>${icon("up")}</button><button class="btn sm ico ghost" data-act="dn" data-i="${i}" aria-label="Move down" ${i === v.chain.length - 1 ? "disabled" : ""}>${icon("down")}</button>${v.fixedChain ? "" : h`<button class="btn sm ico ghost" data-act="rm" data-i="${i}" aria-label="Remove" ${v.chain.length < 2 ? "disabled" : ""}>${icon("x")}</button>`}`;
-    return h`<div class="ent"><span class="p">${i + 1}</span><div class="m"><span class="ell">${nameOf(state, e.model)}</span>${badge(src)}</div><div class="ac">${ac}</div><div class="id mono ell">${e.model}</div>${sel}</div>`;
+    return h`<div class="ent"><span class="p">${i ? "Fallback " + i : "Main"}</span><div class="m"><div class="mn"><b class="ell">${nameOf(state, e.model)}</b>${badge(src)}</div><div class="id mono ell">${e.model}</div></div><div class="rs">${sel}</div><div class="ac">${ac}</div></div>`;
   });
   const canAdd = !ro && v.hasChain && !v.fixedChain && v.chain.length < v.maxChain;
   const title = row.kind === "cat" && row.id !== "general" && !ro ? h`<input class="inp title-in" data-df="title" value="${row.label}" maxlength="240" aria-label="Category title">` : h`<h2>${row.label}</h2>`;
-  const seg = row.kind === "cat" ? h`<div class="seg seg-top" role="group" aria-label="Privacy level">${LEVELS.map((l) => h`<button data-lvl="${l}" aria-pressed="${ui.level === l}">${LEVEL_NAME[l]}</button>`)}</div>` : "";
-  const modelsSec = v.hasChain ? h`<div class="sec"><h4>Models${row.kind === "cat" ? ", " + LEVEL_NAME[v.level] : ""}${canAdd ? h`<button class="btn sm ml-auto nocaps" data-act="add">${icon("plus")}Add fallback</button>` : ""}</h4>${ent}${jv?.warnings?.some((w) => /re-index/.test(w)) ? h`<span class="tag warn">Changing it needs a re-index</span>` : ""}</div>` : "";
+  const seg = row.kind === "cat" ? h`<div class="seg" role="group" aria-label="Privacy level">${LEVELS.map((l) => h`<button data-lvl="${l}" aria-pressed="${ui.level === l}">${LEVEL_NAME[l]}</button>`)}</div>` : "";
+  const reindex = jv?.warnings?.find((w) => /re-index/.test(w));
+  const modelsSec = v.hasChain ? h`<section class="sec"><div class="sh"><h3>Models</h3>${seg}<span class="sp"></span>${canAdd ? h`<button class="btn sm" data-act="add">${icon("plus")}Add fallback</button>` : ""}</div><div class="card"><div class="ent head" aria-hidden="true"><span></span><span>Model</span><span>${v.hasEffort ? "Reasoning" : ""}</span><span></span></div>${ent}</div>${reindex ? h`<p class="note">${reindex}</p>` : ""}</section>` : "";
+  const st = (k) => startOf(state, row, k);
+  const side = (f, startText, changed) => ({ note: h`${changed && !ro ? h`<span class="stn"><span class="mut2 ell">Starting value ${startText}</span><button class="lk" data-act="reset" data-field="${f}">Reset</button></span>` : ""}` });
   const fl = [];
-  if (v.showOut) fl.push(h`<div><label>Max output</label><input class="inp r" ${ro ? "disabled" : ""} data-df="max_output" inputmode="numeric" placeholder="Provider max" value="${v.max_output ?? ""}" aria-label="Max output"></div>`);
-  if (v.showResults) fl.push(h`<div><label>Results</label><input class="inp r" ${ro ? "disabled" : ""} data-df="results" inputmode="numeric" value="${v.results}" aria-label="Results"></div>`);
-  if (v.showTimeout && v.timeout_ms !== undefined) fl.push(h`<div><label>Timeout, seconds</label><input class="inp r" ${ro ? "disabled" : ""} data-df="timeout" inputmode="decimal" placeholder="None" value="${v.timeout_ms == null ? "" : v.timeout_ms / 1000}" aria-label="Timeout in seconds"></div>`);
-  if (v.showSort) fl.push(h`<div><label>Provider sort</label><select class="sel" ${ro ? "disabled" : ""} data-df="sort" aria-label="Provider sort">${Object.keys(SORT).map((k) => h`<option value="${k}" ${k === (v.sort || "") ? "selected" : ""}>${SORT[k]}</option>`)}</select></div>`);
-  if (v.showSort) fl.push(h`<div><label>Max price per M tokens</label><div class="two"><input class="inp r" ${ro ? "disabled" : ""} data-df="pi" placeholder="in" value="${v.max_price ? v.max_price.prompt : ""}" aria-label="Max input price per million tokens"><input class="inp r" ${ro ? "disabled" : ""} data-df="po" placeholder="out" value="${v.max_price ? v.max_price.completion : ""}" aria-label="Max output price per million tokens"></div></div>`);
-  const limSec = fl.length ? h`<div class="sec"><h4>Limits</h4><div class="fg">${fl}</div>${jv?.limit_note ? h`<p class="note ${jv.limit_note.level}">${jv.limit_note.text}</p>` : ""}</div>` : "";
-  const sv = x.ss.sv;
-  const svSec = !sv || (!sv.served_model && !sv.requested) ? "" : h`<div class="sec"><h4>Last served</h4><dl class="kv"><dt>Model</dt><dd>${sv.served_model ? sv.served_model : h`${sv.requested} (requested name, the answer named no model)`}</dd>${sv.served_model && sv.requested && sv.requested !== sv.served_model ? h`<dt>Requested</dt><dd>${sv.requested}</dd>` : ""}${sv.served_provider ? h`<dt>Provider</dt><dd>${sv.served_provider}</dd>` : ""}<dt>When</dt><dd>${agoText(sv.last_at, now)}</dd><dt>Calls</dt><dd>${num(sv.calls)}</dd><dt>Status</dt><dd>${sv.last_status && sv.last_status !== "ok" ? h`<span class="tag bad">${sv.last_status}</span>` : h`OK${sv.last_error ? h` <span class="tag bad">${sv.last_error}</span>` : ""}`}</dd></dl></div>`;
+  if (v.showOut) fl.push(limitRow("df-out", "Max output", h`<input id="df-out" class="inp r" ${ro ? "disabled" : ""} data-df="max_output" inputmode="numeric" placeholder="Provider max" value="${v.max_output ?? ""}">`, side("max_output", outText(st("max_output")), (v.max_output ?? null) !== st("max_output"))));
+  if (v.showResults) fl.push(limitRow("df-res", "Results", h`<input id="df-res" class="inp r" ${ro ? "disabled" : ""} data-df="results" inputmode="numeric" value="${v.results}">`, side("results", String(st("results")), v.results !== st("results"))));
+  if (v.showSort) fl.push(limitRow("df-sort", "Provider sort", h`<select id="df-sort" class="sel" ${ro ? "disabled" : ""} data-df="sort">${Object.keys(SORT).map((k) => h`<option value="${k}" ${k === (v.sort || "") ? "selected" : ""}>${SORT[k]}</option>`)}</select>`, side("sort", sortName(st("sort")), (v.sort || null) !== (st("sort") || null))));
+  if (v.showSort) fl.push(limitRow("df-pi", "Max price per million tokens", h`<div class="two"><input id="df-pi" class="inp r" ${ro ? "disabled" : ""} data-df="pi" inputmode="decimal" placeholder="In, default" value="${v.max_price ? v.max_price.prompt : ""}" aria-label="Max input price per million tokens, dollars"><input class="inp r" ${ro ? "disabled" : ""} data-df="po" inputmode="decimal" placeholder="Out, default" value="${v.max_price ? v.max_price.completion : ""}" aria-label="Max output price per million tokens, dollars"></div>`, side("max_price", priceText(st("max_price")), !samePrice(v.max_price || null, st("max_price")))));
+  if (v.showTimeout && v.timeout_ms !== undefined) fl.push(limitRow("df-to", "Timeout, seconds", h`<input id="df-to" class="inp r" ${ro ? "disabled" : ""} data-df="timeout" inputmode="decimal" placeholder="None" value="${v.timeout_ms == null ? "" : v.timeout_ms / 1000}">`, side("timeout_ms", secText(st("timeout_ms")), (v.timeout_ms ?? null) !== (st("timeout_ms") ?? null))));
+  const limSec = fl.length ? h`<section class="sec"><div class="sh"><h3>Limits</h3></div><div class="card">${fl}</div>${jv?.limit_note ? h`<p class="note ${jv.limit_note.level}">${jv.limit_note.text}</p>` : ""}</section>` : "";
+  const sv = x.ss.sv, hist = x.ss.k === "history";
+  const svTag = x.ss.t ? h`<span class="tag ${x.ss.k === "fallback" ? "warn" : "bad"}">${x.ss.t}</span>` : "";
+  const svSec = !sv || (!sv.served_model && !sv.requested) ? "" : h`<section class="sec"><div class="sh"><h3>Last served</h3>${svTag}${hist ? h`<span class="mut2">Before the last change to this ${row.kind === "cat" ? "category" : "job"}</span>` : ""}</div><div class="card"><dl class="kv"><dt>Model</dt><dd>${sv.served_model ? sv.served_model : h`${sv.requested} (requested name, the answer named no model)`}</dd>${sv.served_model && sv.requested && sv.requested !== sv.served_model ? h`<dt>Requested</dt><dd>${sv.requested}</dd>` : ""}${sv.served_provider ? h`<dt>Provider</dt><dd>${sv.served_provider}</dd>` : ""}<dt>When</dt><dd>${timeEl(sv.last_at, now)}</dd><dt>Calls</dt><dd>${num(sv.calls)}</dd><dt>Status</dt><dd>${sv.last_status && sv.last_status !== "ok" ? h`<span class="tag bad">${sv.last_status}</span>` : h`OK${sv.last_error ? h` <span class="mut">${sv.last_error}</span>` : ""}`}</dd></dl></div></section>`;
   const del = row.kind === "cat" && row.id !== "general" && !ro ? h`<button class="btn sm danger" data-act="catdelete">Delete</button>` : "";
-  return h`<div class="dh"><div class="t">${title}<button class="btn sm ghost ico" data-act="close" aria-label="Close">${icon("x")}</button></div><div class="tg">${flags.map((f) => h`<span class="tag ${f.k}">${f.t}</span>`)}</div><p>${row.desc}</p>${seg}</div><div class="db">${modelsSec}${limSec}${svSec}</div><div class="dfoot"><button class="btn sm ico" data-act="prev" aria-label="Previous job" ${pos < 1 ? "disabled" : ""}>${icon("up")}</button><button class="btn sm ico" data-act="next" aria-label="Next job" ${pos < 0 || pos >= ids.length - 1 ? "disabled" : ""}>${icon("down")}</button><span class="grow"></span>${del}<button class="btn sm pri" data-act="close">Done</button></div>`;
+  const notices = flags.filter((f) => f.d);
+  const modes = modesText(row);
+  return h`<div class="dh"><button class="btn sm ghost goback" data-act="close">${icon("left")}Jobs</button><div class="t">${title}<span class="sp"></span>${del}</div><p class="desc">${row.desc}${modes ? h` <span class="mut2">Reads ${modes}.</span>` : ""}</p>${notices.map((f) => h`<div class="notice ${f.k}">${icon(NOTICE_ICON[f.k] || "alert")}<div><b>${f.t}</b><span>${f.d}</span></div></div>`)}</div><div class="db">${modelsSec}${limSec}${svSec}</div>`;
 }
 
 
@@ -509,37 +551,66 @@ export function sandboxInner(state, sb) {
   };
   const bar = cur ? h`<b class="ell">${cur.label}</b><span class="sp"></span>${slots.map(slotBar)}${slots.length < SLOTS_MAX ? h`<button class="btn sm ico" data-sb-act="addslot" aria-label="Add a model to compare" title="Add a model to compare">${icon("plus")}</button>` : ""}` : "";
   const goldBtn = cur && sb.gold && sb.gold.edit ? h`<button class="btn sm" data-sb-gact="toggle" aria-expanded="${!!sb.gold.open}">Golden answers</button>` : "";
-  return h`<aside class="sb-list" aria-label="Jobs">${list}</aside><div class="sb-main">${select}<div class="sb-bar">${bar}${goldBtn}</div>${goldPanelHtml(sb)}${sandboxChat(state, sb)}<div class="sb-in">${cur && sb.draft ? inputHtml(sb) : ""}</div></div>`;
+  return h`<aside class="sb-list" aria-label="Jobs">${list}</aside><div class="sb-main">${select}<div class="sb-bar">${bar}${goldBtn}</div>${goldPanelHtml(sb)}${cur ? sandboxChat(state, sb) : h`<div class="empty sb-none"><b>Choose a job</b></div>`}<div class="sb-in">${cur && sb.draft ? inputHtml(sb) : ""}</div></div>`;
 }
-export const sandboxHtml = (state, ui) => h`<div class="vh"><h1>Sandbox</h1></div><div class="sb" id="sb-root">${sandboxInner(state, ui.sb)}</div>`;
+export const sandboxHtml = (state, ui) => h`<div class="sb" id="sb-root">${sandboxInner(state, ui.sb)}</div>`;
 
 // ---------------------------------------------------------------- HTML: the page
+// The job shown in the detail: the chosen one when this environment has it, otherwise the first job of the list.
+export function resolveSel(state, ui, V) {
+  if (ui.sel && V.info.some((i) => i.row.key === ui.sel)) return ui.sel;
+  const first = visibleInfo(state, ui, V)[0] || V.info[0];
+  return first ? first.row.key : null;
+}
+export const JOB_VIEWS = ["all", "attention"];
+export const isJobsView = (ui, state) => !["limits", "readonly", "sandbox"].includes(ui.view);
 export function pageHtml(state, ui, now) {
-  const V = view(state, ui);
-  const counts = {}; for (const r of V.rows) counts[r.group] = (counts[r.group] || 0) + 1;
+  const V = view(state, ui, now);
   const att = attention(V).length;
-  const navb = (v, label, count, cls) => h`<button data-view="${v}" aria-current="${ui.view === v}">${label}${count != null ? h`<span class="c ${cls || ""}">${count}</span>` : ""}</button>`;
-  const jobsMode = !["limits", "readonly", "sandbox"].includes(ui.view);
-  const titleOf = () => (ui.view === "all" ? "All jobs" : ui.view === "attention" ? "Needs attention" : groupsOf(state).find((g) => g.id === ui.view)?.title || "");
-  const body = jobsMode ? h`<div class="vh"><h1>${titleOf()}</h1><span class="mut">${visibleInfo(state, ui, V).length} jobs</span></div>${jobsTable(state, ui, V, now)}` : ui.view === "sandbox" ? sandboxHtml(state, ui) : ui.view === "limits" ? limitsView(state, ui, V) : readonlyView(state);
-  const stale = state.stale ? h`<div class="stale" role="alert">The saved settings could not be read just now, so this page is showing the last copy that was read.</div>` : "";
-  return h`<div class="shell"><aside class="side"><a class="brand" href="/"><i></i>1Helm</a>
-<div class="nav"><h6>Models</h6>${navb("all", "All jobs", V.rows.length)}${navb("attention", "Needs attention", att, att ? "hot" : "")}${navb("sandbox", "Sandbox")}</div>
-<div class="nav"><h6>Groups</h6>${groupsOf(state).map((g) => navb(g.id, g.title, counts[g.id] || 0))}</div>
-<div class="nav"><h6>Settings</h6>${navb("limits", "Limits")}${navb("readonly", "Read only")}</div></aside>
-<div class="main">${stale}<div class="top"><div class="sr"><span class="ico">${icon("search")}</span><input class="inp" data-k="q" data-q placeholder="Search jobs and models" value="${ui.q}" aria-label="Search" autocomplete="off"><span class="kbd">/</span></div><span class="sp"></span><button class="btn" data-act="hist">${icon("clock")}History</button></div>${body}</div></div>
-<div class="scrim${ui.sel ? " open" : ""}" data-act="close"></div><aside class="drawer${ui.sel ? " open" : ""}" aria-label="Job inspector">${ui.sel ? drawerHtml(state, ui, V, now) : ""}</aside>`;
+  const jobsMode = isJobsView(ui, state);
+  const selKey = resolveSel(state, ui, V), U = { ...ui, sel: selKey };
+  const tab = (v, label, count, cls, on) => h`<button data-view="${v}" aria-current="${on ?? ui.view === v}"><span class="lbl">${label}</span>${count != null ? h`<span class="c ${cls || ""}">${count}</span>` : ""}</button>`;
+  const tabs = h`<nav class="tabs" aria-label="Models">${tab("all", "Jobs", V.rows.length, "", jobsMode)}${tab("sandbox", "Sandbox")}${tab("limits", "Limits")}${tab("readonly", "Read only")}</nav>`;
+  const body = jobsMode ? h`<div class="split${ui.open ? " open" : ""}">${jobList(state, ui, V, selKey, { att })}<section class="detail" aria-label="Job detail">${drawerHtml(state, U, V, now)}</section></div>`
+    : ui.view === "sandbox" ? sandboxHtml(state, ui) : ui.view === "limits" ? limitsView(state, ui, V) : readonlyView(state);
+  const banners = [state.stale ? h`<div class="banner warn" role="alert">The saved settings could not be read just now, so this page is showing the last copy that was read.</div>` : ""];
+  const sv = ui.save || {};
+  const saveSlot = h`<span class="savest" data-st="${sv.k || ""}" role="status" aria-live="polite">${sv.k === "saving" ? h`<span class="spin">${icon("spin")}</span><span class="mut">Saving</span>` : sv.k === "saved" ? h`${icon("check")}<span>Saved</span>${ui.undo ? h`<button class="lnk" data-act="undo">Undo</button>` : ""}` : sv.k === "failed" ? h`${icon("alert")}<span>Not saved</span>` : ""}</span>`;
+  return h`<div class="app" data-view="${jobsMode ? "jobs" : ui.view}"><header class="top"><a class="brand" href="/"><i></i><span>1Helm</span></a><span class="sp"></span>${saveSlot}<button class="btn" data-act="hist">${icon("clock")}<span class="lbl">History</span></button></header>${tabs}${banners}<main class="body${jobsMode ? " jobs" : ""}${ui.view === "sandbox" ? " sbv" : ""}">${body}</main></div>`;
 }
 
 // ---------------------------------------------------------------- HTML: dialogs
 export const modalHtml = (title, tag, body, foot, cls) => h`<div class="back"><div class="modal ${cls || ""}" role="dialog" aria-modal="true" aria-label="${title}"><div class="mh"><h3>${title}</h3>${tag ? h`<span class="tag ${tag.cls || ""}">${tag.text}</span>` : ""}<button class="btn sm ghost ico" data-x aria-label="Close">${icon("x")}</button></div><div class="mb" data-body>${body}</div>${foot ? h`<div class="mf" data-foot>${foot}</div>` : ""}</div></div>`;
+// ---- history ----
+const FIELD_NAME = { chain: "models", effort: "reasoning", max_output: "max output", sort: "sort", max_price: "max price", timeout_ms: "timeout", results: "results", title: "name", value: "value" };
+export function changeLabel(state, key) {
+  if (key.startsWith("limit:")) return state.limits?.defs?.find((d) => d.key === key.slice(6))?.label || key.slice(6);
+  return rowByKey(state, key)?.label || (key.startsWith("cat:") ? "Category" : key);
+}
+export function actionText(a) {
+  const s = String(a || "");
+  let m;
+  if (s === "seed") return "First settings";
+  if (s === "save") return "";
+  if ((m = /^restore:(\d+)$/.exec(s))) return `Restored revision ${m[1]}`;
+  if ((m = /^add-jobs:(.*)$/.exec(s))) return "Added " + m[1].split(",").join(", ");
+  if (s === "add-dynamic-routing") return "Added routing categories";
+  if (s === "strip-provider-lists") return "Removed saved provider lists";
+  if (s === "admin") return "Saved by an administrator script";
+  return s;
+}
+export function changeLines(state, changes) {
+  return (changes || []).map((c) => c.added ? `${changeLabel(state, c.key)} added` : c.removed ? `${changeLabel(state, c.key)} removed` : `${changeLabel(state, c.key)}: ${c.fields.map((f) => FIELD_NAME[f] || f).join(", ")}`);
+}
 export function historyBody(state, confirmRev) {
   const rows = (state.history || []).map((x) => {
     const cur = x.revision === state.revision;
-    const act = cur ? "" : confirmRev === x.revision ? h`<button class="btn sm pri" data-do="${x.revision}">Restore</button> <button class="btn sm" data-no>Cancel</button>` : h`<button class="btn sm" data-rs="${x.revision}">Restore</button>`;
-    return h`<tr><td><b>${x.revision}</b> ${cur ? h`<span class="tag ok">Now</span>` : ""}</td><td>${new Date(x.at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}</td><td>${x.by}</td><td>${x.action}</td><td class="r2">${act}</td></tr>`;
+    const act = cur ? "" : confirmRev === x.revision ? h`<button class="btn sm pri" data-do="${x.revision}">Restore</button><button class="btn sm" data-no>Cancel</button>` : h`<button class="btn sm" data-rs="${x.revision}">Restore</button>`;
+    const lines = changeLines(state, x.changes), head = actionText(x.action), shown = lines.slice(0, 4);
+    const what = h`${head ? h`<div><b>${head}</b></div>` : ""}${shown.map((l) => h`<div class="${head ? "mut" : ""}">${l}</div>`)}${lines.length > shown.length ? h`<div class="mut2">and ${lines.length - shown.length} more</div>` : ""}${!head && !lines.length ? h`<div class="mut2">${x.changes ? "No change to a job or limit" : "Saved"}</div>` : ""}`;
+    return h`<div class="hr${cur ? " now" : ""}"><div class="rev"><b>${x.revision}</b>${cur ? h`<span class="tag ok">Now</span>` : ""}</div><div class="what">${what}<div class="mut2 by">${new Date(x.at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}, ${x.by}</div></div><div class="act">${act}</div></div>`;
   });
-  return h`<table class="t"><thead><tr><th>Revision</th><th>When</th><th>By</th><th>What</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  return h`<div class="hist">${rows}</div>`;
 }
 export const historyModal = (state, confirmRev) => modalHtml("History", null, historyBody(state, confirmRev), null, "wide");
 export const confirmModal = (title, body, ok, danger) => modalHtml(title, null, h`<div class="pad16">${body}</div>`, h`<span class="grow"></span><button class="btn" data-x>Cancel</button><button class="btn pri${danger ? " bad" : ""}" data-go>${ok}</button>`, "");

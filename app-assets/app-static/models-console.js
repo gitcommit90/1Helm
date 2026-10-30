@@ -5,22 +5,42 @@ import { initSandbox } from "./models-sandbox.js";
 
 const $ = (s, r) => (r || document).querySelector(s), $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 let state = JSON.parse($("#model-state").textContent);
-const ui = { view: "all", q: "", sel: null, level: "unrestricted" };
+const ui = { view: "all", q: "", sel: null, open: false, level: "unrestricted", save: null, undo: null };
 const app = $("#app"), layer = $("#layer"), toastEl = $("#toast");
 const editable = () => true;
 
 // ------------------------------------------------------------ rendering
 const keyOf = (el) => (el && el.dataset ? el.dataset.k || (el.dataset.df ? "d." + el.dataset.df + (el.dataset.i || "") : null) : null);
-function render() {
+// The page is drawn again from the state after every change. The scroll position of the list, the detail and the page, the focus, and a value that was typed
+// and not saved yet are put back, so nothing jumps.
+const JOB_FILTERS = ["all", "attention"];   // a new filter shows its first job, so the detail is never a job that the list does not show
+let listTop = 0, lastSig = "", lastListSig = "";
+function render(focusKey) {
+  ui.sel = C.resolveSel(state, ui, C.view(state, ui));
   const a = document.activeElement, key = keyOf(a), sel = key && a.setSelectionRange && a.type !== "number" ? [a.selectionStart, a.selectionEnd] : null;
-  const tbl = $(".tbl"), db = $(".db"), sx = window.scrollX, sy = window.scrollY, tl = tbl ? tbl.scrollLeft : 0, rowFocus = a && a.dataset && a.dataset.row;
+  const typed = key && a.dataset.dirty ? a.value : null;   // a value that was typed and not saved yet survives a redraw caused by another save
+  const lb = $(".lbody"), db = $(".detail"), bd = $(".body"), rowFocus = a && a.dataset && a.dataset.row;
+  if (lb && lb.offsetParent !== null) listTop = lb.scrollTop;   // a hidden list reports 0, so only a shown list is read
+  const detailTop = db ? db.scrollTop : 0, bodyTop = bd ? bd.scrollTop : 0;
   app.innerHTML = C.pageHtml(state, ui, Date.now()).toString();
   if (ui.view === "sandbox") SB.enter();
-  if (tl && $(".tbl")) $(".tbl").scrollLeft = tl;
-  if (db && $(".db")) $(".db").scrollTop = db.scrollTop;
-  window.scrollTo(sx, sy);
-  if (key) { const el = $$("[data-k],[data-df]", app).find((e) => keyOf(e) === key); if (el) { el.focus({ preventScroll: true }); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch (e) { /* not a text field */ } } }
+  const sig = [ui.view, ui.sel, ui.level].join("|"), listSig = [ui.view, ui.q].join("|");
+  if (listSig !== lastListSig) listTop = 0;
+  const same = sig === lastSig; lastSig = sig; lastListSig = listSig;
+  if ($(".lbody")) $(".lbody").scrollTop = listTop;
+  if (same) { if ($(".detail")) $(".detail").scrollTop = detailTop; if ($(".body")) $(".body").scrollTop = bodyTop; }
+  if (focusKey) { const el = $(`[data-row="${CSS.escape(focusKey)}"]`); if (el) { el.focus({ preventScroll: true }); el.scrollIntoView({ block: "nearest" }); } }
+  else if (key) { const el = $$("[data-k],[data-df]", app).find((e) => keyOf(e) === key); if (el) { if (typed !== null && el.matches("input")) { el.value = typed; el.dataset.dirty = "1"; } el.focus({ preventScroll: true }); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch (e) { /* not a text field */ } } }
   else if (rowFocus) { const el = $(`[data-row="${CSS.escape(rowFocus)}"]`); if (el) el.focus({ preventScroll: true }); }
+  placeFocus();
+}
+// Keyboard use on a narrow screen, where the detail replaces the list: opening a job moves focus into it, and going back returns focus to its row.
+let shownOpen = false;
+function placeFocus() {
+  const narrow = window.matchMedia("(max-width: 899px)").matches, a = document.activeElement;
+  if (narrow && ui.open && !shownOpen && a && a.classList && a.classList.contains("it")) { const d = $(".detail h2, .detail .title-in"); if (d) { d.setAttribute("tabindex", "-1"); d.focus({ preventScroll: true }); } }
+  else if (!ui.open && shownOpen && a && a.closest && a.closest(".detail")) { const r = $(`[data-row="${CSS.escape(ui.sel)}"]`); if (r) r.focus({ preventScroll: true }); }
+  shownOpen = ui.open;
 }
 let toastTimer = null;
 function toast(text) { toastEl.textContent = text; toastEl.className = text ? "on" : ""; clearTimeout(toastTimer); if (text) toastTimer = setTimeout(() => toast(""), 7000); }
@@ -35,6 +55,13 @@ async function api(method, path, body) {
     return { ok: r.ok, status: r.status, data };
   } catch (e) { return { ok: false, status: 0, data: { error: "Check your connection and try again." } }; }
 }
+let saveTimer = null, undoTimer = null;
+function setSave(k, undoTo) {
+  clearTimeout(saveTimer); ui.save = k ? { k } : null;
+  if (undoTo !== undefined) { clearTimeout(undoTimer); ui.undo = undoTo ? { revision: undoTo } : null; if (undoTo) undoTimer = setTimeout(() => { ui.undo = null; if (ui.save?.k === "saved") ui.save = null; render(); }, 12000); }
+  if (k === "saved") saveTimer = setTimeout(() => { if (!ui.undo) { ui.save = null; render(); } }, 2500);
+  if (k === "failed") saveTimer = setTimeout(() => { ui.save = null; render(); }, 6000);
+}
 function adopt(data) { data.unlisted = state.unlisted || []; state = data; if (ui.sel && !C.rowByKey(state, ui.sel)) ui.sel = null; render(); }
 let queue = Promise.resolve();
 // edits: a list of edit objects (models-console-core.js applyEdit), applied one after another to the newest saved settings and saved once.
@@ -43,12 +70,20 @@ function commit(edits, after) {
     let cfg = state.config, changed = false;
     for (const e of edits) { const next = C.applyEdit(cfg, e); if (next) { cfg = next; changed = true; } }
     if (!changed) { render(); return; }
-    const r = await api("POST", "/models/api/save", C.saveBody(cfg, state.revision));
-    if (r.ok) { adopt(r.data); if (after) after(); return; }
-    toast("Not saved. " + (r.data.error || "Try again."));
+    const before = state.revision;
+    setSave("saving"); render();
+    const r = await api("POST", "/models/api/save", C.saveBody(cfg, before));
+    if (r.ok) { setSave("saved", before >= 1 ? before : 0); adopt(r.data); if (after) after(); return; }
+    setSave("failed", 0); toast("Not saved. " + (r.data.error || "Try again."));
     if (r.status === 409) { const latest = await api("GET", "/models/api"); if (latest.ok) adopt(latest.data); else render(); } else render();
   });
   return queue;
+}
+async function undoLast() {
+  const u = ui.undo; if (!u) return;
+  ui.undo = null; setSave("saving"); render();
+  const r = await api("POST", "/models/api/restore", { revision: state.revision, restore_revision: u.revision });
+  if (r.ok) { setSave("saved", 0); adopt(r.data); } else { setSave("failed", 0); toast("Not undone. " + (r.data.error || "Try again.")); render(); }
 }
 async function loadUnlisted() {
   const r = await api("GET", "/models/api/unlisted");
@@ -87,72 +122,91 @@ function fieldEdit(key, field, read) {
     else if (field === "timeout") e = { t: "field", ...tg, field: "timeout_ms", value: parseTimeout(read.value) };
     else if (field === "price") e = { t: "field", ...tg, field: "max_price", value: parsePrice(read.a, read.b) };
     return commit([e]);
-  } catch (err) { toast(err.message); render(); }
+  } catch (err) { refuse(err.message); }
 }
+// A value that can't be saved stays in its box, marked, so it can be fixed. Nothing is saved and the page is not drawn again.
+function refuse(message) { toast(message); const a = document.activeElement; for (const el of $$("[data-dirty]", app)) { el.setAttribute("aria-invalid", "true"); el.title = message; } if (a && a.dataset && a.dataset.dirty) a.setAttribute("aria-invalid", "true"); }
+function clearInvalid(el) { el.removeAttribute("aria-invalid"); if (el.title && el.dataset.dirty) el.removeAttribute("title"); }
+app.addEventListener("input", (e) => {
+  const el = e.target;
+  if (el.dataset && (el.dataset.df || el.dataset.lim) && el.matches("input")) { el.dataset.dirty = "1"; clearInvalid(el); }
+});
+// Escape puts a box back to what is saved.
+app.addEventListener("keydown", (e) => {
+  const el = e.target;
+  if (e.key === "Escape" && el.dataset && el.dataset.dirty && el.matches("input")) { e.stopPropagation(); e.preventDefault(); delete el.dataset.dirty; render(); }
+  if (e.key === "Enter" && el.matches && el.matches("input[data-df],input[data-lim]")) el.blur();
+}, true);
 app.addEventListener("change", (e) => {
   const el = e.target;
   if (!editable()) return;
-  if (el.dataset.f) {
-    const f = el.dataset.f;
-    if (f !== "price") fieldEdit(el.dataset.id, f, { value: el.value });   // a price has two boxes, so it is saved when focus leaves both (below)
-  } else if (el.dataset.df && ui.sel) {
+  if (el.dataset.df && ui.sel) {
     const f = el.dataset.df, key = ui.sel;
-    if (f === "effort") { try { commit([{ t: "effort", ...target(key), level: ui.level, idx: +el.dataset.i, value: el.value }]); } catch (err) { toast(err.message); } }
+    if (f === "effort") commit([{ t: "effort", ...target(key), level: ui.level, idx: +el.dataset.i, value: el.value }]);
     else if (f === "title") commit([{ t: "title", cat: C.rowByKey(state, key).id, value: el.value.trim() }]);
-    else if (f === "pi" || f === "po") return;
+    else if (f === "pi" || f === "po") return;   // a price has two boxes, so it is saved when focus leaves both (below)
     else fieldEdit(key, f, { value: el.value });
   } else if (el.dataset.lim) {
     const def = state.limits.defs.find((d) => d.key === el.dataset.lim);
-    try { const v = parseLimit(def, el.value); commit([{ t: "limit", limitKey: def.key, value: v === def.default ? null : v }]); } catch (err) { toast(err.message); render(); }
+    try { const v = parseLimit(def, el.value); commit([{ t: "limit", limitKey: def.key, value: v === def.default ? null : v }]); } catch (err) { refuse(err.message); }
   }
 });
 // A price is two boxes. It is saved when focus leaves the pair, and only when it changed.
 app.addEventListener("focusout", (e) => {
-  const pair = e.target.closest && e.target.closest(".pr, .two");
+  const pair = e.target.closest && e.target.closest(".two");
   if (!pair || !editable() || (e.relatedTarget && pair.contains(e.relatedTarget))) return;
-  const inRow = pair.classList.contains("pr"), key = inRow ? e.target.dataset.id : ui.sel, boxes = $$("input", pair);
+  const key = ui.sel, boxes = $$("input", pair);
   if (!key) return;
   const cur = C.viewOf(state, ui, C.rowByKey(state, key), C.snapshotFromConfig(state)).max_price;
   const a = boxes[0].value.trim(), b = boxes[1].value.trim(), same = (!cur && a === "" && b === "") || (cur && Number(a) === cur.prompt && Number(b) === cur.completion && a !== "" && b !== "");
   if (!same) fieldEdit(key, "price", { a, b });
 });
-app.addEventListener("input", (e) => { if (e.target.dataset.q !== undefined) { ui.q = e.target.value; render(); } });
+app.addEventListener("input", (e) => { if (e.target.dataset.q !== undefined) { ui.q = e.target.value; ui.sel = null; render(); } });
 
 // ------------------------------------------------------------ clicks
 app.addEventListener("click", (e) => {
   const t = e.target, b = t.closest("[data-view],[data-act],[data-lvl],[data-row]");
   if (!b) return;
   if (t.closest("input,select") && !b.dataset.act) return;
-  if (b.dataset.view) { ui.view = b.dataset.view; ui.sel = null; render(); window.scrollTo(0, 0); return; }
+  if (b.dataset.view) { if (JOB_FILTERS.includes(b.dataset.view) && b.dataset.view !== ui.view) ui.sel = null; ui.view = b.dataset.view; ui.open = false; render(); return; }
   if (b.dataset.lvl) { ui.level = b.dataset.lvl; render(); return; }
   if (b.dataset.act) return act(b);
-  if (b.dataset.row) { ui.sel = b.dataset.row; render(); }
+  if (b.dataset.row) { ui.sel = b.dataset.row; ui.open = true; render(b.dataset.row); }
 });
 function slot(i) { const row = C.rowByKey(state, ui.sel), v = V().info.find((x) => x.row.key === ui.sel).v; return { key: ui.sel, row, v, idx: i, level: v.level, ...(row.kind === "cat" ? { kind: "cat" } : { kind: "job", jv: row.jv }) }; }
 function act(b) {
   const a = b.dataset.act, i = +b.dataset.i, key = ui.sel;
-  if (a === "close") { ui.sel = null; render(); }
+  if (a === "close") { ui.open = false; render(); }
+  else if (a === "open") { const k = b.dataset.key; ui.view = k.startsWith("limit:") ? "limits" : "all"; if (!k.startsWith("limit:")) { ui.sel = k; ui.open = true; ui.q = ""; } render(k.startsWith("limit:") ? undefined : k); }
+  else if (a === "reset") { const row = C.rowByKey(state, key); commit([{ t: "field", ...target(key), field: b.dataset.field, value: C.startOf(state, row, b.dataset.field) ?? null }]); }
+  else if (a === "limreset") commit([{ t: "limit", limitKey: b.dataset.key, value: null }]);
   else if (a === "hist") openHistory();
   else if (a === "chg") openPicker(slot(i), "Choose a model for " + C.rowByKey(state, key).label);
   else if (a === "add") openPicker(slot(V().info.find((x) => x.row.key === key).v.chain.length), "Add a fallback for " + C.rowByKey(state, key).label);
   else if (a === "up" || a === "dn") commit([{ t: "move", ...target(key), level: ui.level, idx: i, d: a === "up" ? -1 : 1 }]);
   else if (a === "rm") commit([{ t: "remove", ...target(key), idx: i }]);
-  else if (a === "prev" || a === "next") { const ids = C.visibleInfo(state, ui, V()).map((x) => x.row.key), p = ids.indexOf(key) + (a === "next" ? 1 : -1); if (ids[p]) { ui.sel = ids[p]; render(); } }
-  else if (a === "catadd") commit([{ t: "catAdd", newId: "cat_" + crypto.randomUUID().replace(/-/g, "") }], () => { const last = state.config.routing.categories.at(-1); ui.sel = "cat:" + last.id; render(); const ti = $('[data-df="title"]'); if (ti) { ti.focus(); ti.select(); } });
-  else if (a === "catdelete") { const row = C.rowByKey(state, key); confirmAsk("Delete " + row.label + "?", "The category is removed from all three privacy levels.", "Delete", true).then((ok) => { if (ok) { ui.sel = null; commit([{ t: "catDelete", cat: row.id }]); } }); }
+  else if (a === "catadd") commit([{ t: "catAdd", newId: "cat_" + crypto.randomUUID().replace(/-/g, "") }], () => { const last = state.config.routing.categories.at(-1); ui.sel = "cat:" + last.id; ui.open = true; render(); const ti = $('[data-df="title"]'); if (ti) { ti.focus(); ti.select(); } });
+  else if (a === "catdelete") { const row = C.rowByKey(state, key); confirmAsk("Delete " + row.label + "?", "The category is removed from all three privacy levels.", "Delete", true).then((ok) => { if (ok) { ui.sel = null; ui.open = false; commit([{ t: "catDelete", cat: row.id }]); } }); }
+  else if (a === "clearq") { ui.q = ""; render(); const q = $("[data-q]"); if (q) q.focus(); }
+  else if (a === "undo") undoLast();
 }
 
 // ------------------------------------------------------------ keys
 document.addEventListener("keydown", (e) => {
   const tag = (document.activeElement || {}).tagName, typing = /INPUT|SELECT|TEXTAREA/.test(tag);
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.key === "/" && !typing && !stack.length) { e.preventDefault(); const q = $("[data-q]"); if (q) q.focus(); return; }
+  if (e.key === "/" && !typing && !stack.length) { const q = $("[data-q]"); if (q) { e.preventDefault(); q.focus(); } return; }
   if (stack.length) return;
-  if (e.key === "Escape" && ui.sel) { ui.sel = null; render(); return; }
-  if (typing) { if (e.key === "Enter" && document.activeElement.dataset.q !== undefined) { const f = C.visibleInfo(state, ui, V())[0]; if (f) { ui.sel = f.row.key; render(); } } return; }
-  const rows = $$("[data-row]"), cur = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.row : null;
-  if ((e.key === "j" || e.key === "k") && rows.length) { const i = rows.findIndex((r) => r.dataset.row === cur), n = rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === "j" ? 1 : -1)))]; n.focus(); e.preventDefault(); }
-  if ((e.key === "Enter" || e.key === " ") && cur) { ui.sel = cur; render(); e.preventDefault(); }
+  if (e.key === "Escape" && ui.open) { ui.open = false; render(); return; }
+  const jobs = !["changes", "limits", "readonly", "sandbox"].includes(ui.view), ids = jobs ? C.visibleInfo(state, ui, V()).map((x) => x.row.key) : [];
+  if (typing) { if (e.key === "Enter" && document.activeElement.dataset.q !== undefined && ids[0]) { ui.sel = ids[0]; ui.open = true; render(ids[0]); } return; }
+  const cur = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.row : null;
+  const down = e.key === "j" || e.key === "ArrowDown", up = e.key === "k" || e.key === "ArrowUp";
+  if (jobs && ids.length && (down || up) && (cur || e.key === "j" || e.key === "k")) {
+    const i = ids.indexOf(cur || ui.sel), next = ids[Math.max(0, Math.min(ids.length - 1, (i < 0 ? 0 : i) + (down ? 1 : -1)))];
+    e.preventDefault(); ui.sel = next; render(next); return;
+  }
+  if ((e.key === "Enter" || e.key === " ") && cur) { ui.sel = cur; ui.open = true; render(cur); e.preventDefault(); }
 });
 
 // ------------------------------------------------------------ the model picker
@@ -211,3 +265,17 @@ function openHistory() {
 // ------------------------------------------------------------ start
 render();
 loadUnlisted();
+// The words of every time ("5 min ago") are refreshed each minute without drawing the page again.
+setInterval(() => { const now = Date.now(); for (const t of $$("time[data-ts]", app)) { const w = C.agoText(+t.dataset.ts, now); if (t.textContent !== w) t.textContent = w; } }, 30000);
+// The page stays current: when it is visible, the last served rows are read again once a minute and when the person comes back to it. Settings that
+// were saved from another window are adopted. Nothing is read while a box holds a value that was typed and not saved, or while a dialog is open.
+let refreshedAt = Date.now();
+async function refresh() {
+  const a = document.activeElement;
+  if (document.hidden || stack.length || Date.now() - refreshedAt < 45000 || (a && a.dataset && a.dataset.dirty)) return;
+  refreshedAt = Date.now();
+  const r = await api("GET", "/models/api");
+  if (r.ok) { if (r.data.revision === state.revision) { state.served = r.data.served; state.history = r.data.history; render(); } else adopt(r.data); }
+}
+setInterval(refresh, 60000);
+document.addEventListener("visibilitychange", refresh); window.addEventListener("focus", refresh);

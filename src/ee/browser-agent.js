@@ -1,4 +1,5 @@
 import { dispatch } from "./model-dispatch.js";
+import { tabKeyOf } from "../browser-tab.js";
 import { limitsFor, jobTimeoutFor } from "./limits-read.js";
 import { plannedMaxOutput } from "./job-limits.js";
 import { S, structuredChat } from "../structured-output.js";
@@ -104,7 +105,7 @@ export async function runBrowserTask(res, C, a, tc, { guard, ownerToken = null, 
     if (shouldStop?.()) throw Object.assign(new Error("browser job stopped before the next action"), { stopped: true });
     await beforeBrowse?.(op, body, page);
     if (shouldStop?.()) throw Object.assign(new Error("browser job stopped before the next action"), { stopped: true });
-    const r = await C.browser(op, body, ownerToken);
+    const r = await C.browser(op, body, ownerToken, tabKeyOf(tc));   // this task's own tab (browser-tab.js)
     if (r.ok === false) throw Object.assign(new Error(r.error || "browser operation failed"), { uncertain: !!r.operation_may_have_completed, owner_lost: !!r.owner_lost, taken_over: !!r.taken_over });
     try { await afterBrowse?.(op, r); }
     catch (e) { throw Object.assign(new Error(`browser action completed, but its checkpoint failed: ${e.message}`), { uncertain: true }); }

@@ -15,5 +15,6 @@ assert.deepEqual(inputs("web_search"), []);
 for (const j of JOBS) assert.ok(Array.isArray(JOB_KINDS[j.kind].inputs), j.id);
 const html = String(modesHtml({ jv: { inputs: ["text", "image"] } }));
 assert.match(html, /Needs a model that reads images/);
+assert.doesNotMatch(html, /reads text/, "every job reads text, so only pictures and sound get a mark");
 assert.equal(String(modesHtml({ kind: "cat" })), "");
 console.log("models-modality: ok");

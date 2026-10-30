@@ -29,7 +29,7 @@ import { steerText, SKIP_TEXT, TOO_MANY, LIMIT_REPORT_ASK } from "./steer.js";
 import { zoneEditFile, zoneInfo, zoneEditsNote } from "./zone-edit.js";
 import { replyRef, replyIn, withReply } from "./reply-to.js";   // Reply on a chat bubble: the quoted message travels with the person's
 import { workingSet, bringBack, sameAsShown, BRING_BACK_TOOL, SOURCE_TOOLS, SOURCE_MAX, SOURCE_BUDGET } from "./workmem.js";
-import { linkCreatePurchase, linkGetPurchase } from "./ee/index.js";
+import { linkCreatePurchase, linkGetPurchase, linkNoteFill, linkNoteHandoff } from "./ee/index.js";
 import { normSite, hostMatchesSite, loginForHost, loginSites, loginAccountsForHost } from "./logins.js";
 import { useOpenRouter, jevNote, OR_RESERVE_PRICE, prefixPrint, runPrint, CACHE_WRITE_MULT, cacheKey } from "./model.js";
 import { S, structuredFormat, parseStructuredResponse } from "./structured-output.js";
@@ -165,7 +165,8 @@ import { TASK_TOOLS, taskTitle } from "./task-tools.js";
 import { LIST_CHANNELS_TOOL, listChannels, routeTaskTool, receiveTaskAccess } from "./task-access.js";
 import { CREATE_CHANNEL_TOOL, START_TASK_TOOL, createChannelTool } from "./task-kickoff.js";
 import { recallHistory } from "./history-search.js";
-import { appFirstBlock, repeatBlock, repeatNote, taskWords } from "./ee/index.js";
+import { appFirstBlock, repeatBlock, repeatNote, navRepeatPending, taskWords } from "./ee/index.js";
+import { tabKeyFor, tabKeyOf } from "./browser-tab.js";
 import { integrationHint, hintNudge } from "./ee/index.js";
 import { wantsWebsiteLive, websiteLiveNote } from "./website-live.js";
 import { fileRecipe, RECIPE_SLUG } from "./file-recipe.js";
@@ -267,8 +268,8 @@ const TOOLS = () => (toolDefs ??= [
   { type: "function", function: { name: "browser_screenshot", description: "Take a screenshot of the page open in the browser and show it to the person right in this chat (they see the picture; you don't). Use when they ask to see something, or to show proof of a result (a confirmation, a price, an order). Say in one short line what it shows. A background helper's screenshot is not shown in the chat: it is held for review, and the helper that started you decides whether to show it. With look: true it works the other way round: nothing is shown or saved, and you get a text description of what is on screen, an answer to your question, the click_at x,y positions of that thing with find, the text on screen read by OCR with the click_at position of each short text, and where the page is scrolled (it only sees the part of the page in view). Use look: true when the outline lacks what you need (a canvas editor, pictures, a chart, a map). Then click a position with browser_act click_at.", parameters: { type: "object", properties: { caption: { type: "string", description: "A few words describing what the picture shows, e.g. 'omaha.com front page'" }, look: { type: "boolean", description: "true: get a text description of the screen for yourself; the person does not see a picture" }, question: { type: "string", description: "With look: what you need to know, e.g. 'What does the chart show?'" }, find: { type: "string", description: "With look: a short phrase naming one thing to locate, e.g. 'blue Press me button'. You get its click_at x,y positions." } } } } },
   { type: "function", function: { name: "browser_record", description: "Record the browser screen (the whole Chrome window, 1280x800) to an mp4 video on this channel's computer, for a demo or a walkthrough the person asked to have recorded. Call it with action \"start\", keep working with browser_navigate and browser_act while it records in the background, then call it with action \"stop\". Stop returns the file path, duration, size and frame count, and says plainly when the recording is empty or very short, so read it before you share anything. Then give the person the file with share_file (an H.264 mp4 that X and Reddit accept). One recording at a time; it stops by itself after 3 minutes. Use this instead of installing screen capture tools or writing your own script.", parameters: { type: "object", properties: { action: { type: "string", enum: ["start", "stop"] }, name: { type: "string", description: "File name without the extension, e.g. demo-walkthrough (optional; give it on start or on stop)" } }, required: ["action"] } } },
   { type: "function", function: { name: "buy_with_link", description: "Ask the person to approve a purchase with their Link wallet. Use only when they asked you to buy something, after you've reached the store's checkout and read the exact total (items + shipping + tax). Link texts/notifies them to approve; nothing is charged unless they approve. Returns a purchase id. Then end your turn telling them to approve in Link; when they say they approved, call check_purchase.", parameters: { type: "object", properties: { amount_cents: { type: "integer", description: "Exact checkout total in cents, e.g. 4375 for $43.75" }, currency: { type: "string" }, merchant_name: { type: "string" }, merchant_url: { type: "string", description: "The store's checkout page URL" }, context: { type: "string", description: "At least 100 characters the person reads in Link: what exactly is being bought, quantity, from which store, the total with shipping/tax, and that they asked for it." } }, required: ["amount_cents", "merchant_name", "merchant_url", "context"] } } },
-  { type: "function", function: { name: "check_purchase", description: "Check a Link purchase you requested: pending_approval, approved, denied, expired, etc.", parameters: { type: "object", properties: { purchase_id: { type: "string" } }, required: ["purchase_id"] } } },
-  { type: "function", function: { name: "browser_fill_card", description: "After check_purchase says approved: type Link's one-time card (number, expiry, security code, and optionally the cardholder name/billing ZIP) into the checkout form in the browser. You never see the card; pass the refs of the fields from the latest outline. Afterwards take a snapshot, check the total still matches, and press the store's Pay button.", parameters: { type: "object", properties: { purchase_id: { type: "string" }, number_ref: { type: "string" }, expiry_ref: { type: "string", description: "Ref of a combined MM/YY field, if the form has one" }, exp_month_ref: { type: "string" }, exp_year_ref: { type: "string" }, cvc_ref: { type: "string" }, name_ref: { type: "string" }, zip_ref: { type: "string" } }, required: ["purchase_id", "number_ref", "cvc_ref"] } } },
+  { type: "function", function: { name: "check_purchase", description: "Check a Link purchase you requested. what_happened says in plain words what is known. Approved only means Link issued a card, never that the order is paid.", parameters: { type: "object", properties: { purchase_id: { type: "string" } }, required: ["purchase_id"] } } },
+  { type: "function", function: { name: "browser_fill_card", description: "After check_purchase says approved: type Link's one-time card (number, expiry, security code, and optionally the cardholder name/billing ZIP) into the checkout form in the browser. You never see the card; pass the refs of the fields from the latest outline. Fields inside a hosted payment iframe are listed under \"inside frame\" with refs like f2e1: pass those the same way (a field the page swaps for an iframe when it is clicked is handled for you). If a field cannot be filled, the error says which one: hand off with browser_handoff and do not retry. Afterwards take a snapshot, check the total still matches, and press the store's Pay button.", parameters: { type: "object", properties: { purchase_id: { type: "string" }, number_ref: { type: "string" }, expiry_ref: { type: "string", description: "Ref of a combined MM/YY field, if the form has one" }, exp_month_ref: { type: "string" }, exp_year_ref: { type: "string" }, cvc_ref: { type: "string" }, name_ref: { type: "string" }, zip_ref: { type: "string" } }, required: ["purchase_id", "number_ref", "cvc_ref"] } } },
   { type: "function", function: { name: "browser_fill_login", description: "Sign in with a login the person saved in Settings → Passwords & keys (the saved sites are listed in your instructions). Open the site's sign-in page first, then pass the site and the refs of the username/email field and the password field from the latest outline. 1Helm types the saved username and password itself, and only if the open page belongs to that site (the site or a subdomain); you never see the password. Sites that ask for the username first and the password on the next page: call it once for each step. Afterwards press the sign-in button (or set submit) and snapshot to check it worked. No saved login for the site, or it asks for a code or CAPTCHA: use browser_handoff.", parameters: { type: "object", properties: { site: { type: "string", description: "The saved login's site, e.g. costco.com" }, username_ref: { type: "string", description: "Ref of the username/email field, if the page shows one" }, password_ref: { type: "string", description: "Ref of the password field, if the page shows one" }, username: { type: "string", description: "Which saved account to use, when the site has more than one (the list says '2 accounts'). Leave out to get the list of usernames; ask the person if it isn't clear which one." }, submit: { type: "boolean", description: "Press Enter in the last filled field to sign in" } }, required: ["site"] } } },
   { type: "function", function: { name: "fetch_url", description: "Read a public URL without starting the computer. A web page comes back as clean readable text (rendered like a browser would, links kept); a feed, API or file comes back as the response body as is. Truncated to 20k chars. Use run_command+curl+jq when you need to filter large data.", parameters: { type: "object", properties: { url: { type: "string" }, raw: { type: "boolean", description: "true: the page's raw HTML source instead of readable text" } }, required: ["url"] } } },
   { type: "function", function: { name: "text_person", description: "Send one text message to this person's phone (an iMessage on an iPhone, a regular text message on Android). Use only when they asked to be texted (e.g. a workflow's delivery contract) and the condition is met. Never text quiet/no-news results. It only reaches the person themselves, never their contacts or anyone else, so if they ask you to text someone else, say plainly that you can't send texts to other people yet and offer to draft the message for them to send.", parameters: { type: "object", properties: { message: { type: "string" }, expects_reply: { type: "boolean", description: "Set true when the text asks the person to decide, confirm or answer something, so their plain text reply comes back to this task. Leave it out for reports, finished notices and anything that asks for nothing." } }, required: ["message"] } } },
@@ -1407,15 +1408,17 @@ export class Resident extends DurableObject {
     const af = await this.browserFirstCheck(name, a, tc); if (af) return { code: 1, out: af };   // appfirst.js: a connected app's website / the same page again
     const no = await permGate(this, tc, name, a); if (no) return { code: 1, out: no };   // perms.js: their level asks first
     const nf = name === "browser_task" ? await fillTaskGate(this, tc, a) : await fillGate(this, tc, name, a); if (nf) return { code: 1, out: nf };   // personal-fill.js: their details need their OK; cards/passwords/IDs never
-    if (tc) { tc.inTool++; tc.line = lineFor(name, a); tc.emit?.({ t: "status", line: tc.line }); }
-    try { let r = await untilStopped(tc, this.execComputerToolInner(name, a, tc), { code: 130, out: STOPPED_TOOL_TEXT }); if (r?.code === 0) { repeatNote(tc, name, a, r.out); const brief = await briefForWrite(this, name, a, r, tc); if (brief) r = { ...r, out: String(r.out ?? "").replace(/\n*$/, "") + brief }; } else r = this.browserBusyNote(r, tc?.session); return r; } finally { if (tc) tc.inTool--; }   // design-brief.js: a task's first .html write (both engines, helpers and native workers too) carries the design brief
+    const inBrowser = BROWSER_TOOLS.has(name);   // a page's request during this call may be this task's (egressDecision)
+    if (tc) { tc.inTool++; if (inBrowser) tc.inBrowser = (tc.inBrowser || 0) + 1; tc.line = lineFor(name, a); tc.emit?.({ t: "status", line: tc.line }); }
+    try { let r = await untilStopped(tc, this.execComputerToolInner(name, a, tc), { code: 130, out: STOPPED_TOOL_TEXT }); if (r?.code === 0) { repeatNote(tc, name, a, r.out); const brief = await briefForWrite(this, name, a, r, tc); if (brief) r = { ...r, out: String(r.out ?? "").replace(/\n*$/, "") + brief }; } else r = this.browserBusyNote(r, tc?.session); return r; } finally { if (tc) { tc.inTool--; if (inBrowser) tc.inBrowser--; } }   // design-brief.js: a task's first .html write (both engines, helpers and native workers too) carries the design brief
   }
   // Before a browser call (both engines): the same page as last time with nothing done since, or the sign-in page / web app of a
   // service the account has a connected app for (appfirst.js). → the refusal text, or null. Handoff and fill_login also check the
   // page that's actually open (browserToolInner).
   async browserFirstCheck(name, a, tc) {
     if (!BROWSER_TOOLS.has(name)) return null;
-    const again = repeatBlock(tc, name, a); if (again) return again;
+    const live = name === "browser_navigate" && navRepeatPending(tc, a) ? await this.liveTab(tc) : null;   // only read the tab when a repeat is suspected
+    const again = repeatBlock(tc, name, a, live); if (again) return again;
     if (name === "browser_navigate" || (name === "browser_task" && a.url)) { const af = await appFirstBlock(this, tc, name, a.url); if (af) return af; }
     else if (name === "browser_fill_login" && a.site) return await appFirstBlock(this, tc, name, a.site, { site: true });
     return hintNudge(this, tc, name, a);   // integration-hint.js: this turn's hint named the site's app; once per app per task
@@ -1453,6 +1456,12 @@ export class Resident extends DurableObject {
     const list = pics.map((p) => `"${p.name}"`).join(", ");
     messages.push({ role: "user", content: [{ type: "text", text: `(Not from the person: the picture${pics.length > 1 ? "s" : ""} you read with read_file, in order: ${list}.)` }, ...pics.map((p) => p.part)] });
     this.save(turn, { role: "user", content: `(Not from the person: ${list} was shown to you here as a picture. Read the file again to look at it again.)` });
+  }
+  // The task's own tab as it is now, read without moving it: { known: true, url } ("" when it has no page), or null when it cannot be read
+  // (an older browser service answers with no tab field).
+  async liveTab(tc) {
+    try { const r = await this.computer().browser("status", {}, null, tabKeyOf(tc)); if (r && r.ok !== false && "tab" in r) return { known: true, url: String(r.tab?.url || "") }; } catch {}
+    return null;
   }
   async execComputerToolInner(name, a, tc) {
     if (tc?.helper?.dynamic_routing && (name === "write_file" || name === "edit_file")) {
@@ -1573,6 +1582,7 @@ export class Resident extends DurableObject {
   async browserToolInner(name, a, tc) {
     { const no = secretUseBlock(name, tc); if (no) return { code: 1, out: no }; }
     const C = this.computer(); if (tc) tc.touch = true;
+    const tab = tabKeyOf(tc);   // browser-tab.js: this task's own tab
     if (name === "browser_task") {
       if (!this.browserAgentOn()) return { code: 2, out: "browser_task is not available; use browser_navigate/browser_act." };
       // In a task with the person it runs as a browser job that the turn waits for; any other caller (a workflow run, a follow-up) runs it here.
@@ -1584,10 +1594,12 @@ export class Resident extends DurableObject {
       return { code: r.code, out: r.out + "(The page outline is not included. Call browser_snapshot only if you need to check or continue on the page.)" };
     }
     if (name === "browser_handoff") {
-      const r = await C.browser("snapshot", {});
+      const r = await C.browser("snapshot", {}, null, tab);
       const af = await appFirstBlock(this, tc, name, r.url); if (af) return { code: 1, out: af };   // appfirst.js: never hand them a connected service's sign-in
+      await C.browser("activate", { pin: true }, null, tab).catch(() => null);   // the live view shows this task's tab, and keeps showing it, while the person has it (an older browser service has no such op: ignored)
       this.put("handoff", JSON.stringify({ at: Date.now(), instructions: String(a.instructions || "").slice(0, 500), url: r.url || "" }));
       tc?.emit?.({ t: "browser_handoff", instructions: String(a.instructions || ""), url: r.url || "" });
+      await linkNoteHandoff(this.env, this.get("tenant"), this.get("channel"));   // the Wallet shows "handed to you" on this channel's approved purchase
       if (tc?.helper?.dynamic_routing) {
         // A routed worker cannot talk to the person. It pauses like request_input, its session, history and browser stay open, and Primary
         // is told. The person's reply or the hand back button comes to Primary, which sends it to this same worker (message_subagent).
@@ -1599,7 +1611,7 @@ export class Resident extends DurableObject {
       return { code: 0, out: `The person now sees the live browser${r.url ? ` (${r.url})` : ""} with your instructions and a Take control button. End your turn now with a short message telling them what to do; don't use the browser until they reply.` };
     }
     if (name === "browser_screenshot") {
-      const r = await C.browser("screenshot", a.look === true ? { ocr: true } : {});   // an older image ignores ocr
+      const r = await C.browser("screenshot", a.look === true ? { ocr: true } : {}, null, tab);   // an older image ignores ocr
       if (!r.ok || !r.jpeg_base64) return { code: 1, out: `browser error: ${r.error || "no picture"}` };
       if (r.url !== undefined && !/^https?:/.test(r.url)) return { code: 1, out: "The browser has no page open (it's blank), so there's nothing to show. Open the page with browser_navigate first." };
       const bytes = Uint8Array.from(atob(r.jpeg_base64), (c) => c.charCodeAt(0));
@@ -1623,7 +1635,7 @@ export class Resident extends DurableObject {
     if (name === "browser_record") {
       const act = String(a.action || "").toLowerCase();
       if (act !== "start" && act !== "stop") return { code: 2, out: "Pass action: \"start\" or \"stop\"." };
-      const r = await C.browser("record", { action: act, ...(a.name ? { name: String(a.name).slice(0, 80) } : {}) });
+      const r = await C.browser("record", { action: act, ...(a.name ? { name: String(a.name).slice(0, 80) } : {}) }, null, tab);
       if (!r.ok) return { code: 1, out: /not found|unknown browser op/i.test(String(r.error)) ? "Screen recording is not available on this computer yet. Do not install capture tools yourself; tell the person." : `browser error: ${r.error}` };
       if (act === "start") return { code: 0, out: `Recording the browser screen. It will be saved as ${r.will_save_as}. It stops by itself after ${r.max_seconds} s. Carry on with browser_navigate and browser_act, then call browser_record with action "stop".` };
       return recordingStopText(r);
@@ -1637,16 +1649,25 @@ export class Resident extends DurableObject {
       const k = got.card, yy = String(k.exp_year).slice(-2), mm = String(k.exp_month).padStart(2, "0");
       // Prototype safety: in TEST_MODE only Link's documented test card may ever be typed into a store.
       if (this.env.LINK_REAL !== "1" && String(k.number).replace(/\D/g, "") !== "4000009990001984") return { code: 1, out: "Stopped: Link returned what looks like a real card, but this prototype only uses test cards. Nothing was filled or paid. Tell the person the purchase was stopped for safety." };
-      const acts = [{ kind: "fill", ref: a.number_ref, text: k.number }];
-      if (a.expiry_ref) acts.push({ kind: "fill", ref: a.expiry_ref, text: `${mm}${yy}` });
-      if (a.exp_month_ref) acts.push({ kind: "select_or_fill", ref: a.exp_month_ref, text: mm });
-      if (a.exp_year_ref) acts.push({ kind: "select_or_fill", ref: a.exp_year_ref, text: String(k.exp_year) });
-      if (a.cvc_ref && k.cvc) acts.push({ kind: "fill", ref: a.cvc_ref, text: k.cvc });
-      if (a.name_ref && k.billing_address?.name) acts.push({ kind: "fill", ref: a.name_ref, text: k.billing_address.name });
-      if (a.zip_ref && k.billing_address?.postal_code) acts.push({ kind: "fill", ref: a.zip_ref, text: k.billing_address.postal_code });
-      const r = await C.browser("act", { actions: acts, secret: true });
-      const scrub = (x) => String(x || "").split(k.number).join("••••").split(k.cvc || "\u0000").join("•••");
-      if (!r.ok) return { code: 1, out: `browser error: ${scrub(r.error)}` };
+      const acts = [{ kind: "fill", ref: a.number_ref, text: k.number, field: "number" }];
+      if (a.expiry_ref) acts.push({ kind: "fill", ref: a.expiry_ref, text: `${mm}${yy}`, field: "expiry" });
+      if (a.exp_month_ref) acts.push({ kind: "select_or_fill", ref: a.exp_month_ref, text: mm, field: "expiry" });
+      if (a.exp_year_ref) acts.push({ kind: "select_or_fill", ref: a.exp_year_ref, text: String(k.exp_year), field: "expiry" });
+      if (a.cvc_ref && k.cvc) acts.push({ kind: "fill", ref: a.cvc_ref, text: k.cvc, field: "cvc" });
+      if (a.name_ref && k.billing_address?.name) acts.push({ kind: "fill", ref: a.name_ref, text: k.billing_address.name, field: "name" });
+      if (a.zip_ref && k.billing_address?.postal_code) acts.push({ kind: "fill", ref: a.zip_ref, text: k.billing_address.postal_code, field: "zip" });
+      const r = await C.browser("act", { actions: acts, secret: true }, null, tab);
+      const digits = String(k.number).replace(/\D/g, "");
+      const scrub = (x) => { let t = String(x || "").split(k.number).join("••••").split(k.cvc || "\u0000").join("•••");
+        if (digits.length >= 12) for (const sep of [" ", "-", ""]) t = t.split(digits.replace(/(\d{4})(?=\d)/g, `$1${sep}`)).join("••••");   // a field may show the number spaced or dashed
+        return t; };
+      if (!r.ok) {
+        // Some fields may already hold card digits: refuse to describe this page by screenshot, like after a full fill.
+        try { const s = await C.browser("snapshot", {}, null, tab); if (s?.url) this.put("card_filled_url", pageKey(s.url)); } catch {}
+        await linkNoteFill(this.env, this.get("tenant"), a.purchase_id, { ok: false, why: scrub(r.error).slice(0, 160) });
+        return { code: 1, out: `browser error: ${scrub(r.error)}. The card was not filled in, so the purchase is not paid. Tell the person plainly that it is approved but not paid.` };
+      }
+      await linkNoteFill(this.env, this.get("tenant"), a.purchase_id, { ok: true, host: fillSiteOf(r.url) });
       tc?.emit?.({ t: "browser", url: r.url, title: r.title });
       // They approved this purchase in Link: the checkout they then submit on this store is not asked about again (coverSite).
       for (const u of [r.url, got.public.merchant_url]) this.coverSite(tc?.session, fillSiteOf(u), "your Link purchase");
@@ -1659,7 +1680,7 @@ export class Resident extends DurableObject {
       if (!want) return { code: 2, out: "Pass site: the website of the saved login, e.g. costco.com." };
       if (!refs.length) return { code: 2, out: "Pass username_ref and/or password_ref: the refs of the sign-in fields in the latest outline." };
       // A fresh outline of the page as it is NOW: its host decides whether the login may be typed, and its refs are the ones act will use.
-      const s = await C.browser("snapshot", {});
+      const s = await C.browser("snapshot", {}, null, tab);
       if (!s.ok) return { code: 1, out: `browser error: ${s.error}` };
       let u = null; try { u = new URL(s.url); } catch {}
       const host = u?.hostname.toLowerCase() || "";
@@ -1692,7 +1713,7 @@ export class Resident extends DurableObject {
       if (!acts.length) return { code: 1, out: `The saved login for ${login.site} has no username, so there was nothing to type into ${a.username_ref}. Use browser_handoff if the site needs one.` };
       if (a.submit) acts[acts.length - 1].submit = true;
       if (grant) this.sql.exec("UPDATE helper_requests SET uses=uses+1 WHERE id=?", grant.id);
-      const r = await C.browser("act", { actions: acts, secret: true });
+      const r = await C.browser("act", { actions: acts, secret: true }, null, tab);
       const scrub = (x) => String(x || "").split(login.password).join("••••");
       if (!r.ok) return { code: 1, out: `browser error: ${scrub(r.error)}` };
       tc?.emit?.({ t: "browser", url: scrub(r.url), title: scrub(r.title) });
@@ -1701,12 +1722,13 @@ export class Resident extends DurableObject {
       return { code: 0, out: `Filled the saved ${did.join(" and ")} for ${login.site}.${a.submit ? " Pressed Enter to sign in." : " Now press the site's sign-in button."} Check the page: if it asks for a code or a CAPTCHA, use browser_handoff. Page: ${scrub(r.title)} — ${scrub(r.url)}\n` + untrusted(`the web page ${rh || "?"}`, scrub(r.snapshot)) };
     }
     const op = name.slice(8);
-    if (name === "browser_act") this.noteBrowserActs(a.actions, { url: this._outline?.url, snapshot: this._outline?.snapshot });
-    const r = await C.browser(op, name === "browser_navigate" ? { url: a.url } : name === "browser_act" ? { actions: a.actions } : {});
+    const outlines = (this._outlines ||= new Map());   // the outline each task's next browser_act refs come from: one per tab, never another task's page
+    if (name === "browser_act") this.noteBrowserActs(a.actions, { url: outlines.get(tab)?.url, snapshot: outlines.get(tab)?.snapshot });
+    const r = await C.browser(op, name === "browser_navigate" ? { url: a.url } : name === "browser_act" ? { actions: a.actions } : {}, null, tab);
     if (!r.ok) return { code: 1, out: `browser error: ${r.error}` };
-    if (r.snapshot) this._outline = { url: r.url, snapshot: r.snapshot };   // the outline the next browser_act's refs come from
+    if (r.snapshot) { outlines.set(tab, { url: r.url, snapshot: r.snapshot }); if (outlines.size > 50) outlines.delete(outlines.keys().next().value); }
     tc?.emit?.({ t: "browser", url: r.url, title: r.title });
-    const head = `${name === "browser_act" ? `completed ${r.completed} step(s). ${r.page_changed === false ? "NOTHING VISIBLE CHANGED on the page after these steps: the action probably had no effect. Don't report it as done; " : ""}` : ""}${r.notes?.length ? `Notes: ${r.notes.join("; ")}. ` : ""}${r.visited ? `Pages passed through: ${r.visited.join(" → ")}. ` : ""}Page: ${r.title || "(untitled)"} — ${r.url}\n`;
+    const head = `${r.tab_note ? `(Note, not from the person: ${r.tab_note}) ` : ""}${r.new_tab ? "A click opened a new tab in your browser. It is now your current tab, and the page below is that tab's page; your earlier tab is still open. " : ""}${r.closed_tab ? "That tab had no earlier page, so it was closed and you are back on your other tab. " : ""}${name === "browser_act" ? `completed ${r.completed} step(s). ${r.page_changed === false ? "NOTHING VISIBLE CHANGED on the page after these steps: the action probably had no effect. Don't report it as done; " : ""}` : ""}${r.notes?.length ? `Notes: ${r.notes.join("; ")}. ` : ""}${r.visited ? `Pages passed through: ${r.visited.join(" → ")}. ` : ""}Page: ${r.title || "(untitled)"} — ${r.url}\n`;
     return { code: 0, out: head + untrusted(`the web page ${new URL(r.url || "about:blank").host || r.url}`, r.snapshot || "") };
   }
   async runTool(call, ctx = {}) {
@@ -1815,7 +1837,7 @@ export class Resident extends DurableObject {
       }
       case "check_purchase": {
         if (ctx?.helper?.dynamic_routing && !workerPurchaseGrant(this.sql, ctx.helper.id, a.purchase_id)) return "error: this purchase was not approved for you by Primary. Call request_purchase first.";
-        try { const r = await linkGetPurchase(this.env, this.get("tenant"), a.purchase_id); return JSON.stringify({ id: r.id, status: r.status, amount: r.amount, merchant: r.merchant_name, card_last4: r.card_last4, next_action: r.next_action, test: r.test }) + (r.status === "approved" ? "\nApproved. Use browser_fill_card with this purchase_id and the checkout's card field refs." : ""); }
+        try { const r = await linkGetPurchase(this.env, this.get("tenant"), a.purchase_id); return JSON.stringify({ id: r.id, status: r.status, amount: r.amount, merchant: r.merchant_name, card_last4: r.card_last4, next_action: r.next_action, test: r.test, what_happened: r.outcome?.text }) + (r.status === "approved" ? "\nApproved means Link issued a card. It does not mean the order is paid. Use browser_fill_card with this purchase_id and the checkout's card field refs, then confirm the order on the store's own confirmation page before telling the person it is paid. Report what_happened as written." : ""); }
         catch (e) { return `error: ${e.message}`; }
       }
       case "gmail_search": case "gmail_read": case "gmail_draft": case "gmail_send": case "calendar_events": case "calendar_add": {
@@ -2345,10 +2367,12 @@ export class Resident extends DurableObject {
     const inp = browserJobInput(a); if (inp.error) return `error: ${inp.error}`;
     const af = await this.browserFirstCheck("browser_task", inp, ctx); if (af) return `error: ${af}`;
     const nf = await fillTaskGate(this, ctx, inp); if (nf) return nf;
-    { const busy = activeBrowserJob(this.sql); if (busy) return `error: another background browser job is already running in this channel (${this.browserJobWhere(busy, ctx.session)}). Wait for it to finish or stop it with stop_browser_task.`; }
+    { const busy = activeBrowserJob(this.sql, ctx.session); if (busy) return `error: another background browser job is already running in this task (${this.browserJobWhere(busy, ctx.session)}). Wait for it to finish or stop it with stop_browser_task.`; }
     const { job: j } = this.browserJobCreate(ctx, inp, "");
     return browserJobStartedText(j);
   }
+  // The browser jobs this object is running right now (in memory), one per task at most.
+  runningBrowserJobs() { const m = new Map((this._browserJobs ? [...this._browserJobs.values()] : []).map((x) => [x.id, x])); if (this._browserJob) m.set(this._browserJob.id, this._browserJob); return [...m.values()]; }
   // "from this task" or `from another task "Title"`, with how long ago it started, for refusal texts.
   browserJobWhere(j, session) {
     const mins = Math.max(0, Math.round((Date.now() - Number(j.started)) / 60e3)), title = this.session(j.session)?.title;
@@ -2357,7 +2381,7 @@ export class Resident extends DurableObject {
   // The shared computer refuses shell commands and browser steps while a job holds the browser. Say which job and how to stop it.
   browserBusyNote(r, session) {
     if (!r || typeof r.out !== "string" || !/background browser (job|task)|Another browser task is using/.test(r.out)) return r;
-    const j = activeBrowserJob(this.sql); if (!j) return r;
+    const j = activeBrowserJob(this.sql, session); if (!j) return r;
     return { ...r, out: `${r.out.replace(/\s+$/, "")} It is browser job #${j.id} (${this.browserJobWhere(j, session)}). To stop it, call stop_browser_task with id ${j.id}.` };
   }
   // Test accounts only (index.js): stop every working browser job in this channel, so a crashed check cannot leave one behind.
@@ -2384,8 +2408,8 @@ export class Resident extends DurableObject {
   // and keeps going, and its result arrives as a new message like any background job. Browser actions are never replayed.
   async browserTaskJob(a, tc) {
     const inp = browserTaskInput(a); if (inp.error) return { code: 1, out: `error: ${inp.error}` };
-    const busy = activeBrowserJob(this.sql);
-    if (busy) return { code: 1, out: `error: browser job #${busy.id} is still working in this channel's browser (${this.browserJobWhere(busy, tc.session)}). Wait for its result, or stop it with stop_browser_task (id ${busy.id}).` };
+    const busy = activeBrowserJob(this.sql, tc.session);
+    if (busy) return { code: 1, out: `error: browser job #${busy.id} is still working in this task's browser tab (${this.browserJobWhere(busy, tc.session)}). Wait for its result, or stop it with stop_browser_task (id ${busy.id}).` };
     const { job: j, run } = this.browserJobCreate(tc, inp, "task");
     const inline = (this._inlineBrowserJobs ||= new Set()); inline.add(j.id);
     let settled = false; run.then(() => { settled = true; });
@@ -2419,7 +2443,7 @@ export class Resident extends DurableObject {
       // A missing method on an older ChannelComputer fails closed before any browser call.
       // Record possible ownership before RPC. A reset can hide a successful acquire response.
       this.sql.exec("UPDATE browser_jobs SET lease_acquired=1 WHERE id=?", id);
-      const grant = await C.acquireBrowserOwner(j.token, BROWSER_JOB_LEASE_MS);
+      const grant = await C.acquireBrowserOwner(j.token, BROWSER_JOB_LEASE_MS, tabKeyFor(j.session));   // a job holds only its own task's tab
       if (!grant?.ok) { this.sql.exec("UPDATE browser_jobs SET lease_acquired=0 WHERE id=?", id); this.browserJobFinish(id, "blocked", grant?.error || "Could not take the browser."); return; }
       owned = true;
       j = browserJobRow(this.sql, id);
@@ -2428,8 +2452,8 @@ export class Resident extends DurableObject {
       const live = () => liveTurnOf(this, j.session);
       const tc = { kind: "browser_job", turn: j.parent_card, session: j.session, inTool: 1,
         subs: { get size() { return live()?.subs?.size || 0; } }, emit: (o) => live()?.emit?.(o) };
-      this._browserJob = { id, session: j.session, turn: j.parent_card, tc };
-      renew = setInterval(() => { C.renewBrowserOwner(j.token, BROWSER_JOB_LEASE_MS).then((r) => { if (!r?.ok) lost = true; }, () => { lost = true; }); C.touch().catch(() => {}); }, 30e3);
+      this._browserJob = { id, session: j.session, turn: j.parent_card, tc }; (this._browserJobs ||= new Map()).set(id, this._browserJob);   // one job can run in each task, so several can run in a channel
+      renew = setInterval(() => { C.renewBrowserOwner(j.token, BROWSER_JOB_LEASE_MS, tabKeyFor(j.session)).then((r) => { if (!r?.ok) lost = true; }, () => { lost = true; }); C.touch().catch(() => {}); }, 30e3);
       // A browser_task that is still waiting in its turn stops at the next boundary when the person writes again, as the attended tool did.
       const shouldStop = () => {
         if (this._inlineBrowserJobs?.has(id) && this.hasSteers?.(live())) this.sql.exec("UPDATE browser_jobs SET status='stopping' WHERE id=? AND status='running'", id);
@@ -2454,11 +2478,11 @@ export class Resident extends DurableObject {
       this.browserJobFinish(id, status, String(e.message || e));
     } finally {
       if (renew) clearInterval(renew);
-      if (this._browserJob?.id === id) this._browserJob = null;
+      this._browserJobs?.delete(id); if (this._browserJob?.id === id) this._browserJob = [...(this._browserJobs?.values() || [])].at(-1) || null;
       // After an uncertain action, let the short lease expire. A late network
       // request remains tied to this job rather than borrowing another task's grant.
       if (!keepLease && (owned || browserJobRow(this.sql, id)?.lease_acquired)) {
-        const released = await C.releaseBrowserOwner(j.token).catch(() => null);
+        const released = await C.releaseBrowserOwner(j.token, tabKeyFor(j.session)).catch(() => null);
         if (released?.ok || released?.owner_lost) this.sql.exec("UPDATE browser_jobs SET lease_acquired=0 WHERE id=?", id);
         else this.sql.exec("UPDATE browser_jobs SET status='uncertain',ended=?,report=COALESCE(report,'')||? WHERE id=?", Date.now(), " Browser ownership release was not confirmed. No browser action was replayed.", id);
       }
@@ -2486,7 +2510,7 @@ export class Resident extends DurableObject {
   async browserJobsRecover({ boot = false } = {}) {
     const now = Date.now(); let recovered = false;
     for (const j of this.sql.exec("SELECT * FROM browser_jobs WHERE status IN ('queued','running','stopping')").toArray()) {
-      if (!boot && this._browserJob?.id === j.id && now < j.deadline) continue;
+      if (!boot && this.runningBrowserJobs().some((x) => x.id === j.id) && now < j.deadline) continue;
       recovered = true;
       const reason = boot ? "The browser job was interrupted by a restart. Its last action may have completed; no action was replayed." : "The browser job reached its time limit. Its last action may have completed; no action was replayed.";
       this.sql.exec("UPDATE browser_jobs SET status='uncertain',ended=?,report=COALESCE(report,?) WHERE id=?", now, reason, j.id);
@@ -2620,7 +2644,7 @@ export class Resident extends DurableObject {
   async workerRequest(name, a, tc) {
     const h = tc.helper;
     if (!h?.dynamic_routing) return "error: only an assigned worker can ask Primary for this.";
-    const s = await this.computer().browser("snapshot", {});
+    const s = await this.computer().browser("snapshot", {}, null, tabKeyOf(tc));
     if (!s.ok) return `error: browser error: ${s.error}`;
     let u = null; try { u = new URL(s.url); } catch {}
     if (!u || u.protocol !== "https:") return `error: the open page (${s.url || "blank"}) isn't a secure https page. Open the site's page first.`;
@@ -5056,7 +5080,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
     // unrelated turn is active. After a reset the lease can outlive the runner;
     // without its in-memory owner, deny rather than borrow another task's grant.
     let browserOwner = { owned: false };
-    let mayOwn = !!this._browserJob;
+    let mayOwn = this.runningBrowserJobs().length > 0;
     if (!mayOwn) { try { mayOwn = !!this.sql.exec("SELECT id FROM browser_jobs WHERE lease_acquired=1 AND started>? LIMIT 1", Date.now() - 15 * 60e3).toArray().length; }
       catch { mayOwn = false; } } // Older partial test objects have no browser job table and cannot own a job.
     if (mayOwn) {
@@ -5068,10 +5092,10 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
     const all = [...this.active.values()].filter((t) => !t.finished);
     let owners;
     if (browserOwner?.owned || browserOwner?.in_flight) {
-      const job = this._browserJob, row = job && browserJobRow(this.sql, job.id);
-      if (!job || !row || row.status !== "running" || row.session !== job.session)
-        return { verdict: "deny", why: "background browser task attribution is unavailable" };
-      owners = [job.tc];
+      // Jobs hold their own tabs, so a task's turn can be working in its tab at the same time: a page's request belongs to the jobs and to the turns using tools.
+      const jobs = this.runningBrowserJobs().filter((job) => { const row = browserJobRow(this.sql, job.id); return row && row.status === "running" && row.session === job.session; });
+      if (!jobs.length) return { verdict: "deny", why: "background browser task attribution is unavailable" };
+      owners = [...jobs.map((job) => job.tc), ...all.filter((t) => t.inBrowser > 0)];
     } else {
       owners = all.filter((t) => t.inTool > 0); if (!owners.length) owners = all;
     }

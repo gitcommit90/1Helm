@@ -40,12 +40,14 @@ export async function readServed(env) {
     .catch(() => env.DB.prepare("SELECT job_id, requested, served_model, served_provider, last_at, calls, last_status, last_error_at FROM model_served WHERE environment=?").bind(environmentOf(env)).all());
   return Object.fromEntries((r.results || []).map((x) => [x.job_id, x]));
 }
-// The rows as the Models console shows them: job id to { requested, served_model, served_provider, last_at, calls, last_status, last_error_at }.
+// The rows as the Models console shows them: job id to { since, requested, served_model, served_provider, last_at, calls, last_status, last_error_at }.
 // A missing table or a read error gives no rows, and the console then shows "No calls yet".
-export async function servedView(env) {
+// since: the time each row's models last changed (model-changes.js changeTimes). Each row carries it as `since`, so a reader judges a call against the models
+// that were saved when it was served, never against a list saved after it. A row with no `since` (a server from before this field, or a read that failed) is not judged.
+export async function servedView(env, since = null) {
   try {
     const out = {};
-    for (const [id, x] of Object.entries(await readServed(env))) out[id] = { requested: x.requested ?? null, served_model: x.served_model ?? null, served_provider: x.served_provider ?? null, last_at: Number(x.last_at) || null, calls: Number(x.calls) || null, last_status: x.last_status ?? null, last_error_at: Number(x.last_error_at) || null, last_error: x.last_error ?? null };
+    for (const [id, x] of Object.entries(await readServed(env))) out[id] = { since: since && Object.prototype.hasOwnProperty.call(since, id) ? since[id] : null, requested: x.requested ?? null, served_model: x.served_model ?? null, served_provider: x.served_provider ?? null, last_at: Number(x.last_at) || null, calls: Number(x.calls) || null, last_status: x.last_status ?? null, last_error_at: Number(x.last_error_at) || null, last_error: x.last_error ?? null };
     return out;
   } catch { return {}; }
 }

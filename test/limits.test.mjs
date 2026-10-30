@@ -154,8 +154,8 @@ await test("the console shows the Limits view, and the Timeout field", async () 
   assert.equal(state.limits.defs.length, LIMIT_DEFS.length); assert.equal(state.limits.values.chat_steps, 60);
   const html = pageHtml(state, ui, Date.now()).toString();
   for (const d of LIMIT_DEFS) assert.ok(html.includes(`data-lim="${d.key}"`), d.key);
-  const label = pageHtml(state, { ...ui, view: "all" }, Date.now()).toString(); assert.match(label, /data-f="timeout"[^>]*value="30"/);
-  assert.match(drawerHtml(state, { ...ui, view: "all", sel: "label" }, consoleView(state, { ...ui, view: "all", sel: "label" }), Date.now()).toString(), /Timeout, seconds/);
+  const label = drawerHtml(state, { ...ui, view: "all", sel: "label" }, consoleView(state, { ...ui, view: "all", sel: "label" }), Date.now()).toString(); assert.match(label, /data-df="timeout"[^>]*value="30"/);
+  assert.match(label, /Timeout, seconds/);
 });
 
 // ---- the places that read the saved values ----

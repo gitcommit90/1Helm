@@ -150,7 +150,9 @@ assert.equal(wire.length, 0);
   assert.equal(open.MODEL_SETTINGS_REVISION, 0);
   assert.equal((await readModelSettings({ DB: { prepare() { throw new Error("the shared settings table must not be read without the EE switch"); } } })).revision, 0);
   assert.equal(await jobModel({ DB: null }, "label"), SEED.jobs.label.model);
-  assert.equal(await modelSettingsEnv({ BYOK: { model: "own" } }).then((e) => e.MODEL_SETTINGS), undefined, "own-key accounts keep their own endpoint and model");
+  // an own-key account keeps its own endpoint and model for chat calls, and (like every account) reads the settings for the jobs with no own-key path
+  const own = await modelSettingsEnv({ BYOK: { model: "own" } });
+  assert.equal(own.BYOK.model, "own"); assert.equal(own.MODEL_SETTINGS.jobs.label.model, SEED.jobs.label.model);
 }
 globalThis.fetch = originalFetch;
 console.log("PASS model source of truth: guard, every job from its saved setting, clear failure without settings");

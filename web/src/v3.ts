@@ -73,6 +73,7 @@ import { replyBinding, responseId, type InputRequest, type InputReply } from "./
 import { offerCardHtml, offerFold, cxoInit, cxoUpdate, cxoFrom, cxoBoot, cxoDraftHtml, type OfferCard } from "./ee/connect-card";
 import { planInit, planAttach, planEvent, planCardHtml, planBriefs, briefMsgHtml } from "./plan-live";   // plan cards (propose_plan)
 import { bcxInit, bcxUsage } from "./ee/cancel";
+import { loadDue, loadFailed, withRetries } from "./task-load";
 import { pdInit, pdSet } from "./ee/pastdue";   // payment failed: read-only banner (Fix payment) + disabled composers
 import * as coreByok from "./byok";
 import * as billingByok from "./ee/byok-billing";
@@ -140,7 +141,7 @@ type Msg = { id: number; role: "user" | "agent"; body: string; at: number; steps
 // Where a remember really saved, from the server (proto src/saved-to.js): the "Added to …" chips under the reply.
 type Saved = { to: "notebook" | "contact" | "memory" | "account"; channel?: string; sec?: string; text?: string; name?: string; fields?: string[] };
 type FileV = { id: string; name: string; mime: string; bytes: number; at: number; source?: string; session?: string | null; image?: boolean; tags?: string[]; tx?: string };
-type Session = { id: any; srv?: any; loaded?: boolean; loading?: boolean; streaming?: boolean; attached?: boolean; tmp?: string; rawLine?: string; title: string; status: string; state: string; updated: number; messages: Msg[]; line?: string; unread?: boolean; fresh?: boolean; pinned?: boolean; done?: boolean };
+type Session = { id: any; srv?: any; loaded?: boolean; loading?: boolean; loadFailAt?: number; streaming?: boolean; attached?: boolean; tmp?: string; rawLine?: string; title: string; status: string; state: string; updated: number; messages: Msg[]; line?: string; unread?: boolean; fresh?: boolean; pinned?: boolean; done?: boolean };
 type Channel = { id: number; slug: string; name: string; purpose: string; memory: string[]; notes?: any[]; jobs: any[]; sessions: Session[]; cs?: CS };
 type Art = { tx?: string; name: string; kind: "doc" | "sheet" | "pdf" | "image" | "link" | "code"; sid: any; at: number; size: string; fresh?: boolean; fid?: string; you?: boolean; mime?: string; bytes?: number; tags?: string[] };
 
@@ -394,7 +395,7 @@ function renderStage() {
   $("#m").innerHTML = "";
   const { ch, s } = route();
   document.title = isSch() ? "Scheduled · 1Helm" : isCt() ? "Contacts · 1Helm" : isNb() ? `${who(ch)}'s notebook · 1Helm` : isLib() ? `${ch.name} Library · 1Helm` : s ? `${s.title} · ${ch.name} · 1Helm` : `${ch.name} Home · 1Helm`;
-  if (s) { if (LIVE && s.unread) livePatch(ch, s, { seen: true }); s.unread = false; if (LIVE && !s.loaded && !s.loading) liveLoad(ch, s); }
+  if (s) { if (LIVE && s.unread) livePatch(ch, s, { seen: true }); s.unread = false; if (LIVE) openLoad(ch, s); }
 
   const railTop = document.querySelector("#rail .chs")?.scrollTop ?? 0;
   $("#rail").innerHTML = railHtml(ch); railWire(railTop);
@@ -1599,7 +1600,7 @@ function msgsHtml(s: Session, ch: Channel) {
   settleBrowserCards(s);   // the live "using the browser" card goes once nothing is running, however the end was missed
   const next: (string | undefined)[] = []; let u: string | undefined;
   for (let i = s.messages.length - 1; i >= 0; i--) { next[i] = u; if (s.messages[i].role === "user") u = s.messages[i].body; }
-  return s.messages.map((m, i) => msgHtml(m, ch, s.messages[i - 1], !!s.streaming && i === s.messages.length - 1, s, next[i])).join("") + turnProgress(s, ch) + (LIVE && s.srv ? slBubbles(ch.slug, s.id) : "") + (LIVE && s.srv && !s.streaming && showCosts() ? usageNote(ch.slug, s.id) : "");
+  return s.messages.map((m, i) => msgHtml(m, ch, s.messages[i - 1], !!s.streaming && i === s.messages.length - 1, s, next[i])).join("") + turnProgress(s, ch) + (LIVE && loadFailed(s) ? `<div class="wkfail tkfail"><p>This task didn't load.</p><button class="sa mute" data-tkload>Tap to try again</button></div>` : "") + (LIVE && s.srv ? slBubbles(ch.slug, s.id) : "") + (LIVE && s.srv && !s.streaming && showCosts() ? usageNote(ch.slug, s.id) : "");
 }
 // The helper's reaction on a person's message (its react tool): a tapback badge on the bubble's top corner, like iMessage.
 // m.turn = the server's turn id (the stream's reaction event names it); m.reaction = love | like | dislike | laugh | emphasize | question.
@@ -1730,6 +1731,7 @@ maInit({ key: rqKey,
   who: role => role === "user" ? "You" : who(route().ch),
   repaint: () => { const { s } = route(); if (s) paintChat(s); },
   note: (t, b) => note(ic.clock, t, b, "") });
+window.addEventListener("hashchange", () => { const s = route().s; if (LIVE && s && !s.loaded) s.loadFailAt = 0; });   // opening a task again tries its load again, even right after a failure
 window.addEventListener("hashchange", render);
 matchMedia("(max-width: 767px)").addEventListener("change", render);
 
@@ -1783,7 +1785,7 @@ function renderPhone() {
   const other = ch.sessions.some(x => x !== s && rowLit(x)), elsewhere = channels.some(c => c !== ch && c.sessions.some(rowLit));
   const head = `<header class="mh"><button class="cb" data-mdrawer aria-label="Tasks and channels" aria-controls="mobile-tasks" aria-expanded="${mState.drawer}">${ic.menu}${other || elsewhere ? `<i class="udot"></i>` : ""}</button>
     ${s && canRename(s) ? `<div class="mpill task-pill"><button class="task-about" data-msheet="about" aria-label="About ${esc(ch.name)}" title="About ${esc(ch.name)}">${av(ch, "av sm")}</button><button class="task-title" data-rename="${esc(ch.slug)}|${esc(s.id)}" aria-label="Rename task" title="Rename task"><span data-task-title>${esc(s.title)}</span></button></div>` : `<button class="mpill" data-msheet="about">${isSch() ? `<span class="pico">${ic.clock}</span>` : isLib() ? `<span class="pico">${ic.lib}</span>` : isCt() ? `<span class="pico">${ic.people}</span>` : isNb() ? `<span class="pico">${ic.nb}</span>` : av(ch, "av sm")}<span>${esc(isSch() ? "Scheduled" : isCt() ? (ctSel() ? ctSel()!.name : "Contacts") : isNb() ? `${who(ch)}'s notebook` : isLib() ? `${ch.name} Library` : s ? s.title : `${ch.name} Home`)}</span></button>`}<span class="grow"></span>${LIVE ? pomoGlobalBtn(true) : ""}${LIVE && s ? `<span class="mo" data-mo="3">${hasFeature("ambient") ? lnBtn(ch.slug, s.id, true) : ""}${pomoBtn(ch.slug, s.id, true)}</span><span class="mo" data-mo="5">${todoBtn(ch.slug, s.id, true)}</span><span class="mo" data-mo="4">${tkBtn(ch.slug, s.id, true)}</span>` : ""}${LIVE ? `<span class="mo" data-mo="2"><button class="cb${ch.sessions.some(x => x.state === "working") ? " busy" : ""}" data-watch="${esc(ch.slug)}" aria-label="Open ${esc(who(ch))}'s computer">${ic.screen}</button></span>` : ""}${s && stWorking(s) ? `<button class="cb mstop" data-stop="${esc(ch.slug)}|${esc(s.id)}" aria-label="Stop this task" title="Stop">${SQ}</button>` : ""}${s ? `<span class="mo" data-mo="4"><button class="cb mdone${s.done ? " on" : ""}" data-done="${s.id}" aria-label="${s.done ? "Reopen" : "Mark done"}">${box(s).replace(/ data-done="[^"]+"/, "").replace('role="checkbox" tabindex="0"', 'aria-hidden="true"')}</button></span>` : ""}<span class="mo" data-mo="1"><button class="cb" data-ntask aria-label="New task">${ic.newS}</button></span><button class="cb mmore" data-mmore aria-label="More actions" aria-haspopup="dialog" hidden>${MORE}</button></header>`;
-  if (s) { if (LIVE && s.unread) livePatch(ch, s, { seen: true }); s.unread = false; if (LIVE && !s.loaded && !s.loading) liveLoad(ch, s); }
+  if (s) { if (LIVE && s.unread) livePatch(ch, s, { seen: true }); s.unread = false; if (LIVE) openLoad(ch, s); }
   if (isNb() && !s) { nbSync(ch); void nbpLoad(ch); }
   const chat = isSch() ? `${head}${schPage(ch.slug).replace('class="dhome" id="scroll"', 'class="scroll" id="scroll"')}` : isCt() ? `${head}${ctPage().replace('class="dhome" id="scroll"', 'class="scroll" id="scroll"')}` : isNb() ? `${head}${nbPage(ch).replace('class="dhome" id="scroll"', 'class="scroll" id="scroll"')}` : isLib() ? `${head}${libPage(ch).replace('class="dhome" id="scroll"', 'class="scroll" id="scroll"')}` : s
     ? LIVE && ivIs(ch.slug, s.id) ? `${head}${ivView()}` : `${head}${liveNotesWrap(ch.slug, s.id, `<div class="scroll" id="scroll"><div class="msgs">${msgsHtml(s, ch)}</div></div><div class="dock">${composer(`Message ${esc(who(ch))}`)}</div>`)}`
@@ -1984,7 +1986,13 @@ const LK: { loaded: boolean; st: any; busy: boolean; poll: number } = { loaded: 
 function loadLink() { if (!LIVE) return; LK.loaded = true; fetch(`${LIVE.api}/link/status`, { credentials: "same-origin" }).then(r => r.json()).then(d => {
   LK.st = d; if (d.pending && !LK.poll) LK.poll = window.setInterval(loadLink, 5000); if (!d.pending && LK.poll) { clearInterval(LK.poll); LK.poll = 0; }
   if (d.just_connected) note(ic.check, "Link added", "You'll approve every purchase in the Link app.", "");
-  if (S.open && S.sec === "wallet") sRender(); }).catch(() => {}); }
+  if (S.open && S.sec === "wallet") sRender(); }).catch(() => { if (!LK.st) LK.loaded = false; }); }
+// Purchases list: when a purchase was asked for. Today shows the time and an earlier day shows the date, to keep each row short; the row's title attribute has both.
+function purchaseWhen(t: number, full = false) {
+  const d = new Date(t); if (isNaN(+d)) return "";
+  const day = d.toLocaleDateString(undefined, { month: "short", day: "numeric" }), time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return full ? `${day}, ${time}` : d.toDateString() === new Date().toDateString() ? time : day;
+}
 function walletHtml() {
   if (!LK.loaded) loadLink();
   const st = LK.st || {}, money = (c: number) => `$${(c / 100).toFixed(2)}`;
@@ -1992,7 +2000,7 @@ function walletHtml() {
     : st.pending ? srow(brand("stripe"), "Finish in Link", `Open Link and confirm the code <b class="lkcode">${esc(st.phrase || "")}</b>`, `<a class="sa blue" href="${esc(st.url || "#")}" target="_blank" rel="noopener">Open Link</a>`)
     : srow(brand("stripe"), "Link by Stripe", st.error ? esc(st.error) : st.expired ? "That code expired. Start again." : !LK.st ? "Checking…" : "Pay with the cards you've saved in Link", sa(LK.busy ? "Opening…" : "Add", "data-lkon", "blue"));
   const ps = (st.purchases || []) as any[];
-  return `${row}</div>${st.connected ? `<h3>Purchases</h3><div class="sc">${ps.length ? ps.map(p => srow(`<span class="favi">${esc(((p.merchant_name || "?")[0] || "?").toUpperCase())}${logoOver(p.merchant_url || "", 38)}</span>`, esc(p.merchant_name || "Purchase"), `${money(p.amount)} · ${esc(p.status)}${p.test ? " · test" : ""}`, "")).join("") : srow("", "Nothing bought yet", `Purchases ${esc(who(main))} makes will show up here.`, "")}</div>` : ""}<div>`;
+  return `${row}</div>${st.connected ? `<h3>Purchases</h3><div class="sc">${ps.length ? ps.map(p => srow(`<span class="favi">${esc(((p.merchant_name || "?")[0] || "?").toUpperCase())}${logoOver(p.merchant_url || "", 38)}</span>`, esc(p.merchant_name || "Purchase"), `${money(p.amount)} · ${esc(p.outcome?.text || "Ask your helper what happened")}${p.test ? " · test" : ""} · ${esc(purchaseWhen(p.created_at))}`, "", ` title="${esc(purchaseWhen(p.created_at, true))}"`)).join("") : srow("", "Nothing bought yet", `Purchases ${esc(who(main))} makes will show up here.`, "")}</div>` : ""}<div>`;
 }
 // Official store destinations: https://link.com/download. Notifications and approvals belong to Link.
 function linkAppHtml() {
@@ -2045,7 +2053,7 @@ function cxLoad(force = false) {
   CX.at = Date.now(); CX.loading = true;
   const paint = () => { if (S.open && S.sec === "accounts") sRender(); };
   const fail = (why: string) => { CX.loading = false; CX.err = why || "Something went wrong on our side"; paint(); };
-  fetch(`${LIVE.api}/apps${force ? "?fresh=1" : ""}`, { credentials: "same-origin", signal: AbortSignal.timeout(CX_WAIT) }).then(r => r.json())
+  withRetries(signal => fetch(`${LIVE.api}/apps${force ? "?fresh=1" : ""}`, { credentials: "same-origin", signal }).then(r => r.json()), { tries: 2, timeoutMs: CX_WAIT })   // a timeout while the page was hidden or frozen is not counted (task-load.ts)
     .then(d => { cmSet(d); if (!Array.isArray(d?.accounts)) return fail(cxReason(d?.error)); CX.loading = false; CX.err = ""; cxSet(d.accounts); paint(); })
     .catch(e => fail(/timeout|abort/i.test(`${e?.name} ${e?.message}`) ? "It took too long to answer" : "Couldn't reach 1Helm"));
 }
@@ -2659,7 +2667,7 @@ function secHtml(sec: string): string {
       <h3>Websites</h3><div class="sc" role="radiogroup">${radio("web", "some", "Ask for important actions", "When it would send your info, or the site is new to it")}${radio("web", "all", "Always ask", "Before it visits any website")}</div>
       <h3>Always allowed</h3><div class="sc">${S.allowed.length ? S.allowed.map((a, i) => srow(`<span class="favi">${g("globe", 16)}${logoOver(a.site, 38)}</span>`, esc(a.site), `Allowed in ${esc(a.where)}`, sa("Remove", `data-rmallow="${i}"`, "mute"))).join("") : srow("", "Nothing yet", "When you tap “Always allow” on a request, it shows up here.", "")}</div>`;
     case "texting": {
-      if (LIVE && !TX.loaded) { TX.loaded = true; fetch(`${LIVE.api}/texting`, { credentials: "same-origin" }).then(r => r.json()).then(d => { TX.st = d; if (S.open && S.sec === "texting") sRender(); }).catch(() => {}); }
+      if (LIVE && !TX.loaded) { TX.loaded = true; fetch(`${LIVE.api}/texting`, { credentials: "same-origin" }).then(r => r.json()).then(d => { TX.st = d; if (S.open && S.sec === "texting") sRender(); }).catch(() => { TX.loaded = false; }); }   // a failed read is asked again the next time Settings draws
       const st = TX.st?.status, on = st === "connected", mid = st === "signup" || st === "awaiting_code";
       const sub = !LIVE ? "(•••) •••-4821" : on ? `Connected · texts ${esc(fmtTel(TX.st.phone))} from ${esc(fmtTel(TX.st.assigned))}` : mid ? "Almost done: finish setting it up" : TX.loaded && !TX.st ? "Checking…" : "Text your helper from your phone";
       const btn = !LIVE ? tg("text", "Texting") : on ? sa("Manage", `data-texting`, "mute") : sa(mid ? "Continue" : "Set up", `data-texting`, "blue");
@@ -3185,10 +3193,13 @@ if (LIVE) planInit({ api, helper: slug => { const c = channels.find(x => x.slug 
 // A turn that a restart cut off and that couldn't be picked up again (the server's turns row error "interrupted"): the honest version.
 const INTERRUPTED_MSG = "1Helm restarted while I was working on this, so I stopped before replying. Send it again and I'll pick it back up.";
 const HANDOFF_OPENED = new Set<string>();   // a worker handoff opens the viewer once per handoff, not on every reload
+// Drawing the open task: a task that isn't loaded loads now. A repaint right after a failed load waits out the pause in task-load.ts,
+// and opening the task again (the hashchange listener before render) clears the pause so it always tries.
+function openLoad(ch: Channel, s: Session) { if (loadDue(s)) void liveLoad(ch, s); }
 async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
   s.loading = true;
   try {
-    const d = snapshot || await api(`/res/${ch.slug}/sessions/${s.id}?n=80`, undefined, { signal: AbortSignal.timeout(15000) }); if (d.error) throw new Error(d.error);
+    const d = snapshot || await withRetries(async signal => { const r = await api(`/res/${ch.slug}/sessions/${s.id}?n=80`, undefined, { signal }); if (r.error) throw new Error(r.error); return r; });
     todoSet(ch.slug, s.id, d.todos || []); pomoSet(ch.slug, s.id, d.session?.pomodoro); lnSet(ch.slug, s.id, d.session?.livenotes);
     tkLoad(ch.slug, s.id, d);
     pauseSet(d.pauses); usageSet(ch.slug, s.id, d.usage?.nano || 0);   // spendguard.ts
@@ -3227,8 +3238,8 @@ async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
     const last = [...s.messages].reverse().find(m => m.role === "agent");
     if (last) for (const a of d.approvals || []) { const m = ["ssh","ssh_hostkey"].includes(a.perm) && a.turn ? (s.messages as TkMsg[]).find(x => x.role === "agent" && x.card === a.turn) || last : last; addApproval(m, a, false); }   // native receipts stay beside their originating request
     for (const o of d.offers || []) { const m = (s.messages as TkMsg[]).find(x => x.role === "agent" && o.turn && x.card === o.turn) || last; if (m) addOffer(m, ch, o, false); }   // connect cards, under the reply that offered them
-    applySrv(s, d.session && { ...d.session, pending_inputs: d.pending_inputs || d.session.pending_inputs || [] }); s.loaded = true;
-  } catch (e: any) { s.messages = [{ id: nextId++, role: "agent", body: `Couldn't load this task (${e.message}).`, at: Date.now(), steps: [] }]; s.loaded = true; }
+    applySrv(s, d.session && { ...d.session, pending_inputs: d.pending_inputs || d.session.pending_inputs || [] }); s.loaded = true; s.loadFailAt = 0;
+  } catch { s.loadFailAt = Date.now(); }   // never "loaded": the messages already shown stay, and the next open, return to the app or refresh tries again (task-load.ts)
   s.loading = false; if (route().s === s) paintChat(s); else repaint(ch);
 }
 // Repaint only the open task's messages (keeps the composer and the scroll position when you've scrolled up).
@@ -3557,6 +3568,12 @@ if (LIVE) document.addEventListener("click", e => {
   if (route().s !== x) location.hash = `/${slug}/s/${sid}`;
   liveReply(c, x, "Keep going.", [], true, card);
 });
+// "This task didn't load. Tap to try again", and coming back to the app: a task whose load failed is loaded again.
+if (LIVE) {
+  document.addEventListener("click", e => { if (!(e.target as HTMLElement).closest("[data-tkload]")) return; e.preventDefault(); const { ch, s } = route(); if (s && loadDue(s, Date.now(), true)) { void liveLoad(ch, s); paintChat(s); } }, true);
+  const back = () => { if (document.visibilityState === "hidden") return; const { ch, s } = route(); if (s && s.loadFailAt && loadDue(s, Date.now(), true)) void liveLoad(ch, s); };
+  document.addEventListener("visibilitychange", back); window.addEventListener("focus", back);
+}
 // "Not sent · Retry": the same message again, with the same client id.
 if (LIVE) document.addEventListener("click", e => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-tkretry]"); if (!b) return;
@@ -4222,7 +4239,7 @@ const WK_GROUPS = ["Pages", "More"];
 // What the server sends (API contract with the Worker): the tree and facts, then one page's markdown.
 type NbpTree = { id: string; title: string; group: "pages" | "more"; kind: "page" | "notes"; updated_at: number | null };
 type NbpPage = { id: string; title: string; markdown: string; updated_at: number | null; sources: { kind: string; id: string; title: string; at: number }[]; state: "ready" | "building" | "empty" };
-type Nbp = { person: { first: string; name: string; photo: string | null } | null; facts: { label: string; value: string }[]; tree: NbpTree[]; ready: boolean; failed: boolean; at: number; busy: boolean; preBusy: boolean; reals: number; redo: boolean;
+type Nbp = { person: { first: string; name: string; photo: string | null } | null; facts: { label: string; value: string }[]; tree: NbpTree[]; ready: boolean; failed: boolean; failAt?: number; at: number; busy: boolean; preBusy: boolean; reals: number; redo: boolean;
   pages: Record<string, NbpPage | "busy" | "failed">; saved: Record<string, { at: number; markdown: string }> };
 const NBP: Record<string, Nbp> = {};
 const nbpState = (slug: string): Nbp => NBP[slug] ||= { person: null, facts: [], tree: [], ready: false, failed: false, at: 0, busy: false, preBusy: false, reals: 0, redo: false, pages: {}, saved: {} };
@@ -4274,7 +4291,7 @@ async function nbpLoad(ch: Channel, force = false, pre = false) {
   if (pre) st.preBusy = false; else st.busy = false;
   const redo = !pre && st.redo; if (!pre) st.redo = false;
   if (pre && (st.reals !== real || !(d && Array.isArray(d.tree)))) return;   // a failed prefetch changes nothing; a real read that landed first is newer
-  if (!d || !Array.isArray(d.tree)) { if (!st.ready && !st.failed) { st.failed = true; if (isNb() && route().ch === ch) nbPaint(ch); } return; }   // can't be read: the Try again line shows
+  if (!d || !Array.isArray(d.tree)) { if (!st.ready && !st.failed) { st.failed = true; st.failAt = Date.now(); if (isNb() && route().ch === ch) nbPaint(ch); } return; }   // can't be read: the Try again line shows
   if (!pre) { st.reals++; st.at = Date.now(); }
   const p = d.person || {}, first = !st.ready;
   st.person = { first: String(p.first || ""), name: String(p.name || p.first || ""), photo: p.photo ? String(p.photo) : null };
@@ -4455,7 +4472,8 @@ function nbWiki(ch: Channel): string {
   if (!LIVE && !NBW.seeded) { NBW.seeded = true; queueMicrotask(() => { (window as any).__beeFactsDemo(true); (window as any).__beeSpeakersDemo(true); }); }
   if (NBW.ch !== ch.slug) { NBW.ch = ch.slug; NBW.seen = ""; NBW.edit = ""; NBW.menu = false; NBW.sheet = false; NBW.hash = ""; }
   if (nbPagesOff()) return `<div class="wk wkfail"><p>The Notebook needs memory, which is off for this deployment. Memory needs its Vectorize index and AI binding set up (see docs/configuration.md).</p></div>`;
-  if (LIVE) { const st = nbpState(ch.slug); if (st.failed || (st.ready && !st.tree.length)) return `<div class="wk wkfail"><p>Couldn't load the Notebook.</p><button class="sa mute" data-wkretry>Try again</button></div>`; if (!st.ready) { void nbpLoad(ch); return `<div class="wk wkcold"></div>`; } }
+  if (LIVE) { const st = nbpState(ch.slug); if (st.failed && Date.now() - (st.failAt || 0) >= 10000) { st.failed = false; st.ready = false; }   // a failed read is tried again on the next open, not kept until Try again
+    if (st.failed || (st.ready && !st.tree.length)) return `<div class="wk wkfail"><p>Couldn't load the Notebook.</p><button class="sa mute" data-wkretry>Try again</button></div>`; if (!st.ready) { void nbpLoad(ch); return `<div class="wk wkcold"></div>`; } }
   const pages = wkPages(ch); wkHashPage(ch, pages);
   const cur = wkCur(ch, pages); if (LIVE && cur.kind === "page" && !cur.ready) void nbpPage(ch, cur.k);
   const bee = wkPhone() ? "" : wkBee(ch);

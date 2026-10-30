@@ -49,7 +49,7 @@ export const routeEnabled = (env, path, scope = "global") =>
 // Core-facing EE exports. Runtime admission remains gated by enabled().
 export { appDetail } from "./app-detail.js";
 export { appEventView, evOf, eventsInit, eventsMix, eventsNext } from "./app-events.js";
-export { PAUSE_FACTS, appFirstBlock, callKey, repeatBlock, repeatNote, taskWords } from "./appfirst.js";
+export { PAUSE_FACTS, appFirstBlock, callKey, navRepeatPending, repeatBlock, repeatNote, taskWords } from "./appfirst.js";
 export { appLogoRoute } from "./applogo.js";
 export { APPS_USED_LINE, APPS_USED_TOOL, APP_OPTIONS, NONE, appsUsedApi, appsUsedLine, appsUsedTool, getAppsUsed, optionsView, setAppsUsed, usedSlugs } from "./apps-used.js";
 export { BeeSync };
@@ -69,7 +69,7 @@ export { deciderModel } from "./decider.js";
 export { hintNudge, integrationHint } from "./integration-hint.js";
 export { clip, leanJSON, readMail } from "./lean.js";
 export { Ledger };
-export { linkApi, linkCreatePurchase, linkDisconnect, linkGetPurchase, linkListPurchases, linkStartConnect, linkStatus } from "./link.js";
+export { linkApi, linkCreatePurchase, linkDisconnect, linkGetPurchase, linkListPurchases, linkNoteFill, linkNoteHandoff, linkStartConnect, linkStatus } from "./link.js";
 export { lnAudio } from "./live-mic.js";
 export { LiveNotes };
 export { lnName, lnResidentMethods } from "./live-notes.js";

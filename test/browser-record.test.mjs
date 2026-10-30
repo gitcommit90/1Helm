@@ -72,7 +72,7 @@ const good = { ok: true, name: "demo", path: "/workspace/recordings/demo.mp4", s
 
 // 4. Wiring outside resident.js: the channel computer passes the op, and the browser server answers it, ends by itself and can finish after a restart.
 {
-  assert.match(readFileSync(new URL("../src/channel-computer.js", import.meta.url), "utf8"), /\^\(navigate\|snapshot\|act\|back\|screenshot\|status\|record\)\$/);
+  assert.match(readFileSync(new URL("../src/channel-computer.js", import.meta.url), "utf8"), /\^\(navigate\|snapshot\|act\|back\|screenshot\|status\|record\|activate\|closetab\)\$/);
   const srv = readFileSync(new URL("../image/opt/1hc-browser/server.mjs", import.meta.url), "utf8");
   for (const re of [/m\[1\] === "record"/, /x11grab/, /libx264/, /yuv420p/, /"-t", String\(REC_MAX_S\)/, /REC_STATE/, /faststart/, /async function recStop/, /async function recStart/]) assert.match(srv, re, String(re));
   const labels = readFileSync(new URL("../src/tracker.js", import.meta.url), "utf8"); assert.match(labels, /browser_record:/);

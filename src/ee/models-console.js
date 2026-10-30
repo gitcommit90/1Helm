@@ -11,6 +11,7 @@ import { LIMIT_GROUPS, LIMIT_DEFS, limitValues } from "../limits.js";
 import { outsideModels } from "./outside-models.js";
 import { servedView } from "./model-served.js";
 import { boundedText, BodyTooLargeError } from "../bounded-body.js";
+import { versionChanges } from "./model-changes.js";
 import { sandboxRead, sandboxSend, sandboxGolden, SEND_MAX } from "./sandbox.js";
 import { pageHtml } from "../../app-assets/app-static/models-console-core.js";
 
@@ -82,10 +83,11 @@ export async function consoleState(view, env) {
   // Saved records from before the catalog kept each endpoint's limit are completed from the live catalog, for the max output note only (nothing is saved).
   const config = await withEndpointLimits(view.config, { env }).catch(() => view.config);
   const dash = modelDashboard({ ...view, config });
+  const { history, since } = await versionChanges(env);
   return {
-    environment: view.environment, dynamicRouting: view.dynamicRouting, revision: view.revision, stale: !!view.stale, history: view.history,
+    environment: view.environment, dynamicRouting: view.dynamicRouting, revision: view.revision, stale: !!view.stale, history: (view.history || []).map((x) => ({ ...x, changes: history[x.revision] || null })),
     config: view.config, defaults: Object.fromEntries(JOB_IDS.map((id) => [id, jobFieldDefaults(id)])),
-    jobs: dash.jobs, groups: dash.groups, served: await servedView(env),
+    jobs: dash.jobs, groups: dash.groups, served: await servedView(env, since),
     limits: { groups: LIMIT_GROUPS, defs: LIMIT_DEFS, values: limitValues(view.config) },
     choices: view.options.choices, outside: outsideModels(env), unlisted: [],
   };

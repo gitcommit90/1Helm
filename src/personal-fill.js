@@ -18,6 +18,7 @@
 // permission card: "OK to fill in your name, phone and email on opentable.com?" Allow once / Always allow filling in your details /
 // Don't allow. "Allow once" covers this site for the rest of this turn; the next turn (or another site) asks again.
 import { EMAIL_RE, STREET_RE, SSN_RE, turnPerms, askPerson, notAllowed, takeGrant } from "./perms.js";
+import { tabKeyOf } from "./browser-tab.js";
 
 const TYPING = new Set(["fill", "type", "select"]);   // select: a dropdown choice counts too (birth month / year, state)
 const digits = (s) => String(s || "").replace(/\D/g, "");
@@ -137,7 +138,7 @@ export async function fillGate(res, tc, name, a = {}) {
   if (!acts.length) return null;
   // The page as it is now (the browser's act re-reads it the same way before it types, so the refs line up): its fields and its site.
   let page = null;
-  try { const s = await res.computer().browser("snapshot", {}); if (s && s.ok !== false) page = { url: s.url, snapshot: s.snapshot || "" }; } catch {}
+  try { const s = await res.computer().browser("snapshot", {}, null, tabKeyOf(tc)); if (s && s.ok !== false) page = { url: s.url, snapshot: s.snapshot || "" }; } catch {}
   const c = classifySteps(acts, page?.snapshot || "", tc.ownDetails ||= await ownDetails(res));
   if (c.block) return BLOCKED[c.block];
   if (!c.what.length && a.fills_personal !== true) return null;
@@ -151,7 +152,7 @@ export async function fillTaskGate(res, tc, a = {}) {
   const c = classifyTexts(texts, tc.ownDetails ||= await ownDetails(res));
   if (c.block) return BLOCKED[c.block];
   if (!c.what.length && a.fills_personal !== true) return null;
-  let url = a.url; if (!url) { try { url = (await res.computer().browser("snapshot", {}))?.url; } catch {} }
+  let url = a.url; if (!url) { try { url = (await res.computer().browser("snapshot", {}, null, tabKeyOf(tc)))?.url; } catch {} }
   return await needPersonal(res, tc, c.what, url);
 }
 

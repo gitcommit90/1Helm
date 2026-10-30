@@ -327,8 +327,10 @@ export async function readModelSettings(env) {
   }
 }
 // A snapshot for one dispatch only. Never mutate the Worker env or keep this on a long-lived Resident.
+// An own-key env (env.BYOK) gets the saved settings too: the jobs that have no own-key path (the browser's next step, the screen look, speech,
+// pictures, ...) run on the models saved on the Models page. The returned env still carries BYOK, so plain chat calls keep going to the person's key.
 export async function modelSettingsEnv(env) {
-  if (env?.BYOK || env?.MODEL_SETTINGS) return env;
+  if (env?.MODEL_SETTINGS) return env;
   // Without the EE switch nothing reads the shared settings table: a deployment gets the first-run data, unchanged and in memory only.
   if (env?.ONEHELM_EE !== "1hc") return Object.assign(Object.create(env || null), { MODEL_SETTINGS: firstRunSettings(), MODEL_SETTINGS_REVISION: 0 });
   const s = await readModelSettings(env);
@@ -370,6 +372,14 @@ export const modelSettingsOptions = (config) => ({ groups: GROUPS, jobs: MODEL_P
 export async function unlistedModels(env) {
   const s = await readModelSettings(env);
   return unlistedIds(Object.keys({ ...listedKinds(SEED_FACTS), ...listedKinds(s.config.catalog) })).catch(() => []);
+}
+// The latest saved versions with only the parts the Models page compares (jobs, routing and limits), newest first. The catalog is left out in SQL so a
+// read stays small. Used for what changed in each version and for when each row's models last changed (model-changes.js).
+export async function recentVersions(env, limit = 60) {
+  const db = dbOf(env), n = Math.max(2, Math.min(200, Number(limit) || 60));
+  const rows = (await db.prepare(`SELECT revision,at,by,action,json_extract(config,'$.jobs') AS jobs,json_extract(config,'$.routing') AS routing,json_extract(config,'$.limits') AS limits FROM ${TABLE} WHERE environment=? ORDER BY revision DESC LIMIT ?`).bind(settingsEnvironment(env), n).all()).results || [];
+  const parse = (t) => { try { return t == null ? null : JSON.parse(t); } catch { return null; } };
+  return rows.map((r) => ({ revision: Number(r.revision), at: Number(r.at), by: r.by, action: r.action, jobs: parse(r.jobs), routing: parse(r.routing), limits: parse(r.limits) }));
 }
 export async function modelSettingsView(env) {
   const db = dbOf(env), s = await readModelSettings(env);
