@@ -3219,14 +3219,17 @@ async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
     // A routed worker's browser work, with no Primary turn running: the live view, or the Take control card when it handed the browser over.
     // The server keeps both, so a reload or a reopened app shows them. The reply they sit under is the one that dispatched the worker.
     const wb = d.worker_browser, lastAgent = msgs.findLast(m => m.role === "agent");
-    if (wb && lastAgent) { (lastAgent.cards ??= []).push({ t: "browser", url: wb.url, text: wb.text || undefined, stored: true } as any); const key = `${s.id}|${wb.url}|${wb.text}`; if (wb.text && !HANDOFF_OPENED.has(key)) { HANDOFF_OPENED.add(key); if (route().s === s) openPC(ch.slug, wb.url, wb.text); } }
+    const wbLive = !!wb && !!d.live && !d.live.silent && !s.streaming;   // a turn still running owns the card: it goes on that reply
+    if (wb && lastAgent && !wbLive) { (lastAgent.cards ??= []).push({ t: "browser", url: wb.url, text: wb.text || undefined, stored: true } as any); const key = `${s.id}|${wb.url}|${wb.text}`; if (wb.text && !HANDOFF_OPENED.has(key)) { HANDOFF_OPENED.add(key); if (route().s === s) openPC(ch.slug, wb.url, wb.text); } }
     // Primary's review of a paused worker says nothing unless it asks the person something: no reply, no live stream of it.
     if (d.live?.silent && !s.streaming) { s.messages = msgs; s.state = "working"; s.rawLine = ""; }
     else if (d.live && !s.streaming) {
       const lm = (d.live.card?.events || []).filter((e: any) => e.type === "msg");
       if (lm.length) lm.forEach((x: any, i: number) => msgs.push(userOf(x, { at: d.live.started }, i)));
       else if (d.live.user_text && !nativeResumeInput(d.live.card) && !internalHandoffInput(d.live.card)) msgs.push({ id: nextId++, role: "user", body: d.live.user_text, at: d.live.started, steps: [], turn: d.live.turn, reaction: d.live.reaction || undefined } as RxMsg);
-      const r: Msg = { id: nextId++, role: "agent", body: d.live.text || "", at: Date.now(), steps: [], rid: d.live.turn, ...(d.live.input_request ? { input_request: d.live.input_request } : {}), ...(d.live.card?.id ? { card: d.live.card.id } : {}), ...(d.live.interviews?.length ? { cards: d.live.interviews.map((v: any) => ({ t: "interview", v })) } : {}) } as TkMsg; progressSnapshot(r, d.live.reply_state); liveOutputs(ch, r, d.live); msgs.push(r);
+      const r: Msg = { id: nextId++, role: "agent", body: d.live.text || "", at: Date.now(), steps: [], rid: d.live.turn, ...(d.live.input_request ? { input_request: d.live.input_request } : {}), ...(d.live.card?.id ? { card: d.live.card.id } : {}), ...(d.live.interviews?.length ? { cards: d.live.interviews.map((v: any) => ({ t: "interview", v })) } : {}) } as TkMsg; progressSnapshot(r, d.live.reply_state); liveOutputs(ch, r, d.live);
+      if (wbLive) { (r.cards ??= []).push({ t: "browser", url: wb.url, text: wb.text || undefined, stored: true } as any); const key = `${s.id}|${wb.url}|${wb.text}`; if (wb.text && !HANDOFF_OPENED.has(key)) { HANDOFF_OPENED.add(key); if (route().s === s) openPC(ch.slug, wb.url, wb.text); } }
+      msgs.push(r);
       s.messages = msgs; s.state = "working"; s.rawLine = d.live.line || ""; liveAttach(ch, s, r);
     } else if (!s.streaming && d.session?.state === "working" && !d.session.native_progress && !(Number(d.session.helpers) > 0 && !d.session.line)) {
       // A worker-only task has no Primary reply to resume. Other working tasks
@@ -3290,7 +3293,8 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
   else if (ev.t === "approval") { addApproval(reply, ev.approval, true); s.status = "waiting"; s.state = "idle"; s.rawLine = "waiting for your OK"; }
   // Decided (here, in another tab or inside Messages): the card stays, locked, showing the result (it used to vanish).
   else if (ev.t === "approval_done") { apCards(ch.slug, String(ev.id)).forEach(k => { if (k.st === "pending" && !k.busy) { k.st = ev.status === "denied" ? "deny" : ev.status === "approved" ? "allowed" : "expired"; k.confirm = false; } }); s.status = "resolved"; s.state = "working"; s.rawLine = "working"; }
-  else if (ev.t === "browser" || ev.t === "browser_handoff") { reply.cards = (reply.cards || []).filter(c => c.t !== "browser"); reply.cards.push({ t: "browser", url: ev.url, text: ev.instructions, fresh: true });  if (ev.t === "browser_handoff" && route().s === s) openPC(ch.slug, ev.url, ev.instructions); }
+  else if (ev.t === "browser" || ev.t === "browser_handoff") { reply.cards = (reply.cards || []).filter(c => c.t !== "browser"); reply.cards.push({ t: "browser", url: ev.url, text: ev.instructions, fresh: true });  if (ev.t === "browser_handoff") s.srv = { ...s.srv, waiting: "browser" };   // the server holds the task on the browser too, so the card stays until they hand back
+  if (ev.t === "browser_handoff" && route().s === s) openPC(ch.slug, ev.url, ev.instructions); }
   else if (ev.t === "note") { const nb = nbOf(ch), n = ev.note; if (n?.id && !nb.notes.some((x: any) => x.id === n.id)) nb.notes.unshift({ id: n.id, sec: NB_SECS.some(x => x[0] === n.sec) ? n.sec : "how", text: n.text, at: n.at || Date.now(), you: false, fresh: true } as any); }
   else if (ev.t === "link_purchase" && hasFeature("billing")) (reply.cards ??= []).push({ t: "link", p: ev.purchase, fresh: true });
   else if (ev.t === "connect_offer" && hasFeature("connected_apps")) addOffer(reply, ch, ev.offer, true);

@@ -1598,6 +1598,7 @@ export class Resident extends DurableObject {
       const af = await appFirstBlock(this, tc, name, r.url); if (af) return { code: 1, out: af };   // appfirst.js: never hand them a connected service's sign-in
       await C.browser("activate", { pin: true }, null, tab).catch(() => null);   // the live view shows this task's tab, and keeps showing it, while the person has it (an older browser service has no such op: ignored)
       this.put("handoff", JSON.stringify({ at: Date.now(), instructions: String(a.instructions || "").slice(0, 500), url: r.url || "" }));
+      if (tc?.session) this.put("handoff:" + tc.session, JSON.stringify({ url: (() => { try { const u = new URL(r.url); return u.origin + u.pathname; } catch { return ""; } })(), text: scrubSecrets(String(a.instructions || "").trim()).slice(0, 500) }));   // this task's Take control card, restored by workerBrowserView while sessions.waiting='browser'
       tc?.emit?.({ t: "browser_handoff", instructions: String(a.instructions || ""), url: r.url || "" });
       await linkNoteHandoff(this.env, this.get("tenant"), this.get("channel"));   // the Wallet shows "handed to you" on this channel's approved purchase
       if (tc?.helper?.dynamic_routing) {
@@ -3693,6 +3694,7 @@ export class Resident extends DurableObject {
       // Primary's turn about a worker that handed its browser to the person must not clear "waiting on you in the browser"; the person's own message does.
       const browserWait = opts.handoff?.type === "helper" && this.sql.exec("SELECT 1 FROM helpers WHERE id=? AND status='waiting_input' AND input_kind='browser'", Number(opts.handoff.id)).toArray().length > 0;
       this.sql.exec(`UPDATE sessions SET done=0, done_at=NULL, waiting=${browserWait ? "waiting" : "NULL"}, updated=? WHERE id=?`, Date.now(), session); notifyReset(this, session);
+      if (!browserWait) this.sql.exec("DELETE FROM kv WHERE k=?", "handoff:" + session);   // the person's turn ends the handoff, so no stale card comes back
     }
     this.busy = (this.busy || 0) + 1;
     const keep = setInterval(() => { if (tc.touch) this.computer().touch().catch(() => {}); this.journalBeat(tc); if (JOURNALED.has(kind)) this.armBeat(); }, 20e3);   // a stored alarm always covers a running turn (resume.js)
@@ -4938,6 +4940,11 @@ export class Resident extends DurableObject {
     // A pause saved before the request row existed still shows its card, from the worker's own saved question.
     const paused = this.sql.exec("SELECT input_question FROM helpers WHERE session=? AND dynamic_routing=1 AND status='waiting_input' AND input_kind='browser' ORDER BY id DESC LIMIT 1", String(session)).toArray()[0];
     if (paused) return { url: "", text: String(paused.input_question || "Please take over the browser.").slice(0, 600) };
+    // Primary's own handoff: the task waits on the person in the browser until they hand back (their next turn clears the flag).
+    if (this.sql.exec("SELECT 1 FROM sessions WHERE id=? AND waiting='browser'", String(session)).toArray().length) {
+      let h = null; try { h = JSON.parse(this.get("handoff:" + session) || "null"); } catch {}
+      if (h) return { url: h.url || "", text: h.text || "Please take over the browser." };
+    }
     return null;
   }
   // One task: its turns (with scheduled-run reports it owns) as a simple timeline for the app.
