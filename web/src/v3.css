@@ -412,6 +412,8 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
   .nkbd{display:none}.ngo{height:44px;padding:0 20px;font-size:16px}
   .nlist{top:auto;bottom:42px}
   #toast{left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom));max-width:none;transform:translateY(20px)}
+  /* drawer open: the chat sheet covers the right 16% of the screen, so centre the toast on the drawer (the visible list) */
+  body:has(#m .cv.open) #toast{right:calc(16% + 12px)}
   .tview{height:38px}}
 
 /* ---------- Library scoped to the channel, All channels as a toggle ---------- */
@@ -1382,6 +1384,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .about{padding:0 8px 12px}.about .av.xl{width:64px;height:64px;margin:0 auto 8px}.about h2{font-size:26px}.about .purp{margin:10px 0 0;font-size:15px}}
 @media (max-width:359px){
   .dm{width:88%}.cv.open .chat{transform:translateX(90%)}
+  body:has(#m .cv.open) #toast{right:calc(12% + 12px)}
   .cv.dragging .chat{transform:translateX(calc(var(--drawer-progress) * 90%))}
   .dnav{gap:0;padding:2px 4px 6px}
   .dtl{font-size:10.5px;letter-spacing:-.015em}
@@ -1698,3 +1701,16 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .navhb{display:grid;place-items:center;flex:none;width:18px;height:30px;padding:0;border-radius:8px;color:var(--mute)}
 .navhb:hover:not(:disabled){background:var(--hover);color:var(--ink)}
 .navhb:disabled{opacity:.35;cursor:default}
+
+/* Touch screens (phones, tablets, the Fold): no word selection or system lookup bar in the chat, so a long press opens the message menu.
+   Select text in that menu opens #ma-sel, where selection is allowed. Mouse desktops keep normal selection. */
+@media (hover:none) and (pointer:coarse){
+  .msgs,.msgs *{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  .msgs input,.msgs textarea,.msgs [contenteditable=true],.msgs [contenteditable=true] *{-webkit-user-select:text;user-select:text}
+}
+#ma-sel{position:fixed;inset:0;z-index:70;display:flex;align-items:flex-end;justify-content:center}
+#ma-sel .mas-bd{position:absolute;inset:0;background:rgba(0,0,0,.4)}
+#ma-sel .mas-card{position:relative;box-sizing:border-box;width:min(720px,100%);max-height:80dvh;overflow:auto;overscroll-behavior:contain;background:var(--sheet);color:var(--ink);border-radius:30px 30px 0 0;padding:16px 20px calc(20px + env(safe-area-inset-bottom))}
+#ma-sel .mas-x{position:sticky;top:0;display:block;margin:0 0 4px auto;width:44px;height:44px;padding:0;border:0;border-radius:50%;background:var(--chip);color:var(--ink)}
+#ma-sel .mas-x svg{margin:auto;display:block}
+#ma-sel .mas-tx{font:400 16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;-webkit-user-select:text;user-select:text;-webkit-touch-callout:default;outline:0}

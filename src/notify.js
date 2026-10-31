@@ -67,8 +67,8 @@ const appUrl = (env, slug, channel, session) => `https://${env.APP_HOST || env.G
 
 // The task changed state: kind "needs" (waiting on the person; why = sessions.waiting or "approval") or "finished".
 // R = the channel's Resident. opts.noText: the caller already texted this (a permission card); opts.watched: the person is
-// watching this turn in the app right now (no text; the push still goes and the service worker keeps it quiet only if a focused,
-// visible app window is showing this task: swQuiet in pwa.js).
+// watching this turn in the app right now (no text; the push still goes, and the service worker keeps it quiet on any device
+// that has a visible app window, whatever it shows: swQuiet in pwa.js).
 // Returns what happened (tests read it).
 export async function notifyTask(R, session, kind, { why = "", reply = "", noText = false, watched = false } = {}) {
   const env = R.env, tenant = R.get("tenant"), channel = R.get("channel");

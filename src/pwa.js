@@ -38,28 +38,23 @@ export const pwaHead = (slug, dev = false) => `<link rel="manifest" href="/w/${s
 
 // ---- the service worker (Web Push only; src/notify.js sends) ----
 export const SW_RE = /^\/w\/([a-z0-9-]+)\/sw\.js$/;
-// swQuiet(windows, payload): whether a push stays quiet (the app chimes instead of a system notification). Only a real task
-// event, and only when an app window that is visible AND focused shows that same task (#/<channel>/s/<session>). A test never;
-// an app left open in a background tab, another task, or another app in front: always notifies. Self-contained: SW_JS embeds
+// swQuiet(windows, payload): whether a push stays quiet (the app chimes instead of a system notification). Only a task event
+// ("finished" or "needs"), and only when at least one app window on this device is visible (visibilityState "visible"), whatever
+// screen or task it shows. A test never; an app left open only in background tabs, or no window at all: always notifies.
+// WindowClient.focused is not used: it is unreliable in installed Android PWAs, where it stayed false and made every push notify.
+// Skipping showNotification while a window is visible does not trigger Chrome's "site updated in the background" notice,
+// which Chrome shows only when no window of the site is visible (userVisibleOnly rule). Self-contained: SW_JS embeds
 // its source, and the unit tests call it directly.
-// Which task a window shows: Chrome's WindowClient.url keeps the address the page loaded with (it doesn't follow #hash
-// changes), so the worker asks each visible, focused window ({t:"where"} on a MessageChannel; the app answers {hash, focus}
-// from notif.ts). No answer within 500 ms (an older app, a busy tab): that window counts as not showing the task, so it notifies.
 export function swQuiet(wins, d) {
-  if (!d || d.test) return false;
-  const sidOf = (u) => { const m = String(u || "").match(/#\/[^/?#]+\/s\/([^/?#]+)/); return m ? m[1] : ""; };
-  const sid = String(d.session || sidOf(d.url));
-  if (!sid) return false;
-  return (wins || []).some((w) => !!w && w.visibilityState === "visible" && w.focused === true && sidOf(w.url) === sid);
+  if (!d || d.test || (d.kind !== "finished" && d.kind !== "needs")) return false;
+  return (wins || []).some((w) => !!w && w.visibilityState === "visible");
 }
 // Every push is recorded for Settings → Notifications → This device (Cache Storage "1helm-nf", key <scope>nf-last: when it
 // arrived, whether it was shown or kept quiet, any error), posted to open app windows ({t:"pushed"}), and, for tests and
 // errors, sent to /api/clientlog (dev only) so "nothing arrived" can be told apart from "it arrived but the OS hid it".
-// A test always shows, under its own tag (a repeat is never merged into the last one). A tap opens the task: focuses an open
+// A task push is quiet while any app window is visible (the app chimes). A test always shows, under its own tag (a repeat is never merged into the last one). A tap opens the task: focuses an open
 // app window and points it there, else opens a new one.
 export const SW_JS = `const swQuiet = ${swQuiet.toString()};
-const where = (w) => new Promise((z) => { let ch = null; const done = (v) => { clearTimeout(t); try { ch && ch.port1.close(); } catch {} z(v); }; const t = setTimeout(() => done(null), 500);
-  try { ch = new MessageChannel(); ch.port1.onmessage = (e) => done(e.data || null); w.postMessage({ t: "where" }, [ch.port2]); } catch { done(null); } });
 const NF_CACHE = "1helm-nf", NF_KEY = () => self.registration.scope + "nf-last";
 const nfLog = (body) => fetch(self.registration.scope + "api/clientlog", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sw: "push", ...body }) }).catch(() => {});
 self.addEventListener("install", () => self.skipWaiting());
@@ -72,12 +67,7 @@ self.addEventListener("push", (e) => {
     rec.kind = String(d.kind || ""); rec.test = !!d.test;
     let wins = []; try { wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true }); } catch {}
     try {
-      const views = d.test ? [] : await Promise.all(wins.map(async (w) => {
-        if (w.visibilityState !== "visible" || w.focused !== true) return { visibilityState: w.visibilityState, focused: w.focused, url: "" };
-        const r = await where(w);
-        return { visibilityState: w.visibilityState, focused: !!r && r.focus !== false, url: r && typeof r.hash === "string" ? r.hash : "" };
-      }));
-      if (swQuiet(views, d)) { rec.quiet = true; for (const w of wins) w.postMessage({ t: "push", d }); }
+      if (swQuiet(wins, d)) { rec.quiet = true; for (const w of wins) w.postMessage({ t: "push", d }); }
       else {
         const tag = d.test ? "test-" + rec.at : (d.tag ? String(d.tag) : "");
         const opts = { body: d.body || "", icon: "/1helm-icon-192.png", badge: "/1helm-icon-64.png", data: { url: d.url || "" } };

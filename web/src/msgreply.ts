@@ -62,8 +62,11 @@ const IC = {
   tick: svg('<path d="M20 6 9 17l-5-5"/>', 15),
   x: svg('<path d="M18 6 6 18M6 6l12 12"/>', 15),
   sel: svg('<path d="m5 3 14 7-6 2-2 6z"/>', 15),
+  text: svg('<path d="M5 6V4h14v2M12 4v16M9 20h6"/>', 15),
 };
 const M = { open: null as string | null, copied: null as string | null, copiedT: 0 as any, top: 0 };
+// Touch screens (phones, tablets, the Fold) have no word selection in the chat (v3.css), so their menu carries Select text; mouse desktops select normally.
+const touchOnly = () => matchMedia("(hover:none) and (pointer:coarse)").matches;
 const HOVER_SPACE = new Set<string>();
 const actionKey = (mr: number, part = "") => `${mr}:${part}`;
 const PINS = new Map<string, Pin>();   // task → its pinned reply
@@ -71,7 +74,7 @@ const PINS = new Map<string, Pin>();   // task → its pinned reply
 // The two buttons in a bubble's revealed action strip. mr identifies the turn; part identifies its visible text bubble.
 export function maActs(mr: number, part = "", card = "") {
   const key = actionKey(mr, part), c = M.copied === key;
-  return `<span class="mact" data-mact="${key}" data-mapart="${part}"><button type="button" class="ma-copy${c ? " done" : ""}" data-macopy="${mr}" aria-label="${c ? "Copied" : "Copy message"}" title="${c ? "Copied" : "Copy"}">${c ? IC.tick : IC.copy}<span class="mal">${c ? "Copied" : "Copy"}</span></button><button type="button" class="ma-reply" data-mareply="${mr}" aria-label="Reply to this message" title="Reply">${IC.reply}<span class="mal">Reply</span></button>${card ? `<button type="button" class="ma-task" data-tkcard="${esc(card)}" aria-label="Open task card for this response" title="Task card">${IC.task}</button>` : ""}</span>`;
+  return `<span class="mact" data-mact="${key}" data-mapart="${part}"><button type="button" class="ma-copy${c ? " done" : ""}" data-macopy="${mr}" aria-label="${c ? "Copied" : "Copy message"}" title="${c ? "Copied" : "Copy"}">${c ? IC.tick : IC.copy}<span class="mal">${c ? "Copied" : "Copy"}</span></button><button type="button" class="ma-reply" data-mareply="${mr}" aria-label="Reply to this message" title="Reply">${IC.reply}<span class="mal">Reply</span></button>${touchOnly() ? `<button type="button" class="ma-seltext" data-maselect="${mr}" aria-label="Select text" title="Select text">${IC.text}</button>` : ""}${card ? `<button type="button" class="ma-task" data-tkcard="${esc(card)}" aria-label="Open task card for this response" title="Task card">${IC.task}</button>` : ""}</span>`;
 }
 // Touch controls and temporary hover spacing are kept across repaints.
 export const maOpenCls = (mr: number, part = "") => (M.open === actionKey(mr, part) ? " macts" : "") + (HOVER_SPACE.has(actionKey(mr, part)) ? " ma-space" : "");
@@ -134,6 +137,13 @@ function menuOpen(key: string) {
   document.querySelector(`[data-mact="${key}"]`)?.parentElement?.classList.add("macts");
 }
 function menuClose() { if (M.open == null) return; M.open = null; document.querySelectorAll(".msgs .bubble.macts").forEach(el => el.classList.remove("macts")); }
+// Select text: the message's plain text in a sheet where native selection is allowed (the chat itself blocks it on touch screens).
+function selOpen(plain: string) {
+  selClose(); const el = document.createElement("div"); el.id = "ma-sel";
+  el.innerHTML = `<div class="mas-bd" data-masel-x></div><div class="mas-card" role="dialog" aria-modal="true" aria-label="Select text"><button type="button" class="mas-x" data-masel-x aria-label="Close" title="Close">${IC.x}</button><div class="mas-tx" tabindex="-1">${esc(plain)}</div></div>`;
+  document.body.classList.add("ma-selopen"); document.body.appendChild(el); el.querySelector<HTMLElement>(".mas-x")?.focus({ preventScroll: true });
+}
+function selClose() { document.getElementById("ma-sel")?.remove(); document.body.classList.remove("ma-selopen"); }
 const INTERACTIVE = "a,button,input,select,textarea,label,summary,details,video,audio,img,.acard,.gu,.fcard,.mfiles,[data-fv],[role=button]";
 
 export function maInit(deps: Deps) {
@@ -157,10 +167,13 @@ export function maInit(deps: Deps) {
     const cp = t.closest<HTMLElement>("[data-macopy]");
     if (cp) { e.preventDefault(); e.stopPropagation(); const mr = +cp.dataset.macopy!, a = cp.closest<HTMLElement>("[data-mact]")!, key = a.dataset.mact!, f = D!.msg(mr, a.dataset.mapart); if (!f) return;
       void copyToClipboard(f.plain, f.html).then(ok => {
-        if (!ok) { D!.note("Couldn't copy", "Your browser didn't allow it. Select the text and copy it instead."); return; }
+        if (!ok) { D!.note("Couldn't copy", "Your browser didn't allow it. On a phone or tablet, hold the message and choose Select text. Otherwise select the text and copy it."); return; }
         M.copied = key; clearTimeout(M.copiedT); paintCopied(); say("Copied");
         M.copiedT = setTimeout(() => { if (M.copied === key) { M.copied = null; paintCopied(); } }, 1600);
       }); return; }
+    const st = t.closest<HTMLElement>("[data-maselect]");
+    if (st) { e.preventDefault(); e.stopPropagation(); const f = D!.msg(+st.dataset.maselect!, st.closest<HTMLElement>("[data-mact]")?.dataset.mapart); if (f) { st.blur(); menuClose(); selOpen(f.plain); } return; }
+    if (t.closest("[data-masel-x]")) { e.preventDefault(); selClose(); return; }
     const rp = t.closest<HTMLElement>("[data-mareply]");
     if (rp) { e.preventDefault(); e.stopPropagation(); const mr = +rp.dataset.mareply!, f = D!.msg(mr, rp.closest<HTMLElement>("[data-mact]")?.dataset.mapart), key = D!.key(); if (!f || !key) return;
       PINS.set(key, { id: f.id, role: f.role, text: excerpt(f.plain), mr }); M.open = null; D!.repaint(); rqPaint();
@@ -171,7 +184,8 @@ export function maInit(deps: Deps) {
     if (q) { e.preventDefault(); const [role, id, mr] = q.dataset.mq!.split("|"); jump({ role: role as Role, id: id || null, text: q.dataset.mqt || "", mr: mr ? +mr : undefined }); return; }
     if (M.open != null && !t.closest(".mact")) menuClose();
   });
-  // Long-press only. Never capture the pointer or prevent touch movement/native text selection.
+  // Long-press only. Never capture the pointer or prevent touch movement. On touch screens v3.css turns native text selection off
+  // in the chat (like ChatGPT and Gemini), so the hold can't race a word selection; Select text in the menu opens the text instead.
   // Suppress only the held bubble's immediate compatibility click, never an unrelated next click.
   let lp: any = 0, lpAt: { x: number; y: number; key: string } | null = null, held: { key: string; until: number } | null = null;
   const cancel = () => { clearTimeout(lp); lpAt = null; };
@@ -180,9 +194,9 @@ export function maInit(deps: Deps) {
     cancel(); held = null;
     const t = e.target as HTMLElement, key = targetKey(t);
     if (M.open && (!t.closest(".mact") || key !== M.open)) menuClose();
-    if (e.touches.length !== 1 || !key || !t.closest(".msgs") || t.closest(INTERACTIVE) || window.getSelection()?.toString()) return;
+    if (e.touches.length !== 1 || !key || !t.closest(".msgs") || t.closest(INTERACTIVE) ) return;
     const p = e.touches[0]; lpAt = { x: p.clientX, y: p.clientY, key };
-    lp = setTimeout(() => { if (!lpAt || !t.isConnected || window.getSelection()?.toString()) return;
+    lp = setTimeout(() => { if (!lpAt || !t.isConnected) return;
       held = { key, until: Date.now() + 1200 }; menuOpen(key); try { navigator.vibrate?.(8); } catch {} }, 450);
   }, { passive: true });
   document.addEventListener("touchmove", e => { if (!lpAt) return; const p = e.touches[0]; if (e.touches.length !== 1 || Math.abs(p.clientX - lpAt.x) > 8 || Math.abs(p.clientY - lpAt.y) > 8) { cancel(); held = null; menuClose(); } }, { passive: true });
@@ -191,12 +205,12 @@ export function maInit(deps: Deps) {
   document.addEventListener("click", e => { const t = e.target as HTMLElement;
     if (held && Date.now() < held.until && targetKey(t) === held.key && !t.closest(INTERACTIVE)) { held = null; e.preventDefault(); e.stopPropagation(); }
   }, true);
-  document.addEventListener("selectionchange", () => { if (window.getSelection()?.toString()) cancel(); });
   document.addEventListener("contextmenu", e => { if (held && Date.now() < held.until && targetKey(e.target as HTMLElement) === held.key && !(e.target as HTMLElement).closest(INTERACTIVE)) e.preventDefault(); });
   window.addEventListener("hashchange", () => { cancel(); held = null; menuClose(); });
   // Esc: closes the touch menu, else cancels the pinned reply (while typing in the box, not while dictating: Esc stops that).
   document.addEventListener("keydown", e => {
     if (e.key !== "Escape" || e.defaultPrevented) return;
+    if (document.getElementById("ma-sel")) { selClose(); return; }
     if (M.open != null) { menuClose(); return; }
     const t = e.target as HTMLElement;
     if (!(t.id === "box" || t.closest?.("#rq-box"))) return;
