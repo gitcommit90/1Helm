@@ -1,6 +1,7 @@
 // node --import ./test/stubs/register.mjs test/source-stays.test.mjs
 // Source text stays (helper #29): a file the job reads with file_text / read_file stays whole in the model's input for the rest of the
 // request, so the helper never spends steps restoring it. Judged on app facts only: what the model input holds at each step, and step counts.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import assert from "node:assert";
 import { workingSet, bringBack, sameAsShown, SOURCE_BUDGET, SOURCE_MAX } from "../src/workmem.js";
 import { world } from "./deploy-harness.mjs";
@@ -132,7 +133,7 @@ const PROMPT = text(1, 26059), PDF = text(2, 15048);
 
 // 9. read_file: the command returns the first max_bytes, says so when the file is longer, keeps the exit code, and the answer is not cut at the end.
 {
-  const dir = mkdtempSync(join(tmpdir(), "ss-")), f = join(dir, "a.txt"); writeFileSync(f, text(9, 150000));
+  const dir = cleanupOnExit(mkdtempSync(join(tmpdir(), "ss-"))), f = join(dir, "a.txt"); writeFileSync(f, text(9, 150000));
   const run = (p, mb) => spawnSync("bash", ["-c", readFileCommand(p, mb)], { encoding: "utf8", maxBuffer: 1e7 });
   let r = run(f); assert.equal(r.status, 0); assert.ok(r.stdout.startsWith(text(9, 150000).slice(0, 120000)), "default is the first 120,000 bytes"); assert.match(r.stdout, /\[read_file stopped at 120000 of 150000 bytes/); assert.equal(r.stdout.slice(0, 100), text(9, 150000).slice(0, 100));
   r = run(f, 100000); assert.equal(r.stdout.length >= 100000, true); assert.match(r.stdout, /\[read_file stopped at 100000 of 150000 bytes; read again with a larger max_bytes/);

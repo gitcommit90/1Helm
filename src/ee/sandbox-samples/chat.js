@@ -18,6 +18,7 @@ import { plannedMaxOutput } from "../job-limits.js";
 import { structuredFormat, structuredBody } from "../../structured-output.js";
 import { jevState, jevBody } from "../route2.js";
 import { buildMenu, browserDeciderState, browserNextQuestion, browserValuesMessages, browserOssRequest, BROWSER_VALUES_SCHEMA } from "../browser-agent.js";
+import { PROMISE_QUESTIONS, promiseState } from "../promise-check.js";
 import { labelRequest, labelSchema } from "../../tracker.js";
 import { chatTitleRequest } from "../../chat-titles.js";
 import { HANDOFF_PROMPT, HANDOFF_SCHEMA, chatPromptFlags, chatPinned, recentChannelLines, chatChannelOptions, composeSystemPrompt, chatBaseTools, availableChatTools, modelChatTools, currentTimeTag, chatUserText, chatTurnContext, taskDeveloperText, attachmentNote } from "../../resident.js";
@@ -324,6 +325,7 @@ const GOLDEN = {
     { line: 0, kind: "task" }, { line: 2, kind: "reminder" }, { line: 4, kind: "task" }, { line: 9, status: "completed" }, { line: 10, relation: "correction" }] }),
   // The sorter's answers object: the steer question has the right answer "none" (a new request, not about either open job).
   decider: () => ({ type: "choices", list: "", id: null, field: "choice", options: ["none", ...OPEN_SUBAGENTS.map((a) => String(a.id))], value: { steer: "none" } }),
+  promise_check: () => ({ type: "choices", list: "", id: null, field: "choice", value: { promise: "unfinished" } }),
   browser_decider: () => ({ type: "choices", list: "", id: null, field: "choice", value: { next: browserNextId() } }),
   // The live note-taker's answer is { ops: [...] } and the new lines are the last two (the pricing call moves to Wednesday, the interview slots question is settled).
   notes: () => ({ type: "items", list: "ops", match: ["op", "sec", "owner", "due"], value: [
@@ -346,6 +348,7 @@ export const samples = [
   { job: "sidecar_card", golden: GOLDEN.sidecar_card(), via: "model-dispatch.js#dispatch", build: async (env, ctx) => ({ request: await sidecarRequest(env, ctx), files: [] }) },
   { job: "ambient_extract", golden: GOLDEN.ambient_extract(), via: "model-dispatch.js#dispatch", build: async (env, ctx) => ({ request: await ambientExtractRequest(env, ctx), files: [] }) },
   { job: "ambient_review", golden: GOLDEN.ambient_review(), via: "model-dispatch.js#dispatch", build: async (env, ctx) => ({ request: await ambientReviewRequest(env, ctx), files: [] }) },
+  { job: "promise_check", golden: GOLDEN.promise_check(), via: "text-decision.js#askJob", meta: { kind: "decider" }, build: async () => ({ request: { state: promiseState({ personMessage: "Fix the bullet points in the three job descriptions.", reply: "I'll make the formatting consistent across all three job descriptions." }), questions: PROMISE_QUESTIONS }, files: [] }) },
   { job: "browser_decider", golden: GOLDEN.browser_decider(), via: "text-decision.js#askJob", meta: { kind: "decider" }, build: async () => ({ request: browserDeciderRequest(), files: [] }) },
   { job: "workers_ai_chat", golden: GOLDEN.chat(), via: "model-dispatch.js#dispatch", meta: { kind: "chat-fallback" }, build: chatBuild("general") },
 ];

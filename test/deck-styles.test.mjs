@@ -1,5 +1,6 @@
 // Deck styles (deck-styles.js, scripts/build-deck-style-thumbs.mjs): app facts only, no model. Thumbnails for all 34 templates and the staleness check; a delivered
 // HTML deck is tagged "deck" and a plain .html is not; the picker data; the helper tool and the transcript marker; and nothing stores a style.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -54,7 +55,7 @@ test('the picker data lists every template with name, feel and two thumbnails, a
 test('the thumbnails check passes now and fails when a template changed after its thumbnails, or a picture is missing', () => {
   const chk = (out) => { const r = spawnSync('node', [join(ROOT, 'scripts/build-deck-style-thumbs.mjs'), '--check', ...(out ? ['--out', out] : [])], { encoding: 'utf8' }); return { status: r.status, text: r.stderr + r.stdout }; };
   assert.equal(chk().status, 0);
-  const out = mk(join(tmpdir(), 'ds-thumbs-')); cpSync(OUTD, out, { recursive: true });
+  const out = cleanupOnExit(mk(join(tmpdir(), 'ds-thumbs-'))); cpSync(OUTD, out, { recursive: true });
   const idx = JSON.parse(rf(join(out, 'index.json'), 'utf8')); idx.templates[0].hash = '0000000000000000'; wf(join(out, 'index.json'), JSON.stringify(idx));
   assert.match(chk(out).text, new RegExp(idx.templates[0].name + ': the template changed'));
   idx.templates[0].hash = index.templates[0].hash; wf(join(out, 'index.json'), JSON.stringify(idx)); rmSync(join(out, idx.templates[1].project));

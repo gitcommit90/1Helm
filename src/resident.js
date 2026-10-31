@@ -174,6 +174,7 @@ import { slidesLine, slidesGate, namesGoogleSlides, slidesImageNote } from "./de
 import { APPS_USED_TOOL, APPS_USED_LINE, appsUsedTool, appsUsedLine, getAppsUsed, usedSlugs } from "./ee/index.js";   // "Apps I use": the person's own list, a heads-up for offers and hints   // a named service that has an integration: one hint line per message, one nudge per app per task
 import { memoryReply, isStatusNotice, looksLikeStatus, STATUS_MARK } from "./status-notes.js";
 import { ackNudge } from "./ack-stall.js";
+import { promiseSkip, promiseState, turnFacts, runPromiseCheck, promiseTrace, PROMISE_NOTE } from "./ee/index.js";   // a final reply that promises undone work goes back once
 import { liveNudge, noteRan } from "./live-check.js";   // live status (flights, prices, scores) needs a lookup in this turn   // 1Helm's pause / limit notices are past status, never work to resume   // connected app first; no repeated searches / lists / pages in a turn
 import { plansInit, PROPOSE_PLAN_TOOL, proposePlan, decidePlan, startPlanTask, planCardData, plansOf, originOf, textPlan } from "./plans.js";
 import { INTERVIEW_TOOL, interviewInit, interviewTool, interviewOp, ivView, ivRow, attachInterviews, ivDeliverTexted, ivOnlyCard } from "./interview-chat.js";
@@ -263,7 +264,7 @@ const TOOLS = () => (toolDefs ??= [
   { type: "function", function: { name: "search_files", description: "Search file contents in this channel's files with ripgrep (case-insensitive). Returns matching lines with paths.", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
   { type: "function", function: { name: "browser_navigate", description: "Open a web page in this channel's real Chrome browser (it runs on the channel computer; the person can watch it live and logins/cookies persist between conversations). Returns a text outline of the page where every clickable/typeable element has a ref like [e7]. Use for sites that need JavaScript, logins, forms, carts or checkout; for simply reading a page or feed prefer fetch_url.", parameters: { type: "object", properties: { url: { type: "string", description: "Full http(s) URL" } }, required: ["url"] } } },
   { type: "function", function: { name: "browser_snapshot", description: "Get a fresh text outline of the page currently open in the browser (refs change after every page change, so snapshot again before acting on a changed page).", parameters: { type: "object", properties: {} } } },
-  { type: "function", function: { name: "browser_act", description: "Do 1–20 steps in the open page, in order, using refs from the latest outline. Kinds: click {ref}; fill {ref, text, submit?} (replaces the field's text; submit presses Enter); type {ref, text} (appends); select {ref, text} (dropdown option); press {key: Enter|Tab|Escape|ArrowDown|ArrowUp|PageDown|...}; scroll {direction: down|up}; wait {ms} (one wait step waits at most 10000 ms and the result says when it was shortened; use several wait steps to wait longer); upload {ref, path} (puts a file from your computer into the page: path is relative to /workspace or absolute, the same as share_file; ref is a file input or the visible button or link that opens a file chooser, such as 'Add photos or video'; it picks the file for you, no chooser stays open; several files at once: paths: [..]); click_at {x, y} (a pixel position on the screen, 0 to 1280 across and 0 to 800 down, for things with no ref such as a canvas; get the position from browser_screenshot with look: true). Returns the new outline. Typing the person's personal details (name, phone, email, address, date of birth) is allowed directly on the Standard permission level; on Careful or Locked down 1Helm asks them first with a card (Allow once or Always allow). Never type a password, card number or ID number here.", parameters: { type: "object", properties: { actions: { type: "array", items: { type: "object", properties: { kind: { type: "string", enum: ["click", "click_at", "fill", "type", "select", "press", "scroll", "wait", "upload"] }, ref: { type: "string" }, x: { type: "number" }, y: { type: "number" }, text: { type: "string" }, path: { type: "string", description: "upload: file path on your computer" }, paths: { type: "array", items: { type: "string" }, description: "upload: several file paths for one control" }, submit: { type: "boolean" }, key: { type: "string" }, direction: { type: "string" }, ms: { type: "integer" } }, required: ["kind"] } }, fills_personal: { type: "boolean", description: "true when any text you type is the person's (or their guest's) name, phone, email, address or date of birth" } }, required: ["actions"] } } },
+  { type: "function", function: { name: "browser_act", description: "Do 1–20 steps in the open page, in order, using refs from the latest outline. Kinds: click {ref}; fill {ref, text, submit?} (replaces the field's text; submit presses Enter); type {ref, text} (appends); select {ref, text} (picks a dropdown item by its text, in a native list or a custom dropdown; typed text in a dropdown is not a choice, and it fails if the choice does not stick); press {key: Enter|Tab|Escape|ArrowDown|ArrowUp|PageDown|...}; scroll {direction: down|up}; wait {ms} (one wait step waits at most 10000 ms and the result says when it was shortened; use several wait steps to wait longer); upload {ref, path} (puts a file from your computer into the page: path is relative to /workspace or absolute, the same as share_file; ref is a file input or the visible button or link that opens a file chooser, such as 'Add photos or video'; it picks the file for you, no chooser stays open; several files at once: paths: [..]); click_at {x, y} (a pixel position on the screen, 0 to 1280 across and 0 to 800 down, for things with no ref such as a canvas; get the position from browser_screenshot with look: true). Returns the new outline. Typing the person's personal details (name, phone, email, address, date of birth) is allowed directly on the Standard permission level; on Careful or Locked down 1Helm asks them first with a card (Allow once or Always allow). Never type a password, card number or ID number here.", parameters: { type: "object", properties: { actions: { type: "array", items: { type: "object", properties: { kind: { type: "string", enum: ["click", "click_at", "fill", "type", "select", "press", "scroll", "wait", "upload"] }, ref: { type: "string" }, x: { type: "number" }, y: { type: "number" }, text: { type: "string" }, path: { type: "string", description: "upload: file path on your computer" }, paths: { type: "array", items: { type: "string" }, description: "upload: several file paths for one control" }, submit: { type: "boolean" }, key: { type: "string" }, direction: { type: "string" }, ms: { type: "integer" } }, required: ["kind"] } }, fills_personal: { type: "boolean", description: "true when any text you type is the person's (or their guest's) name, phone, email, address or date of birth" } }, required: ["actions"] } } },
   { type: "function", function: { name: "browser_handoff", description: "Ask the person to take over the browser themselves: logging in when there's no saved login for the site (if there is one, use browser_fill_login instead), a CAPTCHA, a code sent to their phone, card details, ID numbers (passport, license, SSN), personal details they didn't allow you to fill in, or approving a purchase. Never type passwords, card numbers or one-time codes yourself. The app shows them the live browser with a Take control button. After calling this, end your turn and tell them briefly what to do; continue when they say they're done.", parameters: { type: "object", properties: { instructions: { type: "string", description: "One or two plain sentences for the person, e.g. 'Please sign in to Target, then tell me when you're done.'" } }, required: ["instructions"] } } },
   { type: "function", function: { name: "browser_screenshot", description: "Take a screenshot of the page open in the browser and show it to the person right in this chat (they see the picture; you don't). Use when they ask to see something, or to show proof of a result (a confirmation, a price, an order). Say in one short line what it shows. A background helper's screenshot is not shown in the chat: it is held for review, and the helper that started you decides whether to show it. With look: true it works the other way round: nothing is shown or saved, and you get a text description of what is on screen, an answer to your question, the click_at x,y positions of that thing with find, the text on screen read by OCR with the click_at position of each short text, and where the page is scrolled (it only sees the part of the page in view). Use look: true when the outline lacks what you need (a canvas editor, pictures, a chart, a map). Then click a position with browser_act click_at.", parameters: { type: "object", properties: { caption: { type: "string", description: "A few words describing what the picture shows, e.g. 'omaha.com front page'" }, look: { type: "boolean", description: "true: get a text description of the screen for yourself; the person does not see a picture" }, question: { type: "string", description: "With look: what you need to know, e.g. 'What does the chart show?'" }, find: { type: "string", description: "With look: a short phrase naming one thing to locate, e.g. 'blue Press me button'. You get its click_at x,y positions." } } } } },
   { type: "function", function: { name: "browser_record", description: "Record the browser screen (the whole Chrome window, 1280x800) to an mp4 video on this channel's computer, for a demo or a walkthrough the person asked to have recorded. Call it with action \"start\", keep working with browser_navigate and browser_act while it records in the background, then call it with action \"stop\". Stop returns the file path, duration, size and frame count, and says plainly when the recording is empty or very short, so read it before you share anything. Then give the person the file with share_file (an H.264 mp4 that X and Reddit accept). One recording at a time; it stops by itself after 3 minutes. Use this instead of installing screen capture tools or writing your own script.", parameters: { type: "object", properties: { action: { type: "string", enum: ["start", "stop"] }, name: { type: "string", description: "File name without the extension, e.g. demo-walkthrough (optional; give it on start or on stop)" } }, required: ["action"] } } },
@@ -2437,15 +2438,21 @@ export class Resident extends DurableObject {
     const tail = row.status === "uncertain" ? "\n(The last browser action may have completed. Do not repeat it without checking the page.)" : "";
     return { code: row.status === "done" ? 0 : 1, out: out + tail + "\n(The page outline is not included. Call browser_snapshot only if you need to check or continue on the page.)" };
   }
-  async browserJobRun(id) {
-    let j = browserJobRow(this.sql, id); if (!j || j.status !== "queued") return;
+  async browserJobRun(id, { resume = false } = {}) {
+    let j = browserJobRow(this.sql, id); if (!j || j.status !== (resume ? "running" : "queued")) return;
+    let state = null; if (resume) { try { state = JSON.parse(j.resume_state || "null"); } catch {} if (!state) { this.browserJobFinish(id, "uncertain", "The browser job was interrupted by a restart and had nothing saved to resume from. Its last action may have completed; no action was replayed."); return; } }
     const C = this.computer(); let owned = false, lost = false, renew = null, keepLease = false;
     try {
       // A missing method on an older ChannelComputer fails closed before any browser call.
       // Record possible ownership before RPC. A reset can hide a successful acquire response.
       this.sql.exec("UPDATE browser_jobs SET lease_acquired=1 WHERE id=?", id);
       const grant = await C.acquireBrowserOwner(j.token, BROWSER_JOB_LEASE_MS, tabKeyFor(j.session));   // a job holds only its own task's tab
-      if (!grant?.ok) { this.sql.exec("UPDATE browser_jobs SET lease_acquired=0 WHERE id=?", id); this.browserJobFinish(id, "blocked", grant?.error || "Could not take the browser."); return; }
+      if (!grant?.ok) {
+        this.sql.exec("UPDATE browser_jobs SET lease_acquired=0 WHERE id=?", id);
+        if (resume) this.browserJobFinish(id, "uncertain", `The browser job was interrupted by a restart and could not resume: ${grant?.error || "could not take the browser"}. Its last action may have completed; no action was replayed.`);
+        else this.browserJobFinish(id, "blocked", grant?.error || "Could not take the browser.");
+        return;
+      }
       owned = true;
       j = browserJobRow(this.sql, id);
       if (j.status === "stopping") { this.browserJobFinish(id, "stopped", "Stopped before the first browser action."); return; }
@@ -2467,7 +2474,8 @@ export class Resident extends DurableObject {
       const afterBrowse = (_op, page) => this.sql.exec("UPDATE browser_jobs SET last_step=last_step+1,pending_op=NULL,last_url=?,last_title=? WHERE id=?",
         String(page.url || "").slice(0, 2000), String(page.title || "").slice(0, 300), id);
       const args = { url: j.url, task: j.task, values: JSON.parse(j.vals || "null"), fills_personal: !!j.fills_personal };
-      const r = await runBrowserTask(this, C, args, tc, { ownerToken: j.token, shouldStop, beforeBrowse, afterBrowse, detailedReport: true, purchaseGuard: j.mode !== "task",
+      const saveState = (st) => this.sql.exec("UPDATE browser_jobs SET resume_state=? WHERE id=? AND status='running'", JSON.stringify(st).slice(0, 60000), id);
+      const r = await runBrowserTask(this, C, args, tc, { ownerToken: j.token, shouldStop, beforeBrowse, afterBrowse, resume: state, saveState, detailedReport: true, purchaseGuard: j.mode !== "task",
         guard: (acts, page) => fillStepGate(this, tc, acts, page) });
       const latest = browserJobRow(this.sql, id);
       const status = r.uncertain || latest.pending_op ? "uncertain" : latest.status === "stopping" || r.stopped || r.taken_over || lost ? "stopped" : r.code === 0 ? "done" : "blocked";
@@ -2508,10 +2516,26 @@ export class Resident extends DurableObject {
       this.sql.exec("UPDATE browser_jobs SET handed=1,result_card=? WHERE id=?", h.card?.id || null, id);
     j = browserJobRow(this.sql, id); return j;
   }
+  // A restart resumes a running job that has saved state, is inside its deadline and step limit, and whose browser the person has not taken.
+  async browserJobCanResume(j, now = Date.now()) {
+    if (j.status !== "running" || now >= j.deadline || !j.resume_state) return false;
+    let state; try { state = JSON.parse(j.resume_state); } catch { return false; }
+    if (!state || !Array.isArray(state.hist)) return false;
+    try { if (state.steps >= (await limitsFor(this.env)).browserSteps) return false; } catch { return false; }
+    try { if ((await this.computer().browserOwnerState(tabKeyFor(j.session)))?.human_controlled) return false; } catch {}
+    return true;
+  }
   async browserJobsRecover({ boot = false } = {}) {
     const now = Date.now(); let recovered = false;
     for (const j of this.sql.exec("SELECT * FROM browser_jobs WHERE status IN ('queued','running','stopping')").toArray()) {
       if (!boot && this.runningBrowserJobs().some((x) => x.id === j.id) && now < j.deadline) continue;
+      if (boot && await this.browserJobCanResume(j, now)) {
+        // Continue the loop from its saved state. Count it as running at once, so the alarm does not end it while it re-takes the browser.
+        (this._browserJobs ||= new Map()).set(j.id, { id: j.id, session: j.session, turn: j.parent_card, tc: null });
+        const run = this.browserJobRun(j.id, { resume: true }).catch((e) => console.log("browser job resume", j.id, String(e.message || e).slice(0, 200)));
+        this.ctx.waitUntil?.(run); this._browserJobRuns = [...(this._browserJobRuns || []), run];
+        recovered = true; continue;
+      }
       recovered = true;
       const reason = boot ? "The browser job was interrupted by a restart. Its last action may have completed; no action was replayed." : "The browser job reached its time limit. Its last action may have completed; no action was replayed.";
       this.sql.exec("UPDATE browser_jobs SET status='uncertain',ended=?,report=COALESCE(report,?) WHERE id=?", now, reason, j.id);
@@ -4205,6 +4229,24 @@ export class Resident extends DurableObject {
         // live-check.js: the answer states live status (a flight landed, a price, a score) with no lookup in this turn → look first, once.
         const ln = !res.calls.length && step < stepLimit - 1 ? liveNudge(tc, personWords(tc), res.content) : null;
         if (ln) { said.pop(); saidMeta.length = Math.min(saidMeta.length, said.length); send?.({ t: "work" }); const nudge = { role: "user", content: ln }; messages.push(nudge); this.save(turn, nudge); stats.live_nudge = 1; continue; }
+        // promise-check.js: the reply is about to end the turn. A decision model says whether it promises work that no step did and nothing running will do
+        // ("unfinished"); then the reply goes back to the chat model once, with a note. The reply text stays as an interim message exactly as after an ack-stall nudge
+        // (saidMeta.ack: progress, no new status text), and the step is saved before the extra model call so a restart resumes at it. Any failure ends the turn as before.
+        if (!res.calls.length) {
+          const pr = stripNotesEcho(answerText(splitProgress(said, saidMeta)));
+          if (eeEnabled(this.env) && !promiseSkip({ kind, byok: !!this.env.BYOK, nativeWorker, restricted: restrictedNarration, abort: tc.abort, paused: !!tc.pause, stalled: !!tc.stall, step, stepLimit, reply: pr, resent: !!stats.promise_resent })) {
+            const facts = turnFacts(this.sql, { turn, session: tc.session, since: t0 });
+            const pc = await runPromiseCheck(this.env, { ledger: () => this.ledger(), state: promiseState({ personMessage: text, reply: pr, steps: facts.steps, running: facts.running, setUp: facts.setUp }), meta: { tenant: this.get("tenant"), channel: this.get("channel") }, deps: this.promiseDeps });   // promiseDeps: set only by tests
+            stats.charge += pc.charge; trace.push(promiseTrace(pc));
+            if (pc.choice === "unfinished" && !tc.abort && !this.hasSteers(tc)) {
+              if (saidMeta[said.length - 1]) saidMeta[said.length - 1].ack = true;
+              stats.promise_resent = 1; send?.({ t: "work" });
+              const nudge = { role: "user", content: PROMISE_NOTE }; messages.push(nudge); this.save(turn, nudge);
+              this.journalStep(tc, { step, phase: "tools", stats, said, saidMeta, checkpoints });
+              continue;
+            }
+          }
+        }
         if (!res.calls.length) { this.commitTurn(tc); reply = stripNotesEcho(answerText(splitProgress(said, saidMeta))); break; }   // progress-dedupe.js: the reply is the answer; text written before tool calls is progress (kept in parts)   // the reply closes the card
         send?.({ t: "work" });
         // Several app_run calls in one step: each passes every check on its own, in order; the reads among them park in one batch and go

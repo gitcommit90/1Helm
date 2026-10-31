@@ -261,7 +261,19 @@ async function settle(c, ms = 10e3) {
 
 // Page → readable outline for a text-only model. Interactive elements get refs like [e7] that browser_act uses.
 const SNAPSHOT_JS = String.raw`(() => {
-  const MAX = 14000; let n = 0, out = [], len = 0;
+  const MAX = 14000; let n = 0, out = [], len = 0; const WANT = __WANT__;
+  // Choices of a dropdown: the first 12, then up to 8 more that match a value the job needs (so a 250-item list still shows "United States").
+  const low = (s) => String(s).toLowerCase();
+  const wanted = (o) => WANT.some((w) => low(o) === low(w) || (w.length >= 3 && o.length >= 3 && (low(o).includes(low(w)) || low(w).includes(low(o)))));
+  const pickOpts = (arr) => { const seen = new Set(), all = arr.filter((t) => t && !seen.has(t) && seen.add(t)); return all.slice(0, 12).concat(all.slice(12).filter(wanted).slice(0, 8)); };
+  const backingSelect = (el) => { for (let p = el.parentElement, k = 0; p && k < 3; p = p.parentElement, k++) { const ss = p.querySelectorAll('select'); if (ss.length === 1 && p.querySelectorAll('input:not([type=hidden]),[role=combobox]').length === 1) return ss[0]; if (ss.length > 1) break; } return null; };
+  const comboOpts = (el) => {
+    const bs = backingSelect(el); if (bs) return [...bs.options].map((o) => clean(o.text, 30));
+    if (el.list && el.list.options) return [...el.list.options].map((o) => clean(o.value || o.text, 30));
+    for (const id of ((el.getAttribute('aria-controls') || '') + ' ' + (el.getAttribute('aria-owns') || '')).split(/\s+/)) { const lb = id && document.getElementById(id); if (!lb) continue;
+      const items = lb.querySelectorAll('[role=option],option'); const list = items.length ? items : lb.querySelectorAll('li'); if (list.length) return [...list].map((o) => clean(o.textContent, 30)); }
+    return [];
+  };
   document.querySelectorAll('[data-1hc]').forEach((e) => e.removeAttribute('data-1hc'));
   const INTER = 'a[href],button,input:not([type=hidden]),select,textarea,summary,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[role=option],[role=combobox],[role=switch],[role=textbox],[contenteditable=""],[contenteditable=true]';
   const vis = (el) => { const r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; const s = getComputedStyle(el); return s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0'; };
@@ -285,6 +297,9 @@ const SNAPSHOT_JS = String.raw`(() => {
         else if (tag === 'input' || tag === 'textarea') { const ac = [el.getAttribute('autocomplete'), el.name, el.id, el.getAttribute('placeholder'), el.getAttribute('aria-label')].join(' '); const hide = IN_FRAME || el.type === 'password' || /cc-|card|cvc|cvv|cvn|csc|exp|\bpan\b/i.test(ac) || /^\d[\d\s.-]{11,}$/.test(el.value || '');
           extra = el.value ? ' value="' + (hide ? '•••• (filled)' : clean(el.value, 60)) + '"' : ''; }
         else if (tag === 'select') extra = ' selected="' + clean(el.options[el.selectedIndex]?.text, 60) + '" options: ' + [...el.options].slice(0, 12).map((o) => clean(o.text, 30)).join(' | ');
+        if ((role === 'combobox' || el.getAttribute('list') || (tag === 'input' && backingSelect(el))) && tag !== 'select') {
+          if (tag !== 'input' && tag !== 'textarea') { const t = clean(el.innerText, 60); if (t) extra += ' value="' + t + '"'; }
+          const co = pickOpts(comboOpts(el)); if (co.length) extra += ' options: ' + co.join(' | '); }
         if (el.disabled) extra += ' (disabled)';
         { const acv = (tag === 'input' || tag === 'textarea') && el.getAttribute('autocomplete'); if (acv && /^cc-|postal-code|^name$/.test(acv)) extra += ' autocomplete=' + acv.slice(0, 20); }
         push('[' + ref + '] ' + role + ' "' + label(el) + '"' + extra + (tag === 'a' ? ' → ' + clean(el.getAttribute('href'), 80) : ''));
@@ -330,13 +345,14 @@ async function frames(c) {
   for (const f of out) { if (!frameNo.has(f.id)) frameNo.set(f.id, nextFrame++); f.n = frameNo.get(f.id); }
   return out;
 }
-const FRAME_JS = (n) => SNAPSHOT_JS.replace("const ref = 'e' + (++n)", `const ref = 'f${n}e' + (++n)`);
+const snapJS = (c) => SNAPSHOT_JS.replace("__WANT__", () => JSON.stringify(c.want || []));
+const FRAME_JS = (n, c) => snapJS(c).replace("const ref = 'e' + (++n)", `const ref = 'f${n}e' + (++n)`);
 async function snapshot(c) {
-  const s = await evalJS(c, SNAPSHOT_JS);
+  const s = await evalJS(c, snapJS(c));
   let text = s.text, extra = "";
   for (const f of await frames(c).catch(() => [])) {
     try {
-      const r = await evalJS(c, FRAME_JS(f.n), f);
+      const r = await evalJS(c, FRAME_JS(f.n, c), f);
       if (!r || !r.refs) continue;   // invisible or non-interactive frames (analytics, captcha shells) are left out
       extra += `\n--- inside frame f${f.n} (${(() => { try { return new URL(f.url).host; } catch { return ""; } })()}) ---\n${r.text}`;
     } catch {}
@@ -379,6 +395,67 @@ async function clickRef(c, ref) {
   // Off-screen controls (e.g. Stripe's hidden "AI agent" steering checkbox) can't take a mouse click; click them in the page.
   if (p.x < 0 || p.y < 0 || p.x > W || p.y > H) await evalJS(c, `(() => { const e = document.querySelector('[data-1hc="${String(ref).replace(/[^a-z0-9]/gi, "")}"]'); e && e.click(); })()`, p.fr);
   else await click(c, p.x, p.y);
+}
+// select {ref, text} on a dropdown that is not a native SELECT (combobox, listbox, jQuery-UI style list, often backed by a hidden select).
+// Opens the list if needed, finds the item by exact then case-insensitive text (also in a backing select), scrolls it into view, clicks it with a
+// real mouse click, then reads the field back and fails when the choice did not stick. The ref can be the input or its arrow button.
+const CUSTOM_JS = (ref, want, step) => String.raw`(() => {
+  const want = ${JSON.stringify(want)}, step = ${JSON.stringify(step)};
+  const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim(), lo = (s) => norm(s).toLowerCase();
+  let e = document.querySelector('[data-1hc="${String(ref).replace(/[^a-z0-9]/gi, "")}"]'); if (!e) return { error: 'gone' };
+  if (!e.matches('input,select,textarea,[role=combobox]')) { const p = e.parentElement; const c = p && p.querySelector('input:not([type=hidden]),[role=combobox]'); if (c) e = c; }
+  const vis = (x) => { const r = x.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; const s = getComputedStyle(x); return s.visibility !== 'hidden' && s.display !== 'none'; };
+  let bs = null; for (let p = e.parentElement, k = 0; p && k < 3 && !bs; p = p.parentElement, k++) { const ss = p.querySelectorAll('select'); if (ss.length === 1) bs = ss[0]; else if (ss.length > 1) break; }
+  const scopes = []; for (const id of ((e.getAttribute('aria-controls') || '') + ' ' + (e.getAttribute('aria-owns') || '')).split(/\s+/)) { const x = id && document.getElementById(id); if (x) scopes.push(x); }
+  const items = () => { let l = []; for (const s of scopes) l = l.concat([...s.querySelectorAll('[role=option],li,[role=menuitem]')]);
+    if (!l.length) l = [...document.querySelectorAll('[role=option],.ui-menu-item,[role=listbox] li')];
+    return l.filter(vis); };
+  if (step === 'find') {
+    document.querySelectorAll('[data-1hc-opt]').forEach((x) => x.removeAttribute('data-1hc-opt'));
+    const l = items(); const hit = l.find((x) => norm(x.textContent) === norm(want)) || l.find((x) => lo(x.textContent) === lo(want));
+    if (!hit) return { found: false, open: l.length, backing: !!bs && [...bs.options].some((o) => lo(o.text) === lo(want) || o.value === want) };
+    hit.scrollIntoView({ block: 'center', inline: 'center' }); hit.setAttribute('data-1hc-opt', '1'); const b = hit.getBoundingClientRect();
+    return { found: true, x: b.left + b.width / 2, y: b.top + b.height / 2 };
+  }
+  if (step === 'backing') {   // no visible item: set the backing select directly and show the text in the visible field
+    const o = bs && [...bs.options].find((o) => lo(o.text) === lo(want) || o.value === want); if (!o) return false;
+    bs.value = o.value; bs.dispatchEvent(new Event('input', { bubbles: true })); bs.dispatchEvent(new Event('change', { bubbles: true }));
+    if ('value' in e && e.tagName === 'INPUT') { e.value = o.text.trim(); e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); }
+    return true;
+  }
+  if (step === 'click') { const x = document.querySelector('[data-1hc-opt]'); x && x.click(); return !!x; }
+  if (step === 'read') {   // the visible value, the field's own text and the backing select
+    const shown = [e.value, e.innerText, e.getAttribute('aria-valuetext')].map(norm).filter(Boolean);
+    const sel = bs && bs.selectedIndex >= 0 ? norm(bs.options[bs.selectedIndex].text) : '';
+    const ok = [...shown, sel].some((v) => lo(v) === lo(want));
+    document.querySelectorAll('[data-1hc-opt]').forEach((x) => x.removeAttribute('data-1hc-opt'));
+    return { ok, shown: shown[0] || '', backing: sel };
+  }
+})()`;
+async function chooseCustom(c, a, fs_) {
+  const want = String(a.text ?? ""), r = (step) => evalJS(c, CUSTOM_JS(a.ref, want, step), fs_);
+  if (!want) throw new Error(`select needs text: the choice to pick in ${a.ref}`);
+  let f = await r("find");
+  if (f.error) throw new Error(`no element ${a.ref} on the page now — take a new snapshot`);
+  if (!f.found) {   // the list is closed: open it, then look again
+    try { await clickRef(c, a.ref); } catch {}
+    await sleep(350); f = await r("find");
+  }
+  if (!f.found && !f.backing) {   // an autocomplete list that filters as you type
+    try { await fillField(c, { ref: a.ref, text: want }, "fill", false); } catch {}
+    await sleep(500); f = await r("find");
+  }
+  let how;
+  if (f.found) {
+    if (fs_) await r("click");
+    else { const p = { x: f.x, y: f.y }; if (p.x < 0 || p.y < 0 || p.x > W || p.y > H) await r("click"); else await click(c, p.x, p.y); }
+    how = "clicked the item";
+  } else if (f.backing && await r("backing")) how = "set the backing select";
+  else throw new Error(`could not find "${want}" in the dropdown ${a.ref}${f.open ? ` (the open list has ${f.open} items, none with that text; use the exact text of a choice)` : " (the list did not open or has no such item)"}`);
+  await sleep(300);
+  const v = await r("read");
+  if (!v.ok) throw new Error(`picked "${want}" in ${a.ref} but the choice did not stick (the field shows "${String(v.shown || v.backing).slice(0, 40)}"). Open the list and try again, or pick another way`);
+  return `chose "${want}" in ${a.ref} (${how}; the field now shows it)`;
 }
 // upload {ref, path | paths}: put files from the computer into a page. The ref is a file input (set directly), or a button or link that opens
 // the browser's file chooser (the chooser is intercepted and answered with the files, so sites that hide the real input work too).
@@ -681,7 +758,7 @@ const OPS = {
       const rec = tabs.get(ctx.key); if (!rec?.current || rec.current === c.targetId) return false;
       const t = (await targets()).find((x) => x.id === rec.current); if (!t) return false;
       const c2 = await connectTarget(t); if (!c2.persistent) ctx.opened.push(c2);
-      c = c2; await activateTab(rec); await settle(c, 10e3); switched = true; return true;
+      c2.want = c.want; c = c2; await activateTab(rec); await settle(c, 10e3); switched = true; return true;
     };
     const h0 = (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries.length;
     for (const a of acts) {
@@ -697,9 +774,10 @@ const OPS = {
       else if (kind === "fill" || kind === "type") { await fillField(c, a, kind, !!b.secret); if (a.submit) { await press(c, "Enter"); await settle(c, 8e3); }
       } else if (kind === "select") {
         const fs_ = await frameOf(c, a.ref);
-        const ok = await evalJS(c, `(() => { const e = document.querySelector('[data-1hc="${String(a.ref).replace(/[^a-z0-9]/gi, "")}"]'); if (!e || e.tagName !== 'SELECT') return false; const o = [...e.options].find((o) => o.text.trim() === ${JSON.stringify(String(a.text ?? ""))} || o.value === ${JSON.stringify(String(a.text ?? ""))}); if (!o) return false; e.value = o.value; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`, fs_);
-        if (!ok) throw new Error(`could not select "${a.text}" in ${a.ref}`);
-      } else if (kind === "press") { await press(c, String(a.key || "Enter")); await settle(c, 8e3); }
+        const ok = await evalJS(c, `(() => { const e = document.querySelector('[data-1hc="${String(a.ref).replace(/[^a-z0-9]/gi, "")}"]'); if (!e || e.tagName !== 'SELECT') return null; const o = [...e.options].find((o) => o.text.trim() === ${JSON.stringify(String(a.text ?? ""))} || o.value === ${JSON.stringify(String(a.text ?? ""))}); if (!o) return false; e.value = o.value; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`, fs_);
+        if (ok === null) { notes.push(await chooseCustom(c, a, fs_)); await settle(c, 3e3); }   // not a native select: a combobox, listbox or script-made list
+        else if (!ok) throw new Error(`could not select "${a.text}" in ${a.ref}`);
+            } else if (kind === "press") { await press(c, String(a.key || "Enter")); await settle(c, 8e3); }
       else if (kind === "scroll") { await c.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: W / 2, y: H / 2, deltaX: 0, deltaY: a.direction === "up" ? -600 : 600 }); await sleep(400); }
       else if (kind === "wait") { const want = Number(a.ms) || 1000, ms = Math.min(WAIT_MAX, Math.max(0, want)); if (want > WAIT_MAX) notes.push(`wait shortened from ${want} to ${WAIT_MAX} ms (the most one wait step waits; use several wait steps, or check the page between waits)`); await sleep(ms); }
       else if (kind === "upload") { notes.push(await upload(c, a)); uploaded = true; await settle(c, 8e3); }
@@ -761,6 +839,7 @@ const server = http.createServer(async (req, res) => {
         const ctx = { key: k, op: m[1], opened: [] };
         try {
           const { rec, c, note } = await openTab(k, ctx);
+          c.want = Array.isArray(b.want) ? b.want.slice(0, 20).map((x) => String(x).slice(0, 80)) : [];   // values the job needs: the outline lists matching dropdown choices
           const out = await OPS[m[1]](b, c, ctx);
           if (out?.url && /^https?:/.test(out.url)) { try { fs.writeFileSync(LAST_URL, out.url); } catch {} if (out.url !== rec.url) { rec.url = out.url; saveTabs(); } }
           return { ...out, ...(note ? { tab_note: note } : {}) };

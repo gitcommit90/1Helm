@@ -55,6 +55,7 @@ const origTotal = tplSlides.length, total = deck.slides.length;
 // Photos: embed into copies of the slide files, so the source files stay small.
 mkdirSync(BUILD, { recursive: true });
 const tmp = mkdtempSync(join(tmpdir(), "deck-"));
+process.on("exit", () => { try { rmSync(tmp, { recursive: true, force: true }); } catch { /* gone */ } });   // also when fail() exits early
 let missing = [];
 slideFiles.forEach((f, i) => copyFileSync(f, join(tmp, `${String(i).padStart(3, "0")}.html`)));
 if (existsSync(join(SRC, "media"))) {

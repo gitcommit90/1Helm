@@ -4,6 +4,7 @@
 // files, chained and unknown-size streams), what it must refuse (so the file goes to Qwen3), the piece size, and a bounded memory use on a
 // long file. Fixtures (test/fixtures/audio) are 4 s of the synthetic speech of the live notes fixture, encoded with ffmpeg
 // (ffmpeg encodes them from one 4 s speech clip); ref16k.wav is the same 4 s as 16 kHz mono PCM.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import assert from "node:assert"; import { readFileSync } from "node:fs";
 import { convertAudio, sniff, resampler, wavHeader, PIECE_BYTES, RATE, READ_WINDOW, Unsupported, Corrupt } from "../src/audio-convert.js";
 import { splitWav } from "../src/sidecar.js";
@@ -152,7 +153,7 @@ await scenario("memory bound: an hour of mp3 (stereo 44.1 kHz), of Opus (900 cha
   const cat = (name, copies) => { const one = FX(name), big = new Uint8Array(one.length * copies); for (let i = 0; i < copies; i++) big.set(one, i * one.length); return big; };
   const inputs = [["st44.mp3 x900", cat("st44.mp3", 900)], ["m.ogg x900", cat("m.ogg", 900)]];
   try {   // ffmpeg only makes the long m4a (a 1 hour AAC file with a moov at the end and a small video track); without it that case is skipped
-    const { spawnSync } = await import("node:child_process"), { mkdtempSync, readFileSync: rf, rmSync } = await import("node:fs"), { tmpdir } = await import("node:os"), d = mkdtempSync(tmpdir() + "/ac-");
+    const { spawnSync } = await import("node:child_process"), { mkdtempSync, readFileSync: rf, rmSync } = await import("node:fs"), { tmpdir } = await import("node:os"), d = cleanupOnExit(mkdtempSync(tmpdir() + "/ac-"));
     const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-stream_loop", "899", "-i", new URL("./fixtures/audio/ref16k.wav", import.meta.url).pathname, "-f", "lavfi", "-i", "testsrc=size=64x48:rate=2", "-t", "3600", "-c:v", "mpeg4", "-b:v", "20k", "-c:a", "aac", "-b:a", "32k", d + "/long.mp4"], { timeout: 120000 });
     if (r.status === 0) inputs.push(["long.mp4 (1 h, video)", new Uint8Array(rf(d + "/long.mp4"))]); rmSync(d, { recursive: true, force: true });
   } catch {}

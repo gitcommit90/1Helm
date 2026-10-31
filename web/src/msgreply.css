@@ -34,6 +34,16 @@
   .msgs .m .bubble:has(>.mact :focus-visible),.msgs .m .bubble.macts,.msgs .m .bubble.ma-space{margin-bottom:var(--action-space)}
   .msgs .m .bubble:has(>.mact){--action-space:48px}
   .msgs .mact button{height:44px;min-width:44px}
+  /* A held bubble's strip floats at the finger (msgreply.ts menuSpot sets --ma-x and --ma-y), so it is in view for a message of any
+     length, and the bubble reserves no space for it: nothing moves when it opens. */
+  .msgs .m .bubble.macts{margin-bottom:6px}
+  /* The strip is always out of the flow on touch (fixed, hidden until held), so opening it never changes how far the chat scrolls:
+     an absolute strip under the last message used to add to the scroll height, and removing it moved the end of the chat. */
+  .msgs .m .bubble>.mact{position:fixed;top:var(--ma-y,0);left:var(--ma-x,0);right:auto;bottom:auto;padding:0;flex-direction:row}
+  .msgs .m .bubble:has(>.mact :focus-visible):not(.macts)>.mact{position:absolute;top:100%;left:0;padding-top:2px}
+  .msgs .m.user .bubble:has(>.mact :focus-visible):not(.macts)>.mact{left:auto;right:0;flex-direction:row-reverse}
+  .msgs .m .bubble.macts>.mact{position:fixed;top:var(--ma-y,0);left:var(--ma-x,0);right:auto;bottom:auto;padding:0;flex-direction:row;z-index:30}
+  .msgs .m .bubble.macts>.mact button{background:var(--sheet);border:1px solid var(--line);border-radius:999px;box-shadow:0 2px 8px rgba(0,0,0,.14)}
 }
 @keyframes mapop{from{opacity:0;transform:translateY(4px) scale(.97)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.mact{transition:none}}

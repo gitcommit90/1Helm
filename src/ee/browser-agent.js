@@ -31,6 +31,8 @@ export const browserOssRequest = (messages, maxTokens) => ({ ...(maxTokens ? { m
 // What the decider is told about the page, and the one question it answers with the menu of actions.
 export const browserDeciderState = ({ task, url, hist, outline }) => ({ task, url, previous_actions: hist.slice(-10), page_outline_now: outline.slice(0, 9000) });
 export const browserNextQuestion = (menu) => ({ next: { type: "choice", instructions: "Pick the single next action that best moves the task forward from the page as it is now. Don't repeat an action that already worked. If the page is still loading, look again. Choose FINISH only when the task is done or the needed information is visible on the page.", criteria: menu } });
+// Does a dropdown choice match a value the job needs? Exact or case-insensitive, or one contains the other (3+ letters).
+const sameText = (o, v) => { const a = String(o).toLowerCase().trim(), b = String(v).toLowerCase().trim(); return !!a && (a === b || (a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a)))); };
 export function buildMenu(outline, values, dead) {
   const menu = {}, act = {}, seen = new Set(); let i = 0;
   const add = (label, a) => { if (seen.has(label) || dead.has(label)) return; seen.add(label); const id = `a${++i}`; menu[id] = label; act[id] = a; };
@@ -39,13 +41,25 @@ export function buildMenu(outline, values, dead) {
   const ctx = {}; let lastName = "";
   for (const l of lines) { const m = l.match(/^\[((?:f\d+)?e\d+)\] .+? "([^"]*)"/); if (!m) { if (l.length > 3 && l.length < 80 && !/^\$|^#|^\[|^---/.test(l)) lastName = l; continue; }
     const d = m[2].match(/(?:View details for|for) (.+)$/); if (d) lastName = d[1]; ctx[m[1]] = lastName; }
+  let combo = "";   // the last dropdown field seen: its list items and arrow button carry its name, so the same item under two fields is two actions
   for (const m of outline.matchAll(/^\[((?:f\d+)?e\d+)\] (.+?) "([^"]*)"(.*)$/gm)) {
-    const [, ref, role, label, rest] = m; const L = (counts[label] > 1 && ctx[ref] ? `${label} — for ${ctx[ref]}` : label).slice(0, 110);
+    const [, ref, role, label, rest] = m; let L = (counts[label] > 1 && ctx[ref] ? `${label} — for ${ctx[ref]}` : label).slice(0, 110);
+    if (/combobox|^select$/.test(role) || (/ input$/.test(role) && /options: /.test(rest))) combo = label || ctx[ref] || "";
+    else if (combo && (role === "option" || (role === "button" && !label))) L = (role === "option" ? `${label} — in ${combo}` : `arrow of ${combo}`).slice(0, 110);
+    else if (!/^(option|button)$/.test(role)) combo = "";
     if (/\(disabled\)/.test(rest)) continue;
     const typeable = /(text|search|email|tel|password|number|time|date|url) input|textarea|textbox|searchbox|combobox/.test(role) && !/options: /.test(rest);
     if (typeable) for (const v of values) { add(`Type "${v}" into ${role} "${L}"`, [{ kind: "fill", ref, text: v }]); add(`Type "${v}" into ${role} "${L}" and press Enter`, [{ kind: "fill", ref, text: v, submit: true }]); }
-    if (role === "select") { const opts = (rest.match(/options: (.*)$/) || [, ""])[1].split(" | ").filter(Boolean).slice(0, 15); for (const o of opts) add(`Choose "${o}" in dropdown "${L}"`, [{ kind: "select", ref, text: o }]); }
-    else if (!typeable || /combobox/.test(role)) add(`Click ${role} "${L}"${/checkbox|radio/.test(role) ? " " + (rest.match(/\((un)?checked\)/)?.[0] || "") : ""}`, [{ kind: "click", ref }]);
+    const dropdown = role === "select" || role === "combobox" || (/ input$/.test(role) && /options: /.test(rest));   // a plain input with a readable list (a script-made combobox over a hidden select)
+    if (dropdown) {
+      // Choices that match the job's values come first, so a long list still offers the right item.
+      const all = (rest.match(/options: (.*)$/) || [, ""])[1].split(" | ").filter(Boolean);
+      const opts = all.filter(o => values.some(v => sameText(o, v))).concat(all.filter(o => !values.some(v => sameText(o, v)))).slice(0, 15);
+      for (const o of opts) add(`Choose "${o}" in dropdown "${L}"`, [{ kind: "select", ref, text: o }]);
+      // A custom dropdown whose list cannot be read before it opens: offer the job's own values as choices.
+      if (role !== "select" && !all.length) for (const v of values.slice(0, 8)) add(`Choose "${v}" in dropdown "${L}"`, [{ kind: "select", ref, text: v }]);
+    }
+    if (role !== "select") add(`Click ${role} "${L}"${/checkbox|radio/.test(role) ? " " + (rest.match(/\((un)?checked\)/)?.[0] || "") : ""}`, [{ kind: "click", ref }]);
     if (i > 120) break;
   }
   add("Press Enter", [{ kind: "press", key: "Enter" }]); add("Scroll down", [{ kind: "scroll", direction: "down" }]);
@@ -56,6 +70,14 @@ export function buildMenu(outline, values, dead) {
   return { menu, act, ids };
 }
 
+// A page state seen before. trail = [{ outline, label }] of the steps taken so far. After a step that went from `before` to `after`:
+// if `after` is a page state already seen (A to B to A), every step taken since that state led nowhere, so return their labels.
+export function loopLabels(trail, before, label, after) {
+  trail.push({ outline: before, label });
+  if (after === before) return [];
+  const k = trail.findIndex(t => t.outline === after);
+  return k < 0 ? [] : [...new Set(trail.slice(k).map(t => t.label))];
+}
 // A plain summary of what a job did, built only from its recorded steps and its last page, for when the report step fails.
 export function stepSummary(hist, page, steps = 0) {
   const submitted = hist.some(h => /submit|send|place order|checkout|buy|pay/i.test(h) && /→ done/.test(h));
@@ -64,8 +86,8 @@ export function stepSummary(hist, page, steps = 0) {
 // res = the Resident (for ledger + env), C = this channel's computer. Returns { code, out } like the other browser tools.
 // guard(actions, page) → null or a refusal: checked before each step that acts on the page (personal-fill.js: the person's details
 // need their OK; cards, passwords and ID numbers are never typed). A refusal stops the task with that text.
-export async function runBrowserTask(res, C, a, tc, { guard, ownerToken = null, beforeBrowse = null, afterBrowse = null, shouldStop = null, detailedReport = false, purchaseGuard = true } = {}) {
-  const env = res.env, meta = { tenant: res.get?.("tenant"), channel: res.get?.("channel") }, st = { jev_calls: 0, oss_calls: 0, charge: 0, steps: 0, trace: [] };
+export async function runBrowserTask(res, C, a, tc, { guard, ownerToken = null, beforeBrowse = null, afterBrowse = null, shouldStop = null, detailedReport = false, purchaseGuard = true, resume = null, saveState = null } = {}) {
+  const env = res.env, meta = { tenant: res.get?.("tenant"), channel: res.get?.("channel") }, st = { jev_calls: 0, oss_calls: 0, charge: Math.max(0, Number(resume?.charge) || 0), steps: Math.max(0, Number(resume?.steps) || 0), trace: [] };
   const task = String(a.task || "").slice(0, 2000), url = String(a.url || "");
   // One Ledger reservation per call, settled at cost × markup (same rule as the main model).
   const billed = async (estNano, fn) => {
@@ -85,8 +107,11 @@ export async function runBrowserTask(res, C, a, tc, { guard, ownerToken = null, 
       } catch (e) { if (i >= 2) { e.cost = cost; throw e; } }
       await sleep(800 * (i + 1));
     } });
-  const hist = [], dead = new Set();
-  let page = null;
+  // A job that was interrupted by a restart continues with the history, dead actions, steps and charge it had saved.
+  const hist = resume ? [...(resume.hist || [])] : [], dead = new Set(resume ? resume.dead || [] : []), trail = []; let wantList = [];
+  let page = null, values = null;
+  // Saved before each step, so a restart can continue the loop. inflight = the action about to be sent, whose outcome a restart leaves unknown.
+  const save = (inflight = null) => saveState?.({ hist: hist.slice(-40).map((h) => String(h).slice(0, 300)), dead: [...dead].slice(-60), steps: st.steps, values, charge: st.charge, inflight });
   // This loop is one parent tool call, but can contain 25 browser actions. Give
   // control back at a boundary when the person changes the request or stops it.
   // Never cancel/replay an in-flight action, consume the parent's input, or ask
@@ -110,7 +135,7 @@ export async function runBrowserTask(res, C, a, tc, { guard, ownerToken = null, 
     if (shouldStop?.()) throw Object.assign(new Error("browser job stopped before the next action"), { stopped: true });
     await beforeBrowse?.(op, body, page);
     if (shouldStop?.()) throw Object.assign(new Error("browser job stopped before the next action"), { stopped: true });
-    const r = await C.browser(op, body, ownerToken, tabKeyOf(tc));   // this task's own tab (browser-tab.js)
+    const r = await C.browser(op, wantList.length ? { ...body, want: wantList } : body, ownerToken, tabKeyOf(tc));   // this task's own tab (browser-tab.js)
     if (r.ok === false) throw Object.assign(new Error(r.error || "browser operation failed"), { uncertain: !!r.operation_may_have_completed, owner_lost: !!r.owner_lost, taken_over: !!r.taken_over });
     try { await afterBrowse?.(op, r); }
     catch (e) { throw Object.assign(new Error(`browser action completed, but its checkpoint failed: ${e.message}`), { uncertain: true }); }
@@ -119,17 +144,28 @@ export async function runBrowserTask(res, C, a, tc, { guard, ownerToken = null, 
   try {
     let yielded; if ((yielded = handBack())) return yielded;
     // 1) gpt-oss: every exact string the task may need typed (the main helper may pass them directly).
-    let values = Array.isArray(a.values) ? a.values.map(String).slice(0, 20) : null;
+    values = resume ? (resume.values || []).map(String).slice(0, 20) : Array.isArray(a.values) ? a.values.map(String).slice(0, 20) : null;
     if (!values) { const out = await oss(browserValuesMessages(task), BROWSER_VALUES_SCHEMA, "browser_values");
       values = out.values.slice(0, 20); }
+    wantList = values.slice(0, 20);
     st.trace.push(`values ${JSON.stringify(values).slice(0, 200)}`);
     if ((yielded = handBack())) return yielded;
-    page = url ? await browse("navigate", { url }) : await browse("snapshot", {});
+    if (resume) {
+      // Never replay the action that was in flight: note that its outcome is unknown, then look at the page again.
+      if (resume.inflight) { hist.push(`${resume.inflight} → ERROR (outcome unconfirmed after a restart; do not repeat, check the page)`); dead.add(resume.inflight); }
+      hist.push("Resumed after a restart: the page was read again");
+      save();
+      page = await browse("snapshot", {});
+    } else {
+      save();
+      page = url ? await browse("navigate", { url }) : await browse("snapshot", {});
+    }
     // 2) jev picks each step.
     let finRej = 0, abstained = false, finished = false;
     const MAX_STEPS = tc?.limits?.browserSteps ?? (await limitsFor(env)).browserSteps;
     for (; st.steps < MAX_STEPS; st.steps++) {
       if ((yielded = handBack())) return yielded;
+      save();
       const outline = page.snapshot || ""; const { menu, act, ids } = buildMenu(outline, values, dead);
       const ans = await jev(browserNextQuestion(menu), outline);
       if ((yielded = handBack())) return yielded;
@@ -153,7 +189,11 @@ export async function runBrowserTask(res, C, a, tc, { guard, ownerToken = null, 
       const no = guard ? await guard(act[pick], page) : null;
       if ((yielded = handBack())) return yielded;
       if (no) return { code: 1, charge: st.charge, out: `browser_task stopped after ${st.steps} step(s), before a browser action: ${no}\nPage: ${page.title || ""} — ${page.url}\n`, page };
-      try { page = await browse("act", { actions: act[pick] }); if ((page.snapshot || "") === before) { hist.push(`${menu[pick]} → no visible change`); dead.add(menu[pick]); } else hist.push(`${menu[pick]} → done`); }
+      save(menu[pick]);
+      try { page = await browse("act", { actions: act[pick] }); const back = loopLabels(trail, before, menu[pick], page.snapshot || "");
+        if ((page.snapshot || "") === before) { hist.push(`${menu[pick]} → no visible change`); dead.add(menu[pick]); }
+        else if (back.length) { hist.push(`${menu[pick]} → page is back to an earlier state (no progress)`); for (const l of back) dead.add(l); }
+        else hist.push(`${menu[pick]} → done`); }
       catch (e) { hist.push(`${menu[pick]} → ERROR (outcome unconfirmed; do not repeat) ${String(e.message).slice(0, 100)}`); dead.add(menu[pick]); if (ownerToken != null) { e.uncertain = true; throw e; } if (e.uncertain || e.owner_lost || e.taken_over || e.stopped) throw e; if ((yielded = handBack())) return yielded; page = await browse("snapshot", {}); }
     }
     // 3) gpt-oss: a short result for an attended call, or a fuller report for a background job.

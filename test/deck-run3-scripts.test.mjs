@@ -1,11 +1,12 @@
 // Deck build (run 3, changed by deck-ours): a deck of any length starts from --slides or --data, and a slide file changed by hand is built like any other.
 // make_deck.sh no longer refuses hand edits, and the first PASS still removes the data-file record. Deterministic facts only; no browser and no model.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-const S = new URL('../src/skills/artifacts/scripts/', import.meta.url).pathname, work = mkdtempSync(join(tmpdir(), 'deck-run3-'));
+const S = new URL('../src/skills/artifacts/scripts/', import.meta.url).pathname, work = cleanupOnExit(mkdtempSync(join(tmpdir(), 'deck-run3-')));
 const run = (cmd, args) => spawnSync(cmd, args, { encoding: 'utf8', cwd: work });
 const slides = [{ pattern: 'cover', text: ['2026 AI', 'Report', 'Northwind', '2026'] }, ...Array.from({ length: 12 }, (_, i) => ({ pattern: 'project', title: `Project ${i + 1}`, users: 'Supply Chain', problem: 'Late', built: 'Model', impact: [{ value: '31%', label: 'fewer' }], notes: `n${i}` })), { pattern: 'closing', text: ['Thank you', '', '', ''] }];
 const P = join(work, 'deck'), data = join(work, 'slides.json'); writeFileSync(data, JSON.stringify({ slides }));

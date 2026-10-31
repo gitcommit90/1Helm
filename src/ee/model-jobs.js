@@ -94,6 +94,7 @@ export const JOBS = [
   { id: "mem_rerank", kind: "rerank_memory", group: "mem", label: "Memory: rerank", description: "Puts the facts found by a memory search in order of how well they answer the question, one call for every search. It reads English best. If it fails or takes too long, the order the search found them in is used." },
   { id: "web_search", kind: "search", group: "search", label: "Web search", description: "Finds web pages for a question when DuckDuckGo has no answer. The model is the search provider, and max output is the number of results it asks for." },
   { id: "browser_decider", kind: "decider", group: "browser", label: "Browser next step", description: "Reads each page and decides the browser's next action, such as clicking, typing, scrolling or stopping." },
+  { id: "promise_check", kind: "decider", group: "routing", label: "Promise check", description: "Reads the final reply of a chat turn before it is sent and decides whether it promises work that nobody is going to do. When it does, the reply goes back to the chat model once, with a note to do the work or say plainly that it won't. If this job fails, the reply is sent as it is." },
   { id: "look", kind: "look", group: "browser", label: "Browser screen reading", description: "Looks at a picture of a page in the browser and answers questions about it, or points at something on it." },
 ];
 // Calls that use no hosted model. The Models page shows them as read-only lines so every outside call is listed in one place.
@@ -104,7 +105,7 @@ export const JOB_IDS = JOBS.map((j) => j.id);
 export const jobDef = (id) => JOBS.find((j) => j.id === id) || null;
 export const GROUPS = [
   { id: "chat", title: "Chat categories", note: "The routing categories choose the models that answer you, and each category sets its own max output, provider sort, max price and timeout. The first model that your privacy setting allows answers, and the next one takes over if it fails." },
-  { id: "routing", title: "Routing", note: "Picks the kind of request." },
+  { id: "routing", title: "Routing", note: "Picks the kind of request, and checks each final reply for a promise left undone." },
   { id: "browser", title: "Browser", note: "The models the browser uses: one decides each next step, one writes what to type and summarizes the result, and one reads the screen as a picture." },
   { id: "background", title: "Background jobs", note: "Work that runs behind the scenes. These always use zero-data-retention providers." },
   { id: "mem", title: "Memory", note: "Memory (Mem0) stores and searches the facts of each channel in 1Helm's own database. These three jobs are the only model calls it makes. They use zero-data-retention providers for extraction and run on Cloudflare for embedding and reranking." },

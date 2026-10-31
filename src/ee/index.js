@@ -102,6 +102,7 @@ export { MOONDREAM } from "./model-seed.js";
 export { dailyBillingFlag, flagTurns, FLAG_MIN_CHARGE } from "./billing-flag.js";
 export { CHAT_JOB, categoryLimits, choreRouteOf, jobLimits, jobRoute, jobSetting, settingsOf, entriesOf, configuredHosts, quirkOf, effortBody, effortFor, reasoningMandatory } from "./model-jobs.js";
 export { askDecider } from "./text-decision.js";
+export { PROMISE_NOTE, promiseSkip, promiseState, turnFacts, runPromiseCheck, promiseTrace } from "./promise-check.js";
 export { limitsFor, jobTimeoutFor } from "./limits-read.js";
 export { holdOutNano, plannedChatHoldNano, plannedChatMaxOutput, plannedHold, plannedHoldNano, plannedMaxOutput } from "./job-limits.js";
 export { dispatch, liveProviderRequest, plan } from "./model-dispatch.js";

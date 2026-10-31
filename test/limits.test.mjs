@@ -53,7 +53,7 @@ await test("every starting value is what the code used before", () => {
 });
 
 await test("the per job timeouts start where the code enforced them, and the other jobs start with none", () => {
-  assert.deepEqual({ ...JOB_TIMEOUT_DEFAULTS }, { label: 30000, chat_title: 30000, ambient_extract: 90000, ambient_review: 90000, decider: 4000, browser_decider: 20000, stt: 30000, stt_cloudflare: 30000, live_dictation: 6000, speaker_labels: 180000, web_search: 12000,
+  assert.deepEqual({ ...JOB_TIMEOUT_DEFAULTS }, { label: 30000, chat_title: 30000, ambient_extract: 90000, ambient_review: 90000, decider: 4000, browser_decider: 20000, promise_check: 8000, stt: 30000, stt_cloudflare: 30000, live_dictation: 6000, speaker_labels: 180000, web_search: 12000,
     mem_extract: 120000, mem_rerank: 5000 });
   for (const id of JOB_IDS) assert.equal(jobTimeoutMs(SEED, id), jobTimeoutDefault(id) ?? null, id);
   assert.equal(jobTimeoutMs(SEED, "notes"), null, "background-policy.js named 90 seconds for notes but nothing enforced it");

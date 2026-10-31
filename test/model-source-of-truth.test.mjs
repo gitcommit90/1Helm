@@ -105,6 +105,7 @@ probes.speaker_labels = async (S, model) => {   // the container serves only the
   catch (e) { return (e.errors || []).map((x) => x.split(": ")[0]); } };
 probes.embed_files = async (S) => { wire = []; await embedTexts(envFor(S), ["hello"], { tenant: "t" }); return [lastWire("/embeddings").model]; };
 probes.browser_decider = async (S) => { const env = envFor(S); wire = []; await askDecider(env, { task: "t" }, { done: { type: "noul", instructions: "Is it done?" } }, { job: "browser_decider" }); return [await jobModel(env, "browser_decider"), lastWire("/systemone").model]; };
+probes.promise_check = async (S) => { const env = envFor(S); wire = []; await askDecider(env, { task: "t" }, { promise: { type: "choice", instructions: "Is it done?", criteria: { done: "yes", unfinished: "no" } } }, { job: "promise_check" }); return [await jobModel(env, "promise_check"), lastWire("/systemone").model]; };
 probes.vision_files = async (S) => { wire = [];   // the picture goes to the saved model's own transport; the stub's reply isn't a description, so the parse error is expected
   await vision(envFor(S), { tenant: "t" }, { data: new Uint8Array([1, 2, 3]), mime: "image/png" }, "chat").catch(() => {}); return [lastWire("/chat/completions")?.model]; };
 probes.workers_ai_chat = async (S) => [await jobModel(envFor(S), "workers_ai_chat")];

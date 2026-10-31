@@ -59,7 +59,7 @@ for (const file of ["earlier hosted variables"]) {
 }
 
 // the first-run data for an environment with no variables set has the same shape, and the same chat lists
-{ const s = validateModelSettings(seedFresh({})); assert.equal(Object.keys(s.jobs).length, 24);
+{ const s = validateModelSettings(seedFresh({})); assert.equal(Object.keys(s.jobs).length, 25);
   assert.deepEqual(shape(choreRouteOf(s, "browser")), [O120, "low", undefined, undefined, [[DS, "low", undefined, undefined]]], "gpt-oss-120b, with DeepSeek Flash as its fallback"); }
 
 // a saved earlier configuration is carried exactly: replaced slots, custom lists, configured chores, the decider

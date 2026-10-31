@@ -43,7 +43,7 @@ bad((c) => { c.jobs.handoff = { model: "not a model id", effort: "low", fallback
 bad((c) => { c.jobs.handoff.fallbacks[0].hosts = ["together"]; }, /provider lists/); bad((c) => { c.jobs.handoff.fallbacks[0].pin = false; }, /provider lists/);
 bad((c) => { c.catalog["evil/x"] = { id: "evil/x", name: "x", kinds: ["chat"], efforts: ["low"], hosts: ["a"] }; }, /metadata/);
 assert.deepEqual(Object.keys(SEED.jobs).sort(), [...JOB_IDS].sort(), "every job has a saved setting, and only the known jobs");
-assert.ok(JOBS.length === 24 && new Set(JOB_IDS).size === JOBS.length);
+assert.ok(JOBS.length === 25 && new Set(JOB_IDS).size === JOBS.length);
 for (const j of Object.values(SEED.jobs)) for (const e of [j, ...j.fallbacks]) assert.ok(SEED.catalog[e.model], `${e.model} is described in the saved settings`);
 
 // ---- 2) the first saved version: nothing saved yet → the first-run data, once, with the variable that used to choose a model carried in ----

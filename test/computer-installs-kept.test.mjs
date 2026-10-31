@@ -1,5 +1,6 @@
 // node --import ./test/stubs/register.mjs test/computer-installs-kept.test.mjs
 // pip and npm installs on a channel's computer must land under /workspace/.home (the only saved folder), with their download caches in /tmp.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
@@ -18,7 +19,7 @@ assert.ok(!("PIP_USER" in COMPUTER_ENV), "PIP_USER would break --target and venv
 assert.ok(!Object.values(COMPUTER_ENV).some((v) => /cache/i.test(v) && v.startsWith("/workspace")));
 
 // The shell prefix, run in real bash against stub tools that print their arguments.
-const dir = mkdtempSync(join(tmpdir(), "inst-"));
+const dir = cleanupOnExit(mkdtempSync(join(tmpdir(), "inst-")));
 for (const n of ["pip", "pip3", "python3", "python"]) { writeFileSync(join(dir, n), `#!/bin/bash\necho "${n} $*"\n`); chmodSync(join(dir, n), 0o755); }
 const run = (cmd, env = {}) => execFileSync("bash", ["-c", COMPUTER_SHELL_PREFIX + cmd], { env: { PATH: `${dir}:/usr/bin:/bin`, ...env }, encoding: "utf8" }).trim();
 assert.equal(run("pip install six"), "pip install --user six");

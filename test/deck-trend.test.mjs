@@ -1,12 +1,13 @@
 // A change figure's arrow and colour follow the deck's data: "trend" in a --data entry, or a leading + or - in the figure's words, and neutral otherwise.
 // The sample slides no longer carry a red or green state. Deterministic facts only; the make_deck run needs Chrome and playwright-core.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-const S = new URL('../src/skills/artifacts/scripts/', import.meta.url).pathname, T = new URL('../app-assets/deck-templates/', import.meta.url).pathname, work = mkdtempSync(join(tmpdir(), 'deck-trend-'));
+const S = new URL('../src/skills/artifacts/scripts/', import.meta.url).pathname, T = new URL('../app-assets/deck-templates/', import.meta.url).pathname, work = cleanupOnExit(mkdtempSync(join(tmpdir(), 'deck-trend-')));
 const run = (args) => spawnSync('node', [S + 'new_deck.mjs', ...args], { encoding: 'utf8' });
 const pieces = (t, f) => [...readFileSync(`${T}${t}/slides/${f}.html`, 'utf8').matchAll(/>([^<>]+)</g)].map((m) => m[1].replace(/\s+/g, ' ').trim()).filter(Boolean);
 const build = (name, template, entry) => { const d = join(work, name), f = join(work, name + '.json'); writeFileSync(f, JSON.stringify({ slides: [entry] })); const r = run([d, '--template', template, '--title', 'T', '--data', f]); return { r, html: () => readFileSync(join(d, '.src', 'slides', readdirSync(join(d, '.src', 'slides'))[0]), 'utf8') }; };

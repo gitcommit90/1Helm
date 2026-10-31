@@ -2,6 +2,7 @@
 // A user's deck job (helper #30: three rounds, 11 minutes, no deck). Deterministic app facts only: which recipe a deck brief gets, which impact figures
 // new_deck accepts, whether every slide pattern of every template takes long words and fits them, the messages for words that fit nowhere, and (with Chrome) that a
 // deck built from long words passes make_deck.sh in one build. No model wording is judged. Fixtures are synthetic look-alikes of the real brief and project list.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import test from "node:test"; import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -16,11 +17,11 @@ import { wantsWebsiteLive, wantsWebsiteLiveJob } from "../src/website-live.js";
 import { tailOutput } from "../src/computer-capacity.js";
 import { readSkill } from "../src/skills/index.js";
 // The test loader reads files under src/skills as text, so the script is loaded from a copy (as test/skills-artifacts.test.mjs does).
-const fitCopy = join(mkdtempSync(join(tmpdir(), "deck-fit-")), "deck_fit.mjs"); writeFileSync(fitCopy, readFileSync(new URL("../src/skills/artifacts/scripts/deck_fit.mjs", import.meta.url), "utf8"));
+const fitCopy = join(cleanupOnExit(mkdtempSync(join(tmpdir(), "deck-fit-"))), "deck_fit.mjs"); writeFileSync(fitCopy, readFileSync(new URL("../src/skills/artifacts/scripts/deck_fit.mjs", import.meta.url), "utf8"));
 const { bestSize, floorFor, loadFit, scan, flowOf, unitsOf, wrap, unesc } = await import(fitCopy);
 
 const S = new URL("../src/skills/artifacts/scripts/", import.meta.url).pathname, T = new URL("../app-assets/deck-templates/", import.meta.url).pathname;
-const work = mkdtempSync(join(tmpdir(), "deck-captain1-"));
+const work = cleanupOnExit(mkdtempSync(join(tmpdir(), "deck-captain1-")));
 const templates = readdirSync(T).filter((n) => existsSync(join(T, n, "head.html"))).sort();
 const run = (cmd, args, env = {}) => spawnSync(cmd, args, { encoding: "utf8", env: { ...process.env, ...env } });
 

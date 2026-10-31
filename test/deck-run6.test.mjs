@@ -1,13 +1,14 @@
 // Deck run 6: a long impact figure ("3 days → 4 hours") must build in every template's project pattern, and a figure that cannot fit is refused with the one
 // fix. Deterministic facts only: new_deck.mjs answers, the font width table, and the sizes written into the slide files. The make_deck.sh figure hint
 // needs Chrome and playwright-core and runs only where both resolve.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-const S = new URL('../src/skills/artifacts/scripts/', import.meta.url).pathname, T = new URL('../app-assets/deck-templates/', import.meta.url).pathname, work = mkdtempSync(join(tmpdir(), 'deck-run6-'));
+const S = new URL('../src/skills/artifacts/scripts/', import.meta.url).pathname, T = new URL('../app-assets/deck-templates/', import.meta.url).pathname, work = cleanupOnExit(mkdtempSync(join(tmpdir(), 'deck-run6-')));
 const templates = readdirSync(T).filter((n) => existsSync(join(T, n, 'head.html')));
 assert.equal(templates.length, 34);
 const widths = JSON.parse(readFileSync(join(T, '_measure', 'figure-widths.json'), 'utf8')).templates;

@@ -27,7 +27,7 @@ const env = { ONEHELM_EE: "1hc", MEMORY: "on", HS_USE: "on", HS_FOUNDATIONS: "on
 const ctx = { settings, now: Date.UTC(2026, 9, 19, 17, 0) };
 const quiet = console.log; console.log = (...a) => { if (!/^design tools list failed/.test(String(a[0]))) quiet(...a); };   // the design server list is fetched once and fails with no network
 
-const ASSIGNED = ["decider", "handoff", "label", "chat_title", "browser", "notes", "notes_refine", "notes_final", "sidecar_card", "ambient_extract", "ambient_review", "browser_decider", "workers_ai_chat", ...CATEGORIES.map((c) => `chat:${c}`)];
+const ASSIGNED = ["decider", "handoff", "label", "chat_title", "browser", "notes", "notes_refine", "notes_final", "sidecar_card", "ambient_extract", "ambient_review", "browser_decider", "promise_check", "workers_ai_chat", ...CATEGORIES.map((c) => `chat:${c}`)];
 const by = (job) => samples.filter((s) => s.job === job);
 const built = {};
 const build = async (job) => (built[job] ||= await by(job)[0].build(env, ctx));
@@ -57,7 +57,7 @@ for (const s of samples) {
 // The gateway kind the real call site sends, where A's table in the Sandbox has none for the job.
 {
   const kinds = Object.fromEntries(samples.filter((x) => x.meta).map((x) => [x.job, x.meta.kind]));
-  assert.deepEqual(kinds, { ...Object.fromEntries(CATEGORIES.map((c) => [`chat:${c}`, "chat"])), handoff: "chat", browser_decider: "decider", workers_ai_chat: "chat-fallback" });
+  assert.deepEqual(kinds, { ...Object.fromEntries(CATEGORIES.map((c) => [`chat:${c}`, "chat"])), handoff: "chat", browser_decider: "decider", promise_check: "decider", workers_ai_chat: "chat-fallback" });
 }
 
 // Chat: the system prompt is exactly what the real builder returns for the same inputs, and the request carries tools, the picture and the notes.

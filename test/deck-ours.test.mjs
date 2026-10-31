@@ -3,13 +3,14 @@
 // - new_deck.mjs --show prints a pattern's markup, and a deck of more than 8 slides from --slides is accepted;
 // - the google-slides skill description doesn't match a plain deck request;
 // - the editing reference names the theme CSS variables and the picture step, and the presentation reference has no template-file or colour ban.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const S = new URL('../src/skills/artifacts/scripts/', import.meta.url).pathname, R = new URL('../src/skills/artifacts/references/', import.meta.url).pathname;
-const work = mkdtempSync(join(tmpdir(), 'deck-ours-')), run = (cmd, args) => spawnSync(cmd, args, { encoding: 'utf8', cwd: work });
+const work = cleanupOnExit(mkdtempSync(join(tmpdir(), 'deck-ours-'))), run = (cmd, args) => spawnSync(cmd, args, { encoding: 'utf8', cwd: work });
 const nd = (P, ...a) => run('node', [S + 'new_deck.mjs', P, '--template', 'coral', '--title', 'T', ...a]);
 // 1. Notes in both shapes reach the built notes (assemble_deck.mjs writes .src/build/notes.json).
 const P = join(work, 'n'); assert.equal(nd(P, '--slides', 'title-cover,media').status, 0);

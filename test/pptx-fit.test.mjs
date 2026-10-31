@@ -1,5 +1,6 @@
 // PowerPoint fit: text in the mapped font (Arial, Arial Narrow, Times New Roman, Courier New) must fit the box the page gave it, and the export's own check
 // must flag text that does not. Deterministic facts only: computed widths against box widths, read back from the written .pptx. No browser and no model.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -13,7 +14,7 @@ const text = (t, font, px, extra = {}) => ({ type: 'text', x: 100, y: 100, w: 60
 // 1. Text that is wider in Arial Narrow than the page's condensed font is made smaller for its own box, and the written file passes the check.
 {
   const items = [text('SUPERCATALOG NUMBER SEVEN', 'Bebas Neue', 140, { w: 500, maxw: 500 }), text('Short', 'Inter', 40, { w: 120 })];
-  const dir = mkdtempSync(join(tmpdir(), 'pptxfit-')); mkdirSync(join(dir, '.src', 'build'), { recursive: true });
+  const dir = cleanupOnExit(mkdtempSync(join(tmpdir(), 'pptxfit-'))); mkdirSync(join(dir, '.src', 'build'), { recursive: true });
   writeFileSync(join(dir, '.src', 'build', 'pptx.json'), JSON.stringify({ title: 't', slides: [{ items, notes: '' }] }));
   const r = spawnSync('python3', ['-I', S, dir], { encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr);
   const out = JSON.parse(r.stdout.trim().split('\n').pop());
@@ -61,7 +62,7 @@ print(json.dumps({"n":len(g["overflows"](prs.slides[0],1))}))`);
 
 // 5. Without the width table the export still succeeds, fits nothing and says so (make_deck.sh prints a note, never FAIL); the table travels with every template.
 {
-  const dir = mkdtempSync(join(tmpdir(), 'pptxfit-')); mkdirSync(join(dir, '.src', 'build'), { recursive: true }); mkdirSync(join(dir, 'scripts'));
+  const dir = cleanupOnExit(mkdtempSync(join(tmpdir(), 'pptxfit-'))); mkdirSync(join(dir, '.src', 'build'), { recursive: true }); mkdirSync(join(dir, 'scripts'));
   writeFileSync(join(dir, '.src', 'build', 'pptx.json'), JSON.stringify({ title: 't', slides: [{ items: [text('SUPERCATALOG NUMBER SEVEN', 'Bebas Neue', 140, { w: 500, maxw: 500 })], notes: '' }] }));
   copyFileSync(S, join(dir, 'scripts', 'build_pptx.py'));   // away from the repository, so only the deck's own copy and /opt/1hc/deck-templates are searched
   const run1 = (env) => { const r = spawnSync('python3', ['-I', join(dir, 'scripts', 'build_pptx.py'), dir], { encoding: 'utf8', env: { ...process.env, ...env } }); assert.equal(r.status, 0, r.stderr); return JSON.parse(r.stdout.trim().split('\n').pop()); };

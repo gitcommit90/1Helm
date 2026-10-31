@@ -28,7 +28,7 @@ function database() {
   return { sql, DB };
 }
 await test("the retired jobs and the five Hindsight memory jobs are not in the registry, and only the Mem0 jobs mention memory", () => {
-  for (const id of [...RETIRED, ...HS_JOBS]) assert.ok(!JOB_IDS.includes(id), id); assert.equal(JOBS.length, 24);
+  for (const id of [...RETIRED, ...HS_JOBS]) assert.ok(!JOB_IDS.includes(id), id); assert.equal(JOBS.length, 25);
   assert.deepEqual(JOBS.filter((j) => /memory/i.test(`${j.label} ${j.description}`)).map((j) => j.id), ["mem_extract", "mem_embed", "mem_rerank"], "only the memory jobs describe memory work");
   const seed = seedFresh({}); for (const id of [...RETIRED, ...HS_JOBS]) assert.ok(!(id in seed.jobs), `${id} is not seeded`);
 });

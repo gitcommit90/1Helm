@@ -151,10 +151,12 @@ try {
   assert.equal(browserJobRow(sql, loneId).status, "stopped");
   assert.equal((await R.stopBrowserJobs()).working, 0);
 
-  // 6. A deploy during a job still makes it uncertain and never replays an action.
+  // 6. A deploy during a job that has nothing saved to resume from still makes it uncertain and never replays an action
+  //    (a job with saved state resumes instead: test/browser-job-resume.test.mjs).
   gate = deferred();
   const dep = await R.browserToolInner("browser_task", { url: "https://example.com/", task: "Slow", values: [] }, mkTc());
   const depId = Number(dep.out.match(/#(\d+)/)[1]);
+  sql.exec("UPDATE browser_jobs SET resume_state=NULL WHERE id=?", depId);
   await R.browserJobsRecover({ boot: true });
   assert.equal(browserJobRow(sql, depId).status, "uncertain");
   gate.resolve(); gate = null; await Promise.all(waits);

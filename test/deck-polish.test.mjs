@@ -1,5 +1,6 @@
 // Deck polish: the same deck must not reach the person twice, and an impact figure must read alone. Deterministic facts only: Library rows, emitted file
 // cards, names and bytes, and new_deck.mjs answers. No browser and no model.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -65,7 +66,7 @@ computer.files.set('files/2026 AI Impact Report.pptx', pptx);
 const saved = await saveBack(R, ['2026 AI Impact Report.pptx'], new Map([['2026 AI Impact Report.pptx', '1 1']]), { session: SESSION, emit: e => emitted.push(e) });
 assert.deepEqual(saved.failed, []); assert.deepEqual(library(), ['2026 AI Impact Report.html', '2026 AI Impact Report.pptx']);
 // 4. Impact figures read alone: a split figure is refused with the fix, a whole figure builds and a long one gets a smaller size.
-const S = new URL('../src/skills/artifacts/scripts/', import.meta.url).pathname, work = mkdtempSync(join(tmpdir(), 'deck-polish-'));
+const S = new URL('../src/skills/artifacts/scripts/', import.meta.url).pathname, work = cleanupOnExit(mkdtempSync(join(tmpdir(), 'deck-polish-')));
 const deck = (impact, name) => { const data = join(work, name + '.json'); writeFileSync(data, JSON.stringify({ slides: [{ pattern: 'project', title: 'T', users: 'U', problem: 'p', built: 'b', impact }] })); return spawnSync('node', [S + 'new_deck.mjs', join(work, name), '--template', 'emerald-editorial', '--title', 'T', '--data', data], { encoding: 'utf8' }); };
 for (const [i, impact] of [[0, [{ value: '3 days', label: 'to 4 hours: report time cut' }]], [1, [{ value: '9 to 5', label: 'days: close shortened' }]], [2, [{ value: '2.4', label: 'times: reported hazards up' }]], [3, [{ value: '3 days to', label: 'report time' }]], [4, [{ value: 'days', label: 'report time' }]]]) {
   const r = deck(impact, 'bad' + i); assert.equal(r.status, 2, JSON.stringify(impact) + r.stdout); assert.match(r.stdout, /impact/);

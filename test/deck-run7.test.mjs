@@ -1,13 +1,14 @@
 // Deck run 7: a data file whose project entries have no "pattern" key builds (the pattern follows from the fields), every data problem names its slide instead
 // of printing the usage line, and impact figures are sized for any deck however its slide files were written (a data file or the sample's markup filled by hand).
 // Deterministic facts only. The make_deck.sh runs need Chrome and playwright-core and run only where both resolve.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-const S = new URL('../src/skills/artifacts/scripts/', import.meta.url).pathname, work = mkdtempSync(join(tmpdir(), 'deck-run7-'));
+const S = new URL('../src/skills/artifacts/scripts/', import.meta.url).pathname, work = cleanupOnExit(mkdtempSync(join(tmpdir(), 'deck-run7-')));
 const run = (args) => spawnSync('node', [S + 'new_deck.mjs', ...args], { encoding: 'utf8' });
 const T = ['--template', 'blue-professional', '--title', 'T'];
 const wr = (name, o) => { const f = join(work, name); writeFileSync(f, JSON.stringify(o)); return f; };

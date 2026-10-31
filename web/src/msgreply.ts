@@ -132,11 +132,42 @@ function paintCopied() {
     button.innerHTML = `${copied ? IC.tick : IC.copy}<span class="mal">${copied ? "Copied" : "Copy"}</span>`;
   });
 }
-function menuOpen(key: string) {
-  menuClose(); M.open = key; M.top = document.getElementById("scroll")?.scrollTop ?? 0;
-  document.querySelector(`[data-mact="${key}"]`)?.parentElement?.classList.add("macts");
+// Where the held menu goes: a fixed strip near the finger, kept inside the visible part of the chat (never below the bubble, which can be off screen).
+// Above the finger when there is room (the finger hides what is under it), else below it. Pure, so the test can check it.
+export function menuSpot(p: { x: number; y: number }, v: { top: number; bottom: number; left: number; right: number }, w: number, h = 44) {
+  const lift = 28, label = 32, pad = 8, lo = v.top + label, hi = Math.max(lo, v.bottom - h - 4);
+  const y = p.y - h - lift >= lo ? p.y - h - lift : p.y + lift;
+  return { x: Math.round(Math.max(v.left + pad, Math.min(p.x - w / 2, v.right - w - pad))), y: Math.round(Math.max(lo, Math.min(y, hi))) };
 }
-function menuClose() { if (M.open == null) return; M.open = null; document.querySelectorAll(".msgs .bubble.macts").forEach(el => el.classList.remove("macts")); }
+function menuOpen(key: string, at?: { x: number; y: number }) {
+  menuClose(); M.open = key; M.top = document.getElementById("scroll")?.scrollTop ?? 0;
+  const bubble = document.querySelector(`[data-mact="${key}"]`)?.parentElement; bubble?.classList.add("macts");
+  if (!at || !bubble) return;
+  const sc = document.getElementById("scroll")?.getBoundingClientRect(), vv = window.visualViewport;
+  const vw = vv?.width ?? innerWidth, vh = vv?.height ?? innerHeight, w = bubble.querySelector<HTMLElement>(":scope>.mact")?.offsetWidth || 150;
+  const s = menuSpot(at, { top: Math.max(sc?.top ?? 0, 0), bottom: Math.min(sc?.bottom ?? vh, vh), left: 0, right: vw }, w);
+  const o = fixedOrigin(bubble), r = document.documentElement.style;
+  r.setProperty("--ma-x", s.x - o.x + "px"); r.setProperty("--ma-y", s.y - o.y + "px");
+  // A drawer opening or being dragged moves the chat under the strip: close it.
+  const cv = bubble.closest<HTMLElement>(".cv"); drawerWatch?.disconnect();
+  if (cv) { drawerWatch = new MutationObserver(() => { if (cv.classList.contains("open") || cv.classList.contains("dragging")) menuClose(); }); drawerWatch.observe(cv, { attributes: true, attributeFilter: ["class"] }); }
+}
+let drawerWatch: MutationObserver | null = null;
+// The top-left corner of the box a position:fixed child of el is placed in. Normally the viewport (0,0), but an ancestor with a transform,
+// filter, perspective, contain or will-change of those (the phone .chat has will-change:transform) becomes that box instead.
+export function fixedOrigin(el: Element) {
+  for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {
+    const c = getComputedStyle(a);
+    if (hasContainingBlock(c)) { const b = a.getBoundingClientRect(); return { x: b.left, y: b.top }; }
+  }
+  return { x: 0, y: 0 };
+}
+export function hasContainingBlock(c: { transform: string; filter: string; perspective: string; contain: string; willChange: string; backdropFilter?: string }) {
+  return (c.transform && c.transform !== "none") || (c.filter && c.filter !== "none") || (c.perspective && c.perspective !== "none") || (c.backdropFilter && c.backdropFilter !== "none")
+    || /paint|layout|strict|content/.test(c.contain || "") || /transform|filter|perspective/.test(c.willChange || "");
+}
+export const offsetSpot = (s: { x: number; y: number }, o: { x: number; y: number }) => ({ x: s.x - o.x, y: s.y - o.y });
+function menuClose() { if (M.open == null) return; M.open = null; drawerWatch?.disconnect(); document.querySelectorAll(".msgs .bubble.macts").forEach(el => el.classList.remove("macts")); }
 // Select text: the message's plain text in a sheet where native selection is allowed (the chat itself blocks it on touch screens).
 function selOpen(plain: string) {
   selClose(); const el = document.createElement("div"); el.id = "ma-sel";
@@ -197,7 +228,7 @@ export function maInit(deps: Deps) {
     if (e.touches.length !== 1 || !key || !t.closest(".msgs") || t.closest(INTERACTIVE) ) return;
     const p = e.touches[0]; lpAt = { x: p.clientX, y: p.clientY, key };
     lp = setTimeout(() => { if (!lpAt || !t.isConnected) return;
-      held = { key, until: Date.now() + 1200 }; menuOpen(key); try { navigator.vibrate?.(8); } catch {} }, 450);
+      held = { key, until: Date.now() + 1200 }; menuOpen(key, { x: p.clientX, y: p.clientY }); try { navigator.vibrate?.(8); } catch {} }, 450);
   }, { passive: true });
   document.addEventListener("touchmove", e => { if (!lpAt) return; const p = e.touches[0]; if (e.touches.length !== 1 || Math.abs(p.clientX - lpAt.x) > 8 || Math.abs(p.clientY - lpAt.y) > 8) { cancel(); held = null; menuClose(); } }, { passive: true });
   document.addEventListener("touchend", () => { if (held) held.until = Date.now() + 700; cancel(); }, { passive: true });

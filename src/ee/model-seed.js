@@ -17,6 +17,8 @@ const MUSE_C = "meta/muse-spark-1.3-contributor", MUSE_S = "meta/muse-spark-1.3"
 const LUNA = "openai/gpt-6-luna", HAIKU = "anthropic/claude-haiku-5.5";
 const OSS120 = "openai/gpt-oss-120b", GLM = "z-ai/glm-5.3-flash";
 const PPLX_DECIDER = "perplexity/pplx-decider-v1.1-27b";
+// The promise check job starts on this decision model (Captain 2026-10-31). Liquid D1.1 answers only OpenRouter's decision endpoint, like the request sorter's model.
+export const PROMISE_CHECK_MODEL = "liquid/d1.1";
 // The starting model of the Mem0 extraction job (mem_extract): an OpenRouter latest alias, which keeps the value the job copied from the removed memory retain job.
 const MEM_EXTRACT = "~openai/gpt-luna-latest", MEM_EXTRACT_EFFORT = "low";
 // Speech to text, in order (the Captain, 2026-10-15, "it is an accuracy choice"): AssemblyAI Universal-3.6 Pro first, then the earlier order.
@@ -42,10 +44,10 @@ export const jobFieldDefaults = (id) => ({ max_output: MAX_OUTPUT[id] ?? null, s
 export const JOB_FIELDS = ["max_output", "sort", "max_price", "results", "timeout_ms"];
 // Jobs a later release added that an older saved version doesn't carry. They are filled in with this value
 // when read or checked, and nothing is written for it.
-export const OPTIONAL_JOB_IDS = ["speaker_labels", "look", "web_search", "browser_decider", "chat_title", "mem_extract", "mem_embed", "mem_rerank"];
+export const OPTIONAL_JOB_IDS = ["speaker_labels", "look", "web_search", "browser_decider", "chat_title", "mem_extract", "mem_embed", "mem_rerank", "promise_check"];
 const MEM_EMBED = "@cf/baai/bge-m3";   // Workers AI, multilingual, 1024 numbers per text, $0.012 per million tokens: the dimension of both Vectorize indexes (mem0-store.js DIMS)
 const MEM_RERANK = "@cf/baai/bge-reranker-base";   // Workers AI, English, $0.00311 per million input tokens (developers.cloudflare.com/workers-ai/models/bge-reranker-base/), 512 tokens for a question and a fact together
-const OPTIONAL_MODEL = { speaker_labels: DIAR_SELF, mem_embed: MEM_EMBED, mem_rerank: MEM_RERANK, look: MOONDREAM, web_search: SEARCH_LINKUP };
+const OPTIONAL_MODEL = { promise_check: PROMISE_CHECK_MODEL, speaker_labels: DIAR_SELF, mem_embed: MEM_EMBED, mem_rerank: MEM_RERANK, look: MOONDREAM, web_search: SEARCH_LINKUP };
 // browser_decider starts as a copy of the request sorter job (model, reasoning level and fallbacks), so `jobs` (the settings' jobs) says which; it adds no model facts.
 // chat_title starts as a copy of the task summaries job (label): model, reasoning level and fallbacks.
 // mem_extract starts on its own model and reasoning level (MEM_EXTRACT), which are the values it used to copy from the removed memory retain job.
@@ -71,6 +73,7 @@ export const SEED_FACTS = {
   // low, high and max and can't turn it off (mandatory), so "none" is sent as "low" there.
   [GLM]: { name: "GLM 5.3 Flash", kinds: ["chore", "classic"], efforts: ["low", "high", "max"], quirks: { reasoning_mandatory: true } },
   [PPLX_DECIDER]: { name: "Perplexity Decider", kinds: ["decider"], efforts: [] },
+  [PROMISE_CHECK_MODEL]: { name: "Liquid D1.1", kinds: ["decider"], efforts: [] },
   // The extraction job's latest alias (OpenRouter resolves it to a current model when the call is made). Luna takes no temperature.
   [MEM_EXTRACT]: { name: "Luna (latest)", kinds: ["chat", "chore"], efforts: ["default", "none", "low", "medium", "high", "xhigh", "max"], quirks: { no_temperature: true, rate_limit_waits: true } },
   // formats: the input_audio formats it accepts (checked 2026-10-15: webm, m4a, mp4, mp3, ogg and flac answer 400 "only wav is supported";
@@ -225,6 +228,7 @@ export function seedFromLegacy(env = {}, legacy = null) {
   jobs.browser_decider = optionalJobDefault("browser_decider", jobs).job;
   jobs.chat_title = optionalJobDefault("chat_title", jobs).job;
   jobs.mem_extract = optionalJobDefault("mem_extract", jobs).job;
+  jobs.promise_check = optionalJobDefault("promise_check", jobs).job;
   // The chat list becomes the General category (its models are in the catalog because the list is a job while the catalog is made), then the job goes.
   return withRoutingConfig(finish(jobs, legacy?.catalog || {}), { zdrThirdModel: ROUTING_ZDR_THIRD_MODEL });
 }

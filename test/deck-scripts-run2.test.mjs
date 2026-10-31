@@ -1,12 +1,13 @@
 // Deck scripts: a relative project folder, a removed piece takes its empty pill with it, playwright-core is found when a script was
 // copied elsewhere, the PASS line is last, and the PDF hides navigation. Deterministic facts only; no model, no browser for the first four.
+import { cleanupOnExit } from "./stubs/cleanup.mjs";
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const S = new URL('../src/skills/artifacts/scripts/', import.meta.url).pathname;
-const work = mkdtempSync(join(tmpdir(), 'deck-run2-'));
+const work = cleanupOnExit(mkdtempSync(join(tmpdir(), 'deck-run2-')));
 // 1. new_deck with a relative folder and a relative --data file, and a closing slide whose small pieces are "".
 const ends = JSON.parse(readFileSync(new URL('../app-assets/deck-templates/blue-professional/ends.json', import.meta.url)));
 const listing = execFileSync('node', [S + 'new_deck.mjs', '--patterns', 'blue-professional'], { encoding: 'utf8' });
