@@ -61,14 +61,23 @@ export function validateStructured(value, schema, path = "$", depth = 0) {
   else fail("has an unsupported schema type");
   return value;
 }
-export function parseStructuredResponse(response, schema) {
+// Drops fields a schema does not list (objects only, recursively), so an answer with an extra field can still be used.
+export function pruneUnknownFields(value, schema, depth = 0) {
+  if (depth > 64 || !schema || !value || typeof value !== "object") return value;
+  if (Array.isArray(value)) return schema.type === "array" && schema.items ? value.map(v => pruneUnknownFields(v, schema.items, depth + 1)) : value;
+  if (schema.type !== "object" || !schema.properties) return value;
+  const out = {};
+  for (const [k, v] of Object.entries(value)) if (Object.hasOwn(schema.properties, k)) out[k] = pruneUnknownFields(v, schema.properties[k], depth + 1);
+  return out;
+}
+export function parseStructuredResponse(response, schema, { prune = false } = {}) {
   const c = response?.choices?.[0], m = c?.message;
   if (!c || response.error || m?.refusal || m?.tool_calls?.length || c.finish_reason !== "stop") throw new StructuredOutputError("missing, refused, or incomplete answer");
   if (typeof m?.content !== "string") throw new StructuredOutputError("missing JSON text");
   if (m.content.length > 1_000_000) throw new StructuredOutputError("JSON text exceeds limit");
   let value;
   try { value = JSON.parse(m.content); } catch { throw new StructuredOutputError("invalid JSON"); }
-  return validateStructured(value, schema);
+  return validateStructured(prune ? pruneUnknownFields(value, schema) : value, schema);
 }
 export function addStructuredUsage(total, usage = {}) {
   for (const [k, v] of Object.entries(usage || {})) {
@@ -85,7 +94,7 @@ export function workersStructuredResponse(r) {
 }
 // The body structuredChat sends for a request: stream off and the strict JSON format of the schema.
 export const structuredBody = (request, name, schema) => ({ ...request, stream: false, response_format: structuredFormat(name, schema) });
-export async function structuredChat(call, request, { name, schema, maxAttempts = 2, onUsage } = {}) {
+export async function structuredChat(call, request, { name, schema, maxAttempts = 2, onUsage, prune = false } = {}) {
   const usage = {}; let attempts = 0;
   const body = structuredBody(request, name, schema);
   while (attempts < Math.max(1, Math.min(3, maxAttempts))) {
@@ -96,7 +105,7 @@ export async function structuredChat(call, request, { name, schema, maxAttempts 
       const response = r instanceof Response ? JSON.parse(await boundedText(r, 8_000_000)) : r;
       addStructuredUsage(usage, response?.usage);
       await onUsage?.(response?.usage || {}, response);
-      return { data: parseStructuredResponse(response, schema), response, usage, attempts };
+      return { data: parseStructuredResponse(response, schema, { prune }), response, usage, attempts };
     } catch (e) {
       e.usage = usage; e.attempts = attempts;
       if (!e.structured || attempts >= Math.max(1, Math.min(3, maxAttempts))) throw e;

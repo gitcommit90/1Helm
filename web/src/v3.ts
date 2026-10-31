@@ -3231,7 +3231,7 @@ async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
       if (wbLive) { (r.cards ??= []).push({ t: "browser", url: wb.url, text: wb.text || undefined, stored: true } as any); const key = `${s.id}|${wb.url}|${wb.text}`; if (wb.text && !HANDOFF_OPENED.has(key)) { HANDOFF_OPENED.add(key); if (route().s === s) openPC(ch.slug, wb.url, wb.text); } }
       msgs.push(r);
       s.messages = msgs; s.state = "working"; s.rawLine = d.live.line || ""; liveAttach(ch, s, r);
-    } else if (!s.streaming && d.session?.state === "working" && !d.session.native_progress && !(Number(d.session.helpers) > 0 && !d.session.line)) {
+    } else if (!s.streaming && d.session?.state === "working" && !d.session.native_progress && !d.session.background && !(Number(d.session.helpers) > 0 && !d.session.line)) {
       // A worker-only task has no Primary reply to resume. Other working tasks
       // without a live turn were interrupted by an update and should reattach.
       const r: Msg = { id: nextId++, role: "agent", body: "", at: Date.now(), steps: [] }; msgs.push(r);

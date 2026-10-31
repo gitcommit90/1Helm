@@ -4549,6 +4549,8 @@ export class Resident extends DurableObject {
     const nativeProgress = !tc && this.nativeProgress?.(row.id);
     const checkin = !tc && this.spendWaiting?.(row.id);
     const routedWork = !tc && dynamicRoutingOn(this.env) && this.sql.exec("SELECT 1 FROM helpers WHERE session=? AND dynamic_routing=1 AND required_delegation=1 AND status='running' LIMIT 1",row.id).toArray().length > 0;
+    // A browser job that is queued, running or stopping keeps the task working after its turn ended, until the job's result starts the next turn.
+    let browserJob = false; if (!tc) { try { browserJob = !!activeBrowserJob(this.sql, row.id); } catch {} }
     const pending = pendingInputs(this.sql,row.id);
     // A worker that returned is waiting for Primary's review turn (handed=0: the review has not started yet; once it starts it is a live turn). The task is still working until the
     // review ends in approve_subagent or message_subagent; only a question or approval for the person overrides it. A helper whose review never finishes is
@@ -4563,8 +4565,8 @@ export class Resident extends DurableObject {
     }
     // A task marked done never waits on the person, whatever a stale approval, check-in, question or flag still says (the app counts only open tasks as "Needs you").
     const needs = !row.done && !!(nPend || pending.length || rowWaiting || checkin || browserPause);
-    const state = tc || resuming || nativeProgress || routedWork || reviewPending ? "working" : needs ? "waiting" : nJobs ? "watching" : "ready";
-    return { id: row.id, title: row.title, title_manual: !!row.title_manual, title_revision: Number(row.title_revision || 0), pinned: !!row.pinned, section: row.section || null, done: !!row.done, done_at: row.done_at, state, line: tc ? (tc.line || "thinking") : nativeProgress ? nativeProgress.line : resuming ? "picking up where it left off (1Helm was just updated)" : null, ...(nativeProgress?{native_progress:nativeProgress}:{}), ...(tc?.slotWait ? { queued: true } : {}),
+    const state = tc || resuming || nativeProgress || routedWork || reviewPending || browserJob && !needs ? "working" : needs ? "waiting" : nJobs ? "watching" : "ready";
+    return { id: row.id, title: row.title, title_manual: !!row.title_manual, title_revision: Number(row.title_revision || 0), pinned: !!row.pinned, section: row.section || null, done: !!row.done, done_at: row.done_at, state, line: tc ? (tc.line || "thinking") : nativeProgress ? nativeProgress.line : needs ? null : browserJob ? "working in the browser" : resuming ? "picking up where it left off (1Helm was just updated)" : null, ...(nativeProgress?{native_progress:nativeProgress}:{}), ...(browserJob && !needs ? { background: "browser" } : {}), ...(tc?.slotWait ? { queued: true } : {}),
       pending_inputs: pending, waiting: tc || !needs ? null : nPend ? "approval" : pending.length ? "answer" : rowWaiting || (browserPause ? "browser" : null) || (checkin ? "checkin" : null), jobs: nJobs, unread: !!row.last_reply_at && row.last_reply_at > row.seen_at,
       created: row.created, updated: row.updated, preview: row.preview || "", default: row.id === this.getRaw("default_session"), helpers: this.helperCount ? this.helperCount(row.id) : 0, ...this.pomoField(row.id), ...this.lnField(row.id), ...((texts || new Set(this.textsSessions())).has(row.id) ? { texts: true } : {}) };
   }
