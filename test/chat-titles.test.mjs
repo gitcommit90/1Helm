@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { world, HANG, tick } from "./deploy-harness.mjs";
 import { CHAT_TITLE_INSTRUCTION, CHAT_TITLE_TAIL, cleanChatTitle, fallbackChatTitle, claimChatTitle, applyChatTitle, chatTitleRequest, startChatTitle, nameChat, newAutoChat } from "../src/chat-titles.js";
+import { titleFrom } from "../src/resident.js";
 import { labelRequest, skipLabeller, parseLabels } from "../src/tracker.js";
 import { jobDef } from "../src/ee/model-jobs.js";
 import { SEED } from "./helpers/seed-settings.mjs";
@@ -36,6 +37,36 @@ await test("the model is sent the message and the instruction, and the answer is
   assert.equal(cleanChatTitle("<think>hmm</think>One two three"), "One two three");
   for (const text of [null, {}, "", "🌱", "Garden", "Garden plans", "One two three four five six seven eight", "x ".repeat(3) + "y".repeat(80)]) assert.equal(cleanChatTitle(text), null);
   assert.equal(cleanChatTitle("a b c d e f g"), "a b c d e f g");
+});
+await test("the placeholder name keeps the characters as typed", async () => {
+  const cases = [
+    ["Let's plan the trip", "Let's plan the trip"], ["Let\u2019s plan the trip", "Let\u2019s plan the trip"], ["\u{1F389} party ideas", "\u{1F389} party ideas"],
+    ["\u{1F468}\u200D\u{1F469}\u200D\u{1F467} family trip ideas", "\u{1F468}\u200D\u{1F469}\u200D\u{1F467} family trip ideas"],
+    ["\u{1F1EB}\u{1F1F7} trip plan", "\u{1F1EB}\u{1F1F7} trip plan"], ["\u{1F44D}\u{1F3FD} thanks a lot", "\u{1F44D}\u{1F3FD} thanks a lot"], ["\u2764\uFE0F love notes", "\u2764\uFE0F love notes"],
+    ["C++ vs Rust", "C++ vs Rust"], ["e-mail Bob & Alice", "E-mail Bob & Alice"], ["50% off?", "50% off"], ["caf\u00E9 cr\u00E8me", "Caf\u00E9 cr\u00E8me"],
+    ["\u{1F389}", "\u{1F389} chat"], ["Garden", "Garden chat"], ["hey, can you please fix my e-mail", "Fix my e-mail"], ["Hi! could you plan $50 dinner #2?", "Plan $50 dinner #2"],
+    ["", "New chat"], ["   ", "New chat"], ["?!", "New chat"],
+    ["one two three four five six", "One two three four"], [`${"x".repeat(31)} short words`, "Short words"],
+    ["\u{1F468}\u200D\u{1F469}\u200D\u{1F467}".repeat(31) + " ok", "Ok chat"],
+  ];
+  cases.push(["report.pdf", "Report.pdf"], ["notes.v2.txt", "Notes.v2.txt"]);
+  for (const [input, want] of cases) assert.equal(fallbackChatTitle(input), want, JSON.stringify(input));
+  const long = fallbackChatTitle(Array.from({ length: 4 }, () => "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}".repeat(2)).join(" "));
+  assert.ok(long.length <= 80 && !/[\uD800-\uDBFF]$/.test(long) && !/^[\uDC00-\uDFFF]/.test(long));
+});
+await test("titleFrom cuts a long title between characters, never inside an emoji", async () => {
+  const fam = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}", flag = "\u{1F1EB}\u{1F1F7}";
+  assert.equal(titleFrom("hey, can you please plan Let's go"), "Plan Let's go");
+  assert.equal(titleFrom("\u{1F389} party & C++ ideas?"), "\u{1F389} party & C++ ideas");
+  for (const unit of [fam, flag, "\u{1F44D}\u{1F3FD}", "\u2764\uFE0F"]) {
+    for (const pad of ["", "x", "xx", "xxx"]) {
+      const title = titleFrom(pad + unit.repeat(40));
+      assert.ok(title.endsWith("\u2026")); const body = title.slice(0, -1);
+      assert.ok(body.length <= 60, `${body.length}`);
+      assert.equal(body.replace(new RegExp(unit, "g"), "").replace(/^[xX]*$/, ""), "", JSON.stringify(title));   // only whole units remain
+    }
+  }
+  assert.equal(titleFrom("word ".repeat(20)).endsWith("\u2026"), true);
 });
 await test("chat_title is its own Models page job, and the label job is renamed but keeps its id", async () => {
   assert.deepEqual([jobDef("chat_title").kind, jobDef("chat_title").group, jobDef("chat_title").label], ["chore", "background", "Chat titles"]);
@@ -86,7 +117,7 @@ await test("the instant title never touches texting or default threads, named ch
   const fileOnly = R.resolveSession("new", "report.pdf", "").id;
   assert.equal(R.getRaw(`chat_title_pending:${fileOnly}`), undefined);
   for (const id of [named, existing, main, texts, fileOnly]) assert.equal(startChatTitle(R, id), null);
-  assert.equal(before(), 0); assert.equal(R.session(fileOnly).title, "Report pdf");
+  assert.equal(before(), 0); assert.equal(R.session(fileOnly).title, "Report.pdf");
   const manual = R.resolveSession("new", MESSAGE).id; await R.updateSession(manual, { title: "Manual garden" }); assert.equal(startChatTitle(R, manual), null);
   const removed = R.resolveSession("new", MESSAGE).id; await R.removeSession(removed); assert.equal(startChatTitle(R, removed), null);
   await W.settle(); assert.equal(before(), 0);

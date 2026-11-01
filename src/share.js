@@ -4,6 +4,8 @@
 // address is ready) → https://<APP_HOST>/s/<slug>. Both stay valid: a link made on one keeps working.
 //   <base>/f/<token>/<file name>   a file share link (src: a Library file). Anyone with it can view/download it, no sign-in.
 //   <base>/p/<name>/…              a published page (src/publish.js).
+//   <base>/c/<token>               a shared chat: a static copy of one chat, drawn on the server (src/share-chat.js). Same token scheme as
+//                                  file links (table share_chats, one link per chat). Pictures of the copy are at <base>/c/<token>/img/<n>.
 //
 // File links: token = HMAC-SHA256 (key derived from VAULT_KEY) over a random link id + a random 128-bit salt, base64url, 43 chars
 // (256 bits). D1 keeps sha256(token) → tenant, file, R2 key, expiry; the token itself is never stored (the owner's list recomputes
@@ -24,6 +26,8 @@
 //   · POST /share/pages/<name>/unpublish · POST /share/offers/<id>/accept {name?, expires?} · POST /share/offers/<id>/decline
 import { PAGE_MAX_BYTES, PAGES_PER_TENANT, NAME_RE, pageName, pageView, listPages, getPage, freeName, stageFromR2, stageFromComputer, publishVersion, unpublish, dropPrefix, servePage } from "./publish.js";
 import { boundedJson, BodyTooLargeError } from "./bounded-body.js";
+import { stPut, stDeleteListed, room, fullMessage } from "./storage.js";
+import { SNAPSHOT_VERSION, CHAT_IMG_MAX_BYTES, CHAT_IMG_TOTAL_BYTES, CHAT_IMG_MAX, CHAT_JSON_MAX_BYTES, CHATS_PER_TENANT, IMG_TYPES, sniffImage, snapshotFromDetail, renderChatPage, chatHeaders } from "./share-chat.js";
 
 export const LINK_MAX_BYTES = 50 * 1024 * 1024;
 export const LINKS_PER_TENANT = 200;
@@ -58,7 +62,8 @@ const slugHost = (env, host) => {
 };
 // Is this request for a public share route? (index.js: answered before any sign-in gate; the dev strip is never injected.)
 export function isPublicShare(env, url) {
-  return /^\/s\/[a-z0-9-]+\/(f|p)\/./.test(url.pathname) || (!!slugHost(env, url.hostname) && /^\/(f|p)\/./.test(url.pathname));
+  return /^\/s\/[a-z0-9-]+\/(f|p)\/./.test(url.pathname) || /^\/s\/[a-z0-9-]+\/c\/[A-Za-z0-9_-]{43}(\/|$)/.test(url.pathname)
+    || (!!slugHost(env, url.hostname) && (/^\/(f|p)\/./.test(url.pathname) || /^\/c\/[A-Za-z0-9_-]{43}(\/|$)/.test(url.pathname)));   // /c/<43 chars>: a card page's token is another length, so texted cards keep working
 }
 
 // ---- file links ----
@@ -151,13 +156,137 @@ export async function servePublic(req, env, url) {
   const host = slugHost(env, url.hostname);
   if (s) { slug = s[1]; rest = s[2]; base = `/s/${slug}`; if (host && host !== slug) return notFound(); }   // someone's address only serves their own things
   else { slug = host; rest = url.pathname; base = ""; }
-  if (!slug || !/^\/(f|p)\/./.test(rest)) return null;
+  if (!slug || !/^\/(f|p)\/./.test(rest) && !/^\/c\/[A-Za-z0-9_-]{43}(\/|$)/.test(rest)) return null;
   if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
   const t = await env.DB.prepare("SELECT id, slug FROM tenants WHERE slug=?").bind(slug).first();
   if (!t) return notFound();
   const f = rest.match(/^\/f\/([^/]+)(?:\/.*)?$/); if (f) return serveLink(req, env, t, f[1]);
   const p = rest.match(/^\/p\/([^/]+)(\/.*)?$/); if (p) return servePage(req, env, t, p[1], p[2] || "", base);
+  const c = rest.match(/^\/c\/([^/]+)(?:\/img\/(\d{1,3}))?\/?$/); if (c) return serveChat(req, env, t, c[1], c[2] == null ? null : Number(c[2]), `${base}/c/${c[1]}`);
   return notFound();
+}
+
+// ---- shared chats: a static copy of one chat at a public address (src/share-chat.js draws it) ----
+// One link per chat. Making it copies the chat as it is at that moment (and the pictures it shows) into R2; later messages never appear
+// until "Update link", which writes a new copy at the same address. The token is made like a file link's (HMAC of id + salt) and never
+// stored. Revoke, deleting the chat, its channel or the account removes the row and the copy, so the address answers 404 at once.
+const archiveOf = (env, tid) => env.ARCHIVE.get(env.ARCHIVE.idFromName(`archive:${tid}`));
+const CHAT_PREFIX = /^t\/[^/]+\/chats\/[0-9a-f-]{36}\/[0-9a-f-]{36}$/;
+const chatUrl = async (env, base, c) => `${base}/c/${await linkToken(env, c.id, c.salt)}`;
+async function chatView(env, base, c) { return { id: c.id, channel: c.channel, session: c.session, title: c.title, messages: Number(c.messages || 0), pictures: Number(c.pictures || 0), bytes: Number(c.bytes || 0), created_at: Number(c.created_at), updated_at: Number(c.updated_at), url: await chatUrl(env, base, c) }; }
+const listChatRows = async (env, tenantId) => { try { return (await env.DB.prepare("SELECT * FROM share_chats WHERE tenant_id=? ORDER BY updated_at DESC").bind(tenantId).all()).results || []; } catch { return []; } };
+export async function dropChatCopy(env, prefix) {
+  if (!prefix || !CHAT_PREFIX.test(prefix)) return;
+  let cursor;
+  do { const l = await env.WS.list({ prefix: `${prefix}/`, cursor, limit: 1000 }); if (l.objects?.length) await stDeleteListed(env, l.objects); cursor = l.truncated ? l.cursor : null; } while (cursor);
+}
+// Deleting a chat or a channel (deletion.js): the links and copies of what is gone. Pass { channel } for a channel or { channel, session } for one chat.
+export async function shareChatsGone(env, tenantId, { channel, session = null }) {
+  if (!tenantId || !channel) return 0;
+  let rows = []; try { rows = (await (session == null ? env.DB.prepare("SELECT id, prefix FROM share_chats WHERE tenant_id=? AND channel=?").bind(tenantId, channel) : env.DB.prepare("SELECT id, prefix FROM share_chats WHERE tenant_id=? AND channel=? AND session=?").bind(tenantId, channel, String(session))).all()).results || []; } catch { return 0; }
+  for (const r of rows) { await env.DB.prepare("DELETE FROM share_chats WHERE id=?").bind(r.id).run(); await dropChatCopy(env, r.prefix).catch(() => {}); }
+  return rows.length;
+}
+// The chat as the app loads it (the channel must be the person's own), copied into a snapshot with its pictures. → { snap, pics: [{ n, mime, bytes, data }] } | { error, status }
+async function takeChat(env, t, channel, sessionId) {
+  const chans = await archiveOf(env, t.id).channels().catch(() => []), ch = (chans || []).find((c) => (c.slug || c.name) === channel);
+  if (!ch) return { error: "That chat isn't there anymore.", status: 404 };
+  const R = resident(env, t.id, channel); await R.bind(t.id, channel, String(ch.id));
+  const d = await R.sessionDetail(sessionId, 1000);
+  if (!d || d.error || !d.session) return { error: "That chat isn't there anymore.", status: 404 };
+  const { messages } = snapshotFromDetail(d), pics = [], byRef = new Map(); let total = 0;
+  const copy = async (ref) => {
+    const key = `${ref.kind}:${ref.id}`; if (byRef.has(key)) return byRef.get(key);
+    let r2key = null; try { r2key = ref.kind === "shot" ? (await R.shot(ref.id))?.r2key : (await R.fileRow(ref.id))?.r2key; } catch {}
+    let n = null;
+    if (r2key && pics.length < CHAT_IMG_MAX) {
+      const head = await env.WS.head(r2key).catch(() => null);
+      if (head && head.size <= CHAT_IMG_MAX_BYTES && total + head.size <= CHAT_IMG_TOTAL_BYTES) {
+        const o = await env.WS.get(r2key).catch(() => null), data = o ? new Uint8Array(await o.arrayBuffer()) : null, mime = data ? sniffImage(data) : null;
+        if (data && mime && IMG_TYPES.has(mime)) { n = pics.length; pics.push({ n, mime, bytes: data.byteLength, data }); total += data.byteLength; }
+      }
+    }
+    byRef.set(key, n); return n;
+  };
+  for (const m of messages) {
+    const items = [];
+    for (const it of m.items) {
+      const n = it.ref ? await copy(it.ref) : null;
+      if (n != null) items.push({ k: "img", ...(it.shot ? { shot: true } : {}), n, name: it.name || "", caption: it.caption || "", mime: it.mime || "", bytes: pics[n].bytes });
+      else if (it.k === "file") items.push({ k: "file", name: it.name, mime: it.mime, bytes: it.bytes });   // a name tile; a screenshot that could not be copied is left out
+    }
+    m.items = items;
+  }
+  const snap = { v: SNAPSHOT_VERSION, title: String(d.session.title || "Chat").slice(0, 200), shared_at: Date.now(), messages };
+  if (new TextEncoder().encode(JSON.stringify(snap)).length > CHAT_JSON_MAX_BYTES) return { error: "This chat is too long to share.", status: 413 };
+  return { snap, pics };
+}
+// Write a copy to R2 under a new version prefix. → { prefix, bytes } | { error, status }
+async function saveChatCopy(env, tenantId, id, { snap, pics }) {
+  const body = JSON.stringify(snap), bytes = new TextEncoder().encode(body).length + pics.reduce((a, p) => a + p.bytes, 0);
+  const rm = await room(env, tenantId, bytes); if (!rm.ok) return { error: fullMessage(rm), storage_full: true, status: 507 };
+  const prefix = `t/${tenantId}/chats/${id}/${crypto.randomUUID()}`;
+  try {
+    await stPut(env, `${prefix}/snapshot.json`, body, { httpMetadata: { contentType: "application/json; charset=utf-8" } });
+    for (const p of pics) await stPut(env, `${prefix}/img/${p.n}`, p.data, { httpMetadata: { contentType: p.mime } });
+  } catch (e) { await dropChatCopy(env, prefix).catch(() => {}); return { error: "Couldn't save the copy. Try again.", status: 500 }; }
+  return { prefix, bytes };
+}
+export async function createChatShare(env, t, { channel, session }) {
+  const base = publicBase(env, t), now = Date.now();
+  const have = await env.DB.prepare("SELECT * FROM share_chats WHERE tenant_id=? AND channel=? AND session=?").bind(t.id, channel, session).first();
+  if (have) return { link: await chatView(env, base, have), existing: true };
+  const n = await env.DB.prepare("SELECT COUNT(*) n FROM share_chats WHERE tenant_id=?").bind(t.id).first();
+  if (Number(n?.n || 0) >= CHATS_PER_TENANT) return { error: `You can have up to ${CHATS_PER_TENANT} shared chats. Delete one in the Library first.`, status: 409 };
+  const took = await takeChat(env, t, channel, session); if (took.error) return took;
+  const id = crypto.randomUUID(), saved = await saveChatCopy(env, t.id, id, took); if (saved.error) return saved;
+  const salt = b64url(crypto.getRandomValues(new Uint8Array(16))), token = await linkToken(env, id, salt);
+  const row = { id, token_hash: await tokenHash(token), salt, tenant_id: t.id, channel, session, title: took.snap.title, prefix: saved.prefix, messages: took.snap.messages.length, pictures: took.pics.length, bytes: saved.bytes, created_at: now, updated_at: now };
+  const r = await env.DB.prepare("INSERT OR IGNORE INTO share_chats (id,token_hash,salt,tenant_id,channel,session,title,prefix,messages,pictures,bytes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind(row.id, row.token_hash, row.salt, row.tenant_id, row.channel, row.session, row.title, row.prefix, row.messages, row.pictures, row.bytes, row.created_at, row.updated_at).run();
+  if (!r.meta?.changes) {   // another tap made it first: keep that one
+    await dropChatCopy(env, saved.prefix).catch(() => {});
+    const again = await env.DB.prepare("SELECT * FROM share_chats WHERE tenant_id=? AND channel=? AND session=?").bind(t.id, channel, session).first();
+    return again ? { link: await chatView(env, base, again), existing: true } : { error: "Couldn't make the link. Try again.", status: 500 };
+  }
+  return { link: await chatView(env, base, row), existing: false };
+}
+// "Update link": the chat as it is now replaces the copy, at the same address.
+export async function updateChatShare(env, t, id) {
+  const c = await env.DB.prepare("SELECT * FROM share_chats WHERE id=? AND tenant_id=?").bind(String(id), t.id).first();
+  if (!c) return { error: "No such link.", status: 404 };
+  const took = await takeChat(env, t, c.channel, c.session);
+  if (took.status === 404) { await revokeChatShare(env, t.id, c.id); return took; }   // the chat is gone, so its link is too
+  if (took.error) return took;
+  const saved = await saveChatCopy(env, t.id, c.id, took); if (saved.error) return saved;
+  const now = Date.now();
+  await env.DB.prepare("UPDATE share_chats SET title=?, prefix=?, messages=?, pictures=?, bytes=?, updated_at=? WHERE id=?").bind(took.snap.title, saved.prefix, took.snap.messages.length, took.pics.length, saved.bytes, now, c.id).run();
+  if (c.prefix !== saved.prefix) await dropChatCopy(env, c.prefix).catch(() => {});
+  return { link: await chatView(env, publicBase(env, t), { ...c, title: took.snap.title, prefix: saved.prefix, messages: took.snap.messages.length, pictures: took.pics.length, bytes: saved.bytes, updated_at: now }) };
+}
+export async function revokeChatShare(env, tenantId, id) {
+  const c = await env.DB.prepare("SELECT id, prefix FROM share_chats WHERE tenant_id=? AND id=?").bind(tenantId, String(id)).first();
+  if (!c) return { error: "No such link.", status: 404 };
+  await env.DB.prepare("DELETE FROM share_chats WHERE id=?").bind(c.id).run();
+  await dropChatCopy(env, c.prefix).catch(() => {});
+  return { ok: true };
+}
+// GET <base>/c/<token> (the page) and <base>/c/<token>/img/<n> (a picture of the copy). Public: no cookie is read, nothing is set.
+export async function serveChat(req, env, tenant, token, imgN, base) {
+  if (!TOKEN_RE.test(token)) return notFound();
+  const c = await env.DB.prepare("SELECT * FROM share_chats WHERE token_hash=?").bind(await tokenHash(token)).first();
+  if (!c || c.tenant_id !== tenant.id) return notFound();
+  if (imgN != null) {
+    const o = await env.WS.get(`${c.prefix}/img/${imgN}`, { onlyIf: req.headers }); if (!o) return notFound();
+    const mime = o.httpMetadata?.contentType || ""; if (!IMG_TYPES.has(mime)) return notFound();
+    const h = { "content-type": mime, "content-disposition": "inline", "x-content-type-options": "nosniff", "x-robots-tag": "noindex, nofollow", "cache-control": "private, no-cache", "referrer-policy": "no-referrer", "content-security-policy": "default-src 'none'; sandbox", etag: o.httpEtag };
+    if (!("body" in o) || !o.body) return new Response(null, { status: 304, headers: h });
+    return new Response(req.method === "HEAD" ? null : o.body, { headers: { ...h, "content-length": String(o.size) } });
+  }
+  const o = await env.WS.get(`${c.prefix}/snapshot.json`);
+  if (!o) { await env.DB.prepare("DELETE FROM share_chats WHERE id=?").bind(c.id).run(); return notFound(); }
+  let snap; try { snap = JSON.parse(await o.text()); } catch { return notFound(); }
+  return new Response(req.method === "HEAD" ? null : renderChatPage(snap, { base }), { headers: chatHeaders() });
 }
 
 // ---- offers (what the helper prepared; the person's tap decides) ----
@@ -220,16 +349,16 @@ export async function shareApi(req, env, t, sub, access) {
   const out = (d, ok = 200) => new Response(JSON.stringify(d), { status: d?.error ? d.status || 400 : ok, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   const base = publicBase(env, t);
   if (sub === "/api/share" && req.method === "GET") {
-    const [links, pages] = await Promise.all([liveLinks(env, t.id), listPages(env, t.id)]);
-    return out({ base, links: await Promise.all(links.map((l) => linkView(env, base, l))), pages: pages.map((p) => pageView(base, p)), limits: { link_bytes: LINK_MAX_BYTES, page_bytes: PAGE_MAX_BYTES, links: LINKS_PER_TENANT, pages: PAGES_PER_TENANT } });
+    const [links, pages, chats] = await Promise.all([liveLinks(env, t.id), listPages(env, t.id), listChatRows(env, t.id)]);
+    return out({ base, links: await Promise.all(links.map((l) => linkView(env, base, l))), pages: pages.map((p) => pageView(base, p)), chats: await Promise.all(chats.map((c) => chatView(env, base, c))), limits: { link_bytes: LINK_MAX_BYTES, page_bytes: PAGE_MAX_BYTES, links: LINKS_PER_TENANT, pages: PAGES_PER_TENANT, chats: CHATS_PER_TENANT } });
   }
   if (req.method !== "POST") return out({ error: "method", status: 405 });
   let b;
   try { b = await boundedJson(req, 65536); }
   catch (e) { return out({ error: e instanceof BodyTooLargeError ? "too_large" : "bad_request", status: e instanceof BodyTooLargeError ? 413 : 400 }); }
-  const m = sub.match(/^\/api\/share\/(links|pages|offers)(?:\/([^/]+)(?:\/(revoke|unpublish|accept|decline))?)?$/);
+  const m = sub.match(/^\/api\/share\/(links|pages|offers|chats)(?:\/([^/]+)(?:\/(revoke|unpublish|accept|decline|update))?)?$/);
   if (!m) return out({ error: "not found", status: 404 });
-  const making = (m[1] === "links" && !m[2]) || (m[1] === "pages" && !m[2]) || m[3] === "accept";
+  const making = (m[1] === "links" && !m[2]) || (m[1] === "pages" && !m[2]) || m[3] === "accept" || (m[1] === "chats" && (!m[2] || m[3] === "update"));
   if (making && access?.mode === "read_only") return out({ error: "payment_required", message: access.message || "Your 1Helm plan isn't active, so 1Helm is read-only.", access, status: 402 });
   const chan = String(b.channel || ""), fileId = String(b.file || "");
   if (m[1] === "links" && !m[2]) {
@@ -237,6 +366,14 @@ export async function shareApi(req, env, t, sub, access) {
     return out(await createLink(env, t, { channel: chan, file: await resident(env, t.id, chan).fileRow(fileId), expires: String(b.expires || "never") }));
   }
   if (m[1] === "links" && m[3] === "revoke") return out(await revokeLink(env, t.id, m[2]));
+  // Shared chats: anyone who can open the chat in the app can share it (the channel is looked up in the person's own channels).
+  if (m[1] === "chats" && !m[2]) {
+    const sid = String(b.session || "");
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(chan) || !/^[0-9a-f-]{36}$/.test(sid)) return out({ error: "channel and session are required", status: 400 });
+    return out(await createChatShare(env, t, { channel: chan, session: sid }));
+  }
+  if (m[1] === "chats" && m[3] === "update") return out(await updateChatShare(env, t, m[2]));
+  if (m[1] === "chats" && m[3] === "revoke") return out(await revokeChatShare(env, t.id, m[2]));
   if (m[1] === "pages" && !m[2]) {
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(chan) || !/^[0-9a-f-]{36}$/.test(fileId)) return out({ error: "channel and file are required", status: 400 });
     const f = await resident(env, t.id, chan).fileRow(fileId);

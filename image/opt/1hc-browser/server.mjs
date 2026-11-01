@@ -398,7 +398,8 @@ async function clickRef(c, ref) {
 }
 // select {ref, text} on a dropdown that is not a native SELECT (combobox, listbox, jQuery-UI style list, often backed by a hidden select).
 // Opens the list if needed, finds the item by exact then case-insensitive text (also in a backing select), scrolls it into view, clicks it with a
-// real mouse click, then reads the field back and fails when the choice did not stick. The ref can be the input or its arrow button.
+// real mouse click, then reads back what the page shows and reports it (a mismatch is text, never an error). The ref can be the input or its arrow button.
+// <choice-read> (test/browser-choice-read.test.mjs loads the text between the choice-read and choice-judge markers; keep each block free of outside names)
 const CUSTOM_JS = (ref, want, step) => String.raw`(() => {
   const want = ${JSON.stringify(want)}, step = ${JSON.stringify(step)};
   const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim(), lo = (s) => norm(s).toLowerCase();
@@ -424,14 +425,17 @@ const CUSTOM_JS = (ref, want, step) => String.raw`(() => {
     return true;
   }
   if (step === 'click') { const x = document.querySelector('[data-1hc-opt]'); x && x.click(); return !!x; }
-  if (step === 'read') {   // the visible value, the field's own text and the backing select
+  if (step === 'read') {   // what the page shows after the pick: the field's own value, the control's displayed value element, the marked option, the backing select
     const shown = [e.value, e.innerText, e.getAttribute('aria-valuetext')].map(norm).filter(Boolean);
     const sel = bs && bs.selectedIndex >= 0 ? norm(bs.options[bs.selectedIndex].text) : '';
-    const ok = [...shown, sel].some((v) => lo(v) === lo(want));
+    const NEAR = '[class*="single-value" i],[class*="singleValue" i],[class*="selected-value" i],[class*="selectedValue" i],[class*="chosen" i],[class*="multi-value__label" i],[class*="multiValue" i]';
+    const near = []; for (let p = e, k = 0; p && k < 4 && !near.length; p = p.parentElement, k++) for (const x of p.querySelectorAll(NEAR)) { if (!vis(x) || x.closest('[role=listbox]') || /placeholder/i.test(String(x.className))) continue; const t = norm(x.innerText || x.textContent); if (t) near.push(t); }
+    const marked = []; for (const s of scopes) for (const x of s.querySelectorAll('[aria-selected="true"]')) { const t = norm(x.textContent); if (t) marked.push(t); }
     document.querySelectorAll('[data-1hc-opt]').forEach((x) => x.removeAttribute('data-1hc-opt'));
-    return { ok, shown: shown[0] || '', backing: sel };
+    return { shown, near: near.slice(0, 5), marked: marked.slice(0, 5), backing: sel };
   }
 })()`;
+// </choice-read>
 async function chooseCustom(c, a, fs_) {
   const want = String(a.text ?? ""), r = (step) => evalJS(c, CUSTOM_JS(a.ref, want, step), fs_);
   if (!want) throw new Error(`select needs text: the choice to pick in ${a.ref}`);
@@ -453,10 +457,26 @@ async function chooseCustom(c, a, fs_) {
   } else if (f.backing && await r("backing")) how = "set the backing select";
   else throw new Error(`could not find "${want}" in the dropdown ${a.ref}${f.open ? ` (the open list has ${f.open} items, none with that text; use the exact text of a choice)` : " (the list did not open or has no such item)"}`);
   await sleep(300);
-  const v = await r("read");
-  if (!v.ok) throw new Error(`picked "${want}" in ${a.ref} but the choice did not stick (the field shows "${String(v.shown || v.backing).slice(0, 40)}"). Open the list and try again, or pick another way`);
-  return `chose "${want}" in ${a.ref} (${how}; the field now shows it)`;
+  return describePick(want, a.ref, how, judgeChoice(want, await r("read")));
 }
+// <choice-judge>
+// What the page shows after a pick, decided from the text read in the page. Pure. v = { shown: [], near: [], marked: [], backing: "" }.
+// The field's own value, the control's displayed value element (React-Select style controls show the choice in a sibling element, and the
+// input stays empty), the option marked selected and the backing select all count. A mismatch is reported as text, never thrown,
+// because the page may show the choice somewhere the read did not look.
+function judgeChoice(want, v) {
+  const norm = (x) => String(x || "").replace(/\s+/g, " ").trim(), lo = (x) => norm(x).toLowerCase(), w = lo(want);
+  const arr = (x) => (Array.isArray(x) ? x : x ? [x] : []).map(norm).filter(Boolean);
+  const shown = arr(v?.shown), near = arr(v?.near), marked = arr(v?.marked), backing = norm(v?.backing);
+  const hold = (t) => w.length >= 3 && lo(t).includes(w);   // a displayed item such as "Western Governors University (WGU)" holds the wanted text
+  const where = shown.some((t) => lo(t) === w) ? "the field" : near.some((t) => lo(t) === w || hold(t)) ? "the displayed value" : marked.some((t) => lo(t) === w || hold(t)) ? "the marked option" : lo(backing) === w ? "the hidden list behind the field" : "";
+  return { ok: !!where, where, seen: near[0] || shown[0] || marked[0] || backing || "" };
+}
+function describePick(want, ref, how, j) {
+  if (j.ok) return `chose "${want}" in ${ref} (${how}; the page shows it in ${j.where})`;
+  return `picked "${want}" in ${ref} (${how}), but the page does not clearly show it: ${j.seen ? `the field area shows "${j.seen.slice(0, 60)}"` : "no selected text was visible next to the field"}. Take a new snapshot to check before picking again; many dropdowns show the choice somewhere else on the page.`;
+}
+// </choice-judge>
 // upload {ref, path | paths}: put files from the computer into a page. The ref is a file input (set directly), or a button or link that opens
 // the browser's file chooser (the chooser is intercepted and answered with the files, so sites that hide the real input work too).
 const WAIT_MAX = 10e3, UPLOAD_MAX = 10;
@@ -743,8 +763,11 @@ const OPS = {
     await evalJS(c, "history.back()"); await settle(c); return await snapshot(c);
   },
   async screenshot(b, c) {
-    const r = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 78 });
     const loc = await evalJS(c, "({url: location.href, title: document.title, view: {w: innerWidth, h: innerHeight, scroll_x: Math.round(scrollX), scroll_y: Math.round(scrollY), page_h: Math.round(Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0))}})").catch(() => ({}));
+    // max_width (optional): the picture of the viewport is scaled down to about that many pixels across (the model looks at it; coordinates in the outline do not change).
+    const mw = Number(b.max_width), vw = loc.view?.w || W, vh = loc.view?.h || H;
+    const clip = Number.isFinite(mw) && mw >= 200 && mw < vw ? { x: loc.view?.scroll_x || 0, y: loc.view?.scroll_y || 0, width: vw, height: vh, scale: mw / vw } : null;
+    const r = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 78, ...(clip ? { clip } : {}) });
     const out = { jpeg_base64: r.data, url: loc.url, title: loc.title, ...(loc.view ? { view: loc.view } : {}) };
     if (b.ocr === true) out.ocr = await ocrJpeg(Buffer.from(r.data, "base64"), loc.view?.w);
     return out;

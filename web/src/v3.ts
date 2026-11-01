@@ -22,7 +22,7 @@ import { beeLibInit, beeLibParts, beeLibReset, beeLibEnsure } from "./ee/bee-lib
 import { secInit, secPlus, secList, secRow, secOf, moveMenu, canMove, type CS } from "./sections";   // custom sections of the task list
 import { delInit, rowMore, headDelete, channelMore, sheetRows, MORE } from "./delete";   // deleting a chat / channel / the account
 import { openNewChannel, createViaApi, type NewChannel } from "./newchannel";   // second, for the same reason (New channel sheet)
-import { shInit, shFiles, shCards, shEvent, shCardHtml, shFold, shFileBtn, shViewerBtns, shBadge, shLibHtml, shFileGone } from "./share";   // share links + published pages (its sheet's Esc, too)
+import { shInit, shFiles, shCards, shEvent, shCardHtml, shFold, shFileBtn, shViewerBtns, shBadge, shLibHtml, shFileGone, shHeadBtn, shChatGone } from "./share";   // share links + published pages (its sheet's Esc, too)
 import { orb } from "./activity-orb";
 import { cmodelsInit, cmodelsCard, cmodelsPrivacy } from "./ee/custom-models";   // Settings → Advanced → Custom Model Selection (chat categories of this account; licensed)
 import { marked } from "marked";
@@ -426,7 +426,7 @@ function renderStage() {
   if (isNb()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + nbPage(ch); nbAfter(); nbSync(ch); void nbpLoad(ch); return; }
   if (isCt()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + ctPage(); ctAfter(); return; }
   $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + (s ? `
-    <header class="th"><span class="ho" data-ho="0"><span class="who-chip">${av(ch, "av sm")}${esc(AGENT[ch.slug] ?? ch.name)}</span></span><h1 title="${esc(s.title)}">${canRename(s) ? `<button class="task-title" data-rename="${esc(ch.slug)}|${esc(s.id)}" aria-label="Rename task" title="Rename task"><span data-task-title>${esc(s.title)}</span></button>` : esc(s.title)}</h1><span class="ho" data-ho="1">${headPin(s)}</span>${headDone(s)}${LIVE && s.srv ? `<span class="ho" data-ho="3">${headDelete(ch.slug, s.id)}</span>` : ""}${LIVE ? `${hasFeature("ambient") ? `<span class="ho" data-ho="7">${lnBtn(ch.slug, s.id)}</span>` : ""}<span class="ho" data-ho="6">${pomoBtn(ch.slug, s.id)}</span><span class="ho" data-ho="5">${todoBtn(ch.slug, s.id)}</span><span class="ho" data-ho="4">${tkBtn(ch.slug, s.id)}</span>` : ""}<button class="hmore" data-hmore aria-label="More actions" title="More actions" aria-haspopup="menu" aria-expanded="false" hidden>${MORE}</button></header>
+    <header class="th"><span class="ho" data-ho="0"><span class="who-chip">${av(ch, "av sm")}${esc(AGENT[ch.slug] ?? ch.name)}</span></span><h1 title="${esc(s.title)}">${canRename(s) ? `<button class="task-title" data-rename="${esc(ch.slug)}|${esc(s.id)}" aria-label="Rename task" title="Rename task"><span data-task-title>${esc(s.title)}</span></button>` : esc(s.title)}</h1><span class="ho" data-ho="1">${headPin(s)}</span>${headDone(s)}${LIVE && s.srv ? `<span class="ho" data-ho="2.5">${shHeadBtn(ch.slug, s.id)}</span>` : ""}${LIVE && s.srv ? `<span class="ho" data-ho="3">${headDelete(ch.slug, s.id)}</span>` : ""}${LIVE ? `${hasFeature("ambient") ? `<span class="ho" data-ho="7">${lnBtn(ch.slug, s.id)}</span>` : ""}<span class="ho" data-ho="6">${pomoBtn(ch.slug, s.id)}</span><span class="ho" data-ho="5">${todoBtn(ch.slug, s.id)}</span><span class="ho" data-ho="4">${tkBtn(ch.slug, s.id)}</span>` : ""}<button class="hmore" data-hmore aria-label="More actions" title="More actions" aria-haspopup="menu" aria-expanded="false" hidden>${MORE}</button></header>
     ${stageBody(ch, s)}` : `
     <div class="dhome" id="scroll"><div class="hwrap">${homeHead(ch)}${composer(`Give ${esc(who(ch))} a task`)}
       <p class="hhint" id="hhint">${HINT}</p><div id="htasks">${tasksHtml(ch)}</div></div></div>`);
@@ -1454,9 +1454,14 @@ function sideList(ch: Channel, s: Session | null, q: string) {
 const csOf2 = (ch: Channel): CS => ch.cs ??= { on: false, sections: [] };
 const csOn = (ch: Channel) => csOf2(ch).on;
 function clearFresh(ch: Channel) { if (ch.sessions.some(x => x.fresh) || lib(ch).some(a => a.fresh)) setTimeout(() => { ch.sessions.forEach(x => x.fresh = false); lib(ch).forEach(a => a.fresh = false); }, 600); }
+// The longest start of s that fits in max UTF-16 units and ends between whole characters (emoji sequences stay whole).
+function cutChars(s: string, max: number) {
+  try { let out = ""; for (const { segment } of new Intl.Segmenter().segment(s)) { if (out.length + segment.length > max) break; out += segment; } return out; }
+  catch { return s.slice(0, max); }
+}
 function titleOf(t: string) {
   let x = t.trim().replace(/^(hey|hi|ok|okay)[,!\s]+/i, "").replace(/^(can|could|would) you (please )?/i, "").replace(/^please /i, "").replace(/[?.!]+$/, "");
-  x = x.charAt(0).toUpperCase() + x.slice(1); return x.length > 48 ? x.slice(0, 46).trimEnd() + "…" : x;
+  x = x.charAt(0).toUpperCase() + x.slice(1); return x.length > 48 ? cutChars(x, 46).trimEnd() + "…" : x;
 }
 // Patch a container to new HTML IN PLACE: same elements stay, only changed text/attributes/children move.
 // Replacing innerHTML rebuilt every row on every status tick, replaying the "drop" animation and reloading images = flicker.
@@ -3038,7 +3043,7 @@ if (LIVE) delInit({ api, note: (t, sub) => note(ic.trash, t, sub, ""), closeShee
   working: (slug, sid) => { const x = channels.find(c => c.slug === slug)?.sessions.find(y => String(y.id) === sid); return !!x && stWorking(x); }, stop: (slug, sid) => void stopTask(slug, sid),
   chat: (slug, sid) => { const x = channels.find(c => c.slug === slug)?.sessions.find(y => String(y.id) === sid); return x ? { title: x.title, jobs: Number(x.srv?.jobs || 0) } : null; },
   channelName: slug => channels.find(c => c.slug === slug)?.name ?? null,
-  chatGone: (slug, sid) => { const ch = channels.find(c => c.slug === slug); if (!ch) return; const i = ch.sessions.findIndex(y => String(y.id) === sid); const open = route().s === ch.sessions[i];
+  chatGone: (slug, sid) => { shChatGone(slug, sid); const ch = channels.find(c => c.slug === slug); if (!ch) return; const i = ch.sessions.findIndex(y => String(y.id) === sid); const open = route().s === ch.sessions[i];
     if (i >= 0) ch.sessions.splice(i, 1); if (open) location.hash = `/${slug}`; render(); },
   channelGone: slug => { const i = channels.findIndex(c => c.slug === slug); if (i >= 0) channels.splice(i, 1); location.hash = `/${main.slug}`; render(); } });
 // Cancel plan (cancel.ts): Settings → Usage, and the "your plan ends" banner while cancelling. Sandbox: a pretend plan.
@@ -3165,6 +3170,7 @@ if (LIVE) tkInit({ api, base: () => LIVE.api, phone, dragToClose, plain: t => pl
 // Share links + published pages (share.ts): the Library / chat repaint when links or pages change.
 if (LIVE) { shFiles((slug, fid) => { const a = (LIB[slug] || []).find(x => x.fid === fid); return a ? { name: a.name, mime: a.mime || "" } : null; });
   shInit({ api, phone, note: (t, s) => note(ic.check, t, s, ""), helper: slug => { const c = channels.find(x => x.slug === slug); return c ? who(c) : ""; },
+    chatTitle: (slug, sid) => channels.find(x => x.slug === slug)?.sessions.find(y => String(y.id) === sid)?.title || "",
     repaint: () => { if (isLib()) libUpdate(); else { const { s } = route(); if (s) paintChat(s); } } }); }
 // Channel/task tools and approved plans share the same immediate discovery path. Keep the active conversation in place;
 // the returned task link must already be routable before the next six-second boot poll.

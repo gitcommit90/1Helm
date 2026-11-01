@@ -69,3 +69,7 @@ a.gu-b.shopen{text-decoration:none;color:var(--ink2)}
   .shexp{justify-content:center}
   .shrow{margin:0 -8px;padding:10px 8px}.shacts .shbtn{width:38px;height:38px}
 }
+/* Share in the open chat's header (same pill as Pin) */
+.hshare{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:999px;font-size:13px;font-weight:400;color:var(--mute)}
+.hshare:hover,.hshare.on{background:var(--abub);color:var(--ink)}
+#stage>header.th .hshare{flex:none;white-space:nowrap}

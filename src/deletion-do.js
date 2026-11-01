@@ -132,7 +132,7 @@ export const residentDeletion = {
     }
     const shots = sql.exec("SELECT id, r2key FROM shots WHERE session=?", sid).toArray();
     for (const c of chunks(turns)) for (const s of sql.exec(`SELECT id, r2key FROM shots WHERE turn IN (${ph(c)})`, ...c).toArray()) if (!shots.some((x) => x.id === s.id)) shots.push(s);
-    counts.r2_objects = await r2DeleteKeys(this.env, [...gone.flatMap((f) => [{ key: f.r2key, size: f.bytes }, f.view_key, f.prev_key && { key: f.prev_key, size: f.prev_bytes ?? null }, f.orig_key && f.orig_key !== f.prev_key && f.orig_key !== f.r2key && { key: f.orig_key, size: f.orig_bytes ?? null }]), ...previewKeys(sql, gone.map((f) => f.id)), ...sidecarKeys(sql, gone.map((f) => f.id)), ...shots.map((s) => s.r2key), ...routingArtifactKeys(sql,sid)]);
+    counts.r2_objects = await r2DeleteKeys(this.env, [...gone.flatMap((f) => [{ key: f.r2key, size: f.bytes }, f.view_key, f.prev_key && { key: f.prev_key, size: f.prev_bytes ?? null }, f.orig_key && f.orig_key !== f.prev_key && f.orig_key !== f.r2key && { key: f.orig_key, size: f.orig_bytes ?? null }]), ...previewKeys(sql, gone.map((f) => f.id)), ...sidecarKeys(sql, gone.map((f) => f.id)), ...shots.map((s) => s.r2key), ...this.eeDeletion.routingArtifactKeys(sql,sid)]);
     this.eeDeletion.dropRoutingArtifacts(sql,sid);
     const rm = gone.filter((f) => Number(f.synced) !== 0).map((f) => `files/${f.name}`);   // copies on the channel computer
     // Their share links die with them (share.js keeps them in D1, keyed by file).
@@ -232,7 +232,7 @@ export const residentDeletion = {
     this.inputs?.clear?.();
     const counts = {};
     for (const t of ["sessions", "turns", "msgs", "cards", "card_events", "files", "shots", "todos", "reactions", "later", "helpers", "approvals", "grants", "workflows", "outbox", "mem_rows", "mem_segments", "plans", "plan_origin", "connect_offers", "chat_interviews", "user_questions", "user_input_receipts", "pomodoro", "pomodoro_offers"]) counts[t] = count(sql, t);
-    const keys = [...sql.exec("SELECT r2key, view_key FROM files").toArray().flatMap((f) => [f.r2key, f.view_key]), ...sql.exec("SELECT r2key FROM shots").toArray().map((s) => s.r2key), ...previewKeys(sql), ...sidecarKeys(sql), ...routingArtifactKeys(sql)];
+    const keys = [...sql.exec("SELECT r2key, view_key FROM files").toArray().flatMap((f) => [f.r2key, f.view_key]), ...sql.exec("SELECT r2key FROM shots").toArray().map((s) => s.r2key), ...previewKeys(sql), ...sidecarKeys(sql), ...this.eeDeletion.routingArtifactKeys(sql)];
     counts.r2_objects = await r2DeleteKeys(this.env, keys);
     await wipeStorage(this, "channel deleted");
     return counts;

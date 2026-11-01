@@ -14,6 +14,7 @@ import { protectedRequest, financeHost } from "./approval-scope.js";
 import { tolerantEnv, codeV, isResetErr, isLostErr } from "./do-stub.js";
 import { resumeInit, resumeMix, guardIn, JOURNALED, runIdOf } from "./resume.js";
 import { traceMix } from "./turn-trace.js";   // Langfuse turn traces: a root, a span per model step, a TOOL per tool run (no text)
+import { jobNeedsHands, actErrorNeedsHands, HANDS_ON_HIDDEN, HANDS_ON_REFUSAL, HANDS_ON_UNCERTAIN_TAIL, HANDS_ON_JOB_TAIL, HANDS_ON_ACT_TAIL, HANDS_ON_SAVED_NOTE, HANDS_ON_PIC_FOLLOWS, HANDS_ON_WIDTH, HANDS_ON_NEXT_MS, handsOnMessage, keepLatestPictures } from "./browser-handson.js";
 import { runTurnPi } from "./pi-engine.js";
 import { TaskTranscript, TASK_ARCHIVE_TOOL, archiveReply, contextBudget, contextSize, estimateTokens, compactionPlan, transcriptGroups, prefixDigest, transcriptDelete, hasTaskTranscript } from "./task-transcript.js";
 import { usesAppendRuntime, ensureTaskRuntime, authorizeTaskProfile, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./ee/index.js";
@@ -91,7 +92,7 @@ import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { stopMix, untilStopped, stopError, planBudget, STOPPED_REPLY, STOPPED_TOOL_TEXT, STEP_LIMIT_CHAT_ASK } from "./stop.js";   // Stop / Stop all
 import { savedModelPrice, estimateStepCost } from "./step-price.js";
 import { flagTurns, FLAG_MIN_CHARGE } from "./ee/index.js";   // a step with no reported cost: the model's own saved price, never the ceiling
-import { repeatWatch, toolBatchWatch, stepNote, stepFallback } from "./repeat-guard.js";   // a model step that starts repeating itself
+import { repeatWatch, toolBatchWatch, stepNote, stepFallback, FINAL_ASK, FINAL_MAX_OUT } from "./repeat-guard.js";   // a model step that starts repeating itself
 import { guardResume, noteRepeat, commandLimitMs, commandNotes, stepNotes, spendInit, spendMix, guardModel, guardTools, guardCall, noteCharge, reportAsk, pauseFallback, DAY_PAUSE_REPLY, OUT_OF_TIME_REPLY, SPEND_CEILING } from "./spendguard.js";   // per-turn budget, runaway pause, day/month guard
 import { spendPausesOn, pausesApply, stepAllowance } from './spend-preferences.js';
 import { stallCheck } from './stall-guard.js';
@@ -346,11 +347,18 @@ export function egressLabel(r) {
   if (held.length) s += `[1Helm Sentinel held ${held.length} outgoing request(s) that send data (${said(held)}). They need the person's approval in the app. Don't retry in a loop; tell the person what you were sending and why.]\n`;
   return s;
 }
+// The longest start of text that fits in max UTF-16 units and ends between whole characters (emoji sequences stay whole).
+export function cutGraphemes(text, max) {
+  let out = "";
+  try { for (const { segment } of new Intl.Segmenter().segment(text)) { if (out.length + segment.length > max) break; out += segment; } }
+  catch { out = text.slice(0, max); }
+  return out;
+}
 // Task titles are deterministic (no model call): the first sentence of the first message, trimmed.
 export function titleFrom(text) {
   let t = String(text || "").replace(/\s+/g, " ").trim().replace(/^(hey|hi|ok|okay|so)[,!. ]+/i, "").replace(/^(can|could|would) you (please )?|^please /i, "");
   t = (t.match(/^.{8,}?[.?!](\s|$)/)?.[0] || t).replace(/[.?!\s]+$/, "");
-  if (t.length > 60) t = t.slice(0, 60).replace(/\s+\S*$/, "") + "…";
+  if (t.length > 60) t = cutGraphemes(t, 60).replace(/\s+\S*$/, "") + "…";   // cut between characters, never inside an emoji
   return t ? t[0].toUpperCase() + t.slice(1) : "New task";
 }
 const previewOf = (s) => String(s || "").replace(/[*_#`>|]/g, "").replace(/\s+/g, " ").trim().slice(0, 160);
@@ -1045,7 +1053,8 @@ export class Resident extends DurableObject {
   // Append lane with PAYLOAD_CUT lazy (tc.appendLazy): every tool from turn 0 too, but non-eager ones as stubs (payload-cut.js);
   // the list is fixed when the task is created, so the cached prefix never changes.
   modelTools(tc = null) {
-    if (tc?.appendTools && !tc?.taskProfile?.dynamicRouting) return tc.appendTools;
+    if (tc?.appendTools && !tc?.taskProfile?.dynamicRouting) return tc.appendTools;   // frozen with the task, so browser_task stays listed there and is refused when called (browser-handson.js)
+    if (tc?.handsOn && tc.classicTools && !tc.classicHandsOn) { tc.classicTools = tc.classicTools.filter((t) => !HANDS_ON_HIDDEN.has(t.function?.name)); tc.classicHandsOn = true; }   // hands-on mode: the browser worker is not offered again this turn
     if (tc && !tc.appendRuntime && tc.classicTools && !tc.helper?.dynamic_routing) return tc.classicTools;
     const list = modelChatTools(this.env, this.availableTools(tc), tc);
     if (tc && !tc.appendRuntime) tc.classicTools = list;
@@ -1103,9 +1112,31 @@ export class Resident extends DurableObject {
     catch (e) { retainModelUsage(this, tc, r); throw e; }
     const sum = { inTok: r.inTok + r2.inTok, cached: r.cached + r2.cached, cacheWrite: (r.cacheWrite || 0) + (r2.cacheWrite || 0), outTok: r.outTok + r2.outTok, charge: r.charge + r2.charge };
     if (!r2.repeat) return { ...r2, ...sum, repeated: r.repeat };
-    noteRepeat(tc, r2.repeat); console.log("model step repeating again, plain message", r2.repeat.where, r2.repeat.kind, r2.repeat.calls || "");
-    const fallback = stepFallback(r2.repeat); onText?.(fallback);
-    return { ...r2, ...sum, content: fallback, calls: [], finish: "repeat", repeated: r2.repeat };
+    noteRepeat(tc, r2.repeat); console.log("model step repeating again, last attempt", r2.repeat.where, r2.repeat.kind, r2.repeat.calls || "");
+    // Last attempt before the apology: tools off, a short output cap, the repeat guard still watching, and the next model of the account's
+    // own plan when it has one (a Custom Model Selection category on an own key, the task's model chain on OpenRouter). No model is named here.
+    const afterWork = this.turnRanTools(tc);
+    const slot = Number.isInteger(tc?.lastSlot) ? tc.lastSlot : Number.isInteger(tc?.route?.servedIndex) ? tc.route.servedIndex : 0;
+    let r3 = null;
+    if (tc?.abort !== "hard") {
+      try {
+        const ask = { role: "user", content: FINAL_ASK }; if (tc?.appendRuntime) { messages.push(ask); this.save(tc.turn, ask); }
+        if (tc) { tc.finalAttempt = { startAt: slot + 1, capOut: FINAL_MAX_OUT }; tc.otelRetry = true; }
+        r3 = await this.callModelOnce(tc?.appendRuntime ? messages : [...messages, ask], onComputerTool, onText, true, tc);
+      } catch (e) {
+        if (e?.stopped || tc?.abort === "hard") { retainModelUsage(this, tc, sum); throw e; }
+        console.log("last attempt after repeating failed", String(e?.message || e).slice(0, 160)); r3 = null;
+      } finally { if (tc) { tc.finalAttempt = null; if (tc.route) { delete tc.route.startAt; delete tc.route.capOut; } } }
+    }
+    const all = r3 ? { inTok: sum.inTok + r3.inTok, cached: sum.cached + r3.cached, cacheWrite: sum.cacheWrite + (r3.cacheWrite || 0), outTok: sum.outTok + r3.outTok, charge: sum.charge + r3.charge } : sum;
+    if (r3 && !r3.repeat && String(r3.content || "").trim()) return { ...r3, ...all, calls: [], repeated: r2.repeat };
+    if (r3?.repeat) { noteRepeat(tc, r3.repeat); console.log("last attempt repeating too, plain message", r3.repeat.where, r3.repeat.kind); }
+    const fallback = stepFallback((r3 || r2).repeat || r2.repeat, afterWork); onText?.(fallback);
+    return { ...(r3 || r2), ...all, content: fallback, calls: [], finish: "repeat", repeated: r2.repeat };
+  }
+  // True when an earlier step of this turn already ran a tool (its result is saved), so a dropped step does not mean nothing ran.
+  turnRanTools(tc) {
+    try { return Number(this.sql.exec("SELECT COUNT(*) AS n FROM msgs WHERE turn=? AND role='tool'", tc.turn).toArray()[0]?.n) > 0; } catch { return false; }
   }
   async governTaskContext(messages, tc, forced = null) {
     const store = tc.transcript, tools = this.modelTools(tc), budget = contextBudget(tc.taskProfile);
@@ -1195,7 +1226,8 @@ export class Resident extends DurableObject {
     // The output limit is the saved max output of the category the turn was routed to, read again at every step; empty means no limit is sent. The model and its
     // reasoning level stay as the task froze them. The spend hold below is sized from the model's published maximum when no limit is saved.
     const frozen = tc?.taskProfile, chatCategory = frozen?.category || "general", savedOut = await plannedChatMaxOutput(this.env, chatCategory).catch(() => null);
-    const requestMaxOut = savedOut;
+    const lastTry = tc?.finalAttempt || null;   // callModel's last attempt after repeated loops: next model in the plan, short output cap
+    const requestMaxOut = lastTry?.capOut && Number.isFinite(lastTry.capOut) ? (Number.isFinite(savedOut) ? Math.min(savedOut, lastTry.capOut) : lastTry.capOut) : savedOut;
     const holdOutNanoNow = frozen ? holdOutNano({ catalog: { [frozen.requestedModel]: frozen.catalog } }, frozen.requestedModel, savedOut) : await plannedChatHoldNano(this.env, chatCategory).catch(() => 0);
     let backgroundFormat = tc?.appendRuntime && noTools ? (tc.taskProfile.catalog.tool_choice.includes("none") ? { tool_choice: "none" } : {}) : noTools && messages.at(-1)?.role === "user" && String(messages.at(-1)?.content).startsWith(HANDOFF_PREFIX) ? { response_format: structuredFormat("handoff_notes", HANDOFF_SCHEMA) } : {};
     const estIn = Math.ceil(JSON.stringify(messages).length / 3);
@@ -1244,13 +1276,14 @@ export class Resident extends DurableObject {
         const last = messages.at(-1); byokFast = noTools && last?.role === "user" && typeof last.content === "string" && last.content.startsWith(HANDOFF_PREFIX);
         const byokBodyIn = { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true, ...(Number.isFinite(requestMaxOut) ? { max_tokens: requestMaxOut } : {}) }, byokPrivacy = await privacyOf(this.env, this.get("tenant"));
         // Custom Model Selection on an own key (byok-custom.js): the turn's category lists the models to try in order. Chores, and an account with it off, use the one main/fast model.
-        const plan = byokFast || !eeEnabled(this.env) ? null : await planForCall(this, tc);
-        if (plan) { const r = await byokChatChain(byok, byokBodyIn, plan, { signal, privacy: byokPrivacy }); stream = r.response.body; byokPick = { ...r.pick, title: plan.title }; if (r.pick.failed.length) fellBack = `${r.pick.failed[0].model}: ${r.pick.failed[0].error}`; }
+        const plan0 = byokFast || !eeEnabled(this.env) ? null : await planForCall(this, tc), skip = plan0 && lastTry && lastTry.startAt > 0 && lastTry.startAt < plan0.chain.length ? lastTry.startAt : 0, plan = skip ? { ...plan0, chain: plan0.chain.slice(skip) } : plan0;
+        if (plan) { const r = await byokChatChain(byok, byokBodyIn, plan, { signal, privacy: byokPrivacy }); stream = r.response.body; byokPick = { ...r.pick, slot: r.pick.slot + skip, title: plan.title }; if (tc) tc.lastSlot = byokPick.slot; if (r.pick.failed.length) fellBack = `${r.pick.failed[0].model}: ${r.pick.failed[0].error}`; }
         else stream = (await byokChat(byok, byokBodyIn, { fast: byokFast, signal, privacy: byokPrivacy })).body;
         provider = "byok";
       }
       if (viaOR) {
         const sess = tc?.taskProfile?.cacheSession || `${this.ctx.id.toString().slice(0, 24)}:${this.get("tenant") || ""}`;
+        if (route) { if (lastTry) { route.startAt = lastTry.startAt; route.capOut = lastTry.capOut; } else { delete route.startAt; delete route.capOut; } }
         const px = `${prefixPrint(messages, tools)}.${runPrint(tc)}`;   // gateway log: which cached prefix this call used, and which task/run it belongs to (model.js)
         const prov = this.provenance(messages, tc);   // what this payload carries
         try {
@@ -1406,6 +1439,7 @@ export class Resident extends DurableObject {
   // Computer tool → shell command on this channel's computer. Returns the raw { code, out }.
   async execComputerTool(name, a, tc = null) {
     if (name === "read_file" && this.scReadFile) { const t = await this.scReadFile(a?.path).catch(() => null); if (t != null) return { code: 0, out: t }; }   // sidecar.js: a document's text, not its bytes
+    if (name === "browser_task" && this.isHandsOn(tc)) return { code: 1, out: HANDS_ON_REFUSAL };   // browser-handson.js: the worker failed, the model has the browser
     const af = await this.browserFirstCheck(name, a, tc); if (af) return { code: 1, out: af };   // appfirst.js: a connected app's website / the same page again
     const no = await permGate(this, tc, name, a); if (no) return { code: 1, out: no };   // perms.js: their level asks first
     const nf = name === "browser_task" ? await fillTaskGate(this, tc, a) : await fillGate(this, tc, name, a); if (nf) return { code: 1, out: nf };   // personal-fill.js: their details need their OK; cards/passwords/IDs never
@@ -1451,9 +1485,44 @@ export class Resident extends DurableObject {
     (tc.viewPics ||= []).push({ name: raw.split("/").pop(), part: { type: "image_url", image_url: { url: `data:${mime};base64,${btoa(bin)}` } } }); tc.needImg = true;
     return { code: 0, out: `${raw}: the picture follows in the next message (${humanBytes(f.bytes.byteLength)}). The person does not see it.` };
   }
+  // Hands-on browser mode (browser-handson.js). On while this task's turn is in it: set by a failed browser worker or a failed browser_act of
+  // the model's own, kept in the saved settings so a resumed turn keeps it, and for a failed background job it waits for the task's next turn.
+  isHandsOn(tc) {
+    if (!tc || tc.kind !== "chat" || !tc.session) return false;
+    if (tc.handsOn) return true;
+    const next = Number(this.get("handson_next:" + tc.session) || 0);
+    if (next) { this.put("handson_next:" + tc.session, ""); if (Date.now() - next < HANDS_ON_NEXT_MS) { this.enterHandsOn(tc); return true; } }
+    if (tc.turn && this.get("handson:" + tc.session) === String(tc.turn)) { tc.handsOn = true; return true; }
+    return false;
+  }
+  enterHandsOn(tc) {
+    if (!tc || tc.kind !== "chat" || !tc.session) return;
+    tc.handsOn = true; try { if (tc.turn) this.put("handson:" + tc.session, String(tc.turn)); } catch {}
+  }
+  queueHandsOn(session) { try { this.put("handson_next:" + session, String(Date.now())); } catch {} }
+  // After a browser_snapshot or browser_act in hands-on mode: the page as the model sees it. A model that takes images gets a small
+  // screenshot with its next input (tc.viewPics); another gets the description browser_screenshot look:true gives. Never when a card was just
+  // filled on this page (the same refusal look has). Returns text to add to the tool result. A failure here never fails the browser step.
+  async handsOnShot(C, tab, tc) {
+    try {
+      const pics = !tc.noPics && await this.modelSeesImages(tc);
+      const r = await C.browser("screenshot", pics ? { max_width: HANDS_ON_WIDTH } : { ocr: true }, null, tab);
+      if (!r?.ok || !r.jpeg_base64 || !/^https?:/.test(String(r.url || ""))) return "";
+      if (this.get("card_filled_url") && this.get("card_filled_url") === pageKey(r.url)) return "";
+      if (pics) { (tc.viewPics ||= []).push({ hands: true, name: "browser page", part: { type: "image_url", image_url: { url: `data:image/jpeg;base64,${r.jpeg_base64}` } } }); tc.needImg = true; return HANDS_ON_PIC_FOLLOWS; }
+      const look = await this.lookAtScreen(r, Uint8Array.from(atob(r.jpeg_base64), (c) => c.charCodeAt(0)), { look: true }, tc);
+      return look?.code === 0 ? "\n" + look.out : "";
+    } catch { return ""; }
+  }
   // The pictures read_file collected during one step, added after that step's tool results.
   flushViewPics(tc, messages, turn) {
-    const pics = tc?.viewPics?.splice(0) || []; if (!pics.length) return;
+    const all = tc?.viewPics?.splice(0) || []; if (!all.length) return;
+    const shots = all.filter((p) => p.hands), pics = all.filter((p) => !p.hands);
+    if (shots.length) {   // hands-on screenshots: only the newest of this step goes in, and the turn keeps the latest HANDS_ON_KEEP
+      const msg = handsOnMessage(shots.at(-1).part); messages.push(msg); this.save(turn, { role: "user", content: HANDS_ON_SAVED_NOTE });
+      keepLatestPictures(tc.handsMsgs ||= [], msg);
+    }
+    if (!pics.length) return;
     const list = pics.map((p) => `"${p.name}"`).join(", ");
     messages.push({ role: "user", content: [{ type: "text", text: `(Not from the person: the picture${pics.length > 1 ? "s" : ""} you read with read_file, in order: ${list}.)` }, ...pics.map((p) => p.part)] });
     this.save(turn, { role: "user", content: `(Not from the person: ${list} was shown to you here as a picture. Read the file again to look at it again.)` });
@@ -1727,11 +1796,15 @@ export class Resident extends DurableObject {
     const outlines = (this._outlines ||= new Map());   // the outline each task's next browser_act refs come from: one per tab, never another task's page
     if (name === "browser_act") this.noteBrowserActs(a.actions, { url: outlines.get(tab)?.url, snapshot: outlines.get(tab)?.snapshot });
     const r = await C.browser(op, name === "browser_navigate" ? { url: a.url } : name === "browser_act" ? { actions: a.actions } : {}, null, tab);
-    if (!r.ok) return { code: 1, out: `browser error: ${r.error}` };
+    if (!r.ok) {
+      if (name === "browser_act" && actErrorNeedsHands(r)) { this.enterHandsOn(tc); return { code: 1, out: `browser error: ${r.error}` + HANDS_ON_ACT_TAIL + (this.isHandsOn(tc) ? await this.handsOnShot(C, tab, tc) : "") }; }   // browser-handson.js: a failed act of the model's own
+      return { code: 1, out: `browser error: ${r.error}` };
+    }
     if (r.snapshot) { outlines.set(tab, { url: r.url, snapshot: r.snapshot }); if (outlines.size > 50) outlines.delete(outlines.keys().next().value); }
     tc?.emit?.({ t: "browser", url: r.url, title: r.title });
     const head = `${r.tab_note ? `(Note, not from the person: ${r.tab_note}) ` : ""}${r.new_tab ? "A click opened a new tab in your browser. It is now your current tab, and the page below is that tab's page; your earlier tab is still open. " : ""}${r.closed_tab ? "That tab had no earlier page, so it was closed and you are back on your other tab. " : ""}${name === "browser_act" ? `completed ${r.completed} step(s). ${r.page_changed === false ? "NOTHING VISIBLE CHANGED on the page after these steps: the action probably had no effect. Don't report it as done; " : ""}` : ""}${r.notes?.length ? `Notes: ${r.notes.join("; ")}. ` : ""}${r.visited ? `Pages passed through: ${r.visited.join(" → ")}. ` : ""}Page: ${r.title || "(untitled)"} — ${r.url}\n`;
-    return { code: 0, out: head + untrusted(`the web page ${new URL(r.url || "about:blank").host || r.url}`, r.snapshot || "") };
+    const seen = (name === "browser_snapshot" || name === "browser_act") && this.isHandsOn(tc) ? await this.handsOnShot(C, tab, tc) : "";   // hands-on mode: the page, too
+    return { code: 0, out: head + untrusted(`the web page ${new URL(r.url || "about:blank").host || r.url}`, r.snapshot || "") + seen };
   }
   async runTool(call, ctx = {}) {
     if (!eeToolEnabled(this.env, call.function?.name)) return `error: ${call.function.name} is unavailable on this deployment.`;
@@ -2365,6 +2438,7 @@ export class Resident extends DurableObject {
         : `Browser job #${j.id} will stop before its next action. An action already in progress may still complete; its result will be reported.`;
     }
     if (!this.browserAgentOn()) return "error: background browser jobs are not available on this channel.";
+    if (this.isHandsOn(ctx)) return `error: ${HANDS_ON_REFUSAL}`;
     if (!ctx.turn) return "error: a live task card is required before a background browser job can start.";
     const inp = browserJobInput(a); if (inp.error) return `error: ${inp.error}`;
     const af = await this.browserFirstCheck("browser_task", inp, ctx); if (af) return `error: ${af}`;
@@ -2435,13 +2509,14 @@ export class Resident extends DurableObject {
     if (row.status === "stopped" && this.hasSteers?.(tc)) return { code: 0, out: `browser_task handed back for the person's updated request. No further browser actions were started.\nSteps already completed (do not repeat): ${row.last_step || 0} browser step(s)\nPage: ${row.last_title || ""} — ${row.last_url || row.url || "not opened"}\n` };
     const out = String(row.report || row.error || "No result was saved.");
     logBrowserTask(this, tc, a, out);   // worklog.js: what it found stays findable (logged only, never replayed)
-    const tail = row.status === "uncertain" ? "\n(The last browser action may have completed. Do not repeat it without checking the page.)" : "";
+    if (jobNeedsHands(row.status)) this.enterHandsOn(tc);   // browser-handson.js: the worker did not finish, so the model takes the browser
+    const tail = row.status === "uncertain" ? HANDS_ON_UNCERTAIN_TAIL : jobNeedsHands(row.status) ? HANDS_ON_JOB_TAIL : "";
     return { code: row.status === "done" ? 0 : 1, out: out + tail + "\n(The page outline is not included. Call browser_snapshot only if you need to check or continue on the page.)" };
   }
   async browserJobRun(id, { resume = false } = {}) {
     let j = browserJobRow(this.sql, id); if (!j || j.status !== (resume ? "running" : "queued")) return;
     let state = null; if (resume) { try { state = JSON.parse(j.resume_state || "null"); } catch {} if (!state) { this.browserJobFinish(id, "uncertain", "The browser job was interrupted by a restart and had nothing saved to resume from. Its last action may have completed; no action was replayed."); return; } }
-    const C = this.computer(); let owned = false, lost = false, renew = null, keepLease = false;
+    const C = this.computer(); let owned = false, lost = false, renew = null;
     try {
       // A missing method on an older ChannelComputer fails closed before any browser call.
       // Record possible ownership before RPC. A reset can hide a successful acquire response.
@@ -2479,25 +2554,26 @@ export class Resident extends DurableObject {
         guard: (acts, page) => fillStepGate(this, tc, acts, page) });
       const latest = browserJobRow(this.sql, id);
       const status = r.uncertain || latest.pending_op ? "uncertain" : latest.status === "stopping" || r.stopped || r.taken_over || lost ? "stopped" : r.code === 0 ? "done" : "blocked";
-      keepLease = status === "uncertain";
       this.browserJobFinish(id, status, r.out, r.charge);
     } catch (e) {
       const latest = browserJobRow(this.sql, id), status = latest?.pending_op ? "uncertain" : "failed";
-      keepLease = status === "uncertain";
       this.browserJobFinish(id, status, String(e.message || e));
     } finally {
       if (renew) clearInterval(renew);
       this._browserJobs?.delete(id); if (this._browserJob?.id === id) this._browserJob = [...(this._browserJobs?.values() || [])].at(-1) || null;
-      // After an uncertain action, let the short lease expire. A late network
-      // request remains tied to this job rather than borrowing another task's grant.
-      if (!keepLease && (owned || browserJobRow(this.sql, id)?.lease_acquired)) {
-        const released = await C.releaseBrowserOwner(j.token, tabKeyFor(j.session)).catch(() => null);
-        if (released?.ok || released?.owner_lost) this.sql.exec("UPDATE browser_jobs SET lease_acquired=0 WHERE id=?", id);
-        else this.sql.exec("UPDATE browser_jobs SET status='uncertain',ended=?,report=COALESCE(report,'')||? WHERE id=?", Date.now(), " Browser ownership release was not confirmed. No browser action was replayed.", id);
+      // An uncertain end hands the task's own tab back at once (browser-handson.js): the model takes the browser and looks at the page, which is
+      // safer than a two minute lock that only leaves the person to take control. The release is refused while a browser call is still in
+      // flight, so it is retried for a few seconds. If it still cannot be confirmed, the short lease is left to expire as before.
+      if (owned || browserJobRow(this.sql, id)?.lease_acquired) {
+        const uncertainEnd = browserJobRow(this.sql, id)?.status === "uncertain";
+        let released = await C.releaseBrowserOwner(j.token, tabKeyFor(j.session)).catch(() => null);
+        for (let i = 0; i < 10 && uncertainEnd && released?.browser_busy; i++) { await new Promise((z) => setTimeout(z, 500)); released = await C.releaseBrowserOwner(j.token, tabKeyFor(j.session)).catch(() => null); }
+        if (released?.ok || released?.owner_lost) this.sql.exec("UPDATE browser_jobs SET lease_acquired=0,lease_free=? WHERE id=?", uncertainEnd ? 1 : 0, id);
+        else if (!uncertainEnd) this.sql.exec("UPDATE browser_jobs SET status='uncertain',ended=?,report=COALESCE(report,'')||? WHERE id=?", Date.now(), " Browser ownership release was not confirmed. No browser action was replayed.", id);
       }
       // The follow-on assistant starts only after confirmed release. An uncertain
       // action keeps the tab reserved, so its handoff waits past the owner lease.
-      if (!this._inlineBrowserJobs?.has(id)) this.browserJobDeliver(id);   // browser_task is still waiting for it and returns the result itself
+      if (!this._inlineBrowserJobs?.has(id)) { if (jobNeedsHands(browserJobRow(this.sql, id)?.status)) this.queueHandsOn(j.session); this.browserJobDeliver(id); }   // browser_task is still waiting for it and returns the result itself; a job that did not finish puts the task's next turn in hands-on mode
       await this.arm().catch(() => {});
     }
   }
@@ -2509,7 +2585,7 @@ export class Resident extends DurableObject {
   browserJobDeliver(id) {
     if (this._inlineBrowserJobs?.has(Number(id))) return browserJobRow(this.sql, id);
     let j = browserJobRow(this.sql, id); if (!j || j.handed || !["done", "failed", "blocked", "stopped", "uncertain"].includes(j.status)) return j;
-    if (j.status === "uncertain" && Number(j.ended || j.started) + BROWSER_JOB_RELEASE_GRACE_MS > Date.now()) return j;
+    if (j.status === "uncertain" && !j.lease_free && Number(j.ended || j.started) + BROWSER_JOB_RELEASE_GRACE_MS > Date.now()) return j;
     const cid = `browser-job:${j.id}`;
     const h = this.handoff(j.session, { text: browserJobHandoff(j), away: browserJobHandoff(j, true), cid, ref: cid, from: { type: "browser_job", id: j.id, title: "Browser job" } });
     if (h?.mode === "open" || h?.mode === "steer" || h?.mode === "dup" || h?.mode === "gone")
@@ -4045,6 +4121,7 @@ export class Resident extends DurableObject {
     if (ih.line) trace.push({ tool: "integration_hint", args: ih.items.map((x) => x.a.s).join(","), ms: 0, out: ih.line.slice(0, 700) });   // ops/evals see it; not a step
     if (tc.sidecar?.length) trace.push({ tool: "file_sidecar", args: tc.sidecar.map((x) => x.name).join(","), ms: 0, out: tc.sidecar.map((x) => `${x.name}: ${x.mode}${x.tokens ? ` (${x.tokens} tok)` : ""}`).join("; ").slice(0, 700) });   // sidecar.js: inline / card / not ready; not a step
     const engine = tc.appendRuntime ? "append-v1" : (nativeWorker || tc.taskProfile?.dynamicRouting) ? "classic" : RS?.engine || opts.engine || this.get("engine") || this.env.ENGINE || "classic";
+    tc.noPics = engine === "pi";   // the pi engine sends text only, so hands-on mode uses the description there (browser-handson.js)
     if (tc.appendRuntime) {
       const store = tc.transcript, priorState = store.state();
       // Persist the context after layering exactly once; future calls must not

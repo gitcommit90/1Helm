@@ -52,15 +52,15 @@ test('actual retry wrapper discards batches and retries once, including the appe
     for(const appendRuntime of [false,true]) for(const second of ['safe','repeat']) {
       let requests=0;const wire=[],saved=[];
       const R={env:{BYOK:{base:'https://provider.example.test/v1',key:'',model:'fixture-model'}},get:()=>null,modelTools:()=>[],cardCharge:()=>{},
-        governTaskContext:async()=>{},sidecarAudioCurrent(){},save:(_turn,message)=>saved.push(message)};
+        governTaskContext:async()=>{},turnRanTools:()=>false,sidecarAudioCurrent(){},save:(_turn,message)=>saved.push(message)};
       R.callModelOnce=(...args)=>Resident.prototype.callModelOnce.call(R,...args);
       globalThis.fetch=async(_url,init)=>{wire.push(JSON.parse(init.body));return new Response(stream(requests++===0?'repeat':second,{pulled:0,cancelled:0}));};
       const messages=[{role:'user',content:'Read only.'}],tc=appendRuntime?{appendRuntime:true,turn:'fixture',transcript:{observe:()=>{}}}:null;
       const result=await Resident.prototype.callModel.call(R,messages,()=>{},null,false,tc);
-      assert.equal(requests,2);assert.deepEqual(result.calls,[]);assert.equal(result.content,second==='safe'?'Safe report.':REPEAT_FALLBACK);
+      assert.equal(requests,second==='safe'||appendRuntime?2:3,'a second repeat gets one last attempt before the plain message (this fixture has no task profile, so the append case cannot send it and falls to the plain message)');assert.deepEqual(result.calls,[]);assert.equal(result.content,second==='safe'?'Safe report.':REPEAT_FALLBACK);
       assert.ok(!JSON.stringify(wire[1].messages).includes('distinct-'));
       assert.ok(!saved.some(m=>m.tool_calls?.length));
-      assert.equal(saved.length,appendRuntime?1:0);
+      assert.equal(saved.length,appendRuntime?(second==='safe'?1:2):0);
     }
   } finally {globalThis.fetch=savedFetch;console.log=savedLog;}
 });

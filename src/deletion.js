@@ -20,6 +20,7 @@ import { linkDisconnect } from "./ee/index.js";
 import { openSecret } from "./sentinel.js";
 import { stDeleteListed } from "./storage.js";
 import { boundedJson, BodyTooLargeError } from "./bounded-body.js";
+import { shareChatsGone } from "./share.js";   // links to shared chats and their copies
 import { hsEnvelope } from "./hs-flag.js";
 import { dedupeForgetDocs, addTombstones } from "./memory-sources.js";
 
@@ -199,6 +200,8 @@ async function deleteSessionD1(env, tid, slug, sid, inv) {
     if (o.prefix && o.status !== "accepted" && /^t\/[^/]+\/pages\/[0-9a-f-]{36}$/.test(o.prefix)) await r2DeletePrefix(env, `${o.prefix}/`);
     await DB.prepare("DELETE FROM share_offers WHERE id=?").bind(o.id).run(); out.share_offers++;
   }
+  // The public link of this chat (share-chat.js) and its copy go with it, so the address answers 404 at once.
+  out.share_chats = await shareChatsGone(env, tid, { channel: slug, session: sid });
   out.approval_policy = Number((await DB.prepare("DELETE FROM approval_policy WHERE tenant_id=? AND scope='session' AND scope_key=?").bind(tid, `${slug}:${sid}`).run()).meta?.changes || 0);
   // Get to know you: deleting its task removes the answers too (the row stays as "offered once", empty, so it isn't offered again).
   out.interview = Number((await DB.prepare("UPDATE interviews SET status='removed', answers='{}', known='{}', session_id=NULL, updated_at=? WHERE tenant_id=? AND session_id=?").bind(now(), tid, sid).run().catch(() => ({ meta: {} }))).meta?.changes || 0);
@@ -240,6 +243,7 @@ async function wipeChannelEverywhere(env, job, tid, slug, cid, prefix = "") {
       out[t] = Number((await DB.prepare(q).bind(tid, slug).run().catch(() => ({ meta: {} }))).meta?.changes || 0);
     // Share links of its files, offers prepared in it, and pages published from it (bytes first, then the row).
     out.share_links = Number((await DB.prepare("DELETE FROM share_links WHERE tenant_id=? AND channel=?").bind(tid, slug).run().catch(() => ({ meta: {} }))).meta?.changes || 0);
+    out.share_chats = await shareChatsGone(env, tid, { channel: slug });   // links to shared chats of this channel, and their copies
     out.published_pages = 0; out.share_offers = 0;
     for (const t of ["share_offers", "published_pages"]) for (const o of (await DB.prepare(`SELECT * FROM ${t} WHERE tenant_id=? AND channel=?`).bind(tid, slug).all().catch(() => ({ results: [] }))).results || []) {
       if (o.prefix && /^t\/[^/]+\/pages\/[0-9a-f-]{36}$/.test(o.prefix)) await r2DeletePrefix(env, `${o.prefix}/`);

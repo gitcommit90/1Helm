@@ -134,5 +134,12 @@ export const REPEAT_NOTE = "(1Helm note, not from the person: your last output s
 export const BATCH_NOTE = `(1Helm note, not from the person: your last step asked for too many tool calls at once, or for the same call more than once, so it was stopped and none of them ran. Ask for each call only once, make at most 20 calls in one step, wait for their results, and then continue. If one small script can do the same work, write that instead.)`;
 export const BATCH_FALLBACK = "Sorry, I tried to do too many things at once on that step, so I stopped it before anything ran. Nothing from that step was run. Could you tell me again what you need, or break it into a smaller piece?";
 export const stepNote = (hit) => String(hit?.kind || "").startsWith("batch-") ? BATCH_NOTE : REPEAT_NOTE;
-export const stepFallback = (hit) => hit?.kind === "batch-limit" ? BATCH_FALLBACK : REPEAT_FALLBACK;
 export const REPEAT_FALLBACK = "Sorry, I got stuck repeating myself on that step, so I stopped it before it went any further. Nothing from that step was run. Could you tell me again what you need, or break it into a smaller piece?";
+// When earlier steps of the same turn already ran tools, "nothing was run" would be wrong, so the plain message says which part was dropped.
+export const REPEAT_FALLBACK_AFTER_WORK = "Sorry, I got stuck repeating myself on that step, so I stopped it before it went any further. Nothing from that last step was run, but the earlier steps in this turn did run and their results are kept. Could you tell me again what you need, or break it into a smaller piece?";
+export const BATCH_FALLBACK_AFTER_WORK = "Sorry, I tried to do too many things at once on that step, so I stopped it before anything in it ran. The earlier steps in this turn did run and their results are kept. Could you tell me again what you need, or break it into a smaller piece?";
+// The last attempt after two loops (resident.js callModel): tools off, a short output cap, the repeat guard still watching. It is sent only when
+// the turn already gathered something to answer from, and the person gets whatever it writes if it does not loop.
+export const FINAL_ASK = "(1Helm note, not from the person: your last two attempts at this step were stopped because they repeated themselves, and none of their output was kept. No tools are available now. Answer the person's request directly in a few plain sentences, using only what this conversation already holds. If something is still missing, say what it is.)";
+export const FINAL_MAX_OUT = 2000;
+export const stepFallback = (hit, afterWork = false) => hit?.kind === "batch-limit" ? (afterWork ? BATCH_FALLBACK_AFTER_WORK : BATCH_FALLBACK) : (afterWork ? REPEAT_FALLBACK_AFTER_WORK : REPEAT_FALLBACK);

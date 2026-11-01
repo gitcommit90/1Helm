@@ -185,7 +185,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "345";
+const APP_V = "347";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -621,7 +621,7 @@ export default {
       if (isBackupPath(p)) return backupControl(req, env, p);
       if (env.ENV_NAME === "selfhost" && env.BACKUP_MAINTENANCE === "1")
         return p === "/health" ? json({ ok: true, maintenance: true }) : json({ error: "Backup maintenance is active." }, 503);
-      if (!eeRouteEnabled(env, p)) return json({ error: "not found" }, 404);
+      if (!isPublicShare(env, url) && !eeRouteEnabled(env, p)) return json({ error: "not found" }, 404);   // a shared chat on the person's own address is /c/<43 chars>, core code served by src/share.js
       // These cookie and sign-in endpoints are reached from the server's own pages. Reject a supplied
       // sibling-site or sandboxed Origin before it can start or finish a sign-in or change onboarding state.
       if (req.method === "POST" && (p === "/auth/start" || p === "/auth/code" || p === "/auth/logout" || p === "/onboard" || p.startsWith("/onboard/"))) {

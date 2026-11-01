@@ -38,6 +38,8 @@ export async function routedChat(env, body, session, route, meta = {}, signal = 
 }
 
 // The output limit of one step: the saved job value as saved, kept below the context window. Empty stays null, and no max_tokens is sent.
+// A one-off lower cap for the last attempt to answer after repeated loops (resident.js callModel); never raises the saved limit.
+export const capped = (out, cap) => (Number.isFinite(cap) && cap > 0 ? (Number.isFinite(out) ? Math.min(out, cap) : cap) : out);
 const outputLimit = (saved, facts) => {
   const ctx = Number.isFinite(facts?.context_length) && facts.context_length > 1 ? facts.context_length - 1 : null;
   return Number.isFinite(saved) ? (ctx ? Math.min(saved, ctx) : saved) : null;
@@ -48,12 +50,12 @@ const outputLimit = (saved, facts) => {
 // job's current entry from the saved settings. Everything else (max output, sort, price cap, privacy level) is read from the saved job at every step.
 export const frozenModelChoice = (profile) => ({ model: profile.requestedModel, effort: profile.effort });
 // OpenRouter chooses the provider (provider-selection routing, and its own sticky routing keeps a session's prompt cache warm), so no request carries a provider list.
-export function taskPayload(profile, body, { level, settings = null } = {}) {
+export function taskPayload(profile, body, { level, settings = null, capOut = null } = {}) {
   const { reasoning, provider, models, model: _m, max_tokens, session_id, prompt_cache_key, ...rest } = body || {};
   const { model, effort } = frozenModelChoice(profile), limits = categoryLimits(settings, profile.category);   // the limits of the category the turn was routed to (General when it names none)
   if (quirkOf(settings, model, "auto_tool_choice_only") && rest.tool_choice != null && rest.tool_choice !== "auto")
     throw new TaskAffinityBlocked("This task's model supports only automatic tool selection. No different model was substituted.", "unsupported-tool-choice");
-  const out = outputLimit(limits.max_output, profile.catalog);
+  const out = capped(outputLimit(limits.max_output, profile.catalog), capOut);
   const mp = limits.max_price && Number.isFinite(limits.max_price.prompt) && Number.isFinite(limits.max_price.completion) ? limits.max_price : maxPriceFor(profile.catalog);
   const p = { ...rest, messages: replayFor(rest.messages, model), model, ...(out ? { max_tokens: out } : {}), ...effortBody(effort, model, settings),
     provider: { allow_fallbacks: true, require_parameters: true, max_price: mp, ...(limits.sort ? { sort: limits.sort } : {}) },
@@ -63,7 +65,8 @@ export function taskPayload(profile, body, { level, settings = null } = {}) {
 async function taskChat(env, body, route, meta, signal, fetchImpl = globalThis.fetch) {
   const original = route.taskProfile, chain = Array.isArray(original.poolChain) && original.poolChain.length ? original.poolChain : [original];
   let last;
-  for (let index = 0; index < chain.length; index++) {
+  const from = Number.isInteger(route.startAt) && route.startAt > 0 && route.startAt < chain.length ? route.startAt : 0;   // the last attempt after repeated loops: the next model in the chain
+  for (let index = from; index < chain.length; index++) {
     const profile = { ...original, ...chain[index], poolChain: undefined };
     // Every model owns its snapshot, effort, limits and opaque reasoning replay.
     // Provider fallback happens inside one OR request before advancing here.
@@ -71,7 +74,7 @@ async function taskChat(env, body, route, meta, signal, fetchImpl = globalThis.f
       try {
         const auth = await authorizeTaskProfile(env, profile, meta?.tenant, body);
         const frozenSettings = { ...env.MODEL_SETTINGS, catalog: { ...env.MODEL_SETTINGS?.catalog, [profile.requestedModel]: profile.catalog } };
-        const payload = taskPayload(profile, body, { level: isCloudflareModel(profile.requestedModel) ? null : auth.level, settings: frozenSettings });
+        const payload = taskPayload(profile, body, { level: isCloudflareModel(profile.requestedModel) ? null : auth.level, settings: frozenSettings, capOut: route.capOut });
         const r = isCloudflareModel(profile.requestedModel)
           ? await cloudflareChat(env, payload, { ...meta, job: CHAT_JOB, session: payload.session_id, _privacy: auth.level }, signal, profile.catalog)
           : await orFetch(env, payload, { ...meta, job: CHAT_JOB, session: payload.session_id, _privacy: auth.level }, { "x-openrouter-metadata": "enabled" }, signal, fetchImpl);
@@ -85,7 +88,7 @@ async function taskChat(env, body, route, meta, signal, fetchImpl = globalThis.f
           throw Object.assign(new Error(`Task model unavailable (${status}).`), { orStatus: status });
         }
         const out = await firstOk(r, !!body.stream);
-        route.served = profile.requestedModel; route.effort = profile.effort;
+        route.served = profile.requestedModel; route.effort = profile.effort; route.servedIndex = index;
         // Runtime persists which fallback served without replacing the frozen chain.
         route.servedProfile = profile;
         return out;
@@ -127,11 +130,11 @@ export function replayFor(messages, model) {
   return messages.map((m) => { if (!m || !m._rmodel) return m; const { reasoning_details, _rmodel, ...rest } = m; return reasoning_details && _rmodel === model ? { ...rest, reasoning_details } : rest; });
 }
 // One pool attempt's exact request (exported for the wire tests and the ops route preview).
-export function poolPayload(env, model, level, body, session, prov = null, effort = null, category = null) {
+export function poolPayload(env, model, level, body, session, prov = null, effort = null, category = null, capOut = null) {
   const meta = env.MODEL_SETTINGS?.catalog?.[model], limits = categoryLimits(env.MODEL_SETTINGS, category);
   const { reasoning, provider, models, model: _m, max_tokens, ...b } = body || {};   // a caller's/router's effort, output limit or provider never reaches the wire
   if (quirkOf(env.MODEL_SETTINGS, model, "auto_tool_choice_only") && b.tool_choice != null && b.tool_choice !== "auto") throw new PrivacyBlocked(`${model} accepts only tool_choice auto`, { model });
-  const out = outputLimit(limits.max_output, meta);
+  const out = capped(outputLimit(limits.max_output, meta), capOut);
   const mp = limits.max_price && Number.isFinite(limits.max_price.prompt) && Number.isFinite(limits.max_price.completion) ? limits.max_price : maxPriceFor(meta);
   return { ...b, ...(out ? { max_tokens: out } : {}), messages: replayFor(b.messages, model), model, ...effortBody(effort, model, env.MODEL_SETTINGS),
     provider: { allow_fallbacks: true, require_parameters: true, max_price: mp, ...(limits.sort ? { sort: limits.sort } : {}) }, usage: { include: true },
@@ -144,15 +147,16 @@ async function twoChat(env, body, session, route, meta, signal = null, fetchImpl
   if (!order.length) throw new PrivacyBlocked(PRIVACY_EXHAUSTED, { level, category: route.category || null });
   const b = body;   // every attempt takes its output limit, sort and price cap from the saved routing category
   let err, attempts = 0;
-  for (let i = 0; i < order.length && attempts < MAX_ATTEMPTS; i++) {
+  const from = Number.isInteger(route.startAt) && route.startAt > 0 && route.startAt < order.length ? route.startAt : 0;   // the last attempt after repeated loops: the next model in the order
+  for (let i = from; i < order.length && attempts < MAX_ATTEMPTS; i++) {
     // The first model rate-limited (429 on all its endpoints) → wait and ask it again before paying a pricier model for the step (dev 10-07).
     const waits = quirkOf(env.MODEL_SETTINGS, order[i], "rate_limit_waits") && i === 0 ? rateLimitWaits(env) : [];
     for (let k = 0; attempts < MAX_ATTEMPTS; k++) {
       attempts++;
       try {
-        const r = await orFetch(env, poolPayload(env, order[i], level, b, session, prov, picks[i].effort, route.category), { ...meta, job: CHAT_JOB, ...(session ? { session: String(session).slice(0, 256) } : {}), _privacy: level, _prov: prov }, { "x-openrouter-metadata": "enabled" }, signal, fetchImpl);
+        const r = await orFetch(env, poolPayload(env, order[i], level, b, session, prov, picks[i].effort, route.category, route.capOut), { ...meta, job: CHAT_JOB, ...(session ? { session: String(session).slice(0, 256) } : {}), _privacy: level, _prov: prov }, { "x-openrouter-metadata": "enabled" }, signal, fetchImpl);
         if (!r.ok) { const t = await boundedText(r, 64 * 1024).catch(() => ""); throw Object.assign(new Error(`openrouter ${order[i]} ${r.status}: ${t.slice(0, 200)}`), { orStatus: r.status }); }
-        const out = await firstOk(r, !!b.stream); markServed(route, order[i], i > 0, env.MODEL_SETTINGS);
+        const out = await firstOk(r, !!b.stream); markServed(route, order[i], i > 0, env.MODEL_SETTINGS); route.servedIndex = i;
         route.effort = picks[i].effort;
         return out;
       } catch (e) {

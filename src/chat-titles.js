@@ -25,14 +25,18 @@ export function cleanChatTitle(value) {
   const parts = title ? title.split(" ") : [];
   return parts.length >= 3 && parts.length <= 7 && title.length <= 80 ? title : null;
 }
+// The placeholder name keeps the person's characters as typed (apostrophes, symbols, emojis with their joiners and
+// modifiers). Words split on whitespace only, so a word is never cut inside an emoji.
+const charCount = (word) => { try { return [...new Intl.Segmenter().segment(word)].length; } catch { return [...word].length; } };
 export function fallbackChatTitle(text) {
-  const plain = String(text || "").replace(/^(?:(?:hey|hi|ok|okay|so)[,!. ]+|(?:can|could|would) you (?:please )?|please )+/i, "");
-  const parts = words(plain).filter((part) => part.length <= 30).slice(0, 4);
+  const plain = String(text || "").normalize("NFC").replace(/^\s+/, "").replace(/^(?:(?:hey|hi|ok|okay|so)[,!. ]+|(?:can|could|would) you (?:please )?|please )+/i, "");
+  const parts = plain.split(/\s+/u).filter((part) => part && charCount(part) <= 30).slice(0, 4);
+  while (parts.length && !(parts[parts.length - 1] = parts[parts.length - 1].replace(/[.,;:!?]+$/u, ""))) parts.pop();
   if (!parts.length) return "New chat";
-  if (parts.length === 1) parts.push("chat");
+  if (parts.length === 1 && !/\.\p{L}/u.test(parts[0])) parts.push("chat");   // a lone plain word gets "chat"; a file name stays as typed
   while (parts.join(" ").length > 80) parts.pop();
-  const title = parts.join(" ");
-  return title[0].toUpperCase() + title.slice(1);
+  const title = parts.join(" "), first = String.fromCodePoint(title.codePointAt(0));
+  return first.toUpperCase() + title.slice(first.length);
 }
 
 // titleText: the words of the person's first message ("" for a file-only message: the placeholder, the file name, stays). Only a chat with words is

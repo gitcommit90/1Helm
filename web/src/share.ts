@@ -5,7 +5,9 @@
 //    Library badge) shows both options as tiles. Publish asks for the web name → Publish → the live link (Copy / Open / Unpublish).
 //    Once a file is published (published_pages.source = file:<channel>:<id>, or the same .html name from the helper's computer), its
 //    card shows "Published · link" with Copy · Open · Update (republish) · Unpublish, and the Library row a "Published" badge.
-//  · The Library lists published pages (Copy, Open, Unpublish) and shared files (Copy, Revoke) at the top.
+//  · The Library lists published pages (Copy, Open, Unpublish), shared files (Copy, Revoke) and shared chats (Copy, Open, Delete link) at the top.
+//  · Share chat: the Share button in an open chat's header opens a sheet. Create link makes a static public copy of the chat as it is now
+//    (1HC src/share-chat.js); then the sheet shows the link with Copy, Update link (a new copy at the same address) and Delete link.
 //  · Cards in the chat: the helper's publish_page / share_file_link only PREPARE; their card ("Publish trip at …?" with Publish /
 //    Not now, or Create link / Not now) is the person's tap. Stream event `share_offer`; sessionDetail turns carry `offers`.
 // v3.ts only hooks in: shInit() once, shCards()/shEvent() for the cards, shCardHtml() to draw one, shFileBtn() on chat file cards,
@@ -14,6 +16,7 @@
 import { ask } from "./dialog";
 
 type Link = { id: string; file_id: string; channel: string; name: string; mime: string; bytes: number; created_at: number; expires_at: number | null; url: string };
+type Chat = { id: string; channel: string; session: string; title: string; messages: number; pictures: number; created_at: number; updated_at: number; url: string };
 type Page = { name: string; title: string; url: string; files: number; bytes: number; channel: string | null; source?: string | null; created_at: number; updated_at: number };
 export type Offer = { id: string; kind: "page" | "link"; status: "pending" | "accepted" | "declined" | "expired"; name: string | null; title: string | null; url: string | null; base: string;
   update: boolean; file: { id: string; name: string; bytes: number } | null; files: number; bytes: number; channel: string; session: string | null; turn: string | null; result: any; created_at: number };
@@ -23,9 +26,10 @@ type Deps = {
   note: (title: string, sub: string) => void;
   repaint: () => void;                 // the chat / Library on screen changed
   helper: (slug: string) => string;
+  chatTitle?: (slug: string, sid: string) => string;   // the title of that chat, for the Share sheet
 };
 let D: Deps | null = null;
-const SH: { base: string; links: Link[]; pages: Page[]; loaded: boolean } = { base: "", links: [], pages: [], loaded: false };
+const SH: { base: string; links: Link[]; pages: Page[]; chats: Chat[]; loaded: boolean } = { base: "", links: [], pages: [], chats: [], loaded: false };
 const OF = new Map<string, Offer>();
 const OV = new Map<string, { name?: string; exp?: string; busy?: string; err?: string; sugg?: string; fresh?: boolean }>();
 const EXP: [string, string][] = [["never", "Never"], ["7d", "7 days"], ["30d", "30 days"]];
@@ -40,6 +44,8 @@ const IC = {
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   check: '<path d="m5 12 5 5 9-10"/>',
   up: '<path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/>',
+  share: '<path d="M12 15V4"/><path d="m8 8 4-4 4 4"/><path d="M5 13v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>',
+  chat: '<path d="M21 12a8 8 0 0 1-11.8 7L4 20l1.2-4.4A8 8 0 1 1 21 12z"/>',
 };
 const short = (u: string) => u.replace(/^https?:\/\//, "");
 const when = (t: number) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -51,7 +57,7 @@ const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 export function shInit(d: Deps) { D = d; shLoad(); }
 export async function shLoad() {
   if (!D) return;
-  try { const r = await D.api("/share"); if (r && !r.error) { SH.base = r.base || SH.base; SH.links = r.links || []; SH.pages = r.pages || []; SH.loaded = true; D.repaint(); } } catch {}
+  try { const r = await D.api("/share"); if (r && !r.error) { SH.base = r.base || SH.base; SH.links = r.links || []; SH.pages = r.pages || []; SH.chats = r.chats || []; SH.loaded = true; D.repaint(); } } catch {}
 }
 export const shLinkOf = (fid: string) => SH.links.find((l) => l.file_id === fid);
 /** The published page made from this Library file: published from it (file:<ch>:<id>), from an earlier copy with the same name,
@@ -64,6 +70,9 @@ export function shPageOf(slug: string, fid: string, name = "") {
     if (m[1] === "path") return /\.html?$/i.test(m[3]) && m[3].split("/").pop()!.toLowerCase() === nm;
     return (fileInfo(slug, m[3])?.name || "").toLowerCase() === nm; });
 }
+export const shChatOf = (slug: string, sid: string) => SH.chats.find((c) => c.channel === slug && String(c.session) === String(sid));
+/** A chat was deleted in the app: its public link goes with it (the server removes it too). */
+export function shChatGone(slug: string, sid: string) { const n = SH.chats.length; SH.chats = SH.chats.filter((c) => !(c.channel === slug && String(c.session) === String(sid))); if (n !== SH.chats.length) D?.repaint(); }
 export function shFileGone(fid: string) { const n = SH.links.length; SH.links = SH.links.filter((l) => l.file_id !== fid); if (n !== SH.links.length) D?.repaint(); }
 
 async function copy(text: string, what = "Link copied") {
@@ -96,14 +105,18 @@ export const shViewerBtns = (slug: string, fid: string, name: string, mime: stri
 export const shBadge = (slug: string, fid?: string, name = "") => !fid ? "" : (shLinkOf(fid) ? ` <span class="shbadge" role="button" tabindex="0" data-sh="share|${esc(slug)}|${esc(fid)}"${fattr(name)} title="Anyone with the link can open it">${I(IC.link, 11)}Shared</span>` : "")
   + (name && isHtml(name) && shPageOf(slug, fid, name) ? ` <span class="shbadge pub" role="button" tabindex="0" data-sh="pub|${esc(slug)}|${esc(fid)}"${fattr(name)} title="A live web page at your address">${I(IC.globe, 11)}Published</span>` : "");
 
+/** The Share button in an open chat's header. Desktop: a pill that folds into the header's ... menu like Pin; phone: an icon in the task tools. */
+export const shHeadBtn = (slug: string, sid: string, phone = false) => { const on = !!shChatOf(slug, sid), a = `data-sh="chat|${esc(slug)}|${esc(sid)}"`;
+  return phone ? `<button class="cb${on ? " on" : ""}" ${a} aria-label="Share chat">${I(IC.share, 19)}</button>`
+    : `<button class="hshare${on ? " on" : ""}" ${a} aria-label="Share chat" title="${on ? "This chat has a public link" : "Share this chat"}">${I(IC.share, 16)}<span>Share</span></button>`; };
 /** Top of the Library: published pages, then shared files (one channel, or every channel). */
 export function shLibHtml(slug: string | null) {
-  const pages = SH.pages.filter((p) => !slug || p.channel === slug), links = SH.links.filter((l) => !slug || l.channel === slug);
-  if (!pages.length && !links.length) return "";
+  const pages = SH.pages.filter((p) => !slug || p.channel === slug), links = SH.links.filter((l) => !slug || l.channel === slug), chats = SH.chats.filter((c) => !slug || c.channel === slug);
+  if (!pages.length && !links.length && !chats.length) return "";
   const row = (icon: string, title: string, sub: string, url: string, actions: string) => `<div class="shrow"><span class="shico">${I(icon, 18)}</span><span class="shmain"><b>${esc(title)}</b><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(short(url))}</a>${sub ? `<span>${esc(sub)}</span>` : ""}</span>
     <span class="shacts"><button class="shbtn" data-sh="copy|${esc(url)}" aria-label="Copy link" title="Copy link">${I(IC.copy, 16)}</button><a class="shbtn" href="${esc(url)}" target="_blank" rel="noopener noreferrer" aria-label="Open" title="Open">${I(IC.open, 16)}</a>${actions}</span></div>`;
   return `<section class="shlib">${pages.length ? `<h3>Published pages <span>${pages.length}</span></h3>${pages.map((p) => row(IC.globe, p.title, `Updated ${when(p.updated_at)}`, p.url, `<button class="shbtn bad" data-sh="unpub|${esc(p.name)}" aria-label="Unpublish ${esc(p.title)}" title="Unpublish">${I(IC.x, 16)}</button>`)).join("")}` : ""}
-    ${links.length ? `<h3>Shared files <span>${links.length}</span></h3>${links.map((l) => row(IC.link, l.name, expLine(l), l.url, `<button class="shbtn bad" data-sh="revoke|${esc(l.id)}" aria-label="Revoke the link to ${esc(l.name)}" title="Revoke link">${I(IC.x, 16)}</button>`)).join("")}` : ""}</section>`;
+    ${links.length ? `<h3>Shared files <span>${links.length}</span></h3>${links.map((l) => row(IC.link, l.name, expLine(l), l.url, `<button class="shbtn bad" data-sh="revoke|${esc(l.id)}" aria-label="Revoke the link to ${esc(l.name)}" title="Revoke link">${I(IC.x, 16)}</button>`)).join("")}` : ""}${chats.length ? `<h3>Shared chats <span>${chats.length}</span></h3>${chats.map((c) => row(IC.chat, c.title, `Shared ${when(c.updated_at)}`, c.url, `<button class="shbtn bad" data-sh="chdel|${esc(c.id)}" aria-label="Delete the link to ${esc(c.title)}" title="Delete link">${I(IC.x, 16)}</button>`)).join("")}` : ""}</section>`;
 }
 
 // ---------- cards in the chat ----------
@@ -268,9 +281,63 @@ async function republish(slug: string, fid: string, name: string) {
   D.repaint(); D.note("Page updated", short(r.page.url));
 }
 
+// ---------- the sheet for a chat (Share in the chat header) ----------
+type ChatSheet = { slug: string; sid: string; title: string; busy: string; err: string; msg: string; prev: HTMLElement | null };
+let CHT: ChatSheet | null = null;
+function chatOpen(slug: string, sid: string, title: string) {
+  CHT = { slug, sid, title, busy: "", err: "", msg: "", prev: document.activeElement instanceof HTMLElement ? document.activeElement : null };
+  let w = document.getElementById("shw");
+  if (!w) { w = document.createElement("div"); w.id = "shw"; w.className = "shw"; document.body.appendChild(w); }
+  chatPaint(); void w.offsetWidth; w.classList.add("on");
+  requestAnimationFrame(() => (w!.querySelector<HTMLElement>("[data-shfocus]") || w!.querySelector<HTMLElement>(".dlgb"))?.focus({ preventScroll: true }));
+  if (!SH.loaded) void shLoad().then(() => { if (CHT && !CHT.busy) chatPaint(); });
+}
+function chatClose() {
+  const w = document.getElementById("shw"); const prev = CHT?.prev; CHT = null; if (!w) return;
+  w.classList.remove("on"); setTimeout(() => { if (!CHT && !SHT) w.remove(); }, 260);
+  if (prev?.isConnected) prev.focus({ preventScroll: true });
+}
+function chatPaint() {
+  const w = document.getElementById("shw"); if (!w || !CHT) return; const s = CHT, dis = s.busy ? " disabled" : "", c = shChatOf(s.slug, s.sid);
+  const err = s.err ? `<p class="sherr">${esc(s.err)}</p>` : "";
+  const body = c
+    ? `<h2 id="shwt">Share “${esc(s.title)}”</h2><p>Anyone with the link can see a copy of this chat. Messages sent after the copy was made are not in it.</p>
+      <div class="shfield"><input readonly value="${esc(c.url)}" aria-label="Chat link" data-shsel><button class="dlgb ok" data-sh="copy|${esc(c.url)}" data-shfocus>${I(IC.copy, 15)} Copy</button><a class="dlgb no shopen" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${I(IC.open, 15)} Open</a></div>
+      <p class="shmeta">${esc(s.msg || `Copy made ${when(c.updated_at)}`)}</p>${err}
+      <div class="dlgbtns shsplit"><button class="dlgb shrev" data-sh="chdel|${esc(c.id)}"${dis}>${s.busy === "del" ? "Deleting…" : "Delete link"}</button><span class="shgrp"><button class="dlgb no" data-sh="chup|${esc(c.id)}"${dis}>${s.busy === "upd" ? "Updating…" : "Update link"}</button><button class="dlgb no" data-shx>Done</button></span></div>`
+    : `<h2 id="shwt">Share “${esc(s.title)}”</h2><p>Anyone with the link can see a copy of this chat, with no sign-in. Messages sent after you create the link are not included. You can update or delete the link any time.</p>${err}
+      <div class="dlgbtns"><button class="dlgb no" data-shx>Cancel</button><button class="dlgb ok" data-sh="chmk" data-shfocus${dis}>${s.busy === "mk" ? "Creating…" : "Create link"}</button></div>`;
+  w.innerHTML = `<div class="dlgback" data-shx></div><div class="dlg shdlg" role="dialog" aria-modal="true" aria-labelledby="shwt" tabindex="-1"><span class="dlggrab" aria-hidden="true"></span>${body}</div>`;
+}
+const chatFail = (r: any) => r.error === "payment_required" ? "Your plan needs attention first." : r.error;
+async function chatMake() {
+  const s = CHT; if (!s || !D || s.busy) return; s.busy = "mk"; s.err = ""; chatPaint();
+  const r = await D.api("/share/chats", { channel: s.slug, session: s.sid }).catch((e: any) => ({ error: e.message }));
+  if (CHT !== s) return; s.busy = "";
+  if (r.error) { s.err = chatFail(r); chatPaint(); return; }
+  SH.chats = [r.link, ...SH.chats.filter((x) => x.id !== r.link.id)]; chatPaint(); D.repaint(); copy(r.link.url, "Link made and copied");
+}
+async function chatUpdate(id: string) {
+  const s = CHT; if (!s || !D || s.busy) return; s.busy = "upd"; s.err = ""; s.msg = ""; chatPaint();
+  const r = await D.api(`/share/chats/${id}/update`, {}).catch((e: any) => ({ error: e.message }));
+  if (CHT !== s) return; s.busy = "";
+  if (r.error) { s.err = chatFail(r); if (/isn't there/.test(r.error)) SH.chats = SH.chats.filter((x) => x.id !== id); chatPaint(); D.repaint(); return; }
+  SH.chats = SH.chats.map((x) => (x.id === id ? r.link : x)); s.msg = "Updated just now. The link shows the chat as it is now."; chatPaint(); D.repaint(); D.note("Link updated", short(r.link.url));
+}
+async function chatDelete(id: string) {
+  const c = SH.chats.find((x) => x.id === id); if (!c || !D) return;
+  if (!(await ask({ title: "Delete this link?", body: `Anyone who has it won't be able to see “${c.title}” anymore. The chat itself stays. You can make a new link later.`, confirm: "Delete link", danger: true }))) return;
+  const s = CHT; if (s) { s.busy = "del"; s.err = ""; chatPaint(); }
+  const r = await D.api(`/share/chats/${id}/revoke`, {}).catch((e: any) => ({ error: e.message }));
+  if (s) s.busy = "";
+  if (r.error && !/No such link/.test(r.error)) { if (s && CHT === s) { s.err = r.error; chatPaint(); } else D.note("Couldn't delete the link", r.error); return; }
+  SH.chats = SH.chats.filter((x) => x.id !== id); if (CHT) chatPaint(); D.repaint(); D.note("Link deleted", c.title);
+}
+
 // ---------- events (window capture: runs before the app's document handlers, so a button inside a row never opens the row) ----------
 window.addEventListener("click", (e) => {
   const t = e.target as HTMLElement; if (!D || !t?.closest) return;
+  if (CHT && t.closest("[data-shx]")) { e.preventDefault(); e.stopPropagation(); chatClose(); return; }
   if (SHT && t.closest("[data-shx]")) { e.preventDefault(); e.stopPropagation(); sheetClose(); return; }
   if (t.closest("[data-shsel]")) { (t as HTMLInputElement).select?.(); return; }
   const b = t.closest<HTMLElement>("[data-sh]");
@@ -278,7 +345,11 @@ window.addEventListener("click", (e) => {
   e.preventDefault(); e.stopPropagation();
   if ((b as HTMLButtonElement).disabled || b.getAttribute("aria-disabled") === "true") return;
   const [a, x, y, z] = b.dataset.sh!.split("|"), fb = b.dataset.shn ? { name: b.dataset.shn, mime: b.dataset.shm || "" } : undefined;
-  if (a === "share") sheetOpen("share", x, y, fb);
+  if (a === "chat") chatOpen(x, y, b.dataset.shn || D.chatTitle?.(x, y) || "this chat");
+  else if (a === "chmk") chatMake();
+  else if (a === "chup") chatUpdate(x);
+  else if (a === "chdel") chatDelete(x);
+  else if (a === "share") sheetOpen("share", x, y, fb);
   else if (a === "pub") sheetOpen("pub", x, y, fb);
   else if (a === "skind" && SHT) { SHT.kind = x as Sheet["kind"]; SHT.err = ""; SHT.msg = ""; sheetPaint(); document.querySelector<HTMLElement>("#shw .shopt.sel")?.focus({ preventScroll: true }); }
   else if (a === "copy") copy(b.dataset.sh!.slice(5));
@@ -304,11 +375,11 @@ window.addEventListener("keydown", (e) => {
   // role="button" spans (chat card share, the Shared badge) work from the keyboard
   if ((e.key === "Enter" || e.key === " ") && t?.matches?.("span[data-sh]")) { e.preventDefault(); e.stopPropagation(); t.click(); return; }
   if (t?.dataset?.shname && e.key === "Enter") { e.preventDefault(); offerAct(t.dataset.shname, "acc"); return; }
-  if (!SHT) return;
+  if (!SHT && !CHT) return;
   if (document.querySelector(".dlgw:not(.off)")) return;   // ask() on top handles its own keys
   e.stopImmediatePropagation();
-  if (e.key === "Escape") { e.preventDefault(); sheetClose(); return; }
-  if (e.key === "Enter" && t?.dataset?.shpname !== undefined) { e.preventDefault(); sheetPublish(false); return; }
+  if (e.key === "Escape") { e.preventDefault(); if (CHT) chatClose(); else sheetClose(); return; }
+  if (e.key === "Enter" && t?.dataset?.shpname !== undefined && SHT) { e.preventDefault(); sheetPublish(false); return; }
   if (e.key === "Tab") {
     const f = [...document.querySelectorAll<HTMLElement>("#shw .shdlg button:not([disabled]), #shw .shdlg input, #shw .shdlg a[href]")]; if (!f.length) return;
     const i = f.indexOf(document.activeElement as HTMLElement);
