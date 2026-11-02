@@ -63,14 +63,14 @@ export async function pushAll(env, tenantId, payload, { endpoint = null, urgency
 
 const WHY = { question: "has a question for you", approval: "needs your OK to go on", interview: "has a few questions for you", plan: "has a plan for you to approve",
   browser: "needs you in the browser", link: "needs you to approve a purchase in Link", sign: "needs your signature" };
-const appUrl = (env, slug, channel, session) => `https://${env.APP_HOST || env.GATEWAY_HOST}/w/${slug}/app${channel && session ? `#/${channel}/s/${session}` : ""}`;
+export const appUrl = (env, slug, channel, session) => `https://${env.APP_HOST || env.GATEWAY_HOST}/w/${slug}/app${channel && session ? `#/${channel}/s/${session}` : ""}`;
 
 // The task changed state: kind "needs" (waiting on the person; why = sessions.waiting or "approval") or "finished".
 // R = the channel's Resident. opts.noText: the caller already texted this (a permission card); opts.watched: the person is
 // watching this turn in the app right now (no text; the push still goes, and the service worker keeps it quiet on any device
 // that has a visible app window, whatever it shows: swQuiet in pwa.js).
 // Returns what happened (tests read it).
-export async function notifyTask(R, session, kind, { why = "", reply = "", noText = false, watched = false } = {}) {
+export async function notifyTask(R, session, kind, { why = "", reply = "", noText = false, watched = false, force = false } = {}) {
   const env = R.env, tenant = R.get("tenant"), channel = R.get("channel");
   if (!env?.DB || !tenant || (kind !== "needs" && kind !== "finished")) return { skipped: "bad" };
   const key = String(session || "_");
@@ -78,7 +78,7 @@ export async function notifyTask(R, session, kind, { why = "", reply = "", noTex
   if (R.sql.exec("SELECT kind FROM notif_state WHERE session=?", key).toArray()[0]?.kind === kind) return { skipped: "same_state" };
   R.sql.exec("INSERT INTO notif_state (session,kind,at) VALUES (?,?,?) ON CONFLICT(session) DO UPDATE SET kind=excluded.kind, at=excluded.at", key, kind, Date.now());
   const prefs = await getPrefs(env, tenant);
-  if (!prefs[kind]) return { skipped: "off" };
+  if (!prefs[kind] && !force) return { skipped: "off" };   // force: a turn that started from a text, so the person is reachable only by text and the settings for background notices do not apply
   const t = await env.DB.prepare("SELECT slug, helper_name FROM tenants WHERE id=?").bind(tenant).first().catch(() => null);
   const helper = helperName(t), row = session ? R.session?.(session) : null, title = row?.title || "your task";
   const url = appUrl(env, t?.slug || "", channel, session);
@@ -86,10 +86,11 @@ export async function notifyTask(R, session, kind, { why = "", reply = "", noTex
   const payload = kind === "needs"
     ? { kind, title: `${helper} ${WHY[why] || "needs you"}`, body: title, url, session: String(session || ""), tag: `task-${session || "x"}` }
     : { kind, title: `Finished: ${title}`.slice(0, 120), body: reply ? cardsToText(String(reply)).replace(/\s+/g, " ").trim().slice(0, 140) : `${helper} is done. Take a look.`, url, session: String(session || ""), tag: `task-${session || "x"}` };
-  if (await underCap(env, tenant)) out.push = await pushAll(env, tenant, payload, { urgency: kind === "needs" ? "high" : "normal", topic: `t${String(session || "").replace(/-/g, "")}` }).catch((e) => ({ error: e.message }));
+  if (force) out.push = { skipped: "text_turn" };
+  else if (await underCap(env, tenant)) out.push = await pushAll(env, tenant, payload, { urgency: kind === "needs" ? "high" : "normal", topic: `t${String(session || "").replace(/-/g, "")}` }).catch((e) => ({ error: e.message }));
   else out.push = { capped: true };
   // By text: "needs you" only, when texting is connected and they aren't watching. Once per state change (the key above).
-  if (kind === "needs" && prefs.needs_text && !noText && !watched) {
+  if (kind === "needs" && (prefs.needs_text || force) && !noText && (!watched || force)) {
     if (await textConnected(env, tenant)) {
       const q = why === "question" ? (cardsToText(String(reply || "")).split("\n").map((l) => l.trim()).find((l) => /\?$/.test(l)) || "").slice(0, 300) : "";
       const msg = why === "question" ? `${helper} has a question before going on with "${title}"${q ? `: ${q}` : "."} Answer in the app: ${url}`

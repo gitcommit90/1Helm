@@ -16,6 +16,7 @@
 
 import { savePlanCard, planLayout } from "./cards.js";
 import { deliverCard } from "./ee/index.js";
+import { recordTextCard, PLAN_OPTIONS, planReplyLine } from "./text-cards.js";
 import { createChannel } from "./channels.js";
 import { planBudget, planBudgetText } from "./stop.js";
 import { limitsFor } from "./ee/index.js";
@@ -350,7 +351,9 @@ export async function textPlan(res, id) {
   if (!card.fresh) return true;
   const list = view.items.map((x, j) => `${j + 1}. ${x.kind === "project" ? `New project: ${x.project_name} (first task: ${x.title})` : x.title}${x.kind === "followup" ? ` (${x.line})` : ""}`).join("\n");
   const qs = view.questions?.length ? `\nFirst, a quick question${view.questions.length > 1 ? "s" : ""}: ${view.questions.map((x) => `${x.q}${x.options?.length ? ` (${x.options.join(" / ")})` : ""}`).join(" · ")}` : "";
-  const d = await deliverCard(env, tenant, { url: card.url, layout: planLayout(view.items.length, helper), fallback: `${helper} can start these for you:\n${list}${qs}\nOpen to answer, tick what you want and approve: ${card.url}` });
+  const quick = !view.questions?.length;   // a plan with questions first needs its answers, so it is settled on the card page
+  const d = await deliverCard(env, tenant, { url: card.url, layout: planLayout(view.items.length, helper), fallback: `${helper} can start these for you:\n${list}${qs}\n${quick ? `${planReplyLine}\nOr open to ` : "Open to "}answer, tick what you want and approve: ${card.url}` });
+  if (d?.ok && quick) recordTextCard(res, { kind: "plan", ref: id, session: p.session || null, options: PLAN_OPTIONS });
   return !!d?.ok;
 }
 // ---- the texted card (/c/<token>, kind "plan") ----

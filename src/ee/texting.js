@@ -171,20 +171,22 @@ export async function deliverPoll(env, tenantId, { question, choices, clientMess
   if (typeof clientMessageId !== "string" || !clientMessageId) throw new Error("poll client message id is required");
   return { ok: true, ...await P.createPoll(await token(env, r), r.phone, question, choices, { clientMessageId }) };
 }
-// A card reply by text: an iMessage live app card that opens the hosted card page (/c/<token>). If the card can't be sent
-// (new-contact limit / "Target not allowed", or any error), the same reply goes as plain text followed by the link, which
-// iMessage unfurls as a preview on every plan. Returns { ok, via: "app" | "text", id }.
+// A card sent by text. The readable form always goes first as a plain text: the question, its choices and the card link. The person
+// can answer by replying, and the text reaches every phone and plan, so nothing waits only in a card that may not draw (the Spectrum
+// message app can be missing, and the provider reports a sent card as sent whether or not it shows). On iMessage the live app card
+// follows as the tappable form. Returns { ok, via: "app" | "text", id, text_id }: id is the last message sent, text_id the plain text.
 // fallback: the whole text to send instead of "<text form>\n\n<link>" (e.g. a permission request's own wording).
 export async function deliverCard(env, tenantId, { url, layout, text, fallback }) {
   const r = await row(env, tenantId);
   if (!r || r.status !== "connected") return { ok: false, reason: "not_connected" };
   const tok = await token(env, r);
+  const body = fallback || `${cardsToText(text || "").trim()}\n\n${url}`.trim();
+  const textId = await withRetry(() => P.sendText(tok, r.phone, body));
   if (isIMessage(r)) {
-    try { return { ok: true, via: "app", id: await P.sendApp(tok, r.phone, url, { layout, live: true }) }; }
-    catch (e) { console.log("texting app card failed, sending text", P.isNewContactLimit(e) ? "new-contact limit" : String(e.message || e).slice(0, 160)); }
+    try { return { ok: true, via: "app", id: await P.sendApp(tok, r.phone, url, { layout, live: true }), text_id: textId }; }
+    catch (e) { console.log("texting app card failed, the text went", P.isNewContactLimit(e) ? "new-contact limit" : String(e.message || e).slice(0, 160)); }
   } else console.log(`texting card as text (${r.service})`);   // Android (SMS/RCS): no app cards there, so the text form + link
-  const id = await withRetry(() => P.sendText(tok, r.phone, fallback || `${cardsToText(text || "").trim()}\n\n${url}`.trim()));
-  return { ok: true, via: "text", id };
+  return { ok: true, via: "text", id: textId, text_id: textId };
 }
 // A tapback on one of the person's texts (messageId = its webhook message.id). One try, no retry and no fallback text:
 // the caller logs a failure and nothing else happens. Returns { ok, id } | { ok: false, reason }.

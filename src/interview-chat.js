@@ -236,7 +236,7 @@ export async function ivDeliverTexted(R, tenant, channel, r) {
     const prof = await R.env.DB.prepare("SELECT helper_name FROM tenants WHERE id=?").bind(tenant).first().catch(() => null), helper = helperName(prof);
     const card = await saveInterviewCard(R.env, { tenant, channel, id: iv.id, title: iv.title });
     const sent = await deliverCard(R.env, tenant, { url: card.url, layout: { caption: iv.title, subcaption: `${n} questions · ${String(helper).slice(0, 40)}`, summary: iv.title },
-      fallback: `${iv.title}: ${n} quick questions from ${helper}. Tap the link to answer them one at a time (skip any you like), then tap Send answers:\n${card.url}` });
+      fallback: `${iv.title}: ${n} quick question${n === 1 ? "" : "s"} from ${helper}.\n${iv.questions.map((q, j) => `${j + 1}. ${String(q.text || q.q || "").replace(/\s+/g, " ").trim().slice(0, 200)}${q.kind === "yesno" ? " (yes or no)" : ""}`).join("\n")}\nReply here with your answers (skip any you like), or open the link to answer them one at a time: ${card.url}` });
     if (!sent?.ok) console.log("interview card not texted", sent?.reason || "");
   }
 }

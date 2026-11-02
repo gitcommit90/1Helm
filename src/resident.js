@@ -2,6 +2,7 @@ import { originInput, messageOrigin, phoneOrigin, messageTime } from "./message-
 import { phoneFilesInit, phoneFilesNext, queuePhoneFiles, deliverPhoneFiles, dropPhoneFiles, nativePollInit, sendNativePoll, receiveNativeVote, nativePollDelivered, nativeVoteNext, recoverNativeVotes, recoverNativeSends, deliverNativeFallback, dropNativePolls, photonReplyInit, photonReplyOptions, photonReplySource, recordPhotonReplySource, photonAnswerOptions, dropPhotonReplies, photonSourceInput, retainAgentRound, retainAgentMessage, flushAgentMemory, agentMemoryNextWake, searchAgentBank, readAgentDocument, AGENT_MEMORY_TOOLS, initRoutingArtifacts, collectRoutingFiles, approveRoutingFiles, discardRoutingFiles, stageRoutingFile, routingFileTool, ROUTING_FILE_TOOLS, routingImageFallback, isRoutingImageError, dynamicRoutingOn, REQUEST_INPUT_TOOL, DONE_TOOL, WORKER_REQUEST_TOOLS, ORCHESTRATOR_TOOLS, orchestrationPolicy, routingToolsAllowed, storedMessages, stepLog, lineRange } from "./ee/index.js";
 import { userInputInit, acceptAmbiguous, chooseInput, createInputChooser, replyView, replyForTurn, inputView, questionForTurn, pendingInputs, createQuestion, resolveInput, acceptInput, attachInputTurn, deleteInputs, inputContext } from "./user-input.js";
 import { textAlertInit, recordTextAlert, routeInboundText, dropTextAlerts } from "./text-alerts.js";
+import { recordTextReply, textWaitingNotices, recordTextCard, resolveTextCard, hasOpenTextCard, APPROVAL_OPTIONS, approvalReplyLine } from "./text-cards.js";
 // Channel resident: the always-on agent for one channel. Runs in its own Durable Object (never in the container).
 // - Context: the channel's imported purpose, memories and recent history, plus this Cloud conversation.
 // - Tools: run_command / read_file / write_file / search_files run on this channel's ChannelComputer.
@@ -3290,6 +3291,10 @@ export class Resident extends DurableObject {
       const prior=this.sql.exec("SELECT * FROM user_input_receipts WHERE response_id=?",`text:${opts.photonMsg}`).toArray()[0];
       if(prior){const selected=JSON.parse(prior.meta_json||"{}")._selection,expected=selected?.text??prior.answer_text;return expected===String(text)?{ok:true,duplicate:true,session:prior.session,turn:prior.turn}:{error:"This text identity belongs to another answer.",status:409};}
     }
+    if(hasOpenTextCard(this)&&!opts.photon_source_turn&&!opts.photon_target&&!opts.session&&!opts.input_reply&&!files.length&&!this.sql.exec("SELECT 1 FROM user_questions WHERE status='pending' AND via='text' LIMIT 1").toArray().length) {
+      const answered=await resolveTextCard(this,text).catch(e=>{console.log("text card answer",e.message);return null;});   // "1" or "deny" to the one texted approval or plan card settles it like a tap
+      if(answered)return answered;
+    }
     if(opts.photon_source_turn)return this.inputReply(tenant,channel,channelId,opts.session,text,{}, {...opts,viaText:true,_input:photonSourceInput(this,text,opts)});
     const textQuestions=this.sql.exec("SELECT * FROM user_questions WHERE status='pending' AND via='text' ORDER BY created").toArray();
     const textChoosers=this.sql.exec("SELECT session FROM user_questions WHERE status='pending' AND via='text' AND selection_json IS NOT NULL ORDER BY created").toArray();
@@ -3476,8 +3481,22 @@ export class Resident extends DurableObject {
     if (tenant !== this.get("tenant") || channel !== this.get("channel")) return {ok:false,reason:"wrong_channel"};
     if (r?.quiet) return { ok: true, via: "quiet" };   // an internal turn with nothing for the person: no text, and no "I hit a snag" in place of an empty reply
     queuePhoneFiles(this, r?.turn);
-    try { return await this.deliverTextBodyReply(tenant, channel, r); }
-    finally { if (r?.turn) await deliverPhoneFiles(this, r.turn).catch(e => console.log("phone files", e.message)); }
+    let out;
+    try {
+      try { out = await this.deliverTextBodyReply(tenant, channel, r); }
+      catch (e) {
+        // A card that could not be saved or sent must not leave the person with nothing: the plain text form goes instead.
+        console.log("text reply delivery failed, sending plain text", String(e.message || e).slice(0, 160));
+        try { out = await deliverText(this.env, tenant, toTextReply(r?.reply || "") || "Sorry, I hit a snag on that one. Try me again in a minute?", photonAnswerOptions(this, r?.turn)); out.via = "plain_after_error"; }
+        catch (e2) { out = { ok: false, reason: `error: ${String(e2.message || e2).slice(0, 160)}` }; }
+      }
+      if (out?.ok !== false || out.reason !== "not_connected") await this.textWaitingNotices(tenant, r).catch(e => console.log("text waiting notice", e.message));
+      return out;
+    }
+    finally {
+      recordTextReply(this, r, out);
+      if (r?.turn) await deliverPhoneFiles(this, r.turn).catch(e => console.log("phone files", e.message));
+    }
   }
   async deliverTextBodyReply(tenant, channel, r) {
     if(r?.input_request?.status==="pending")this.put("last_text_question_session",r.input_request.session);
@@ -5117,6 +5136,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
   async planDecide(id, decision, picks = null, answers = null) { return decidePlan(this, Number(id), String(decision), picks, answers); }
   async planStartTask(item, origin) { if (!this.get("tenant")) return { error: "no such channel" }; this._limits = await limitsFor(this.env); return startPlanTask(this, item, origin); }
   async planCardData(id) { return planCardData(this, Number(id)); }
+  async textWaitingNotices(tenant, r) { return textWaitingNotices(this, tenant, r); }   // texted turn ended with something only a tap settles (text-cards.js)
   async planText(id) { return textPlan(this, Number(id)); }   // proposed in a texting turn: the same card as an iMessage live app card
   // "Interview me" cards (interview-chat.js): the app's and the card page's view, and the person's taps.
   async interviewView(id) { return ivView(ivRow(this.sql, id),this.sql); }
@@ -5242,7 +5262,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
     const perTask = sessions.length && sessions.every((s) => s && grants.some((g) => g.session === s));
     const g = perTask ? grants.find((x) => x.session === sessions[0]) : grants.find((x) => x.session == null);
     if (g) { if (g.uses_left > 0) this.sql.exec("UPDATE grants SET uses_left=uses_left-1 WHERE id=?", g.id); return { verdict: "allow", why: `approved (${g.scope})` }; }
-    const live = owners.filter((t) => t.subs.size);
+    const fromText = owners.some((t) => t.viaText), live = fromText ? [] : owners.filter((t) => t.subs.size);   // a turn that came from a text asks on the phone even when the app is open somewhere
     let a = this.sql.exec("SELECT * FROM approvals WHERE status='pending' AND host=? AND method=? AND at>? ORDER BY id DESC LIMIT 1", host, method, now - 10 * 60e3).toArray()[0];
     if (!a) {
       this.sql.exec("INSERT INTO approvals (at,host,method,path,bytes,keys,turn,workflow_id,session,via,page) VALUES (?,?,?,?,?,?,?,?,?,?,?)", now, host, method, path || "", bytes || 0, JSON.stringify(keys || []), owners[0]?.turn || null, owners[0]?.workflow_id ?? null, sessions[0] ?? null, via || null, page || null);
@@ -5250,7 +5270,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
     }
     // Nobody is watching in the app (a texting turn, a scheduled run or a job): if they text with their helper, the request goes
     // to their phone as a live app card (/c/<token> → Allow / Deny), and the command is held the same way.
-    const texted = live.length ? false : await this.textApproval(a).catch((e) => { console.log("approval text", e.message); return false; });
+    const texted = live.length ? false : await this.textApproval(a, { viaText: fromText }).catch((e) => { console.log("approval text", e.message); return false; });
     // "A task needs you": a push to their devices (once per task per state change; the permission card above is its text).
     this.ctx.waitUntil?.(notifyTask(this, a.session || null, "needs", { why: "approval", noText: true, watched: live.length > 0 }).catch((e) => console.log("approval notify", e.message)));
     // Someone is watching (or the request went to their phone): hold the command until they decide (up to 2 min).
@@ -5280,18 +5300,20 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
   noteBrowserActs(actions, page = {}) { try { if (buyControlTargeted(actions, page)) this._buyClickAt = Date.now(); } catch {} }
   // A permission request by text: one live app card per request (deduped by the cards table), only when texting is connected.
   // The card falls back to a plain text with the link (new-contact limit or any send error). Returns true when it went out.
-  async textApproval(a) {
+  async textApproval(a, { viaText = false } = {}) {
     const tenant = this.get("tenant"), channel = this.get("channel");
     const tx = await this.env.DB.prepare("SELECT status FROM texting WHERE tenant_id=?").bind(tenant).first().catch(() => null);
     if (tx?.status !== "connected") return false;
-    if (!(await textAllowed(this.env, tenant))) return false;   // Settings → Notifications: "A task needs you" / "Also by text" off
+    if (!viaText && !(await textAllowed(this.env, tenant))) return false;   // viaText: the turn came from a text, so the person is reachable only there and the notification setting does not apply   // Settings → Notifications: "A task needs you" / "Also by text" off
     const prof = await this.env.DB.prepare("SELECT helper_name FROM tenants WHERE id=?").bind(tenant).first().catch(() => null), helper = helperName(prof);
     let channelName = channel; try { const c = (await this.archive().channels()).find((x) => (x.slug || x.name) === channel); if (c?.name) channelName = c.name; } catch {}
     const card = await saveApprovalCard(this.env, { tenant, channel, approval: a, channelName });
     if (!card.fresh) return true;                                     // already on their phone (a retry of the same request)
-    const d = await deliverCard(this.env, tenant, a.perm === CONFIRM ? { url: card.url, layout: confirmLayout(a.what, helper), fallback: `${helper} needs your OK: ${a.what} Open to confirm or cancel: ${card.url}` }
-      : a.perm ? { url: card.url, layout: permLayout(a.perm, helper, a.what), fallback: `${helper} wants to ${a.what || kindName(a.perm).toLowerCase()}. Open to allow or deny: ${card.url}` }
-      : { url: card.url, layout: approvalLayout(a.host, helper), fallback: `${helper} wants to ${a.via === "form" ? "submit a form on" : "send data to"} ${a.host}. Open to allow or deny: ${card.url}` });
+    const sshKind = SSH_PERMS.has(a.perm), reply = sshKind ? "" : `\n${approvalReplyLine(a.perm === CONFIRM)}`;   // an SSH request needs its same-origin page, so it has no text reply
+    const d = await deliverCard(this.env, tenant, a.perm === CONFIRM ? { url: card.url, layout: confirmLayout(a.what, helper), fallback: `${helper} needs your OK: ${a.what}${reply}\nOr open to decide: ${card.url}` }
+      : a.perm ? { url: card.url, layout: permLayout(a.perm, helper, a.what), fallback: `${helper} wants to ${a.what || kindName(a.perm).toLowerCase()}.${reply}\nOr open to decide: ${card.url}` }
+      : { url: card.url, layout: approvalLayout(a.host, helper), fallback: `${helper} wants to ${a.via === "form" ? "submit a form on" : "send data to"} ${a.host}.${reply}\nOr open to decide: ${card.url}` });
+    if (d?.ok && !sshKind) recordTextCard(this, { kind: "approval", ref: a.id, session: a.session || null, options: APPROVAL_OPTIONS });
     return !!d?.ok;
   }
   // For the card page: this request's status (pending | once | session | channel | deny | expired). Expired = gone, or still

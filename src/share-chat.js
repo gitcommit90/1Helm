@@ -3,7 +3,7 @@
 // This file holds the pure parts: turning the app's sessionDetail into a snapshot, and drawing a snapshot as a page. The storage, the
 // token and the routes are in src/share.js (rows in D1 share_chats, the snapshot and its pictures in R2 under t/<tenant>/chats/<id>/<version>/).
 //
-// What a snapshot holds: the title, the person's messages and the helper's replies in order with their times, the pictures the chat
+// What a snapshot holds: the title (a Live notes turn shows its meeting notes under a small "Live notes" label, but not its "Update your meeting notes?" card), the person's messages and the helper's replies in order with their times, the pictures the chat
 // shows (copied, so they still display), and a name tile for every other file. It never holds work steps, tool cards, permission cards,
 // plans, offers, interview cards or any card with buttons, and none of the hidden data: system prompts, model names, costs, memory,
 // tool arguments or results. snapshotFromDetail copies fields one by one from the same turns the app loads, so a field that is not named
@@ -53,29 +53,34 @@ const fileItem = (f) => f && f.name ? { k: "file", name: clip(str(f.name), 200),
 // sessionDetail → { messages, refs }. refs lists the pictures to copy: each item with a ref gets its copy (or becomes a name tile).
 export function snapshotFromDetail(d) {
   const messages = [];
-  const push = (role, at, text, items) => {
+  const push = (role, at, text, items, extra = {}) => {
     text = clip(str(text), CHAT_TEXT_MAX).replace(/\s+$/, "");
     items = items.filter(Boolean);
     if (!text.trim() && !items.length) return;
-    messages.push({ role, at: Number(at) || 0, text, items });
+    messages.push({ role, at: Number(at) || 0, text, items, ...extra });
   };
   for (const t of d?.turns || []) {
-    if (!t || t.kind === "livenote") continue;
+    if (!t) continue;
+    const live = t.kind === "livenote";
     // The person's messages of this turn: the first one plus anything added while the helper worked.
     const users = Array.isArray(t.msgs) ? t.msgs : t.kind === "chat" ? [{ text: t.user_text, at: t.at, files: t.attached }] : [];
     users.forEach((x, i) => {
       const files = (x.files?.length || i) ? x.files || [] : t.attached || [];
-      push("user", x.at || t.at, x.text, files.map(fileItem));
+      // A message sent as a reply to an earlier message shows that message's words above it, cut to the length the app shows.
+      const quote = x.reply && str(x.reply.text).trim() ? { quote: clip(str(x.reply.text).replace(/\s+/g, " ").trim(), 120) } : {};
+      push("user", x.at || t.at, x.text, files.map(fileItem), quote);
     });
     // The helper's reply: the answer parts, else the saved reply, shown as the app shows it (cards become their plain text).
     const sp = Array.isArray(t.parts) && (t.parts.length > 1 || t.progress?.length) ? answerParts(t.parts, t.progress) : null;
     let body = sp?.length ? sp.join("\n\n") : str(t.reply) || (t.error === "interrupted" ? INTERRUPTED : "");
     body = body.trim() === "Stopped." ? "Stopped." : cardsToText(body, NO_CONTROLS);
+    // A Live notes turn that holds the "Update your meeting notes?" card has no message text in the app, only that card (it has buttons).
+    if (live && t.livenote?.refine) body = "";
     const items = [
       ...(t.images || []).map((x) => x && x.id ? { k: "img", shot: true, name: "", caption: [x.caption, hostOf(x.url)].filter(Boolean).filter((v, j, a) => a.indexOf(v) === j).join(" · ").slice(0, 200), ref: { kind: "shot", id: str(x.id) } } : null),
       ...(t.shared || []).map(fileItem),
     ];
-    push("agent", (Number(t.at) || 0) + (Number(t.total_ms) || 0), body, items);
+    push("agent", (Number(t.at) || 0) + (Number(t.total_ms) || 0), body, items, live ? { label: "Live notes" } : {});
   }
   return { messages };
 }
@@ -161,6 +166,8 @@ body{margin:0;background:var(--page);color:var(--ink);font:15px/1.55 var(--sans)
 .msgs .bubble .body .chat-code-block{padding-top:12px}
 .msgs .bubble .body pre{margin:0;overflow-x:auto}
 .msgs .bubble .body a{color:inherit;text-decoration:underline;text-underline-offset:2px}
+.sch-label{color:var(--mute);font-size:12px;font-weight:500;margin:0 0 4px 6px}
+.sch-quote{max-width:min(86%,420px);margin:0 0 4px;padding:4px 10px;border-left:3px solid var(--line2);color:var(--mute);font-size:13px;line-height:1.4;overflow-wrap:anywhere}
 .msgs .body img{max-width:120px;max-height:120px}
 .msgs .bubble .body blockquote{margin:.65em 0;padding-left:12px;border-left:3px solid var(--line2);color:var(--ink2)}
 .msgs .bubble .body hr{border:0;border-top:1px solid var(--line2);margin:1em 0}
@@ -187,11 +194,11 @@ export function renderChatPage(snap, { base = "" } = {}) {
     const tiles = (m.items || []).filter((it) => !(it.k === "img" && Number.isInteger(it.n)));
     if (m.role === "user") {
       const all = [...imgs, ...tiles];
-      html += `<div class="m user${first ? " first" : ""}">${all.length ? `<div class="mfiles">${all.map((it) => tile(it, base, true)).join("")}</div>` : ""}${m.text.trim() ? `<div class="bubble">${esc(m.text)}</div>` : ""}</div>`;
+      html += `<div class="m user${first ? " first" : ""}">${m.quote ? `<div class="sch-quote">${esc(m.quote)}</div>` : ""}${all.length ? `<div class="mfiles">${all.map((it) => tile(it, base, true)).join("")}</div>` : ""}${m.text.trim() ? `<div class="bubble">${esc(m.text)}</div>` : ""}</div>`;
     } else {
       const shots = imgs.filter((it) => it.shot), pics = imgs.filter((it) => !it.shot);
       const grid = [...pics.map((it) => tile(it, base, false)), ...tiles.map((it) => tile(it, base, false))];
-      html += `<div class="m agent${first ? " first" : ""}">${m.text.trim() ? `<div class="reply-slot"><div class="bubble"><div class="body">${renderMarkdown(m.text)}</div></div></div>` : ""}${shots.map((it) => shot(it, base)).join("")}${grid.length ? `<div class="chat-file-grid">${grid.join("")}</div>` : ""}</div>`;
+      html += `<div class="m agent${first ? " first" : ""}">${m.label && (m.text.trim() || shots.length || grid.length) ? `<div class="sch-label">${esc(m.label)}</div>` : ""}${m.text.trim() ? `<div class="reply-slot"><div class="bubble"><div class="body">${renderMarkdown(m.text)}</div></div></div>` : ""}${shots.map((it) => shot(it, base)).join("")}${grid.length ? `<div class="chat-file-grid">${grid.join("")}</div>` : ""}</div>`;
     }
   });
   if (!html) html = `<p class="sch-empty">There are no messages in this chat yet.</p>`;

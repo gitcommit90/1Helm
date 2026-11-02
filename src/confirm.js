@@ -83,8 +83,8 @@ export async function confirmGate(res, tc, spec) {
       now, "", "CONFIRM", "", 0, "[]", tc?.turn || null, tc?.workflow_id ?? null, session, CONFIRM, title, hash, JSON.stringify(view));
     a = sql.exec("SELECT * FROM approvals WHERE id=last_insert_rowid()").one();
   }
-  const live = tc?.subs?.size > 0;
-  const texted = live ? false : await res.textApproval(a).catch((e) => { console.log("confirm text", e.message); return false; });
+  const viaText = !!tc?.viaText, live = tc?.subs?.size > 0 && !viaText;   // a turn that came from a text asks on the phone even when the app is open somewhere
+  const texted = live ? false : await res.textApproval(a, { viaText }).catch((e) => { console.log("confirm text", e.message); return false; });
   if (!live && !texted) return waiting(title, "in the app, on this task") + why;
   (res._confirmHeld ||= new Set()).add(a.id);
   try {

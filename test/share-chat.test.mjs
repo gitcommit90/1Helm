@@ -111,23 +111,31 @@ const CHAT_HEADERS = (r) => { assert.match(r.headers.get("content-type"), /^text
       parts: ["Let me check.", "Here is **the plan**."], progress: [0], reply: "Here is **the plan**.", steps: [{ tool: "web_search", line: "SECRET-STEP", saved: ["SECRET-MEMORY"] }], tool_calls: 4, charge_nano: 12345, trace: "SECRET-TRACE", error: null,
       offers: [{ id: "o1", kind: "page", title: "Publish SECRET-OFFER?" }], interviews: [{ id: "i1" }], input_request: { question: "SECRET-QUESTION" }, deck_styles: true, images: [], shared: [] },
     // a card reply (Say/Tip components) becomes its plain text; a permission-like card keeps no buttons
-    { id: "a2", kind: "chat", at: 2000, msgs: [{ id: "m2", text: "Any tips?", at: 2000, files: [{ id: "f1", name: "a.pdf", mime: "application/pdf", bytes: 10 }] }, { id: "m3", text: "Also one more thing", at: 2100, files: [] }],
+    { id: "a2", kind: "chat", at: 2000, msgs: [{ id: "m2", text: "Any tips?", at: 2000, files: [{ id: "f1", name: "a.pdf", mime: "application/pdf", bytes: 10 }] }, { id: "m3", text: "Also one more thing", at: 2100, files: [], reply: { role: "agent", id: "a1", text: "Here is **the plan**.   Very long ".repeat(10) } }],
       reply: 'root = Stack([a, b, c])\na = Say("Book early")\nb = Buttons([Button("Allow once", "allow"), Button("Deny", "deny")])\nc = Options("slot", [Option("Tuesday SECRET-OPTION")])', total_ms: 100 },
-    { id: "a3", kind: "livenote", at: 3000, reply: "Meeting notes SECRET-LIVENOTE", msgs: [], total_ms: 1 },
+    { id: "a3", kind: "livenote", at: 3000, reply: "## Decisions\n\n- Ship **Friday**\n\n## Action items\n\n- Ana sends the deck", msgs: [], total_ms: 1, images: [], shared: [{ id: "f9", name: "minutes.pdf", mime: "application/pdf", bytes: 5 }] },
+    { id: "a3b", kind: "livenote", at: 3500, reply: "Proposed edit REFINE-HIDDEN", livenote: { refine: { id: "r1", text: "REFINE-HIDDEN" } }, msgs: [], total_ms: 1, shared: [] },
     { id: "a4", kind: "chat", at: 4000, msgs: [{ id: "m4", text: "again", at: 4000, files: [] }], reply: "", error: "interrupted", total_ms: 1 },
     { id: "a5", kind: "chat", at: 5000, msgs: [{ id: "m5", text: "boom", at: 5000, files: [] }], reply: "", error: "SECRET-ERROR from the model host", total_ms: 1 },
     { id: "a6", kind: "followup", at: 6000, msgs: [], reply: "A scheduled check found nothing new.", total_ms: 1 },
   ] };
   const { messages } = snapshotFromDetail(detail), json = JSON.stringify(messages);
   assert.deepEqual(messages.map((m) => [m.role, m.text]), [
-    ["user", "Plan Kyoto"], ["agent", "Here is **the plan**."], ["user", "Any tips?"], ["user", "Also one more thing"], ["agent", messages[4].text], ["user", "again"],
+    ["user", "Plan Kyoto"], ["agent", "Here is **the plan**."], ["user", "Any tips?"], ["user", "Also one more thing"], ["agent", messages[4].text], ["agent", "## Decisions\n\n- Ship **Friday**\n\n## Action items\n\n- Ana sends the deck"], ["user", "again"],
     ["agent", "1Helm restarted while I was working on this, so I stopped before replying. Send it again and I'll pick it back up."], ["user", "boom"], ["agent", "A scheduled check found nothing new."]]);
   assert.match(messages[4].text, /Book early/); assert.doesNotMatch(messages[4].text, /Allow once|Deny|Button|root =/);
-  assert.deepEqual(messages.map((m) => m.at), [1000, 1500, 2000, 2100, 2100, 4000, 4001, 5000, 6001], "in order, with their times (a reply's time is its turn's start plus its duration)");
+  assert.deepEqual(messages.map((m) => m.at), [1000, 1500, 2000, 2100, 2100, 3001, 4000, 4001, 5000, 6001], "in order, with their times (a reply's time is its turn's start plus its duration)");
   assert.equal(messages[2].items[0].name, "a.pdf");
+  assert.equal(messages[5].label, "Live notes", "a Live notes turn carries the label the app uses"); assert.equal(messages[4].label, undefined);
+  assert.equal(messages[5].items[0].name, "minutes.pdf", "a file the Live notes turn shows is kept like any other file");
+  assert.ok(!json.includes("REFINE-HIDDEN"), "the Update your meeting notes card (and the turn that only holds it) never travels");
+  assert.equal(messages[3].quote.length, 120, "a reply to an earlier message keeps its quoted words, cut to 120 characters"); assert.match(messages[3].quote, /^Here is \*\*the plan\*\*\. Very long/);
   for (const secret of ["SECRET", "Allow once", "Publish", "web_search", "12345", "like", "reaction", "cid"]) assert.ok(!json.includes(secret), `snapshot holds no ${secret}`);
   assert.ok(!/error/i.test(json.replace(/Send it again/g, "")), "an error text is never copied");
-  ok("snapshotFromDetail keeps the person's messages and the helper's answers in order with times; steps, cost, trace, offers, cards with buttons, live notes, errors and hidden fields never travel");
+  const pg = renderChatPage({ title: "Standup", shared_at: Date.UTC(2026, 10, 1), messages }, { base: "/s/ck1/c/TOK" });
+  assert.match(pg, /<div class="sch-label">Live notes<\/div><div class="reply-slot"><div class="bubble"><div class="body"><h2>Decisions<\/h2>/); assert.match(pg, /<h2>Action items<\/h2>/); assert.match(pg, /<strong>Friday<\/strong>/);
+  assert.equal((pg.match(/Live notes<\/div>/g) || []).length, 1, "one label, only on the Live notes turn"); assert.match(pg, /<div class="sch-quote">Here is/); assert.doesNotMatch(pg, /REFINE-HIDDEN|<button/);
+  ok("snapshotFromDetail keeps the person's messages and the helper's answers in order with times, adds Live notes turns (notes as markdown under a Live notes label, files kept, the refine card left out) and the quoted words of a reply; steps, cost, trace, offers, cards with buttons, errors and hidden fields never travel");
 }
 {
   // markdown: the app's library, but raw HTML is text and only safe links and pictures stay

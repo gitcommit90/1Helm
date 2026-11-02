@@ -271,6 +271,7 @@ export const pomoMethods = {
     }
     const words = personWords(ctx);
     if (action === "offer") {
+      if (ctx.viaText) return "error: a focus timer offer is a card in the app, and this conversation is by text. Don't offer one; start a timer only if they ask for it.";
       if (!words.length) return "error: offers are only for a conversation with the person (not scheduled runs or handed-back results). Don't mention timers.";
       const p = await this.pomoPrefs();
       if (p.offers === "off") return "error: the person asked not to be offered timers. Don't offer or mention one; start one only if they ask.";

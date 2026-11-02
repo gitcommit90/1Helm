@@ -1,3 +1,5 @@
+import { renderMarkdown } from "./share-chat.js";
+import { CHAT_CSS } from "./share-chat-css.js";
 // Share links and published pages: the person's own web address serves files and pages to anyone they give the link to.
 //
 // Addresses (publicBase): Live with the person's address ready → https://<slug>.<PUBLIC_BASE_DOMAIN>; otherwise (dev, or Live before the
@@ -109,17 +111,28 @@ export function linkHeaders(mime, name, download) {
 const escH = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const human = (b) => b < 1024 ? `${b} B` : b < 1048576 ? `${Math.round(b / 1024)} KB` : `${(b / 1048576).toFixed(b < 10485760 ? 1 : 0)} MB`;
 // A browser opening a picture, video, audio or text link gets a small page: the preview and a Download button. No scripts.
-function viewerPage(l) {
-  const m = l.mime, raw = "?raw=1", el = /^image\//.test(m) ? `<img src="${raw}" alt="${escH(l.name)}">` : /^video\//.test(m) ? `<video src="${raw}" controls playsinline></video>`
+// Text types are drawn here on the server (an iframe cannot show text/markdown in many browsers, and a frame is white in dark mode):
+// Markdown through the shared chats' safe renderer (raw HTML escaped, only http, https and mailto links), other text as escaped preformatted text.
+export const VIEW_TEXT_MAX = 1024 * 1024;
+const isText = (m) => /^text\//i.test(m) && !RISKY(m);
+const isMarkdown = (m) => /^text\/markdown/i.test(m);
+export function viewerPage(l, text = null, cut = false) {
+  const m = l.mime, raw = "?raw=1", el = text != null ? (isMarkdown(m) ? `<article class="md msgs"><div class="bubble"><div class="body">${renderMarkdown(text)}</div></div></article>` : `<pre class="txt">${escH(text)}</pre>`) + (cut ? `<p class="cut">The rest of this file is in the download.</p>` : "")
+    : /^image\//.test(m) ? `<img src="${raw}" alt="${escH(l.name)}">` : /^video\//.test(m) ? `<video src="${raw}" controls playsinline></video>`
     : /^audio\//.test(m) ? `<audio src="${raw}" controls></audio>` : `<iframe src="${raw}" title="${escH(l.name)}"></iframe>`;
+  const tx = text != null;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escH(l.name)}</title>
-<style>:root{color-scheme:light dark;--bg:#f3f2ef;--card:#fff;--ink:#1c1b19;--ink2:#6b675f;--line:#e4e1da}@media (prefers-color-scheme:dark){:root{--bg:#121212;--card:#1c1c1c;--ink:#f1efea;--ink2:#a19d94;--line:#2c2c2c}}
+<style>${tx && isMarkdown(m) ? CHAT_CSS : ""}:root{color-scheme:light dark;--bg:#f3f2ef;--card:#fff;--ink:#1c1b19;--ink2:#6b675f;--line:#e4e1da}@media (prefers-color-scheme:dark){:root{--bg:#121212;--card:#1c1c1c;--ink:#f1efea;--ink2:#a19d94;--line:#2c2c2c}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;min-height:100dvh;display:flex;flex-direction:column}
 header{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--card);border-bottom:1px solid var(--line)}header div{flex:1;min-width:0}header b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}header span{color:var(--ink2);font-size:13px}
 a.dl{flex:none;background:var(--ink);color:var(--card);text-decoration:none;font-weight:600;padding:10px 18px;border-radius:999px}main{flex:1;display:grid;place-items:center;padding:16px;min-height:0}
 img,video{max-width:100%;max-height:calc(100dvh - 120px);border-radius:10px}audio{width:min(520px,100%)}iframe{width:min(900px,100%);height:calc(100dvh - 120px);border:1px solid var(--line);border-radius:10px;background:#fff}
+main.tx{display:block;padding:16px}.tx>*{width:min(900px,100%);margin:0 auto}.tx .md,.tx .txt{background:var(--card);border:1px solid var(--line);border-radius:10px;color:var(--ink);overflow-wrap:anywhere}
+.tx .md .bubble{max-width:none;background:none;padding:20px 24px;font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:var(--ink)}.tx .md .body h1{font-size:1.5em;margin:.8em 0 .4em}.tx .md .body h2{font-size:1.25em;margin:.9em 0 .4em}.tx .md .body h3{font-size:1.1em}
+.tx .md .body a{color:inherit;text-decoration:underline}.tx .md .body img{max-width:100%}.tx .md .body blockquote{margin:.65em 0;padding-left:12px;border-left:3px solid var(--line);color:var(--ink2)}.tx .md .body hr{border:0;border-top:1px solid var(--line);margin:1em 0}.tx .md.msgs{padding:0;display:block}.tx .md .body .chat-code-block{padding:12px;background:var(--bg)}.tx .md .body pre{overflow-x:auto;margin:0}.tx .md .body table{display:block;overflow-x:auto;max-width:100%;box-shadow:none;border:1px solid var(--line)}
+.tx .txt{margin:0 auto;padding:16px 20px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-x:auto}.tx .cut{color:var(--ink2);font-size:13px;text-align:center;margin-top:12px}
 footer{text-align:center;color:var(--ink2);font-size:12px;padding:8px 16px 14px}</style></head>
-<body><header><div><b>${escH(l.name)}</b><span>${human(Number(l.bytes || 0))}</span></div><a class="dl" href="?dl=1" download>Download</a></header><main>${el}</main><footer>Shared with 1Helm</footer></body></html>`;
+<body><header><div><b>${escH(l.name)}</b><span>${human(Number(l.bytes || 0))}</span></div><a class="dl" href="?dl=1" download>Download</a></header><main${tx ? ' class="tx"' : ""}>${el}</main><footer>Shared with 1Helm</footer></body></html>`;
 }
 const notFound = () => new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Not found</title><body style="font:16px/1.5 system-ui,sans-serif;max-width:480px;margin:15vh auto;padding:0 16px;color:#55524c"><h1 style="font-size:20px;color:#1c1b19">This link doesn't work</h1><p>It may have been turned off, or it expired.</p></body>`,
   { status: 404, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'" } });
@@ -138,8 +151,14 @@ export async function serveLink(req, env, tenant, token) {
   const nav = req.headers.get("sec-fetch-dest") === "document" && req.headers.get("sec-fetch-mode") === "navigate";
   if (nav && !dl && !raw && VIEWABLE(l.mime) && !RISKY(l.mime) && mediaType(l.mime) !== "application/pdf") {
     if (!(await env.WS.head(l.r2key))) { await env.DB.prepare("DELETE FROM share_links WHERE id=?").bind(l.id).run(); return notFound(); }
-    return new Response(viewerPage(l), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "private, no-cache", "x-robots-tag": "noindex, nofollow", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; img-src 'self'; media-src 'self'; frame-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'" } });
+    let text = null, cut = false;
+    if (isText(l.mime)) {   // the first 1 MB, drawn on the server; the rest stays in the download
+      const o = await env.WS.get(l.r2key, { range: { offset: 0, length: VIEW_TEXT_MAX } });
+      if (!o) { await env.DB.prepare("DELETE FROM share_links WHERE id=?").bind(l.id).run(); return notFound(); }
+      cut = Number(o.size) > VIEW_TEXT_MAX; text = new TextDecoder("utf-8").decode(await o.arrayBuffer()); if (cut) text = text.replace(/\uFFFD+$/, "");
+    }
+    return new Response(viewerPage(l, text, cut), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "private, no-cache", "x-robots-tag": "noindex, nofollow", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff",
+      "content-security-policy": `default-src 'none'; img-src 'self'${text != null && isMarkdown(l.mime) ? " https:" : ""}; media-src 'self'; frame-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'` } });
   }
   const o = await env.WS.get(l.r2key, { onlyIf: req.headers, range: req.headers });
   if (!o) { await env.DB.prepare("DELETE FROM share_links WHERE id=?").bind(l.id).run(); return notFound(); }

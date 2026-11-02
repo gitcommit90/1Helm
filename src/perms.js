@@ -226,8 +226,8 @@ export async function askPerson(res, tc, kind, what, key = kind) {
     sql.exec("INSERT INTO approvals (at,host,method,path,bytes,keys,turn,workflow_id,session,perm,what) VALUES (?,?,?,?,?,?,?,?,?,?,?)", now, "", "PERM", "", 0, "[]", tc.turn || null, tc.workflow_id ?? null, session, kind, what);
     a = sql.exec("SELECT * FROM approvals WHERE id=last_insert_rowid()").one();
   }
-  const live = tc.subs?.size > 0;
-  const texted = live ? false : await res.textApproval(a).catch((e) => { console.log("perm text", e.message); return false; });
+  const viaText = !!tc.viaText, live = tc.subs?.size > 0 && !viaText;   // a turn that came from a text asks on the phone even when the app is open somewhere
+  const texted = live ? false : await res.textApproval(a, { viaText }).catch((e) => { console.log("perm text", e.message); return false; });
   if (!live && !texted) return needs(kind, "in the app, on this task");
   (res._permHeld ||= new Set()).add(a.id);
   try {
