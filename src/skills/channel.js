@@ -5,7 +5,7 @@
 // there is no background skill-review job). Deleting a channel deletes its skills with the rest of its storage.
 import { SLUG_RE, SKILL_SLUGS, skillProblems } from "./index.js";
 
-export const CHANNEL_SKILLS_MAX = 30, BODY_MAX = 12000, SLUG_MAX = 40;
+export const SLUG_MAX = 40;
 const SECRET = /\b(password|passcode|pin code|security code|verification code|one[- ]time code|ssn|social security|card number|cvv|routing number|account number|api key|secret key)\b[^\n]{0,20}?[:=]?\s*\S*\d{3,}|\b\d{3}-\d{2}-\d{4}\b|\b(?:\d[ -]?){13,19}\b|\bsk-[A-Za-z0-9_-]{16,}/i;
 
 export function channelSkillsInit(sql) { sql.exec("CREATE TABLE IF NOT EXISTS channel_skills (slug TEXT PRIMARY KEY, description TEXT NOT NULL, body TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL, session TEXT)"); }
@@ -43,12 +43,13 @@ export function saveSkill(sql, a = {}, ctx = {}) {
   const p = skillProblems(slug, { name: slug, description, always: false }).filter((x) => !/^name /.test(x));
   if (p.length) return `error: ${p.join("; ")}`;
   if (!/^# \S/.test(body)) return "error: body must be Markdown starting with a # title line";
-  if (body.length > BODY_MAX) return `error: body is ${body.length} characters; keep it under ${BODY_MAX} (move detail out, keep the steps and rules)`;
   if (/\{\{|\}\}/.test(body + description)) return "error: skills can't contain {{ or }}; write the example another way";
   if (SECRET.test(body) || SECRET.test(description)) return "error: it looks like it contains a password, code, card or account number or key. Leave secrets out: saved keys and logins are kept separately (Passwords & keys), and the skill can say which one to use by name.";
-  if (!ex && sql.exec("SELECT COUNT(*) n FROM channel_skills").one().n >= CHANNEL_SKILLS_MAX) return `error: this channel already has ${CHANNEL_SKILLS_MAX} skills. Delete or merge one first.`;
   const now = Date.now();
-  if (ex) sql.exec("UPDATE channel_skills SET description=?, body=?, updated=?, session=? WHERE slug=?", description, body, now, ctx.session || null, slug);
-  else sql.exec("INSERT INTO channel_skills (slug, description, body, created, updated, session) VALUES (?,?,?,?,?,?)", slug, description, body, now, now, ctx.session || null);
+  // No cap of ours on the count or the size. The only ceiling is the platform's row size, which comes back as a plain error.
+  try {
+    if (ex) sql.exec("UPDATE channel_skills SET description=?, body=?, updated=?, session=? WHERE slug=?", description, body, now, ctx.session || null, slug);
+    else sql.exec("INSERT INTO channel_skills (slug, description, body, created, updated, session) VALUES (?,?,?,?,?,?)", slug, description, body, now, now, ctx.session || null);
+  } catch (e) { return `error: the storage could not save this skill (${one(e?.message).slice(0, 200) || "unknown error"}). Try a shorter skill, or split it into two.`; }
   return `${ex ? "Updated" : "Saved"} this channel's skill "${slug}". read_skill reads it now, and it's in your skills list from the next message. Only this channel has it.`;
 }

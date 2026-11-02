@@ -59,6 +59,7 @@ import { lnSpeakers, lnBtn, lnSet, lnSync, lnInit, lnWrap, lnDot, lnRefineCard, 
 import { mtInit } from "./ee/meetings";   // Meeting reminders for notes: "Your 2:00 “Weekly sync” is starting. Take notes?"   // Bee Live notes: header button, split view, chip, presence
 import { streamNote } from "./clientlog";   // stream lost / re-attached lines (dev only)
 import { streamState, streamLease, streamCurrent, streamRelease, streamInvalidate, streamProgress, streamCheckDue, streamFetch, streamErrorBody, readStream, type Lease } from "./stream-recovery";
+import { daySections, msgTime } from "./chat-dates";
 import { tkInit, tkLoad, tkEvent, tkOn, tkLiveCard, tkBtn, tkWrap, tkSync, tkChip, tkMsgOf, tkCardView, tkHelperCount, tkProgress, orbState, type EventView } from "./tracker";
 import { dictBtn, dictInit, dictActive } from "./dictate";
 import { slBtn, slInit, slGate, slSchedule, slBubbles, slSentNote, slSet } from "./send-later";
@@ -1554,7 +1555,7 @@ function partHtml(text: string, ch: Channel, s: Session | undefined, owner: obje
   const bubble = (x: string, j: number) => { const y = scrubCode(x).trim(), key = `${part}-${j}`; if (!y) return "";
     if (message) MA_PARTS.get(message)!.set(key, y);
     const card = (message as TkMsg | undefined)?.card;
-    return `<div class="bubble${pre ? " pre" : ""}${message ? maOpenCls(message.id, key) : ""}">${message ? maActs(message.id, key, LIVE && s && card && tkOn(ch.slug, s.id) ? card : "") : ""}<div class="body">${chatCodeHtml(chatMarkdown(y))}</div></div>`; };
+    return `<div class="bubble${pre ? " pre" : ""}${message ? maOpenCls(message.id, key) : ""}">${message ? maActs(message.id, key, LIVE && s && card && tkOn(ch.slug, s.id) ? card : "", live ? "" : msgTime(message.at)) : ""}<div class="body">${chatCodeHtml(chatMarkdown(y))}</div></div>`; };
   // Prose with code lines in it (or a code tail still streaming) paints part by part; a part that may still become code waits.
   // An unrelated message does not dismiss a pending clarification card.
   const request = message?.input_request;
@@ -1605,7 +1606,7 @@ function msgsHtml(s: Session, ch: Channel) {
   settleBrowserCards(s);   // the live "using the browser" card goes once nothing is running, however the end was missed
   const next: (string | undefined)[] = []; let u: string | undefined;
   for (let i = s.messages.length - 1; i >= 0; i--) { next[i] = u; if (s.messages[i].role === "user") u = s.messages[i].body; }
-  return s.messages.map((m, i) => msgHtml(m, ch, s.messages[i - 1], !!s.streaming && i === s.messages.length - 1, s, next[i])).join("") + turnProgress(s, ch) + (LIVE && loadFailed(s) ? `<div class="wkfail tkfail"><p>This task didn't load.</p><button class="sa mute" data-tkload>Tap to try again</button></div>` : "") + (LIVE && s.srv ? slBubbles(ch.slug, s.id) : "") + (LIVE && s.srv && !s.streaming && showCosts() ? usageNote(ch.slug, s.id) : "");
+  return daySections(s.messages, s.messages.map((m, i) => msgHtml(m, ch, s.messages[i - 1], !!s.streaming && i === s.messages.length - 1, s, next[i]))) + turnProgress(s, ch) + (LIVE && loadFailed(s) ? `<div class="wkfail tkfail"><p>This task didn't load.</p><button class="sa mute" data-tkload>Tap to try again</button></div>` : "") + (LIVE && s.srv ? slBubbles(ch.slug, s.id) : "") + (LIVE && s.srv && !s.streaming && showCosts() ? usageNote(ch.slug, s.id) : "");
 }
 // The helper's reaction on a person's message (its react tool): a tapback badge on the bubble's top corner, like iMessage.
 // m.turn = the server's turn id (the stream's reaction event names it); m.reaction = love | like | dislike | laugh | emphasize | question.
@@ -1633,7 +1634,7 @@ function msgHtml(m: Msg, ch: Channel, prev?: Msg, live = false, s?: Session, rep
   if (m.role === "user") { const rx = rxHtml(m), fl = [...(m.files || []), ...(tm.paste ? [tm.paste] : [])], mf = fl.length;
     const tk = tm.state === "joined" ? `<span class="tk-note joined">${ic.check}Joined the task</span>`
       : tm.state === "failed" ? `<button type="button" class="tk-retry" data-tkretry="${m.id}"${tm.err ? ` title="${esc(tm.err)}"` : ""}>Not sent${/a lot at once/i.test(tm.err || "") ? ": that's a lot at once" : tm.err && !/^HTTP \d+$/.test(tm.err) ? `: ${esc(tm.err)}` : ""} · <u>Retry</u></button>` : "";
-    return `<div class="m user${first ? " first" : ""}${rx ? " rxd" : ""}${tm.state ? ` tk-${tm.state}` : ""}" data-mr="${m.id}">${maQuote(tm.reply)}${mf ? `<div class="mfiles">${!m.body ? rx : ""}${fl.map(f => fileCard(ch, f, true)).join("")}</div>` : ""}${m.body && !tm.paste ? `<div class="bubble${maOpenCls(m.id)}">${maActs(m.id)}${rx}${esc(m.body)}</div>` : ""}${tk}${slSentNote(tm.cid)}</div>`; }
+    return `<div class="m user${first ? " first" : ""}${rx ? " rxd" : ""}${tm.state ? ` tk-${tm.state}` : ""}" data-mr="${m.id}">${maQuote(tm.reply)}${mf ? `<div class="mfiles">${!m.body ? rx : ""}${fl.map(f => fileCard(ch, f, true)).join("")}</div>` : ""}${m.body && !tm.paste ? `<div class="bubble${maOpenCls(m.id)}">${maActs(m.id, "", "", msgTime(m.at))}${rx}${esc(m.body)}</div>` : ""}${tk}${slSentNote(tm.cid)}</div>`; }
   let steps = "";   // no step list during the turn: the progress row is the only indicator
   const tkon = !!LIVE && !!s && !!tm.card && tkOn(ch.slug, s.id);
   if (tkon && !live && ["paused", "failed", "interrupted", "stopped"].includes(tkCardView(ch.slug, s!.id, tm.card)?.status || "")) steps = tkChip(ch.slug, s!.id, tm.card);

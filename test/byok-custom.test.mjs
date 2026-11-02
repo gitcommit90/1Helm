@@ -222,19 +222,19 @@ test("a real turn: off and on-with-nothing-saved use the one main model; the cha
   assert.deepEqual((await turn("off")).main.map((c) => c.body.model), ["main-1"]);
 });
 
-test("categories: General alone asks nobody; with more the request sorter picks among the titles and that category's chain answers", async () => {
+test("categories: General alone asks nobody; with more the request sorter picks among the titles, and the main turn stays on General (a worker takes the other categories: test/byok-handoff.test.mjs)", async () => {
   await reset(); await saveRow(); modelList = PLAIN; const base = { cfg: cfgOf(), kind: "plain" };
   await saveOwn(env, "t1", { on: true }, base);
   await saveOwn(env, "t1", { categories: [cat("general", "General", entry("main-1")), cat("c_code0001", "Coding", entry("qwen-coder"), entry("gemma-2")), cat("c_wrte0001", "Writing", entry("mistral-small", null))] }, base);
   sorterPick = "Coding"; const a = await turn("fix this bug");
   assert.equal(a.sorter.length, 1, "the request sorter was asked once"); assert.deepEqual(Object.keys(JSON.stringify(a.sorter[0]).match(/"(General|Coding|Writing)"/g) || {}).length > 0, true);
   assert.ok(/General/.test(JSON.stringify(a.sorter[0])) && /Coding/.test(JSON.stringify(a.sorter[0])) && /Writing/.test(JSON.stringify(a.sorter[0])), "the account's titles");
-  assert.deepEqual(a.main.map((c) => c.body.model), ["qwen-coder"]); assert.ok(a.res.some(([id]) => id.startsWith("byok-route:")), "reserved first, like every part 1Helm runs on an own key");
+  assert.ok(a.main.length >= 1 && a.main.every((c) => c.body.model === "main-1"), `Primary stays on General's model: ${a.main.map((c) => c.body.model)}`); assert.ok(a.res.some(([id]) => id.startsWith("byok-route:")), "reserved first, like every part 1Helm runs on an own key");
   assert.ok(a.chores.every((c) => c.body.model === "fast-1"));
   const settled = led.settles.filter(([id]) => id.startsWith("byok-route:")).at(-1); assert.equal(settled[1], Math.ceil(0.0004 * 1e9 * 1.15), "the sorter is charged at its cost + 15%");
-  sorterPick = "Writing"; const b = await turn("write a letter"); assert.deepEqual(b.main.map((c) => c.body.model), ["mistral-small"]);
+  sorterPick = "Writing"; const b = await turn("write a letter"); assert.ok(b.main.every((c) => c.body.model === "main-1"));
   sorterPick = "General"; const c = await turn("hi"); assert.deepEqual(c.main.map((x) => x.body.model), ["main-1"]);
-  assert.ok(a.r.models.some((x) => /\[byok\/Coding 1\]/.test(x)), a.r.models.join());
+  assert.ok(a.r.models.every((x) => /\[byok\/General 1\]/.test(x)), a.r.models.join());
   // A sorter that can't be paid for answers from General.
   const real = ledger.reserve; ledger.reserve = async (id, n) => (id.startsWith("byok-route:") ? { ok: false } : real(id, n)); sorterPick = "Coding";
   try { const d = await turn("again"); assert.equal(d.sorter.length, 0); assert.deepEqual(d.main.map((x) => x.body.model), ["main-1"]); } finally { ledger.reserve = real; }

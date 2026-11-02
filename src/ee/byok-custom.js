@@ -8,15 +8,17 @@
 //   - the models the picker offers: on OpenRouter the same catalog and the same privacy filter as a full plan (pickerModels, allowedAt); on any other endpoint the models that
 //     endpoint serves (GET <base>/models with their key, byok.js byokModelsJson), with the facts the list carries (context length, reasoning levels, tool support, price) and
 //     nothing invented. Max price shows only on OpenRouter, where max_price applies;
-//   - routing: byokRouteTurn picks the turn's category (General alone asks nobody; more categories ask the request sorter, paid for like any 1Helm part on an own key), and
-//     byokChatChain tries the category's models in order through byokChat, which stays the one way 1Helm talks to their endpoint. Chores keep the fast model.
+//   - routing: byokRouteTurn sends every chat message to the request sorter when there is more than one category (General alone asks nobody; paid for like any 1Helm part on an own key).
+//     The main turn always runs on General's models. A message sorted into another category follows the same orchestration as a managed plan: Primary must hand the job to a background
+//     worker, which runs on that category's models. byokChatChain tries a plan's models in order through byokChat, which stays the one way 1Helm talks to their endpoint. Chores keep the fast model.
 // One source of truth for the main model: while this setting is on, General's first model is the model that answers, and the own AI key settings show the main model as set here.
 // When it is off, or nothing is saved, the single main model of the own AI key settings answers, exactly as before.
 import { byokChat, byokModelsJson, loadByok, answersOnOwnKey, ByokError } from "../byok.js";
 import { isOpenRouterBase, normalizePrivacy, privacyOf } from "../privacy.js";
 import { parse, BACKGROUND_TITLE, backgroundChain, CUSTOM_VERSION, MAX_CATEGORIES, CHAIN_LENGTH, allowedAt, nameOf, validateCategories, ownProblems, requiredMessage, CustomModelsRequired, modelCard, pickerModels, statusOf, customEnv } from "./custom-models.js";
 import { modelSettingsEnv } from "./model-settings.js";
-import { chooseTwo, prevToolsOf, openWorkOf } from "./route2.js";
+import { dynamicRoutingOn } from "./routing-config.js";
+import { chooseTwo, prevToolsOf, openWorkOf, openAgentsOf, browserBackSteer } from "./route2.js";
 
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o || {}, k);
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -244,39 +246,52 @@ export async function byokChatChain(cfg, body, plan, { signal = null, fetchImpl 
   }
   throw last;
 }
-// At the start of a chat turn on an own key (resident.js, where routeTwoTurn runs for a full plan): which category answers. General alone asks nobody. With more categories the
-// request sorter picks among their titles (route2.js chooseTwo with the account's own categories), reserved first like every part 1Helm runs on an own key. Any failure answers from
-// General. The choice is kept for the task (a helper, a follow-up and a resumed turn use the same category) and the turn's plan is set on tc.
-export async function byokRouteTurn(R, tc, { kind, text, hist, stats = null }) {
+// The frozen profile of one own-key dispatch: the same shape the managed task profile gives the orchestration (task-profile.js routingProfile), minus anything about a model request,
+// because every call of an own-key turn goes to their endpoint through the category's plan (ownKeyPlan, byokChatChain). mode "byok" keeps it from being run on a managed plan.
+export const ownKeyProfile = (plan, cacheSession) => ({ version: 1, mode: "byok", credentialRef: "own-key", requestedModel: plan.chain[0].model, effort: plan.chain[0].effort ?? null, category: plan.category, categoryTitle: plan.title, level: plan.level, cacheSession });
+// The turn's profile when its category is not General or a message is for an open worker: General's own profile with the dispatch the orchestration reads (resident.js, orchestrator.js),
+// exactly as ensureTaskRuntime builds it for a managed plan. The worker's profile carries the category's own plan and its own cache session.
+export function ownKeyDispatch(R, tc, general, worker, { steer = null } = {}) {
+  const key = (...more) => JSON.stringify([R.get("tenant"), R.get("channel"), tc.session, ...more]);
+  return { ...ownKeyProfile(general, key()), dynamicRouting: true, dispatch: { category: worker.category, requiredDelegation: worker.category !== general.category, steer: steer || null, workerProfile: ownKeyProfile(worker, key("worker")) } };
+}
+// At the start of a chat turn on an own key (resident.js, where routeTwoTurn runs for a full plan). The turn itself always runs on General's models, so the main model never changes
+// mid-chat and its cache stays. With more than one category, the request sorter (route2.js chooseTwo with the account's own categories, reserved first like every part 1Helm runs on
+// an own key) picks the category and whether the message is for an open worker. A category other than General, or a message for a worker, gives the turn the same dispatch a managed
+// plan has (tc.byokProfile): Primary must hand the job to a background worker that runs on the category's models. Any failure answers from General.
+// A worker's turn runs on its own category's plan. skipSort: a worker's returned result or an answer to its question is not a new request.
+export async function byokRouteTurn(R, tc, { kind, text, hist, stats = null, skipSort = false }) {
   const cfg = R.env.BYOK, tenant = R.get("tenant");
-  const first = await ownKeyPlan(R.env, tenant, cfg, "general");   // off: null; privacy problems: stops here, before anything is paid for
-  if (!first) { tc.byokPlan = null; return null; }
-  let category = "general", d = null;
-  const saved = R.get?.(`byokcat:${tc.session}`);
-  if (kind === "chat" && first.categories > 1 && !tc.helper) {
+  if (tc.helper?.dynamic_routing) { tc.byokPlan = await ownKeyPlan(R.env, tenant, cfg, tc.helper.category || "general"); return tc.byokPlan; }
+  const general = await ownKeyPlan(R.env, tenant, cfg, "general");   // off: null; privacy problems: stops here, before anything is paid for
+  tc.byokPlan = general; tc.byokProfile = null;
+  if (!general) return null;
+  let worker = general, steer = null;
+  if (kind === "chat" && general.categories > 1 && !skipSort && dynamicRoutingOn(R.env)) {   // the worker orchestration is what other categories run on, so without it General answers
     const hold = await R.byokHold("route", SORTER_NANO, tc);
     if (hold) {
-      let jev = null;
+      let jev = null, d = null;
       try {
         const st = await readOwn(R.env, tenant), config = st.config || await ownDefault(cfg, kindOfBase(cfg.base), { level: st.level });
         const base = R.env.__byokBase || R.env, env = customEnv(await modelSettingsEnv(base), config), level = await privacyOf(env, tenant);
-        d = await chooseTwo(env, { kind, text, hist, prevTools: prevToolsOf(R, tc.session), openWork: openWorkOf(R, tc.session), openAgents: [], prevCategory: config.categories.some((c) => c.id === saved) ? saved : null, level },
+        d = await chooseTwo(env, { kind, text, hist, prevTools: prevToolsOf(R, tc.session), openWork: openWorkOf(R, tc.session), openAgents: openAgentsOf(R, tc.session), prevCategory: null, level },
           { meta: { tenant, channel: R.get("channel") } });
-        jev = d.jev; if (config.categories.some((c) => c.id === d.route?.category)) category = d.route.category;
-      } catch (e) { jev = { error: String(e?.message || e).slice(0, 160) }; console.log("byok sorter", jev.error); }
+        browserBackSteer(R, tc.session, d, text);
+        jev = d.jev; steer = d.route?.steer || null;
+        if (config.categories.some((c) => c.id === d.route?.category)) worker = (await ownKeyPlan(R.env, tenant, cfg, d.route.category)) || general;
+      } catch (e) { jev = { error: String(e?.message || e).slice(0, 160) }; steer = null; worker = general; console.log("byok sorter", jev.error); }
       await hold.done(Math.ceil((Number(jev?.cost) || 0) * 1e9));   // done() adds the same 15% as every part 1Helm runs on an own key
-      if (stats) stats.route = { label: first.categories ? category : "", category, level: first.level, p: jev?.p ?? null, ms: jev?.ms ?? null, error: jev?.error || null, answers: jev?.answers || null };
+      if (stats) stats.route = { label: worker.title, category: worker.category, categoryTitle: worker.title, level: general.level, p: jev?.p ?? null, ms: jev?.ms ?? null, error: jev?.error || null, answers: jev?.answers || null, steer };
     }
-  } else if (typeof saved === "string" && saved) category = saved;
-  tc.byokPlan = await ownKeyPlan(R.env, tenant, cfg, category);
-  if (tc.byokPlan) { try { R.put(`byokcat:${tc.session}`, tc.byokPlan.category); } catch {} if (stats) stats.route = { ...(stats.route || {}), label: tc.byokPlan.title, category: tc.byokPlan.category, categoryTitle: tc.byokPlan.title, level: tc.byokPlan.level }; }
-  return tc.byokPlan;
+  }
+  if (worker.category !== general.category || steer) tc.byokProfile = ownKeyDispatch(R, tc, general, worker, { steer });
+  if (stats && !stats.route) stats.route = { label: general.title, category: general.category, categoryTitle: general.title, level: general.level };
+  return general;
 }
-// The plan for a model call of this turn (the turn's, else the task's category, else General). Chores (the fast model) never use it.
+// The plan for a model call of this turn: a routed worker's own category, otherwise General (the main turn never changes model). Chores (the fast model) never use it.
 export async function planForCall(R, tc) {
   if (tc && tc.byokPlan !== undefined) return tc.byokPlan;
-  const saved = tc?.session ? R.get?.(`byokcat:${tc.session}`) : null;
-  const plan = await ownKeyPlan(R.env, R.get("tenant"), R.env.BYOK, typeof saved === "string" && saved ? saved : "general");
+  const plan = await ownKeyPlan(R.env, R.get("tenant"), R.env.BYOK, tc?.helper?.dynamic_routing && tc.helper.category || "general");
   if (tc) tc.byokPlan = plan;
   return plan;
 }

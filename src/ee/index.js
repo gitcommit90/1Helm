@@ -111,10 +111,10 @@ export { speakerJobReady, speakerRate, speakerReserve, diarize, mapSpeakerIds, s
 export { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, START_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput, browserPurchaseGuard, buyControlTargeted } from "./browser-tasks.js";
 
 export { effectiveTaskCatalog } from "./model-catalog.js";
-export { usesAppendRuntime, authorizeTaskProfile, TaskAffinityBlocked, ensureTaskRuntime, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./task-profile.js";
+export { usesAppendRuntime, authorizeTaskProfile, TaskAffinityBlocked, ensureTaskRuntime, recordTaskServed, bindTaskProfile, bindDispatchProfile, bindBackgroundRuntime } from "./task-profile.js";
 export { backgroundRole, backgroundPolicy, backgroundReserve } from "./background-policy.js";
 export { deliverNativeFallback, dropNativePolls, nativePollDelivered, nativePollInit, nativeVoteNext, receiveNativeVote, recoverNativeSends, recoverNativeVotes, sendNativePoll } from "./native-polls.js";
-export { DONE_TOOL, ORCHESTRATOR_TOOLS, REQUEST_INPUT_TOOL, WORKER_REQUEST_TOOLS, lineRange, orchestrationPolicy, routingToolsAllowed, stepLog, storedMessages } from "./orchestrator.js";
+export { DONE_TOOL, ORCHESTRATOR_TOOLS, REQUEST_INPUT_TOOL, WORKER_REQUEST_TOOLS, dispatchProfileOf, lineRange, orchestrationPolicy, routingToolsAllowed, stepLog, storedMessages } from "./orchestrator.js";
 export { deliverPhoneFiles, dropPhoneFiles, phoneFilesInit, phoneFilesNext, queuePhoneFiles } from "./phone-files.js";
 export { dropPhotonReplies, photonAnswerOptions, photonMessage, photonReplyInit, photonReplyOptions, photonReplySource, photonSourceInput, recordPhotonReplySource } from "./photon-replies.js";
 export { AGENT_MEMORY_TOOLS, agentMemoryNextWake, agentSessionDocuments, forgetAgentBank, agentSessionInventory, flushAgentMemory, purgeAgentSession, readAgentDocument, retainAgentMessage, retainAgentRound, searchAgentBank } from "./routing-agent-memory.js";

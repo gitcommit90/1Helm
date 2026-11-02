@@ -71,10 +71,10 @@ const HOVER_SPACE = new Set<string>();
 const actionKey = (mr: number, part = "") => `${mr}:${part}`;
 const PINS = new Map<string, Pin>();   // task → its pinned reply
 
-// The two buttons in a bubble's revealed action strip. mr identifies the turn; part identifies its visible text bubble.
-export function maActs(mr: number, part = "", card = "") {
+// The buttons (and the message time as ready HTML, when given) in a bubble's revealed action strip. mr identifies the turn; part identifies its visible text bubble.
+export function maActs(mr: number, part = "", card = "", time = "") {
   const key = actionKey(mr, part), c = M.copied === key;
-  return `<span class="mact" data-mact="${key}" data-mapart="${part}"><button type="button" class="ma-copy${c ? " done" : ""}" data-macopy="${mr}" aria-label="${c ? "Copied" : "Copy message"}" title="${c ? "Copied" : "Copy"}">${c ? IC.tick : IC.copy}<span class="mal">${c ? "Copied" : "Copy"}</span></button><button type="button" class="ma-reply" data-mareply="${mr}" aria-label="Reply to this message" title="Reply">${IC.reply}<span class="mal">Reply</span></button>${touchOnly() ? `<button type="button" class="ma-seltext" data-maselect="${mr}" aria-label="Select text" title="Select text">${IC.text}</button>` : ""}${card ? `<button type="button" class="ma-task" data-tkcard="${esc(card)}" aria-label="Open task card for this response" title="Task card">${IC.task}</button>` : ""}</span>`;
+  return `<span class="mact" data-mact="${key}" data-mapart="${part}"><button type="button" class="ma-copy${c ? " done" : ""}" data-macopy="${mr}" aria-label="${c ? "Copied" : "Copy message"}" title="${c ? "Copied" : "Copy"}">${c ? IC.tick : IC.copy}<span class="mal">${c ? "Copied" : "Copy"}</span></button><button type="button" class="ma-reply" data-mareply="${mr}" aria-label="Reply to this message" title="Reply">${IC.reply}<span class="mal">Reply</span></button>${touchOnly() ? `<button type="button" class="ma-seltext" data-maselect="${mr}" aria-label="Select text" title="Select text">${IC.text}</button>` : ""}${card ? `<button type="button" class="ma-task" data-tkcard="${esc(card)}" aria-label="Open task card for this response" title="Task card">${IC.task}</button>` : ""}${time}</span>`;
 }
 // Touch controls and temporary hover spacing are kept across repaints.
 export const maOpenCls = (mr: number, part = "") => (M.open === actionKey(mr, part) ? " macts" : "") + (HOVER_SPACE.has(actionKey(mr, part)) ? " ma-space" : "");

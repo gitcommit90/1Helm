@@ -205,6 +205,19 @@ export function setTurnRoute(R, tc, route) { R._route = route; if (tc) tc.route 
 
 // Resident hook (resident.js runTurnInner, two mode): decide, bill the decider call like any model call, set the route.
 const BROWSER_BACK_RE = /^I'm done in the browser\b/i;
+// The open routed workers of a task, as the request sorter sees them (id, name and the start of the job).
+export function openAgentsOf(R, session) {
+  return R.sql.exec("SELECT id,name,task FROM helpers WHERE session=? AND dynamic_routing=1 AND status IN ('running','awaiting_review','waiting_input') ORDER BY id", session || "").toArray().map(h => ({ ...h, task: h.task.slice(0, 300) }));
+}
+// The hand back button in the live browser sends a fixed message. When a worker is paused on the browser, that message is for that worker.
+export function browserBackSteer(R, session, d, text) {
+  try {
+    if (d.route && !d.route.steer && BROWSER_BACK_RE.test(String(text || "").trim())) {
+      const w = R.sql.exec("SELECT id FROM helpers WHERE session=? AND dynamic_routing=1 AND status='waiting_input' AND input_kind IN ('browser','purchase_wait') ORDER BY id DESC LIMIT 1", session || "").toArray()[0];
+      if (w) d.route.steer = w.id;
+    }
+  } catch {}
+}
 // Returns the decision for turn stats; never throws (any failure → the task's category, else general).
 export async function routeTwoTurn(R, tc, { kind, text, hist, stats, audioContext = tc }) {
   let d; const otelStart = Date.now();
@@ -214,17 +227,11 @@ export async function routeTwoTurn(R, tc, { kind, text, hist, stats, audioContex
   const level = await privacyOf(env, tenant), prevCategory = sessionCategory(R, tc?.session);
   if (audioContext?.audioSources?.length && audioContext.abort === "hard") throw Object.assign(new Error("The recording's task was stopped."), { code: "audio_source_removed", audioReason: "The recording's task was stopped." });
   R.sidecarAudioCurrent?.(audioContext);   // settings/privacy reads must not outlive the attached recording or its task
-  try { d = await chooseTwo(env, { kind, text, hist, prevTools: prevToolsOf(R, tc?.session), openWork: openWorkOf(R, tc?.session), openAgents: dynamicRoutingOn(env) ? R.sql.exec("SELECT id,name,task FROM helpers WHERE session=? AND dynamic_routing=1 AND status IN ('running','awaiting_review','waiting_input') ORDER BY id", tc?.session || "").toArray().map(h => ({...h,task:h.task.slice(0,300)})) : [], prevCategory, level }, { meta: { tenant, channel: R.get?.("channel") } }); }
+  try { d = await chooseTwo(env, { kind, text, hist, prevTools: prevToolsOf(R, tc?.session), openWork: openWorkOf(R, tc?.session), openAgents: dynamicRoutingOn(env) ? openAgentsOf(R, tc?.session) : [], prevCategory, level }, { meta: { tenant, channel: R.get?.("channel") } }); }
   catch (e) { d = { route: policyRoute(env.MODEL_SETTINGS, dynamicRoutingOn(env) ? DEFAULT_CATEGORY : prevCategory || DEFAULT_CATEGORY, level, "decider:unsure", { dynamic: dynamicRoutingOn(env) }), jev: { error: String(e?.message || e).slice(0, 160), verdict: "unsure" } }; }
   const nano = Math.ceil((d.jev?.cost || 0) * 1e9 * JEV_MARKUP);
   if (nano > 0) { try { const rid = `rtr:${crypto.randomUUID()}`; if ((await R.ledger().reserve(rid, nano)).ok) { await R.ledger().settle(rid, nano); if (stats) stats.charge += nano; } } catch (e) { console.log("decider charge", e.message); } }
-  // The hand back button in the live browser sends a fixed message. When a worker is paused on the browser, that message is for that worker.
-  try {
-    if (dynamicRoutingOn(env) && d.route && !d.route.steer && BROWSER_BACK_RE.test(String(text || "").trim())) {
-      const w = R.sql.exec("SELECT id FROM helpers WHERE session=? AND dynamic_routing=1 AND status='waiting_input' AND input_kind IN ('browser','purchase_wait') ORDER BY id DESC LIMIT 1", tc?.session || "").toArray()[0];
-      if (w) d.route.steer = w.id;
-    }
-  } catch {}
+  if (dynamicRoutingOn(env)) browserBackSteer(R, tc?.session, d, text);
   try { R.otelRouting?.(tc, d.jev, otelStart); } catch {}   // turn-trace.js: the decider as a generation with its model and cost (never text)
   setTurnRoute(R, tc, d.route);
   saveSessionCategory(R, tc?.session, d.route.category);

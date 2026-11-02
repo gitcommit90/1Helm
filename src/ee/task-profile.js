@@ -61,6 +61,17 @@ export function usesAppendRuntime({ kind, session, resumed = false, resumedAppen
   if (kind !== "chat" || !session || byok) return false;
   return resumed ? !!resumedAppend : !!existing || !!flagOn;
 }
+// Binds a saved profile to the turn. A managed profile becomes the turn's task profile (model calls go through it). An own-key profile (mode "byok", built by
+// byok-custom.js) never carries a model request: the turn's calls go to the person's own endpoint through the category's plan, so it is kept on tc.byokProfile for
+// the orchestration (dispatch, worker profile) only. A profile saved on one billing mode is never run on the other.
+export function bindDispatchProfile(R, tc, profile, stats = null) {
+  if (profile?.mode === "byok") {
+    if (!R.env.BYOK) throw new TaskAffinityBlocked("Your AI billing mode changed from your own key. This task has stopped before sending its history to a different model. Start a new task, or restore the original mode.", "credential-mode-changed");
+    tc.byokProfile = profile;
+    return profile;
+  }
+  return bindTaskProfile(R, tc, profile, stats);
+}
 export async function ensureTaskRuntime(R, tc, args = {}) {
   if (R.env?.ONEHELM_EE !== "1hc") throw new TaskAffinityBlocked("Managed task routing is unavailable on this deployment.", "ee-disabled");
   if (!tc?.session) throw new TaskAffinityBlocked("A task identity is required before starting the model.", "missing-session");

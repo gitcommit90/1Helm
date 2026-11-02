@@ -101,7 +101,12 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
   journalInput(tc, { userText, engine, ctxMode }) {
     if (!jk(tc)) return;
     try { this.sql.exec("UPDATE turn_runs SET user_text=?, engine=?, route=?, extra=?, updated=? WHERE card=?", typeof userText === "string" ? userText : JSON.stringify(userText), engine, tc.route ? JSON.stringify(tc.route) : null,
-      JSON.stringify({ otel: tc.otel?.saved?.() || null, ctx: ctxMode, audioWait: tc.audioWait || null, audioSources: tc.audioSources || null, appendRuntime: !!tc.appendRuntime, handoff: !!tc.handoff, handoffFrom: tc.handoffFrom || null, userText0: tc.userText, hint: tc.hint || null, outputLimitRetries: tc.outputLimitRetries || 0, modelFailure: tc.modelFailure || null, failedModelUsage: tc.failedModelUsage || null, ...(tc.context ? { context: tc.appendRuntime ? { version: 2, core: "", developer: "", standing: {}, turn: {} } : tc.context } : {}) }), Date.now(), tc.turn); } catch (e) { console.log("journal input", e.message); }
+      JSON.stringify({ otel: tc.otel?.saved?.() || null, ctx: ctxMode, audioWait: tc.audioWait || null, audioSources: tc.audioSources || null, appendRuntime: !!tc.appendRuntime, byokProfile: tc.byokProfile || null, handoff: !!tc.handoff, handoffFrom: tc.handoffFrom || null, userText0: tc.userText, hint: tc.hint || null, outputLimitRetries: tc.outputLimitRetries || 0, modelFailure: tc.modelFailure || null, failedModelUsage: tc.failedModelUsage || null, ...(tc.context ? { context: tc.appendRuntime ? { version: 2, core: "", developer: "", standing: {}, turn: {} } : tc.context } : {}) }), Date.now(), tc.turn); } catch (e) { console.log("journal input", e.message); }
+  },
+  // An own-key turn's dispatch (byok-custom.js ownKeyDispatch) with its current delegation state, so a resumed turn carries on as the managed one does from its saved route.
+  journalByokProfile(tc) {
+    if (!jk(tc) || !tc.byokProfile) return;
+    try { this.sql.exec("UPDATE turn_runs SET extra=json_set(COALESCE(extra,'{}'),'$.byokProfile',json(?)) WHERE card=?", JSON.stringify(tc.byokProfile), tc.turn); } catch (e) { console.log("journal byok profile", e.message); }
   },
   // A local routing mutation can finish before the next model-step checkpoint.
   // Save its typed outcome before yielding, so recovery never repeats a send or
@@ -123,7 +128,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     this.ctx.storage.transactionSync(write);
   },
   restoreDelegation(tc) {
-    if (!jk(tc) || !tc.taskProfile?.dynamicRouting || tc.helper) return;
+    if (!jk(tc) || !(tc.taskProfile?.dynamicRouting || tc.byokProfile?.dynamicRouting) || tc.helper) return;
     const row = this.sql.exec("SELECT extra FROM turn_runs WHERE card=? AND session=?", tc.turn, tc.session).toArray()[0];
     const saved = J(row?.extra, {}).delegationOutcome;
     if (saved?.turn === tc.turn && saved.session === tc.session && saved.call_id && saved.state) {

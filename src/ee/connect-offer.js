@@ -198,13 +198,13 @@ export const OFFER_CONNECT_TOOL = { type: "function", function: { name: "offer_c
   "carry on with their ask. Never pester: at most one offer per app per task; if they tap Not now or say no, don't offer that app again in this task. If they say they don't want " +
   "connection suggestions, save that with remember and stop offering. Not for an app that's already connected (just use it) or not available yet (offer the browser instead), " +
   "except when they ask to connect ANOTHER account of a connected app (\"connect another gmail\", \"add my work email too\"): then pass another: true and the card is \"Connect another Gmail account\" (never send them to Settings for it). " +
-  "When they asked you to SEND or CREATE something with it (an email, an event, a message, a task), pass draft: exactly what you'd send or create, so the card shows it under Connect. Write it in full from their words (never invent a recipient or a time); leave out what you don't know rather than guess. Not for reads (\"check my email\").",
+  "When they asked you to SEND or CREATE something with it (an email, an event, a message, a task), pass draft: exactly what you'd send or create, so the card shows it under Connect. Write it in full from their words (never invent a recipient or a time); leave out what you don't know rather than guess. Not for reads (\"check my email\"). Leave draft out entirely unless they asked you to send or create something once it's connected; never pass an empty draft.",
   parameters: { type: "object", properties: {
     app: { type: "string", description: "the app's id from find_app (e.g. youtube) or its exact name" },
     why: { type: "string", description: "one short line in plain words: what connecting lets you do for them right now, e.g. \"So I can find the cooking videos you saved.\"" },
     another: { type: "boolean", description: "true when the app is already connected and they asked to connect another account of it (a second Gmail, their work Slack too)" },
     service_from: { type: "string", description: "only for an email or calendar app the person didn't name in this task: the exact words in your memory recall that say they use it" },
-    draft: { type: "object", description: "what you'd send or create once it's connected, shown on the card. An email: {to, cc?, subject, body}. An event: {title, start, end, timezone?, calendar?, guests?, location?} (start and end as ISO date-times with their offset, e.g. 2026-10-09T15:00:00-07:00; timezone an IANA name, theirs by default). Anything else (a message, a post, a task): {text}.",
+    draft: { type: "object", description: "OPTIONAL, leave it out unless the person asked you to send or create something once the app is connected (never fill it with blanks). What you'd send or create once it's connected, shown on the card. An email: {to, cc?, subject, body}. An event: {title, start, end, timezone?, calendar?, guests?, location?} (start and end as ISO date-times with their offset, e.g. 2026-10-09T15:00:00-07:00; timezone an IANA name, theirs by default). Anything else (a message, a post, a task): {text}.",
       properties: { to: { type: "string" }, cc: { type: "string" }, subject: { type: "string" }, body: { type: "string" }, title: { type: "string" }, start: { type: "string" }, end: { type: "string" },
         timezone: { type: "string" }, calendar: { type: "string" }, guests: { type: "array", items: { type: "string" } }, location: { type: "string" }, text: { type: "string" } } } }, required: ["app", "why"] } } };
 export const CONNECT_TOOLS = [FIND_APP_TOOL, OFFER_CONNECT_TOOL];
@@ -269,9 +269,12 @@ export function normDraft(raw, { tz = "" } = {}) {
   let d = raw; if (typeof d === "string") { try { d = JSON.parse(d); } catch { d = { text: d }; } }
   if (!d || typeof d !== "object" || Array.isArray(d)) return { error: "error: draft must be an object: {to, subject, body} for an email, {title, start, end} for an event, or {text}." };
   const L = DRAFT_LIMITS, long = (k, v, n) => v.length > n ? `error: the draft's ${k} is too long to show on the card (${v.length} characters; at most ${n}). Shorten it, or leave the draft out and show it in your reply.` : null;
+  // A field counts only when it has a value: a model may send every field blank, and that is no draft. The kind comes from the fields that have values.
+  const has = (v) => Array.isArray(v) ? v.some((x) => has(x)) : typeof v === "string" ? v.trim() !== "" : v != null && v !== false;
+  if (!Object.entries(d).some(([k, v]) => k !== "kind" && has(v))) return { draft: null };
   const kind = String(d.kind || "").toLowerCase();
-  const isMail = kind === "email" || (!kind && (d.to != null || d.subject != null || d.body != null));
-  const isEvent = kind === "event" || (!kind && !isMail && (d.start != null || d.title != null));
+  const isMail = kind === "email" || (!kind && (has(d.to) || has(d.cc) || has(d.subject) || has(d.body)));
+  const isEvent = kind === "event" || (!kind && !isMail && (has(d.start) || has(d.title)));
   if (isMail) {
     const out = { kind: "email", to: line(Array.isArray(d.to) ? d.to.join(", ") : d.to), subject: line(d.subject), body: dtext(d.body) };
     const cc = line(Array.isArray(d.cc) ? d.cc.join(", ") : d.cc); if (cc) out.cc = cc;
@@ -396,8 +399,16 @@ async function offerConnect(res, a, ctx) {
   if (!another && (await offersFlag(res.env, tenant)) === "off") return `NOT OFFERED: the person turned off connection suggestions. Don't offer apps; do it another way if you can, or mention once in a few words that they can connect ${x.n} in Apps.`;
   const prev = offerRow(res.sql, ctx.session, x.s);
   if (prev && !(another && prev.status === "connected")) return `NOT OFFERED: you already offered ${x.n} in this task (${offeredText(prev)}). Don't offer it again.${prev.status === "dismissed" ? ` Do it another way if you can (e.g. the browser), or leave it. If they've changed their mind and want to connect it, tell them they can in Apps.` : ""}`;
-  const nd = normDraft(a.draft, { tz: res.tz?.() || "" }); if (nd.error) return `${nd.error} Nothing was shown.`;
-  const draft = nd.draft;
+  // The draft is optional: when it can't be shown (invalid, or the wrong kind for this app) the card still goes out without it, and the answer says why.
+  const nd = normDraft(a.draft, { tz: res.tz?.() || "" });
+  let draft = nd.draft, draftNote = "";
+  if (nd.error) { draft = null; draftNote = nd.error.replace(/^error: /, ""); }
+  else if (draft) {
+    const mail = EMAIL_APPS_OFFER.has(x.s), cal = CAL_APPS_OFFER.has(x.s);
+    const want = mail && cal ? ["email", "event"] : mail ? ["email"] : cal ? ["event"] : null;
+    if (want && !want.includes(draft.kind)) { draftNote = `${x.n} sends ${want.join(" or ")} drafts and this one was ${draft.kind === "text" ? "plain text" : `an ${draft.kind}`}`; draft = null; }
+  }
+  if (draftNote) draftNote = ` Your draft was left off the card: ${draftNote.replace(/\.$/, "")}. The card is shown without it; if they asked you to send or create something, say what you'll do in your reply.`;
   const why = cleanWhy(a.why) || `So I can use ${x.n} for you.`, now = Date.now();
   const known = conns.filter((c) => c.app === x.s && c.status === "connected").map((c) => ({ id: String(c.id || ""), email: String(c.email || "") }));
   res.sql.exec("INSERT INTO connect_offers (at,session,turn,app,name,why,kind,reconnect,via,draft,another,known) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", now, String(ctx.session), ctx.turn || null, x.s, x.n, why, kind, st.status === "expired" ? 1 : 0, ctx.viaText ? "text" : "app", draft ? JSON.stringify(draft) : null, another ? 1 : 0, JSON.stringify(known));
@@ -415,7 +426,7 @@ async function offerConnect(res, a, ctx) {
     `End your turn now with one short line (don't repeat the card${draft ? " or the draft" : ""}); don't keep working on the part that needs it. When they connect, you get a note${another ? " naming the new account" : ""} and carry on.` +
     (another ? ` Connect opens ${x.n}'s own sign-in for a new account: they sign in to the other account there (if they're signed in to the one already connected, they pick "use another account").` : "") +
     (draft ? ` Connection only supplies access, not new authorization. If their original request explicitly asked you to ${verb} this exact ordinary action, carry it out after connecting without a second yes. A draft-only request stays a draft. Preserve the requested account, recipients and content; ask if a consequential detail changed or was never authorized.` : "") +
-    " If they tap Not now, it's not connected: don't offer it again in this task.";
+    " If they tap Not now, it's not connected: don't offer it again in this task." + draftNote;
 }
 
 export async function connectTool(res, name, a, ctx = {}) {

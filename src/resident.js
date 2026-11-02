@@ -1,5 +1,5 @@
 import { originInput, messageOrigin, phoneOrigin, messageTime } from "./message-origin.js";
-import { phoneFilesInit, phoneFilesNext, queuePhoneFiles, deliverPhoneFiles, dropPhoneFiles, nativePollInit, sendNativePoll, receiveNativeVote, nativePollDelivered, nativeVoteNext, recoverNativeVotes, recoverNativeSends, deliverNativeFallback, dropNativePolls, photonReplyInit, photonReplyOptions, photonReplySource, recordPhotonReplySource, photonAnswerOptions, dropPhotonReplies, photonSourceInput, retainAgentRound, retainAgentMessage, flushAgentMemory, agentMemoryNextWake, searchAgentBank, readAgentDocument, AGENT_MEMORY_TOOLS, initRoutingArtifacts, collectRoutingFiles, approveRoutingFiles, discardRoutingFiles, stageRoutingFile, routingFileTool, ROUTING_FILE_TOOLS, routingImageFallback, isRoutingImageError, dynamicRoutingOn, REQUEST_INPUT_TOOL, DONE_TOOL, WORKER_REQUEST_TOOLS, ORCHESTRATOR_TOOLS, orchestrationPolicy, routingToolsAllowed, storedMessages, stepLog, lineRange } from "./ee/index.js";
+import { phoneFilesInit, phoneFilesNext, queuePhoneFiles, deliverPhoneFiles, dropPhoneFiles, nativePollInit, sendNativePoll, receiveNativeVote, nativePollDelivered, nativeVoteNext, recoverNativeVotes, recoverNativeSends, deliverNativeFallback, dropNativePolls, photonReplyInit, photonReplyOptions, photonReplySource, recordPhotonReplySource, photonAnswerOptions, dropPhotonReplies, photonSourceInput, retainAgentRound, retainAgentMessage, flushAgentMemory, agentMemoryNextWake, searchAgentBank, readAgentDocument, AGENT_MEMORY_TOOLS, initRoutingArtifacts, collectRoutingFiles, approveRoutingFiles, discardRoutingFiles, stageRoutingFile, routingFileTool, ROUTING_FILE_TOOLS, routingImageFallback, isRoutingImageError, dynamicRoutingOn, REQUEST_INPUT_TOOL, DONE_TOOL, WORKER_REQUEST_TOOLS, ORCHESTRATOR_TOOLS, orchestrationPolicy, dispatchProfileOf, routingToolsAllowed, storedMessages, stepLog, lineRange } from "./ee/index.js";
 import { userInputInit, acceptAmbiguous, chooseInput, createInputChooser, replyView, replyForTurn, inputView, questionForTurn, pendingInputs, createQuestion, resolveInput, acceptInput, attachInputTurn, deleteInputs, inputContext } from "./user-input.js";
 import { textAlertInit, recordTextAlert, routeInboundText, dropTextAlerts } from "./text-alerts.js";
 import { recordTextReply, textWaitingNotices, recordTextCard, resolveTextCard, hasOpenTextCard, APPROVAL_OPTIONS, approvalReplyLine } from "./text-cards.js";
@@ -18,7 +18,7 @@ import { traceMix } from "./turn-trace.js";   // Langfuse turn traces: a root, a
 import { jobNeedsHands, actErrorNeedsHands, HANDS_ON_HIDDEN, HANDS_ON_REFUSAL, HANDS_ON_UNCERTAIN_TAIL, HANDS_ON_JOB_TAIL, HANDS_ON_ACT_TAIL, HANDS_ON_SAVED_NOTE, HANDS_ON_PIC_FOLLOWS, HANDS_ON_WIDTH, HANDS_ON_NEXT_MS, handsOnMessage, keepLatestPictures } from "./browser-handson.js";
 import { runTurnPi } from "./pi-engine.js";
 import { TaskTranscript, TASK_ARCHIVE_TOOL, archiveReply, contextBudget, contextSize, estimateTokens, compactionPlan, transcriptGroups, prefixDigest, transcriptDelete, hasTaskTranscript } from "./task-transcript.js";
-import { usesAppendRuntime, ensureTaskRuntime, authorizeTaskProfile, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./ee/index.js";
+import { usesAppendRuntime, ensureTaskRuntime, authorizeTaskProfile, recordTaskServed, bindTaskProfile, bindDispatchProfile, bindBackgroundRuntime } from "./ee/index.js";
 import { effectiveTaskCatalog } from "./ee/index.js";
 import { byokRouteTurn, planForCall, byokChatChain } from "./ee/index.js";   // Custom Model Selection on an own AI key (licensed)
 import { trackerInit, listCards, cardDetail, stepDetail, SILENT_TOOLS } from "./tracker.js";
@@ -1056,7 +1056,7 @@ export class Resident extends DurableObject {
   modelTools(tc = null) {
     if (tc?.appendTools && !tc?.taskProfile?.dynamicRouting) return tc.appendTools;   // frozen with the task, so browser_task stays listed there and is refused when called (browser-handson.js)
     if (tc?.handsOn && tc.classicTools && !tc.classicHandsOn) { tc.classicTools = tc.classicTools.filter((t) => !HANDS_ON_HIDDEN.has(t.function?.name)); tc.classicHandsOn = true; }   // hands-on mode: the browser worker is not offered again this turn
-    if (tc && !tc.appendRuntime && tc.classicTools && !tc.helper?.dynamic_routing) return tc.classicTools;
+    if (tc && !tc.appendRuntime && tc.classicTools && !tc.helper?.dynamic_routing && !tc.orchestration) return tc.classicTools;   // a routed turn's tools follow its delegation state (orchestrator.js), as on the append lane
     const list = modelChatTools(this.env, this.availableTools(tc), tc);
     if (tc && !tc.appendRuntime) tc.classicTools = list;
     return list;
@@ -2709,16 +2709,17 @@ export class Resident extends DurableObject {
     this.sql.exec("INSERT INTO helpers (session,parent_card,name,task,context,status,started,deadline,role,coordinator_id,phase,spawn_call_id) VALUES (?,?,?,?,?,'running',?,?,?,?,?,?)",
       ctx.session, parent, nm, task, inherited, now, coordinating ? coordinator.deadline : now + this.hl().deadlineMs, role, coordinating ? coordinator.id : null, role === "coordinator" ? "dispatch" : null, callId);
     const h = helperRow(this.sql, this.sql.exec("SELECT last_insert_rowid() id").one().id);
-    if (ctx.taskProfile?.dynamicRouting) {
-      const profile = JSON.parse(JSON.stringify(ctx.taskProfile.dispatch.workerProfile));
+    const routed = dispatchProfileOf(ctx);   // the managed task profile, or on an own key the turn's own-key profile (byok-custom.js ownKeyDispatch)
+    if (routed) {
+      const profile = JSON.parse(JSON.stringify(routed.dispatch.workerProfile));
       profile.cacheSession = JSON.stringify([this.get("tenant"), this.get("channel"), ctx.session, h.id]);
       for (const entry of profile.poolChain || []) entry.cacheSession = profile.cacheSession;
-      this.sql.exec("UPDATE helpers SET dynamic_routing=1,required_delegation=?,profile_json=?,primary_profile_json=?,category=?,round_started=? WHERE id=?", ctx.orchestration?.requiredDelegation || ctx.taskProfile.dispatch.requiredDelegation ? 1 : 0, JSON.stringify(profile), JSON.stringify(ctx.taskProfile), ctx.taskProfile.dispatch.category, now, h.id);
+      this.sql.exec("UPDATE helpers SET dynamic_routing=1,required_delegation=?,profile_json=?,primary_profile_json=?,category=?,round_started=? WHERE id=?", ctx.orchestration?.requiredDelegation || routed.dispatch.requiredDelegation ? 1 : 0, JSON.stringify(profile), JSON.stringify(routed), routed.dispatch.category, now, h.id);
       this.sql.exec("UPDATE helpers SET round_request=? WHERE id=?", task, h.id);
-      const minutes = ctx.taskProfile.dispatch.category === "skills" ? 25 : ["apps_economical", "apps_complete"].includes(ctx.taskProfile.dispatch.category) ? 15 : 10;
+      const minutes = routed.dispatch.category === "skills" ? 25 : ["apps_economical", "apps_complete"].includes(routed.dispatch.category) ? 15 : 10;
       this.sql.exec("UPDATE helpers SET deadline=? WHERE id=?", now + minutes * 60000, h.id);
       Object.assign(h, helperRow(this.sql, h.id));
-      ctx.orchestration ||= ctx.taskProfile.dispatch;
+      ctx.orchestration ||= routed.dispatch;
       ctx.orchestration.started = h.id;
       if (ctx.orchestration.requiredDelegation) ctx.orchestration.sent = true;
       if (ctx.orchestration.requiredDelegation) ctx.delegateYield = true;
@@ -4068,12 +4069,18 @@ export class Resident extends DurableObject {
     let messages = [sys, ...hist, userMsg];
     tc.route = RS?.route ? JSON.parse(RS.route) : null;
     let delegationPolicy = "", interactionContext = "";
-    if (nativeWorker) bindTaskProfile(this, tc, JSON.parse(tc.helper.profile_json));
+    if (nativeWorker) bindDispatchProfile(this, tc, JSON.parse(tc.helper.profile_json));
     if (!nativeWorker && tc.abort !== "hard") await bindBackgroundRuntime(this, tc, { resumed: !!RS, stats, workflowId: opts.workflow_id ?? null });
-    if (tc.appendRuntime && dynamicRoutingOn(this.env) && tc.abort !== "hard") {
-      const handedWorker = opts.handoff?.type === "helper" ? helperRow(this.sql, Number(opts.handoff.id)) : null;
-      if (handedWorker?.dynamic_routing && handedWorker.primary_profile_json) bindTaskProfile(this, tc, JSON.parse(handedWorker.primary_profile_json), stats);
-      else await ensureTaskRuntime(this, tc, { kind, text: (tc.inputReply?.selection?.text || asked) + attNote + fileBody, hist, stats });
+    // Own AI key (byok-custom.js): every chat message goes to the request sorter when the account has more than one category, and the turn follows the same orchestration as a managed plan.
+    // The turn runs on General's models; a category other than General gives tc.byokProfile, the dispatch that makes Primary hand the job to a worker on that category's models.
+    // A resumed turn gets the profile it saved. A worker's returned result and an answer to its question carry their own saved profile and are not sorted again.
+    const ownKeyTurn = eeEnabled(this.env) && !!this.env.BYOK && !nativeWorker && tc.abort !== "hard";
+    const handedWorker = opts.handoff?.type === "helper" ? helperRow(this.sql, Number(opts.handoff.id)) : null;
+    if (ownKeyTurn && RS) tc.byokProfile = resumeExtra.byokProfile || null;
+    else if (eeEnabled(this.env) && this.env.BYOK && tc.abort !== "hard") await byokRouteTurn(this, tc, { kind, text: asked + attNote + fileBody, hist, stats, skipSort: !!handedWorker?.dynamic_routing || !!tc.inputReply?.question?.profile_json });
+    if ((tc.appendRuntime || ownKeyTurn && (tc.byokProfile || handedWorker?.dynamic_routing || tc.inputReply?.question?.profile_json || tc.inputReply?.ambiguous)) && dynamicRoutingOn(this.env) && tc.abort !== "hard") {
+      if (handedWorker?.dynamic_routing && handedWorker.primary_profile_json) bindDispatchProfile(this, tc, JSON.parse(handedWorker.primary_profile_json), stats);
+      else if (tc.appendRuntime) await ensureTaskRuntime(this, tc, { kind, text: (tc.inputReply?.selection?.text || asked) + attNote + fileBody, hist, stats });
       let boundQuestion=tc.inputReply?.question;
       if(boundQuestion?.helper_id) {
         const h=helperRow(this.sql,boundQuestion.helper_id);
@@ -4082,9 +4089,9 @@ export class Resident extends DurableObject {
           tc.inputReply.pending.push({question: "The original worker was stopped or moved on while your answer was queued. Ask how the person wants to continue."});
         }
       }
-      if(boundQuestion?.profile_json) bindTaskProfile(this,tc,JSON.parse(boundQuestion.profile_json),stats);
+      if(boundQuestion?.profile_json) bindDispatchProfile(this,tc,JSON.parse(boundQuestion.profile_json),stats);
       const reviewId = boundQuestion?.helper_id || (opts.handoff?.type === "helper" ? Number(opts.handoff.id) : null);
-      tc.orchestration = { ...tc.taskProfile.dispatch, ...(reviewId ? { review: reviewId, steer: null } : {}) };
+      tc.orchestration = { ...dispatchProfileOf(tc)?.dispatch, ...(reviewId ? { review: reviewId, steer: null } : {}) };
       if (reviewId) tc.routingReviewHelper = reviewId;
       if (tc.orchestration.steer) {
         const h = helperRow(this.sql, tc.orchestration.steer);
@@ -4111,12 +4118,13 @@ export class Resident extends DurableObject {
       interactionContext = inputContext(tc.inputReply);
       if (interactionContext && !tc.context) { userText += `\n\n${contextData("INTERACTION CONTEXT", interactionContext)}`; userMsg.content = pics.length ? [{ type: "text", text: userText }, ...pics] : userText; }
       delegationPolicy = orchestrationPolicy(tc);
+      // The classic lane has no developer layer of its own for it: the policy rides just before the person's message, like the nudges below.
+      if (!tc.appendRuntime && delegationPolicy) messages.splice(messages.length - 1, 0, { role: "developer", content: delegationPolicy });
     }
     // ---- Routing policy (route2.js): one decider yes/no per message → Sol (task) or Luna (conversation); sets the turn's route. ----
     // Own AI key: no Jev call and no Sol/Luna; their main model runs the turn, their fast model the chores (callModelOnce).
+    // Own AI key with Custom Model Selection on: byokRouteTurn ran above, with the categories' own sorter step.
     if (eeEnabled(this.env) && !nativeWorker && !tc.taskProfile?.backgroundGeneral && !tc.appendRuntime && useOpenRouter(this.env) && !this.env.BYOK && tc.abort !== "hard" && !RS) await routeTwoTurn(this, tc, { kind, text: asked + attNote + fileBody, hist, stats });
-    // Own AI key with Custom Model Selection on (byok-custom.js, licensed): the same step for their categories, with no Sol/Luna route: it picks which of their categories answers.
-    else if (eeEnabled(this.env) && this.env.BYOK && tc.abort !== "hard" && !RS) await byokRouteTurn(this, tc, { kind, text: asked + attNote + fileBody, hist, stats });
     const stepIn = []; let checkpoints = 0;
     const trace = [];
     const memJoin = await this.memUseJoin(memUse, tc).catch((e) => { console.log("memory arm", e?.message); return { block: "", info: null }; });   // never throws, ends by its own deadline
@@ -4139,7 +4147,7 @@ export class Resident extends DurableObject {
     }
     if (ih.line) trace.push({ tool: "integration_hint", args: ih.items.map((x) => x.a.s).join(","), ms: 0, out: ih.line.slice(0, 700) });   // ops/evals see it; not a step
     if (tc.sidecar?.length) trace.push({ tool: "file_sidecar", args: tc.sidecar.map((x) => x.name).join(","), ms: 0, out: tc.sidecar.map((x) => `${x.name}: ${x.mode}${x.tokens ? ` (${x.tokens} tok)` : ""}`).join("; ").slice(0, 700) });   // sidecar.js: inline / card / not ready; not a step
-    const engine = tc.appendRuntime ? "append-v1" : (nativeWorker || tc.taskProfile?.dynamicRouting) ? "classic" : RS?.engine || opts.engine || this.get("engine") || this.env.ENGINE || "classic";
+    const engine = tc.appendRuntime ? "append-v1" : (nativeWorker || dispatchProfileOf(tc)?.dynamicRouting) ? "classic" : RS?.engine || opts.engine || this.get("engine") || this.env.ENGINE || "classic";
     tc.noPics = engine === "pi";   // the pi engine sends text only, so hands-on mode uses the description there (browser-handson.js)
     if (tc.appendRuntime) {
       const store = tc.transcript, priorState = store.state();
@@ -4227,6 +4235,7 @@ export class Resident extends DurableObject {
         if (tc.abort === "hard") break;   // stopped: no further model calls (the reply is set below)
         tc.stepNo = step;
         if (tc.taskProfile?.dynamicRouting && tc.orchestration) { tc.taskProfile.dispatch = { ...tc.orchestration }; tc.route.taskProfile = tc.taskProfile; }
+        else if (tc.byokProfile && tc.orchestration) { tc.byokProfile.dispatch = { ...tc.orchestration }; this.journalByokProfile(tc); }   // resume.js: a resumed turn carries on with the delegation state it had
         this.journalStep(tc, { step, phase: "model", stats, said, saidMeta, checkpoints });   // resume.js: where a reset would carry on from
         // Steering: everything the person added since the last step is read before this call, as one message.
         const st = this.takeSteers(tc);
@@ -4532,7 +4541,7 @@ export class Resident extends DurableObject {
     const fullText = stripInjectedMemory(kind === "chat" ? this.cardUserText(turn, text) : text);   // the first message plus what was added while it worked; memory 1Helm added to the turn is never retained (memory-block.js)
     // status-notes.js: 1Helm's own notices (day cap, check-in, pause) aren't kept as the helper's words; a paused report is marked as a status from then.
     const memReply = memoryReply(stripInjectedMemory(reply), { paused: !!(paused || stats.hit_limit) });
-    if (!nativeWorker && this.memoryMode() !== "off" && hsWriters(this.env)) this.ctx.waitUntil?.(this.hsTurnWrite({ turn, session: tc.session, at: t0, userText: tc.taskProfile?.dynamicRouting && opts.handoff?.type === "helper" ? this.sql.exec("SELECT text FROM card_events WHERE card=? AND type='msg' ORDER BY seq", turn).toArray().map(e => e.text || "").join("\n") : fullText, reply: cardsToText(memReply), notes, kind, workflowId: opts.workflow_id ?? null, endAt: Date.now() }).catch((e) => console.log("hindsight turn write", e.message)));
+    if (!nativeWorker && this.memoryMode() !== "off" && hsWriters(this.env)) this.ctx.waitUntil?.(this.hsTurnWrite({ turn, session: tc.session, at: t0, userText: dispatchProfileOf(tc)?.dynamicRouting && opts.handoff?.type === "helper" ? this.sql.exec("SELECT text FROM card_events WHERE card=? AND type='msg' ORDER BY seq", turn).toArray().map(e => e.text || "").join("\n") : fullText, reply: cardsToText(memReply), notes, kind, workflowId: opts.workflow_id ?? null, endAt: Date.now() }).catch((e) => console.log("hindsight turn write", e.message)));
     // This channel had a chat turn (the daily billing check reads when).
     if (kind === "chat" && this.get("tenant")) this.ctx.waitUntil?.(noteActivity(this.env, this.get("tenant"), this.get("channel")).catch((e) => console.log("channel activity", e.message)));
     // Each thing it said between tool rounds is its own message bubble in the app ("Let me take a look." · steps · the answer).

@@ -48,6 +48,9 @@ export const WORKER_DENIED_REASONS = {
 export const WORKER_DENIED = new Set(Object.keys(WORKER_DENIED_REASONS));
 registerWorkerDenied(WORKER_DENIED);   // helpers.js (core) cannot import this file
 const WORKER_ONLY = new Set(WORKER_REQUEST_TOOLS.map(t => t.function.name));
+// The dispatch state of a routed turn: the frozen managed task profile, or on an own AI key the turn's own-key profile (byok-custom.js ownKeyDispatch). Both carry
+// { category, requiredDelegation, steer, workerProfile } in .dispatch, so the same orchestration code runs for both.
+export const dispatchProfileOf = (tc) => tc?.taskProfile?.dynamicRouting ? tc.taskProfile : tc?.byokProfile?.dynamicRouting ? tc.byokProfile : null;
 // Only app-owned dispatch state belongs here. Person-provided questions and
 // answers remain labeled user data, outside this developer instruction.
 export function orchestrationPolicy(tc) {
