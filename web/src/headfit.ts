@@ -46,6 +46,15 @@ export function anchorRect(b: HTMLElement): DOMRect {
   const m = document.querySelector<HTMLElement>("#stage>header [data-hmore]:not([hidden])"); return m ? m.getBoundingClientRect() : r;
 }
 
+// The button a panel is anchored to can be replaced by a header repaint. Use the remembered one while it is on the page,
+// otherwise the live button with the same selector that has a box (or the header's ⋯), and null when nothing is on screen.
+export function liveAnchor(b: HTMLElement | null, selector: string): HTMLElement | null {
+  const shown = (x: HTMLElement) => { const r = anchorRect(x); return r.width > 0 || r.height > 0; };
+  if (b && b.isConnected && shown(b)) return b;
+  const f = [...document.querySelectorAll<HTMLElement>(selector)].find(shown); if (f) return f;
+  const m = document.querySelector<HTMLElement>("#stage>header [data-hmore]:not([hidden])"); return m && shown(m) ? m : null;
+}
+
 // A mobile tool's button lives in a closed disclosure while its panel is open.
 // Return to the visible summary after dismissing the panel, never a hidden control.
 export function focusHeaderAction(button: HTMLElement | null, phone = false) {

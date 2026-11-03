@@ -66,7 +66,7 @@ Setup writes your private `wrangler.jsonc` locally and saves recovery secrets at
 
 ### 3. Sign in and connect your AI
 
-Open the deployed host, sign in with the first email address, then set your AI provider endpoint, key, and model in **Settings → Your AI → Use my own AI key**. Start with a chat, web search, and a channel computer task. The web app and PWA use your host. The native apps in `apps/` default to 1HC and can be pointed at a custom HTTPS host.
+Open the deployed host, sign in with the first email address, then set your AI provider endpoint, key, and model in **Settings → AI services**. Start with a chat, web search, and a channel computer task. The web app and PWA use your host. The native apps in `apps/` default to 1HC and can be pointed at a custom HTTPS host.
 
 ### If setup is interrupted
 

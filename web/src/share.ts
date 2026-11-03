@@ -14,6 +14,7 @@
 // shViewerBtns() in the file viewer header, shBadge() on Library rows, shLibHtml() at the top of the Library, shFileGone() after a delete.
 // No native dialogs: our own sheet here, ask() from dialog.ts for Revoke / Unpublish.
 import { ask } from "./dialog";
+import { bdqrHtml, bdqrReset, bdqrInit } from "./bdqr";
 
 type Link = { id: string; file_id: string; channel: string; name: string; mime: string; bytes: number; created_at: number; expires_at: number | null; url: string };
 type Chat = { id: string; channel: string; session: string; title: string; messages: number; pictures: number; created_at: number; updated_at: number; url: string };
@@ -54,7 +55,7 @@ const isHtml = (name: string, mime = "") => /\.html?$/i.test(name) || /text\/htm
 const pageName = (s: string) => { let n = String(s || "").replace(/\.(html?)$/i, "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, ""); return n.length < 2 ? (n ? `page-${n}` : "page") : n; };
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 
-export function shInit(d: Deps) { D = d; shLoad(); }
+export function shInit(d: Deps) { D = d; bdqrInit(); shLoad(); }
 export async function shLoad() {
   if (!D) return;
   try { const r = await D.api("/share"); if (r && !r.error) { SH.base = r.base || SH.base; SH.links = r.links || []; SH.pages = r.pages || []; SH.chats = r.chats || []; SH.loaded = true; D.repaint(); } } catch {}
@@ -197,7 +198,7 @@ function sheetOpen(kind: Sheet["kind"], slug: string, fid: string, fb?: FileInfo
   requestAnimationFrame(() => (w!.querySelector<HTMLElement>("[data-shfocus]") || w!.querySelector<HTMLElement>(".dlgb"))?.focus({ preventScroll: true }));
 }
 function sheetClose() {
-  const w = document.getElementById("shw"); const prev = SHT?.prev; SHT = null; if (!w) return;
+  const w = document.getElementById("shw"); const prev = SHT?.prev; SHT = null; bdqrReset("sheet"); if (!w) return;
   w.classList.remove("on"); setTimeout(() => { if (!SHT) w.remove(); }, 260);
   if (prev?.isConnected) prev.focus({ preventScroll: true });
 }
@@ -212,6 +213,7 @@ function sheetPaint() {
     body = l ? `<h2 id="shwt">Share “${esc(s.name)}”</h2>${tiles}<p>Anyone with the link can view and download it. No sign-in needed.</p>
       <div class="shfield"><input readonly value="${esc(l.url)}" aria-label="Share link" data-shsel><button class="dlgb ok" data-sh="copy|${esc(l.url)}" data-shfocus>${I(IC.copy, 15)} Copy</button></div>
       <p class="shmeta">${esc(expLine(l))}</p>
+      ${bdqrHtml("sheet", [{ url: l.url }])}
       <div class="dlgbtns shsplit"><button class="dlgb shrev" data-sh="revoke|${esc(l.id)}"${dis}>Revoke link</button><button class="dlgb no" data-shx>Done</button></div>`
       : `<h2 id="shwt">Share “${esc(s.name)}”</h2>${tiles}<p>Make a link anyone can use to view and download ${s.web ? "a copy of this file" : "this file"}, no sign-in needed. You can turn it off any time.</p>
       <div class="shexp" role="radiogroup" aria-label="Link expires"><span>Expires</span>${EXP.map(([x, lb]) => `<button role="radio" aria-checked="${x === s.exp}" class="${x === s.exp ? "on" : ""}" data-sh="sexp|${x}"${dis}>${lb}</button>`).join("")}</div>
@@ -222,6 +224,7 @@ function sheetPaint() {
     body = `<h2 id="shwt">${s.done ? "Published" : `Share “${esc(s.name)}”`}</h2>${tiles}<p>${s.done ? `“${esc(pg.title)}” is live.` : `Published as “${esc(pg.name)}”.`} Anyone with the link can open it.</p>
       <div class="shfield"><input readonly value="${esc(pg.url)}" aria-label="Page address" data-shsel><button class="dlgb ok" data-sh="copy|${esc(pg.url)}" data-shfocus>${I(IC.copy, 15)} Copy</button><a class="dlgb no shopen" href="${esc(pg.url)}" target="_blank" rel="noopener noreferrer">${I(IC.open, 15)} Open</a></div>
       ${s.msg ? `<p class="shmeta">${esc(s.msg)}</p>` : `<p class="shmeta">Updated ${esc(when(pg.updated_at))}</p>`}${s.err ? `<p class="sherr">${esc(s.err)}</p>` : ""}
+      ${bdqrHtml("sheet", [{ url: pg.url }])}
       <div class="dlgbtns shsplit"><button class="dlgb shrev" data-sh="sunpub|${esc(pg.name)}"${dis}>${s.busy === "unpub" ? "Unpublishing…" : "Unpublish"}</button><span class="shgrp">${s.done ? "" : `<button class="dlgb no" data-sh="supd|${esc(pg.name)}"${dis}>${s.busy === "upd" ? "Updating…" : "Update"}</button>`}<button class="dlgb no" data-shx>Done</button></span></div>`;
   } else {
     body = `<h2 id="shwt">${s.web ? `Share “${esc(s.name)}”` : `Publish “${esc(s.name)}”`}</h2>${tiles}<p>Put this page on your own address. Anyone with the link can open it; search engines are asked not to list it.</p>
@@ -229,7 +232,7 @@ function sheetPaint() {
       ${s.msg ? `<p class="shmeta">${esc(s.msg)}</p>` : ""}${s.err ? `<p class="sherr">${esc(s.err)}</p>` : ""}
       <div class="dlgbtns">${s.sugg ? `<button class="dlgb no" data-sh="spub|1"${dis}>Replace mine</button>` : `<button class="dlgb no" data-shx>Cancel</button>`}<button class="dlgb ok" data-sh="spub|0"${dis}>${s.busy === "pub" ? "Publishing…" : "Publish"}</button></div>`;
   }
-  w.innerHTML = `<div class="dlgback" data-shx></div><div class="dlg shdlg" role="dialog" aria-modal="true" aria-labelledby="shwt" tabindex="-1"><span class="dlggrab" aria-hidden="true"></span>${body}</div>`;
+  w.innerHTML = `<div class="dlgback" data-shx></div><div class="dlg shdlg bdqr-card" role="dialog" aria-modal="true" aria-labelledby="shwt" tabindex="-1"><span class="dlggrab" aria-hidden="true"></span>${body}</div>`;
 }
 async function mkLink() {
   const s = SHT; if (!s || !D || s.busy) return; s.busy = "link"; s.err = ""; sheetPaint();
@@ -293,7 +296,7 @@ function chatOpen(slug: string, sid: string, title: string) {
   if (!SH.loaded) void shLoad().then(() => { if (CHT && !CHT.busy) chatPaint(); });
 }
 function chatClose() {
-  const w = document.getElementById("shw"); const prev = CHT?.prev; CHT = null; if (!w) return;
+  const w = document.getElementById("shw"); const prev = CHT?.prev; CHT = null; bdqrReset("chat"); if (!w) return;
   w.classList.remove("on"); setTimeout(() => { if (!CHT && !SHT) w.remove(); }, 260);
   if (prev?.isConnected) prev.focus({ preventScroll: true });
 }
@@ -304,10 +307,11 @@ function chatPaint() {
     ? `<h2 id="shwt">Share “${esc(s.title)}”</h2><p>Anyone with the link can see a copy of this chat. Messages sent after the copy was made are not in it.</p>
       <div class="shfield"><input readonly value="${esc(c.url)}" aria-label="Chat link" data-shsel><button class="dlgb ok" data-sh="copy|${esc(c.url)}" data-shfocus>${I(IC.copy, 15)} Copy</button><a class="dlgb no shopen" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${I(IC.open, 15)} Open</a></div>
       <p class="shmeta">${esc(s.msg || `Copy made ${when(c.updated_at)}`)}</p>${err}
+      ${bdqrHtml("chat", [{ url: c.url }])}
       <div class="dlgbtns shsplit"><button class="dlgb shrev" data-sh="chdel|${esc(c.id)}"${dis}>${s.busy === "del" ? "Deleting…" : "Delete link"}</button><span class="shgrp"><button class="dlgb no" data-sh="chup|${esc(c.id)}"${dis}>${s.busy === "upd" ? "Updating…" : "Update link"}</button><button class="dlgb no" data-shx>Done</button></span></div>`
     : `<h2 id="shwt">Share “${esc(s.title)}”</h2><p>Anyone with the link can see a copy of this chat, with no sign-in. Messages sent after you create the link are not included. You can update or delete the link any time.</p>${err}
       <div class="dlgbtns"><button class="dlgb no" data-shx>Cancel</button><button class="dlgb ok" data-sh="chmk" data-shfocus${dis}>${s.busy === "mk" ? "Creating…" : "Create link"}</button></div>`;
-  w.innerHTML = `<div class="dlgback" data-shx></div><div class="dlg shdlg" role="dialog" aria-modal="true" aria-labelledby="shwt" tabindex="-1"><span class="dlggrab" aria-hidden="true"></span>${body}</div>`;
+  w.innerHTML = `<div class="dlgback" data-shx></div><div class="dlg shdlg bdqr-card" role="dialog" aria-modal="true" aria-labelledby="shwt" tabindex="-1"><span class="dlggrab" aria-hidden="true"></span>${body}</div>`;
 }
 const chatFail = (r: any) => r.error === "payment_required" ? "Your plan needs attention first." : r.error;
 async function chatMake() {

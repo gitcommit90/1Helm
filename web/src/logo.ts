@@ -27,6 +27,17 @@ export function workDomain(email: string | null | undefined): string {
   return d && !PERSONAL.has(d) ? d : "";
 }
 
+// The domain whose logo stands for an AI service (Settings, AI services, and the model picker). ChatGPT, OpenCode and OpenRouter have fixed
+// domains; an OpenAI-compatible service uses the registrable part of its address (api.openai.com → openai.com). "" for a private or numeric address.
+const SVC_DOMAIN: Record<string, string> = { chatgpt: "chatgpt.com", opencode: "opencode.ai", openrouter: "openrouter.ai", claudecode: "claude.ai" };
+export function serviceDomain(kind: string, host = ""): string {
+  if (SVC_DOMAIN[kind]) return SVC_DOMAIN[kind];
+  const d = logoDomain(host); if (!d) return "";
+  const p = d.split("."); if (p.length <= 2) return d;
+  const two = p[p.length - 1].length === 2 && ["co", "com", "org", "net", "gov", "ac", "edu"].includes(p[p.length - 2]);
+  return p.slice(-(two ? 3 : 2)).join(".");
+}
+
 const MISS = "lgmiss:", WEEK = 7 * 864e5;
 function missed(d: string) { try { const t = +(localStorage.getItem(MISS + d) || 0); return t > 0 && Date.now() - t < WEEK; } catch { return false; } }
 /** /logo/<domain>?size=… (64 for anything shown up to ~32px, 128 above), or "" when there's nothing to ask for. */
@@ -47,7 +58,7 @@ export function logoChip(site: string, px = 16): string {
   return `<span class="lgc" style="width:${px}px;height:${px}px"><img src="${src}" alt="" width="${px}" height="${px}" loading="lazy" decoding="async" onerror="${fail(d, "this.parentNode")}"></span>`;
 }
 
-// App logos (Composio apps: Settings → Connected accounts, the in-chat connect card, the Apps list, app detail). One rule everywhere:
+// App logos (Composio apps: Settings → Connected Apps, the in-chat connect card, the Apps list, app detail). One rule everywhere:
 // the app's initial on a tinted tile shows at once, and the logo fades in over it once it has loaded; if it fails it removes itself
 // and the tile stays. Live asks 1HC's /applogo/<app> (Composio's logo, cached at Cloudflare and in R2), never logos.composio.dev
 // directly, which can take 10+ s on a cold logo or stall (10-08: the connect card still asked it and sat as an empty white box).

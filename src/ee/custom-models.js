@@ -15,7 +15,7 @@
 // stopped being allowed (the privacy level changed), customRouting() throws CustomModelsRequired and no chat call is made: nothing falls back to our models.
 import { PRIVACY_LABEL, normalizePrivacy, DEFAULT_PRIVACY } from "../privacy.js";
 import { configuredHosts, JOB_KINDS, CATEGORY_FIELDS } from "./model-jobs.js";
-import { modelCatalog, validCatalogRecord, validModelId } from "./model-catalog.js";
+import { modelCatalog, validCatalogRecord, validModelId, refreshLivePrivacy, overlayLivePrivacy, overlayLiveCatalog } from "./model-catalog.js";
 import { kindOk } from "./model-settings.js";
 import { quirksFromRecord } from "../model-quirks.js";
 import { SEED_FACTS } from "./model-seed.js";
@@ -72,7 +72,7 @@ export function backgroundChain(config, fallbackModel) {
 // The chores' chain while Custom Model Selection is on (task titles, labels, hand-off notes, the browser planner): Background jobs' models in order with their facts, or null (off:
 // the own key's fast model applies, as before). Read when the own key's config is loaded (byok.js loadByok) and used by byokChat for every call with fast: true.
 export function ownChorePlan(row, cfg) {
-  if (!row || Number(row.custom_models_own_on) !== 1) return null;
+  if (!row) return null;   // an own key always uses its setting: models are chosen only there (byok-custom.js)
   const config = parse(row.custom_models_own); if (!config) return null;
   const chain = backgroundChain(config, cfg.fast || cfg.model);
   return chain.length ? chain : null;
@@ -82,7 +82,7 @@ export function ownProblems(config, level) {
   const groups = [...(config?.categories || []), ...(Array.isArray(config?.background?.chain) ? [{ id: "background", title: BACKGROUND_TITLE, chain: config.background.chain }] : [])];
   for (const c of groups) (Array.isArray(c?.chain) ? c.chain : []).forEach((e, slot) => {
     const rec = config.catalog?.[e?.model];
-    if (rec?.eligible === true && !allowedAt(rec, level)) out.push({ category: c.title, category_id: c.id, slot, model: e.model, name: nameOf(rec, e.model), why: `No ${PRIVACY_LABEL[level]} provider` });
+    if (rec?.eligible === true && (!rec.connKind || rec.connKind === "openrouter") && !allowedAt(rec, level)) out.push({ category: c.title, category_id: c.id, slot, model: e.model, name: nameOf(rec, e.model), why: `No ${PRIVACY_LABEL[level]} provider` });
   });
   return out;
 }
@@ -93,13 +93,20 @@ export function requiredMessage(problems, level) {
 
 // ---- reading the account's setting ----
 export const parse = (text) => { try { const c = typeof text === "string" && text ? JSON.parse(text) : null; return c && typeof c === "object" && c.version === CUSTOM_VERSION && Array.isArray(c.categories) && c.catalog && typeof c.catalog === "object" ? c : null; } catch { return null; } };
+// The account's saved facts with OpenRouter's current privacy terms over them (model-catalog.js), so the status, the save, the picker and dispatch all agree.
+// A failed lookup leaves the saved facts. Nothing is written back by reading.
+export async function liveConfig(env, config, opts = {}) {
+  if (!config?.catalog) return config;
+  await refreshLivePrivacy(config.catalog, { env, ...opts }).catch(() => {});
+  return { ...config, catalog: overlayLiveCatalog(config.catalog) };
+}
 // { on, config, level }. No tenant or no DB reads as off. An old database without the columns reads as off; any other failure is thrown, because an
 // account that turned this on must never be answered from our models by accident.
 export async function readCustom(env, tenantId) {
   if (!tenantId || !env?.DB) return { on: false, config: null, level: DEFAULT_PRIVACY };
   try {
     const r = await env.DB.prepare("SELECT ai_privacy, custom_models_on, custom_models FROM tenants WHERE id=?").bind(String(tenantId)).first();
-    return { on: Number(r?.custom_models_on) === 1, config: parse(r?.custom_models), level: normalizePrivacy(r?.ai_privacy) };
+    return { on: Number(r?.custom_models_on) === 1, config: await liveConfig(env, parse(r?.custom_models)), level: normalizePrivacy(r?.ai_privacy) };
   } catch (e) {
     if (/no such column/i.test(String(e?.message || e))) return { on: false, config: null, level: DEFAULT_PRIVACY };
     throw e;
@@ -110,12 +117,17 @@ export async function readCustom(env, tenantId) {
 // On an own key (byok-custom.js) the account has its own setting, kept apart from the one for our models (tenants.custom_models_own_on / custom_models_own).
 // ownKey is false, "openrouter" or "plain". Only an OpenRouter key has providers to filter by the privacy level (ownProblems); any other endpoint has none.
 export function statusOf(st, ownKey = false) {
-  if (ownKey) { const problems = st.on && ownKey === "openrouter" ? ownProblems(st.config, st.level) : []; return { on: st.on, level: st.level, own_key: true, endpoint: ownKey === "openrouter" ? "openrouter" : "plain", needs_choice: problems.length > 0, problems: problems.slice(0, 12) }; }
+  if (ownKey) {   // models of an OpenRouter connection are checked against the privacy level; no_model: nothing is chosen for General yet
+    const problems = ownProblems(st.config, st.level);
+    return { on: true, level: st.level, own_key: true, endpoint: "own", needs_choice: problems.length > 0, no_model: !st.config?.categories?.find((c) => c.id === "general")?.chain?.length, problems: problems.slice(0, 12) };
+  }
   const problems = st.on ? problemsOf(st.config, st.level) : [];
   return { on: st.on, level: st.level, needs_choice: st.on && problems.length > 0, problems: problems.slice(0, 12) };
 }
-export const statusOfRow = (t, ownKey = false) => statusOf(ownKey ? { on: Number(t?.custom_models_own_on) === 1, config: parse(t?.custom_models_own), level: normalizePrivacy(t?.ai_privacy) }
-  : { on: Number(t?.custom_models_on) === 1, config: parse(t?.custom_models), level: normalizePrivacy(t?.ai_privacy) }, ownKey);
+// Synchronous, so it reads only the live terms already fetched (readCustom and the picker fetch them); it never waits on OpenRouter.
+const cachedConfig = (c) => c?.catalog ? { ...c, catalog: overlayLiveCatalog(c.catalog) } : c;
+export const statusOfRow = (t, ownKey = false) => statusOf(ownKey ? { on: Number(t?.custom_models_own_on) === 1, config: cachedConfig(parse(t?.custom_models_own)), level: normalizePrivacy(t?.ai_privacy) }
+  : { on: Number(t?.custom_models_on) === 1, config: cachedConfig(parse(t?.custom_models)), level: normalizePrivacy(t?.ai_privacy) }, ownKey);
 export async function customStatus(env, tenantId) { return statusOf(await readCustom(env, tenantId)); }
 
 // ---- applying it to routing ----
@@ -163,15 +175,16 @@ async function lookupLive(env, id, settings) {
   return Object.keys(quirks).length ? { ...m, quirks } : m;
 }
 // The facts of one model for this account: the ones it already saved, then our saved facts, then OpenRouter's live catalog.
-async function factsFor(env, id, have, settings, lookup) {
+async function factsFor(env, id, have, settings, lookup, live = {}) {
   const known = [recordOf(have?.[id], id), recordOf(settings?.catalog?.[id], id)].find((r) => r && r.eligible === true && validCatalogRecord(r, id));
-  return known || (await (lookup || ((x) => lookupLive(env, x, settings)))(id));
+  if (known) { await refreshLivePrivacy([known], { env, settings, ...live }).catch(() => {}); return overlayLivePrivacy(known, id); }   // a saved record's privacy facts follow the live catalog
+  return await (lookup || ((x) => lookupLive(env, x, settings)))(id);
 }
 const titleOf = (t) => (typeof t === "string" ? t : "");
 // Checks a whole set of categories exactly as a save does and returns the config to store. input: [{ id, title, chain: [{model, effort}], max_price }].
 // have: the account's saved catalog (its models keep their facts). Throws an error with a plain message and status 400 for anything wrong.
 // chain: how many models a category may have, [min, max]. A full plan has exactly three; an own key (byok-custom.js) has one to three.
-export async function validateCategories(env, input, level, { have = {}, settings = null, lookup = null, chain: [chainMin, chainMax] = [CHAIN_LENGTH, CHAIN_LENGTH], ownKey = false } = {}) {
+export async function validateCategories(env, input, level, { have = {}, settings = null, lookup = null, live = {}, chain: [chainMin, chainMax] = [CHAIN_LENGTH, CHAIN_LENGTH], ownKey = false } = {}) {
   level = normalizePrivacy(level);
   if (!Array.isArray(input) || !input.length || input.length > MAX_CATEGORIES) fail(`Save between 1 and ${MAX_CATEGORIES} categories.`);
   const ids = new Set(), titles = new Set(), catalog = {}, categories = [];
@@ -198,7 +211,7 @@ export async function validateCategories(env, input, level, { have = {}, setting
       // An own key: the main model the account started from may have no facts, and no reasoning level (nothing is sent); it stays as it is until the person replaces it.
       if (ownKey && !own(catalog, e.model) && have?.[e.model]?.seed === true && e.effort == null) { catalog[e.model] = have[e.model]; chain.push({ model: e.model, effort: null }); continue; }
       if (!own(catalog, e.model)) {
-        const rec = await factsFor(env, e.model, have, settings, lookup);
+        const rec = await factsFor(env, e.model, have, settings, lookup, live);
         if (!rec) fail(`${e.model} is no longer offered. Choose another model.`);
         if (rec.eligible !== true || !validCatalogRecord(rec, e.model)) fail(`${nameOf(rec, e.model)} can't be used: ${(rec.reasons || []).join("; ") || "it isn't available"}.`);
         if (!kindOk(rec, JOB_KINDS.chat)) fail(`${nameOf(rec, e.model)} can't answer chats.`);
@@ -217,14 +230,14 @@ export async function validateCategories(env, input, level, { have = {}, setting
 
 // The one write path (the account route): { on?, categories? }. Turning it on the first time starts from our General at the account's level.
 // Returns the same view the app reads. settings: our saved model settings (the General the account starts from, and known model facts).
-export async function saveCustom(env, tenantId, body, { settings, lookup = null, at = Date.now(), ownKey = false } = {}) {
+export async function saveCustom(env, tenantId, body, { settings, lookup = null, live = {}, at = Date.now(), ownKey = false } = {}) {
   if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((k) => !["on", "categories"].includes(k)) || (!own(body, "on") && !own(body, "categories"))) fail("Nothing to change.");
   if (own(body, "on") && typeof body.on !== "boolean") fail("Choose on or off.");
   const cur = await readCustom(env, tenantId);
   let config = cur.config, on = own(body, "on") ? body.on : cur.on;
   if (own(body, "categories")) {
     if (!cur.on && !own(body, "on")) fail("Turn on Custom Model Selection first.", 409);
-    config = await validateCategories(env, body.categories, cur.level, { have: cur.config?.catalog, settings, lookup });
+    config = await validateCategories(env, body.categories, cur.level, { have: cur.config?.catalog, settings, lookup, live });
   }
   if (on && !config) config = defaultConfig(settings, cur.level);
   await env.DB.prepare("UPDATE tenants SET custom_models_on=?, custom_models=?, updated_at=? WHERE id=?").bind(on ? 1 : 0, config ? JSON.stringify(config) : null, at, String(tenantId)).run();
@@ -243,12 +256,14 @@ export const modelCard = (r, level) => ({ id: r.id, name: nameOf(r, r.id), sourc
   levels: Array.isArray(r.levels) ? r.levels : [], pricing: r.pricing || null, context_length: r.context_length || null, allowed: allowedAt(r, level) });
 // Chat models the account may pick at its level: our saved models plus, for a search, OpenRouter's live catalog. Only models with at least one
 // provider allowed at the level are listed. No provider or host list is built here: allowedAt is the dispatcher's own check.
-export async function pickerModels(env, level, { q = "", settings = null, have = {}, search = null } = {}) {
+export async function pickerModels(env, level, { q = "", settings = null, have = {}, search = null, live = {} } = {}) {
   level = normalizePrivacy(level); q = String(q || "").trim().toLowerCase();
   const pool = new Map();
   const add = (r) => { if (r && r.eligible === true && !r.unverified && r.id && validCatalogRecord(r, r.id) && kindOk(r, JOB_KINDS.chat) && allowedAt(r, level)) pool.set(r.id, r); };
-  for (const r of Object.values(settings?.catalog || {})) add(r);
-  for (const r of Object.values(have || {})) add(r);
+  // Saved facts follow OpenRouter's current privacy terms (a model that gained or lost a level since it was saved is offered or hidden accordingly).
+  await refreshLivePrivacy([...Object.values(have || {}), ...Object.values(settings?.catalog || {})], { env, settings, ...live }).catch(() => {});
+  for (const r of Object.values(settings?.catalog || {})) add(overlayLivePrivacy(r));
+  for (const r of Object.values(have || {})) add(overlayLivePrivacy(r));
   if (q.length >= 2) { const found = await (search || ((x) => modelCatalog(env, { q: x, settings, known: [] }).then((r) => r.models)))(q); for (const r of found) if (!pool.has(r.id)) add(r); }
   const words = q.split(/\s+/).filter(Boolean);
   return [...pool.values()].filter((r) => words.every((w) => `${r.id} ${r.name || ""}`.toLowerCase().includes(w))).slice(0, 80).map((r) => modelCard(r, level));

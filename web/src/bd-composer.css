@@ -1,0 +1,66 @@
+/* Copyright (c) 2026 Bruno Delorence. MIT License. (See THIRD-PARTY-NOTICES.md.)
+   The look of Bruno Delorence's composer-states component (components-src/bd/composer-states) on the real message
+   boxes: the Home and task composers (form.composer). Looks only: no control, markup or behavior changes here.
+   Sizes follow the original: a 26 px corner, 36 px round buttons set 8 px in, a one-line pill 52 px tall, a violet
+   Send disc, quiet icon buttons that get a soft disc on hover, and a dictation row where the mic becomes the stop
+   square on a disc, the other buttons blur away and a dotted line shows while nothing has been heard yet.
+   The model and effort menus of the original have no place in 1Helm and are left out. */
+
+form.composer{
+  --bdcs-disc:color-mix(in srgb,var(--ink) 9%,var(--sheet));
+  --bdcs-hover:color-mix(in srgb,var(--ink) 6%,transparent);
+  --bdcs-ring:color-mix(in srgb,var(--ink) 8%,transparent);
+  --bdcs-press:color-mix(in srgb,var(--ink) 80%,var(--sheet));
+  --bdcs-ease:cubic-bezier(.23,1,.32,1);
+  gap:0;padding:8px;border:0;border-radius:26px;
+  box-shadow:0 0 0 1px var(--bdcs-ring),0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.05);
+  transition:box-shadow .15s;
+}
+form.composer:focus-within{box-shadow:0 0 0 1px color-mix(in srgb,var(--ink) 16%,transparent),0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.06)}
+form.composer.pd-off{box-shadow:none}
+:root[data-theme=dark] form.composer{--bdcs-ring:rgba(255,255,255,.09)}
+:root[data-theme=dark] form.composer,:root[data-theme=dark] form.composer:focus-within{box-shadow:0 0 0 1px var(--bdcs-ring),0 8px 24px rgba(0,0,0,.4)}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme=light]) form.composer{--bdcs-ring:rgba(255,255,255,.09)}
+  :root:not([data-theme=light]) form.composer,:root:not([data-theme=light]) form.composer:focus-within{box-shadow:0 0 0 1px var(--bdcs-ring),0 8px 24px rgba(0,0,0,.4)}
+}
+:root[data-theme=dark] form.composer.pd-off{box-shadow:none}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) form.composer.pd-off{box-shadow:none}}
+
+/* The text: a 26 px line, so a one-line box is the 36 px of the buttons beside it. */
+form.composer textarea{line-height:26px;padding:5px 8px}
+
+/* Icon buttons: quiet, with a soft disc on hover and a small press. */
+form.composer .cbtn{width:36px;height:36px;color:var(--ink);transition:background-color .15s,color .15s,transform .16s var(--bdcs-ease),opacity .2s,filter .24s}
+form.composer .cbtn:hover{background:var(--bdcs-hover);color:var(--ink)}
+form.composer .cbtn:active{transform:scale(.92)}
+form.composer .cbtn.dict{margin-right:4px}
+
+/* Send: the app's own ink disc. */
+form.composer #go:not(.slgo),form.composer .gostop{width:36px;height:36px;background:var(--ink);color:var(--sheet);transition:background-color .15s,transform .16s var(--bdcs-ease),opacity .15s}
+form.composer #go:not(.slgo):active:not(:disabled),form.composer .gostop:active{background:var(--bdcs-press);transform:scale(.9)}
+form.composer #go:not(.slgo):disabled{background:var(--bdcs-disc);color:var(--ink2);cursor:default}
+form.composer #go svg{width:18px;height:18px}
+form.composer #go:focus-visible,form.composer .gostop:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Dictation: the row morphs. The mic is the stop square on a disc (with a thin ring that follows the voice level),
+   and the other buttons blur away while the words come in. */
+form.composer .cbtn.dict.rec,form.composer .cbtn.dict.arm{background:var(--bdcs-disc);color:var(--ink);filter:none}
+form.composer .cbtn.dict.rec{box-shadow:0 0 0 calc(1px + var(--lvl,0) * 3px) color-mix(in srgb,var(--ink) 25%,transparent)}
+form.composer .cbtn.dict.rec:hover,form.composer .cbtn.dict.arm:hover{background:var(--bdcs-disc);color:var(--ink);filter:none}
+form.composer .cbtn.dict.rec:focus-visible{outline:2px solid var(--accent)}
+form.composer .cbtn.dict.busy{background:var(--bdcs-disc)}
+form.composer .cbtn.dict.rec svg{animation:bdcs-in .32s var(--bdcs-ease)}
+@keyframes bdcs-in{from{opacity:0;transform:scale(.5)}}
+form.composer.dicting .cbtn:not(.dict){opacity:.4;filter:blur(1.5px)}
+/* Nothing heard yet: a dotted line where the words will appear. */
+form.composer.dicting textarea:placeholder-shown{background:radial-gradient(circle,color-mix(in srgb,var(--ink) 35%,transparent) 1.1px,transparent 1.6px) 0 50%/8px 4px repeat-x}
+
+@media (max-width:767px){
+  form.composer{padding:6px}
+  form.composer .cbtn,form.composer #go:not(.slgo),form.composer .gostop{width:40px;height:40px}
+}
+@media (prefers-reduced-motion:reduce){
+  form.composer .cbtn,form.composer #go,form.composer .gostop{transition:none}
+  form.composer .cbtn.dict.rec svg{animation:none}
+}

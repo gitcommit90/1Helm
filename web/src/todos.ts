@@ -3,7 +3,7 @@
 // where the person can follow along and tick or untick items. Live from the stream ({t:"todos", items}); the session detail
 // API brings it back after a reload. v3.ts only hooks in: the header buttons, liveLoad, the stream handler and repaints.
 // ready: the helper finished it, but only the person ticks things done ("Ready to tick" until they do).
-import { anchorRect, focusHeaderAction } from "./headfit";
+import { anchorRect, focusHeaderAction, liveAnchor } from "./headfit";
 import { mountPaneFloat, paneOrigin } from "./pane-float";
 export type TodoItem = { id: string; text: string; status: "todo" | "doing" | "done"; ready?: boolean };
 type Deps = {
@@ -73,7 +73,12 @@ export const todoItems = (slug: string, sid: any) => LISTS[key(slug, String(sid)
 // doing item's pulse follows the helper (working ↔ idle).
 export function todoSync(slug: string, sid: any) {
   const k = key(slug, String(sid));
-  document.querySelectorAll<HTMLElement>(".tdw").forEach(w => { if (w.dataset.tdw !== k) { w.dataset.tdw = k; w.innerHTML = ""; } });
+  document.querySelectorAll<HTMLElement>(".tdw").forEach(w => {
+    if (w.dataset.tdw === k) return;
+    // The task got its real id while its list was open: the open panel follows the id, so its button is found again below.
+    if (TD.open && w.dataset.tdw === TD.open) { if (!LISTS[k]) LISTS[k] = LISTS[TD.open] || []; TD.open = k; }
+    w.dataset.tdw = k; w.innerHTML = "";
+  });
   paintBtns(k); if (TD.open) paintPanel();
 }
 
@@ -102,7 +107,7 @@ function paintPanel() {
 }
 function place() {
   { const w = document.getElementById("tdpw"); if (w) mountPaneFloat(w); }   // follows a layout change between phone and wide
-  const el = document.querySelector<HTMLElement>("#tdpw .tdpop"), b = TD.btn; if (!el) return;
+  const el = document.querySelector<HTMLElement>("#tdpw .tdpop"); if (!el) return;
   if (D?.phone() && TD.automatic) {
     // Reveal live updates above the draft, not over the mobile keyboard/composer.
     const o = paneOrigin(document.getElementById("tdpw")!);   // the panel sits inside the chat pane on a phone
@@ -111,10 +116,12 @@ function place() {
     el.style.cssText = `left:8px;right:8px;top:${top}px;bottom:auto;max-height:${Math.max(80, Math.min(360, bottom - top - 12))}px;border-radius:20px`;
     return;
   }
-  if (!b || !b.isConnected || D?.phone()) { el.removeAttribute("style"); return; }
-  const r = anchorRect(b), W = Math.min(360, innerWidth - 24);   // folded into the header's ⋯: under ⋯
+  if (D?.phone()) { el.removeAttribute("style"); return; }
+  // A header repaint can replace the button this panel was opened from, so find the live one for this list again.
+  const b = liveAnchor(TD.btn, `.tdbtn[data-todo="${CSS.escape(TD.open)}"]:not(.m)`); if (b) TD.btn = b;
+  const r = b ? anchorRect(b) : { right: innerWidth - 16, bottom: 56 }, W = Math.min(360, innerWidth - 24);   // folded into the header's ⋯: under ⋯
   el.style.width = `${W}px`; el.style.left = `${Math.max(12, Math.min(r.right - W, innerWidth - W - 12))}px`;
-  el.style.top = `${r.bottom + 8}px`; el.style.maxHeight = `${Math.min(560, innerHeight - r.bottom - 20)}px`;
+  el.style.top = `${r.bottom + 8}px`; el.style.maxHeight = `${Math.max(120, Math.min(560, innerHeight - r.bottom - 20))}px`;
 }
 function todoOpen(k: string, btn: HTMLElement, automatic = false) {
   if (!D || !(LISTS[k] || []).length) return;

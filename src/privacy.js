@@ -172,12 +172,20 @@ export function byokPrivacyFields(cfg, level) {
   return level === "zdr" ? { provider: { zdr: true, data_collection: "deny" } } : level === "no_training" ? { provider: { data_collection: "deny" } } : {};
 }
 export const POLICY_REFUSAL_RE = /data policy|zero data retention|paid model training|No endpoints found matching/i;
-export const byokPrivacyText = (cfg, level, model) => `Your AI data privacy setting (${PRIVACY_LABEL[normalizePrivacy(level)]}) doesn't allow any provider that OpenRouter has for ${model || "your chosen model"}, so I couldn't send this. Nothing was sent elsewhere. Pick a different model in ${cfg?.settings ? `[Settings → Use my own AI key](${cfg.settings})` : "Settings → Use my own AI key"}, or change AI data privacy in Settings → General.`;
+export const byokPrivacyText = (cfg, level, model) => `Your AI data privacy setting (${PRIVACY_LABEL[normalizePrivacy(level)]}) doesn't allow any provider that OpenRouter has for ${model || "your chosen model"}, so I couldn't send this. Nothing was sent elsewhere. Pick a different model in ${cfg?.settings ? `[Settings → AI services](${cfg.settings})` : "Settings → AI services"}, or change AI data privacy in Settings → General.`;
 // What the app shows (boot / Settings): the stored choice, plus whether an own AI key is in play and whether this setting reaches it
 // (byok: "openrouter" = applied through OpenRouter's data policy; "other" = their provider's terms apply; null = no key in use).
 export async function privacyBoot(env, t) {
   const v = privacyView(t); let byok = null;
-  try { const b = await env.DB.prepare("SELECT base_url, mode FROM byok WHERE tenant_id=?").bind(t.id).first();
-    if (b?.base_url && (t.plan === "byok" || b.mode === "fallback")) byok = isOpenRouterBase(b.base_url) ? "openrouter" : "other"; } catch {}
+  try {   // "openrouter" only when every connected service is OpenRouter (the setting reaches it); with any other service in play their terms apply. Read with plain SQL: this file must not import the byok modules.
+    const b = await env.DB.prepare("SELECT mode, base_url FROM byok WHERE tenant_id=?").bind(t.id).first();
+    if (t.plan === "byok" || b?.mode === "fallback") {
+      const done = await env.DB.prepare("SELECT 1 x FROM byok_multi WHERE tenant_id=?").bind(t.id).first().catch(() => null);
+      if (done) {
+        const rows = (await env.DB.prepare("SELECT kind FROM byok_connections WHERE tenant_id=?").bind(t.id).all()).results || [];
+        if (rows.length) byok = rows.every((r) => r.kind === "openrouter") ? "openrouter" : "other";
+      } else if (b?.base_url) byok = isOpenRouterBase(b.base_url) ? "openrouter" : "other";   // not upgraded yet: the old row is still the truth (and is never changed)
+    }
+  } catch {}
   return { ...v, byok };
 }

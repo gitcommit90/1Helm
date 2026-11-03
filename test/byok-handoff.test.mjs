@@ -8,6 +8,7 @@ import { test, after } from "node:test";
 import { ACK_JOB_STARTED_VARIANTS } from "../src/plain-ack.js";
 import { Resident } from "../src/resident.js";
 import { byokChat, loadByok, effortFields } from "../src/byok.js";
+import { connDdl } from "../src/ee/byok-connections.js";
 import { HANDOFF_PREFIX } from "../src/ee/route2.js";
 import { sealSecret } from "../src/sentinel.js";
 import { byokRouteTurn, planForCall, saveOwn, readOwn, ownPicker, ownKeyPlan, byokChatChain, endpointRecords, listedRecords, ownKeyKind, _resetLists, recordOfListed } from "../src/ee/byok-custom.js";
@@ -63,10 +64,11 @@ globalThis.fetch = async (u, init = {}) => {
 };
 const cfgOf = (base = BASE, model = "main-1") => Object.defineProperty({ base, host: new URL(base).hostname, model, fast: "fast-1", last4: KEY.slice(-4) }, "key", { value: KEY });
 async function saveRow({ base = BASE, model = "main-1", fast = "fast-1" } = {}) {
+  await connDdl(env); d1.exec("DELETE FROM byok_connections; DELETE FROM byok_multi;");   // the account still has the one saved key of before: it becomes a connection when first read
   d1.prepare("INSERT OR REPLACE INTO byok (tenant_id,base_url,model,fast_model,key_sealed,key_last4,created_at,updated_at) VALUES ('t1',?,?,?,?,?,?,?)").run(base, model, fast, await sealSecret(env, KEY), KEY.slice(-4), Date.now(), Date.now());
 }
 const reset = (level = "unrestricted") => { d1.exec("UPDATE tenants SET custom_models_own_on=0, custom_models_own=NULL, custom_models_on=0, custom_models=NULL, plan='byok' WHERE id='t1'"); _resetLists(); script.failModels = new Set(); return setPrivacy({ DB: D1 }, "t1", level); };
-const entry = (model, effort = null) => ({ model, effort });
+const entry = (model, effort = null) => ({ model: model.includes(":") ? model : `p_main:${model}`, effort });
 const cat = (id, title, ...chain) => ({ id, title, chain, max_price: null });
 const rec = (id, efforts = ["none", "low", "high"], levels = ["unrestricted", "no_training", "zdr"]) => ({ id, source: "OR", kinds: ["chat", "chore"], name: `Name ${id.split("/")[1]}`, eligible: true, reasons: [], efforts, default_effort: efforts[1] || efforts[0], levels, hosts: ["acme"],
   terms: { zdr: levels.includes("zdr"), no_training: levels.includes("no_training") }, context_length: 100000, max_output: 8000, input_modalities: ["text"], pricing: { prompt: 1, completion: 2 }, json: true, tool_choice: ["auto", "none"] });
@@ -175,7 +177,7 @@ test("a worker's own turn uses its category's plan; the main turn and chores nev
   await twoCats();
   const worker = { dynamic_routing: 1, category: "c_soft0001" };
   assert.equal((await planForCall(R, { helper: worker })).category, "c_soft0001");
-  assert.deepEqual((await planForCall(R, { helper: worker })).chain.map((e) => e.model), ["o-reason", "gemma-2"]);
+  assert.deepEqual((await planForCall(R, { helper: worker })).chain.map((e) => e.model), ["p_main:o-reason", "p_main:gemma-2"]);
   assert.equal((await planForCall(R, { session: "s" })).category, "general");
   assert.equal((await planForCall(R, { helper: { dynamic_routing: 0, category: null } })).category, "general");
 });
@@ -197,7 +199,7 @@ test("a deploy mid-Primary: the resumed turn keeps General's model and its saved
   await twoCats(); const S = R.newSession("Task"); sorterPick = "Software"; script.start = true; script.hang = (b, t) => t.includes("start_helper");   // Primary's call never answers
   const turnP = R.runTurn("t1", "main", "1", "fix the bug in my app", () => {}, { session: S }); await new Promise((z) => setTimeout(z, 300));
   const row = R.sql.exec("SELECT card,extra FROM turn_runs").toArray()[0]; assert.ok(row, "the turn is journaled");
-  const saved = JSON.parse(row.extra).byokProfile; assert.equal(saved.dispatch.requiredDelegation, true); assert.equal(saved.dispatch.category, "c_soft0001"); assert.equal(saved.requestedModel, "main-1");
+  const saved = JSON.parse(row.extra).byokProfile; assert.equal(saved.dispatch.requiredDelegation, true); assert.equal(saved.dispatch.category, "c_soft0001"); assert.equal(saved.requestedModel, "p_main:main-1");
   script.hang = null; const p0 = prov.length;
   const R2 = new Resident({ ...ctx, waitUntil: (p) => waits.push(p) }, env); R2.systemPrompt = async () => "SYSTEM";
   await R2.alarm().catch(() => {}); R2.resumeDue({ force: true }); await settle(R2);

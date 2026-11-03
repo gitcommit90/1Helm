@@ -248,3 +248,63 @@ export async function jsonLevelsFor(id, settings, { lookup = taskModelCatalog, n
   }
   return hit.levels;
 }
+
+// ---- live privacy terms ----
+// A saved record's privacy facts (levels, hosts, unproven_hosts, terms, endpoint_limits, json_levels) were true when it was saved. Providers gain and lose
+// zero-data-retention and no-training terms afterwards, so every place that decides whether a model may be used at a privacy level reads these
+// facts through overlayLivePrivacy, which puts OpenRouter's current answer over the saved record. Nothing is saved: the overlay lives in this isolate
+// (one lookup per model per 30 minutes, like withEndpointLimits). A lookup needs the model list, the ZDR list and the model's own endpoint list
+// to all answer; any failure leaves the saved record as it is, so a failed or partial lookup never widens (or narrows) a model's levels.
+// Registered models keep the registry's hosts (privacy.js), Cloudflare and self-hosted models have no OpenRouter terms, so none of them are looked up.
+export const LIVE_PRIVACY_FIELDS = ["levels", "hosts", "unproven_hosts", "terms", "endpoint_limits", "json_levels"];
+const liveSeen = new Map();   // model id -> { at, fields | null }
+export const resetLivePrivacyCache = () => liveSeen.clear();
+export const refreshable = (id, rec) => !!rec && rec.eligible === true && !rec.unverified && rec.source !== "CF" && (!rec.connKind || rec.connKind === "openrouter") && validModelId(id) && !isCloudflareModel(id) && !registered(id)
+  && !(typeof id === "string" && id.startsWith("@")) && Array.isArray(rec.kinds) && rec.kinds.includes("chat");
+// The privacy facts of a live record, or null when the live record isn't a usable one (then the saved record stays).
+const liveFields = (r, id) => validCatalogRecord(r, id) ? Object.fromEntries(LIVE_PRIVACY_FIELDS.filter((k) => r[k] !== undefined).map((k) => [k, JSON.parse(JSON.stringify(r[k]))])) : null;
+// The saved record with the cached live privacy facts over it. Synchronous: it only reads what refreshLivePrivacy has already fetched.
+export function overlayLivePrivacy(rec, id = rec?.id) {
+  const hit = liveSeen.get(id);
+  if (!hit?.fields || !refreshable(id, rec)) return rec;
+  const out = { ...rec };
+  for (const k of LIVE_PRIVACY_FIELDS) { if (k in hit.fields) out[k] = hit.fields[k]; else delete out[k]; }
+  return out;
+}
+export const overlayLiveCatalog = (catalog) => catalog && typeof catalog === "object" ? Object.fromEntries(Object.entries(catalog).map(([id, r]) => [id, overlayLivePrivacy(r, id)])) : catalog;
+// Reads each model's live record. Throws only for a whole failure; a model whose own list can't be read answers null.
+export async function liveRecords(ids, settings = null, env = null) {
+  const [models, zdr] = await Promise.all([get("/models"), get("/endpoints/zdr")]);
+  const out = new Map();
+  await Promise.all(ids.map(async (id) => {
+    try {
+      const row = models.find((m) => m.id === id), target = isLatestAlias(id) && typeof row?.alias_target?.slug === "string" ? row.alias_target.slug : id;
+      if (!row || !validModelId(target) || registered(target)) return out.set(id, null);
+      const own = await get(`/models/${target}/endpoints`);
+      if (!own.length) return out.set(id, null);
+      out.set(id, assessModelCatalog([row], withProof(zdr, target, own), { autoOnly: (m) => quirkOf(settings, m, "auto_tool_choice_only") })[0] || null);
+    } catch { out.set(id, null); }
+  }));
+  return out;
+}
+// Brings the cache up to date for the models in `records` ({ id: record } or a list of records) that are stale or unseen. Never throws and never waits
+// longer than `wait` ms; a lookup that finishes later still fills the cache.
+export async function refreshLivePrivacy(records, { lookup = liveRecords, now = Date.now(), env = null, settings = null, max = 24, wait = 4000 } = {}) {
+  const list = Array.isArray(records) ? records.map((r) => [r?.id, r]) : Object.entries(records || {});
+  const need = [...new Set(list.filter(([id, r]) => refreshable(id, r)).map(([id]) => id))].filter((id) => { const h = liveSeen.get(id); return !h || now - h.at > REFRESH_MS; }).slice(0, max);
+  if (!need.length) return;
+  for (const id of need) liveSeen.set(id, { at: now, fields: liveSeen.get(id)?.fields || null });   // other callers don't repeat the lookup while this one runs
+  const work = (async () => {
+    let got; try { got = await lookup(need, settings, env); } catch { got = new Map(); }
+    for (const id of need) { const f = (() => { try { return liveFields(got?.get?.(id), id); } catch { return null; } })(); if (f) liveSeen.set(id, { at: now, fields: f }); }
+  })();
+  let timer; await Promise.race([work, new Promise((res) => { timer = setTimeout(res, wait); })]); clearTimeout(timer);
+}
+// A copy of the saved settings whose catalog records of the models in use carry the live privacy facts. Used for the Models page and for dispatch.
+export async function withLivePrivacy(settings, opts = {}) {
+  if (!settings?.catalog) return settings;
+  const used = new Set(Object.values(settings.jobs || {}).flatMap((j) => j ? [j.model, ...(j.fallbacks || []).map((f) => f.model)] : []));
+  for (const c of settings.routing?.categories || []) for (const chain of Object.values(c.chains || {})) for (const e of Array.isArray(chain) ? chain : []) used.add(e?.model);
+  await refreshLivePrivacy([...used].map((id) => settings.catalog[id]).filter(Boolean), { ...opts, settings });
+  return { ...settings, catalog: overlayLiveCatalog(settings.catalog) };
+}

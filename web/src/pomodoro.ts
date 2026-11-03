@@ -9,7 +9,7 @@
 // "Everything (global)" once; it shows app-wide (rail foot on desktop, header on phone) and in the overlay wherever you are.
 // Shortcuts (pomoShortcut, called from v3's one keydown handler): start now at the scope last chosen, pause/resume, stop.
 // v3.ts only hooks in: the header slots, pomoSet from the server, pomoSync after repaints, and pomoInit.
-import { anchorRect, focusHeaderAction } from "./headfit";
+import { anchorRect, focusHeaderAction, liveAnchor } from "./headfit";
 export type PomoTimer = { phase: "work" | "break" | "long" | "ready" | "done"; round: number; rounds: number; ends: number | null; left: number | null; paused: boolean;
   since: number; started: number; work_min: number; break_min: number; long_min: number; focused: number; done_rounds: number; by?: string; now?: number };
 export type PomoOffer = { id: number; at: number; work_min: number; break_min: number; long_min: number; rounds: number };
@@ -208,8 +208,11 @@ function tickPanel() {
   const c = pop.querySelector<SVGCircleElement>(".pmbig .pmfill"); if (c) c.setAttribute("stroke-dashoffset", ((1 - left(t, now) / total(t)) * Number(c.getAttribute("stroke-dasharray"))).toFixed(2));
 }
 function place() {
-  const el = document.querySelector<HTMLElement>("#pmpw .pmpop"), b = P.btn; if (!el) return;
-  if (!b || !b.isConnected || D?.phone()) { el.removeAttribute("style"); return; }
+  const el = document.querySelector<HTMLElement>("#pmpw .pmpop"); if (!el) return;
+  if (D?.phone()) { el.removeAttribute("style"); return; }
+  let b = P.btn;
+  if (!b || !b.isConnected) { b = liveAnchor(b, `[data-pomo="${CSS.escape(P.open)}"]:not(.m)`); if (b) P.btn = b; }
+  if (!b) { Object.assign(el.style, { width: `${Math.min(340, innerWidth - 24)}px`, left: `${Math.max(12, innerWidth - Math.min(340, innerWidth - 24) - 16)}px`, top: "64px", bottom: "" }); return; }
   el.style.bottom = "";
   if (b.closest("#rail")) { const rr = b.getBoundingClientRect(); Object.assign(el.style, { width: "340px", left: `${rr.right + 10}px`, top: "auto", bottom: `${Math.max(12, innerHeight - rr.bottom)}px`, maxHeight: `${innerHeight - 24}px` }); return; }
   const r = anchorRect(b), W = Math.min(340, innerWidth - 24);   // folded into the header's ⋯: under ⋯

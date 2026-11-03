@@ -73,3 +73,67 @@ a.gu-b.shopen{text-decoration:none;color:var(--ink2)}
 .hshare{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:999px;font-size:13px;font-weight:400;color:var(--mute)}
 .hshare:hover,.hshare.on{background:var(--abub);color:var(--ink)}
 #stage>header.th .hshare{flex:none;white-space:nowrap}
+
+/* Look of the QR share card by Bruno Delorence (components-src/bd/qr-share): Copyright (c) 2026 Bruno Delorence. MIT License (see THIRD-PARTY-NOTICES.md).
+   Colours and shapes only: a soft card, white pill buttons with a hairline, a light lift shadow. The Share dialog and the Wallet "Link on your phone" block carry .bdqr-card. */
+.bdqr-card{--bdqr-card:var(--page);--bdqr-ctl:var(--chip);--bdqr-hover:color-mix(in srgb,var(--ink) 4%,var(--chip));--bdqr-ink:var(--ink);--bdqr-mute:var(--mute);--bdqr-edge:rgb(0 0 0/.06);--bdqr-ctl-edge:rgb(0 0 0/.05);--bdqr-near:rgb(0 0 0/.05);--bdqr-drop:rgb(0 0 0/.16);--bdqr-lift:0 0 0 .5px var(--bdqr-edge),0 1px 2px var(--bdqr-near),0 8px 22px -10px var(--bdqr-drop);--bdqr-accent:var(--accent)}
+:root[data-theme=dark] .bdqr-card{--bdqr-card:var(--sheet);--bdqr-ctl:var(--chip);--bdqr-hover:var(--hover);--bdqr-ink:var(--ink);--bdqr-mute:var(--mute);--bdqr-edge:rgb(255 255 255/.08);--bdqr-ctl-edge:rgb(255 255 255/.06);--bdqr-near:rgb(0 0 0/.3);--bdqr-drop:rgb(0 0 0/.6)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .bdqr-card{--bdqr-card:var(--sheet);--bdqr-ctl:var(--chip);--bdqr-hover:var(--hover);--bdqr-ink:var(--ink);--bdqr-mute:var(--mute);--bdqr-edge:rgb(255 255 255/.08);--bdqr-ctl-edge:rgb(255 255 255/.06);--bdqr-near:rgb(0 0 0/.3);--bdqr-drop:rgb(0 0 0/.6)}}
+.bdqr-card{background:var(--bdqr-card);color:var(--bdqr-ink);border:0;box-shadow:var(--bdqr-lift)}
+.dlg.bdqr-card{border-radius:2em 2em 2em 2em;box-shadow:0 30px 80px rgba(28,27,25,.16),var(--bdqr-lift)}
+:root[data-theme=dark] .dlg.bdqr-card{box-shadow:0 30px 80px rgba(0,0,0,.55),var(--bdqr-lift)}
+.bdqr-card h2{letter-spacing:-.01em;font-weight:600}
+.bdqr-card p,.bdqr-card .shmeta,.bdqr-card .shexp>span{color:var(--bdqr-mute)}
+.bdqr-card .shmeta{color:var(--bdqr-mute)!important}
+.bdqr-card .shfield input{height:44px;border-radius:999px;border:0;background:var(--bdqr-ctl);box-shadow:0 0 0 .5px var(--bdqr-ctl-edge);padding:0 18px;color:var(--bdqr-ink)}
+.bdqr-card .shfield input:focus-visible{outline:2px solid var(--bdqr-accent);outline-offset:2px}
+.bdqr-card .dlgb,.bdqr-card.lkapp .sa{min-height:44px;border:0;border-radius:999px;background:var(--bdqr-ctl);color:var(--bdqr-ink);box-shadow:0 0 0 .5px var(--bdqr-ctl-edge);font-weight:600;letter-spacing:-.01em;transition:background-color .2s ease,scale .3s cubic-bezier(.3,1.2,.4,1)}
+.bdqr-card .dlgb:hover,.bdqr-card.lkapp .sa:hover{background:var(--bdqr-hover)}
+.bdqr-card .dlgb:active,.bdqr-card.lkapp .sa:active{scale:.97}
+.bdqr-card .dlgb:focus-visible,.bdqr-card.lkapp .sa:focus-visible{outline:2px solid var(--bdqr-accent);outline-offset:2px}
+.bdqr-card .dlgb.ok:not(.shfield .dlgb){background:var(--bdqr-ink);color:var(--bdqr-card)}
+.bdqr-card .dlgb.ok:not(.shfield .dlgb):hover{background:var(--bdqr-ink);opacity:.88}
+.bdqr-card .dlgb.shrev{color:var(--dlgred,#dc2626);box-shadow:0 0 0 .5px var(--bdqr-ctl-edge)}
+.bdqr-card .shexp button{border-radius:999px;background:var(--bdqr-ctl);color:var(--bdqr-ink);box-shadow:0 0 0 .5px var(--bdqr-ctl-edge);font-weight:600}
+.bdqr-card .shexp button.on{background:var(--bdqr-ink);color:var(--bdqr-card);box-shadow:none}
+.bdqr-card .shopt{background:var(--bdqr-ctl);border-radius:1.45em;box-shadow:0 0 0 .5px var(--bdqr-ctl-edge);color:var(--bdqr-ink)}
+.bdqr-card .shopt:hover{background:var(--bdqr-hover)}
+.bdqr-card .shopt.sel{background:var(--bdqr-ctl);box-shadow:inset 0 0 0 2px var(--bdqr-ink)}
+.bdqr-card .shopt>span:last-child{color:var(--bdqr-mute)}.bdqr-card .shopt>span.shst{color:var(--live)}
+.bdqr-card .shoi{background:var(--bdqr-card);color:var(--bdqr-ink)}.bdqr-card .shopt.sel .shoi{background:var(--bdqr-ink);color:var(--bdqr-card)}
+.bdqr-card .shname{border:0;border-radius:999px;background:var(--bdqr-ctl);box-shadow:0 0 0 .5px var(--bdqr-ctl-edge);padding-left:18px}
+.bdqr-card .shname:focus-within{box-shadow:0 0 0 2px var(--bdqr-accent)}
+.bdqr-card .shpre{color:var(--bdqr-mute)}
+.bdqr-card .dlggrab{background:var(--bdqr-mute);opacity:.4}
+.sc.lkapp.bdqr-card{border-radius:2em;padding:20px}
+.lkapp.bdqr-card p{color:var(--bdqr-mute)}
+@media (max-width:767px){.dlg.bdqr-card{border-radius:2em 2em 0 0}}
+@media (prefers-reduced-motion:reduce){.bdqr-card .dlgb,.bdqr-card.lkapp .sa{transition:none}}
+/* QR code block (bdqr.ts): Bruno Delorence's pill that opens into a card with the code. Copyright (c) 2026 Bruno Delorence. MIT License. */
+.bdqr-qr{--bdqr-plate:#fff;--bdqr-dot:#1c1b19;position:relative;display:block;margin-top:14px;text-align:left}
+:root[data-theme=dark] .bdqr-qr{--bdqr-plate:#e9e8e4}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .bdqr-qr{--bdqr-plate:#e9e8e4}}
+.bdqr-pill{display:inline-flex;align-items:center;gap:.5em;height:44px;padding:0 20px 0 16px;border:0;border-radius:999px;background:var(--bdqr-ctl,var(--chip));color:var(--bdqr-ink,var(--ink));box-shadow:var(--bdqr-lift);font:inherit;font-size:14.5px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;cursor:pointer}
+.bdqr-pill:hover{background:var(--bdqr-hover,var(--hover))}
+.bdqr-pill:focus-visible,.bdqr-x:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.bdqr-glyph{width:1.15em;height:1.15em;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.bdqr-face{display:none;position:relative;padding:.6em;border-radius:32px;background:var(--bdqr-ctl,var(--chip));box-shadow:var(--bdqr-lift)}
+.bdqr-qr[data-open] .bdqr-face{display:block}
+.bdqr-qr[data-open] .bdqr-pill{position:absolute;left:0;top:0;visibility:hidden;pointer-events:none}
+.bdqr-qr[data-moving] .bdqr-pill{visibility:visible}
+.bdqr-plates{display:flex;flex-wrap:wrap;justify-content:center;gap:.6em;padding-right:0}
+.bdqr-plate{margin:0;flex:0 1 min(220px,38dvh);min-width:0;display:flex;flex-direction:column;gap:.5em;align-items:stretch}
+.bdqr-panel{aspect-ratio:1;padding:1.05em;border-radius:1.45em;background:var(--bdqr-plate);box-shadow:0 0 0 .5px var(--bdqr-ctl-edge,rgb(0 0 0/.05))}
+.bdqr-plate figcaption{text-align:center;font-size:13.5px;font-weight:600;letter-spacing:-.01em;color:var(--bdqr-ink)}
+.bdqr-code{display:block;width:100%;height:100%;overflow:visible;fill:var(--bdqr-dot)}
+.bdqr-ring{fill:none;stroke:var(--bdqr-dot);stroke-width:1}
+.bdqr-x{position:absolute;top:.5em;right:.5em;width:34px;height:34px;display:grid;place-items:center;padding:0;border:0;border-radius:50%;background:var(--bdqr-ctl,var(--chip));color:var(--bdqr-mute,var(--mute));box-shadow:0 0 0 .5px var(--bdqr-ctl-edge);cursor:pointer}
+.bdqr-x:hover{background:var(--bdqr-hover)}
+.bdqr-x svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
+.bdqr-qr[data-pop] .bdqr-finder{animation:bdqr-pop .55s cubic-bezier(.3,1.4,.4,1) .08s backwards;transform-box:fill-box;transform-origin:center}
+.bdqr-qr[data-pop] .bdqr-code>g:not(.bdqr-finder)>circle{animation:bdqr-pop .4s cubic-bezier(.3,1.4,.4,1) backwards;animation-delay:calc(var(--ring,0)*18ms + 140ms);transform-box:fill-box;transform-origin:center}
+@keyframes bdqr-pop{from{opacity:0;scale:0}}
+@media (prefers-reduced-motion:reduce){.bdqr-qr *{animation:none!important}}
+.lkapp .bdqr-qr{margin-top:14px}
+@media (max-width:767px){.shw .dlg.bdqr-card .bdqr-qr{margin-top:12px}.bdqr-plate{flex-basis:min(150px,38dvh)}}
+@media (max-width:767px){.bdqr-card .shfield input{flex:none;width:100%}}

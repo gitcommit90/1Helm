@@ -6,8 +6,10 @@ export const SETTINGS_DESTINATIONS = {
   appearance: { section: "general", label: "Appearance", focus: "[data-settings-appearance]" },
   costs: { section: "general", label: "Show estimated costs", focus: "[data-costrow]" },
   account: { section: "account", label: "Your account" },
-  accounts: { section: "accounts", label: "Connected accounts" },
-  "computer-network": { section: "computer-network", label: "Computer connections" },
+  accounts: { section: "accounts", label: "Connected Apps" },
+  apps: { section: "accounts", label: "Connected Apps" },
+  "computer-network": { section: "computer-network", label: "Computers" },
+  computers: { section: "computer-network", label: "Computers" },
   wallet: { section: "wallet", label: "Wallet" },
   keys: { section: "keys", label: "Passwords & keys" },
   perm: { section: "perm", label: "Permissions" },
@@ -18,7 +20,8 @@ export const SETTINGS_DESTINATIONS = {
   notif: { section: "notif", label: "Notifications" },
   advanced: { section: "advanced", label: "Advanced" },   // = CMCP_SEC in custom-mcp.ts (literal here: no import cycle)
   aipriv: { section: "aipriv", label: "AI data privacy" },
-  byok: { section: "byok", label: "Use my own AI key" },
+  ai: { section: "ai", label: "AI services" },
+  byok: { section: "ai", label: "AI services" },   // the old name of the same panel
   help: { section: "help", label: "Help & support" },
   shortcuts: { section: "shortcuts", label: "Keyboard shortcuts" },
   legal: { section: "legal", label: "Legal" },

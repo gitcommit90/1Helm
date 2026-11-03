@@ -55,7 +55,7 @@ Saved passwords and keys are stored encrypted and can't be shown again, even to 
 - **Files:** they can delete files in the Library, which also removes them from the channel's computer.
 - **Connected apps:** they choose what's connected and can disconnect any app in Settings → Connected accounts.
 - **Passwords & keys:** they can remove any saved login or key.
-- **Their own AI key:** they can change or delete it in Settings → General → Use my own AI key (on Bring your own key, or on a full plan where it's a backup or waiting for a switch). It's stored encrypted and never shown again (only its last 4 characters).
+- **Their own AI key:** they can change or delete it in Settings → AI services (on Bring your own key, or on a full plan where it's a backup or waiting for a switch). It's stored encrypted and never shown again (only its last 4 characters).
 - **Link:** they can remove their wallet in Settings → Wallet, and they approve every purchase.
 - **Texting:** they can turn it off in Settings → Texting.
 - **Notifications:** they choose what notifies them and turn each device on or off in Settings → Notifications.

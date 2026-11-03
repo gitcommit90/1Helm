@@ -1,5 +1,5 @@
 // One app's page, App Store style: big logo, name, categories, the FULL description, Connect, what the helper can do with it,
-// how it connects, website. Opens from any app row (Apps popup, its search, Settings → Connected accounts). On desktop it sits
+// how it connects, website. Opens from any app row (Apps popup, its search, Settings → Connected Apps). On desktop it sits
 // over the surface it came from (same size and place, with a back button); on a phone it's full screen.
 // Data: GET <api>/apps/<slug> (Composio's catalog, cached on the server, + this workspace's connection). Connecting and
 // disconnecting go through the app's existing flow (deps.connect / POST /apps/disconnect + deps.setAccounts).
@@ -17,7 +17,7 @@ export type AppDetailDeps = {
   busy: () => boolean;                                  // a sign-in is opening
   connect: (slug: string, name: string, another?: boolean) => void;        // existing connect flow (another: Add another account)
   setAccounts: (accounts: any[]) => void;               // existing connected-apps store
-  manage: () => void;                                   // Settings → Connected accounts
+  manage: () => void;                                   // Settings → Connected Apps
   computerConnections?: () => void;                     // native SSH/Tailscale enrollment, separate from app API credentials
   note: (title: string, sub: string) => void;
   draft?: (slug: string) => string;                     // opened from a Connect card (or a texted offer's link) with a draft: its HTML
@@ -74,7 +74,7 @@ export function openAppDetail(slug: string, opts: { name?: string } = {}) {
   slug = String(slug || "").toLowerCase().replace(/[^a-z0-9_]/g, ""); if (!slug) return;
   const h = host();
   ST.open = true; ST.slug = slug; ST.q = ""; ST.more = {}; ST.descMore = false; ST.busy = false; ST.disc = ""; ST.err = ""; acctNoteReset();
-  ST.from = h?.classList.contains("smodal") ? "Connected accounts" : h ? "Apps" : "";
+  ST.from = h?.classList.contains("smodal") ? "Connected Apps" : h ? "Apps" : "";
   ST.name = opts.name || D.info(slug)?.n || slug;
   appPageDiag(slug, ST.from, D.api);
   const c = CACHE.get(slug); ST.data = c && Date.now() - c.at < 120e3 ? c.d : null;
@@ -93,7 +93,7 @@ export function openAppDetail(slug: string, opts: { name?: string } = {}) {
 export function closeAppDetail() {
   const w = document.getElementById("appdw"); ST.open = false; ST.gen++; ST.opened++; clearInterval(busyT); acctNoteReset(); if (!w) return;
   w.classList.remove("on"); setTimeout(() => { if (!ST.open) w.innerHTML = ""; }, 220);
-  if (ST.from === "Connected accounts") document.querySelector<HTMLElement>(`#setw.on [data-adetail="${ST.slug}"]`)?.focus({ preventScroll: true });
+  if (ST.from === "Connected Apps") document.querySelector<HTMLElement>(`#setw.on [data-adetail="${ST.slug}"]`)?.focus({ preventScroll: true });
 }
 export const appDetailOpen = () => shown();
 
@@ -226,7 +226,7 @@ function howHtml(d: Detail) {
   const fields = (d.connect.fields || []).filter(f => f.label);
   const other = d.auth.filter(a => a.kind !== k && !/not set up/.test(a.text));
   const b = d.connect.byok;
-  return `${ST.slug === "tailscale" ? `<p class="apdmuted">This app connection accesses the Tailscale management API. It does not join the agent's 1HC computer to your tailnet. For native enrollment, use Settings → Connected accounts → Computer connections; that flow opens a Tailscale approval link and never asks for an API key.${D?.computerConnections ? ` <button class="apdbtn quiet" data-adnetwork>Open Computer connections</button>` : ""}</p>` : ""}<div class="apdhow"><span class="apdhowi">${icon}</span><p>${esc(d.connect.text)}</p></div>
+  return `${ST.slug === "tailscale" ? `<p class="apdmuted">This app connection accesses the Tailscale management API. It does not join the agent's 1HC computer to your tailnet. For native enrollment, use Settings → Computers; that flow opens a Tailscale approval link and never asks for an API key.${D?.computerConnections ? ` <button class="apdbtn quiet" data-adnetwork>Open Computers</button>` : ""}</p>` : ""}<div class="apdhow"><span class="apdhowi">${icon}</span><p>${esc(d.connect.text)}</p></div>
     ${b ? `<p class="apdbyok">${esc(b.text)}${b.url ? ` <a class="apdlink" href="${esc(b.url)}" target="_blank" rel="noopener">Get a key from ${esc(b.provider)} ${IC.ext}</a>` : ""}</p>` : ""}
     ${fields.length ? `<ul class="apdfields">${fields.map(f => `<li><b>${esc(f.label)}</b>${f.help ? `<span>${esc(f.help)}</span>` : ""}</li>`).join("")}</ul>` : ""}
     ${other.length ? `<p class="apdmuted apdalso">${esc(d.name)} also supports: ${other.map(a => esc(a.text.replace(/^Needs /, "").replace(/^Signs in /, "signing in "))).join("; ")}.</p>` : ""}
@@ -392,7 +392,7 @@ export function appDetailSync(all: any[]) { if (!ST.data) return; setFromStore(a
 export function initAppDetail(deps: AppDetailDeps) {
   if (D) { D = deps; return; } D = deps;
   onAcctNote(appDetailSync, () => { if (ST.open) paint(); });   // Settings keeps the shared list (its own subscription)
-  // Open from any app row: the Apps popup (and its search), and Settings → Connected accounts. Buttons inside a row keep their own job.
+  // Open from any app row: the Apps popup (and its search), and Settings → Connected Apps. Buttons inside a row keep their own job.
   document.addEventListener("click", e => {
     const t = e.target as HTMLElement;
     if (t.closest?.("#appdw")) return;   // the page's own clicks: panelClick, on the page itself

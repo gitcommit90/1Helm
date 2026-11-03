@@ -1,4 +1,4 @@
-// Sign in with OpenRouter (Captain 10-08): an optional button in Settings → Use my own AI key. OAuth PKCE
+// Sign in with OpenRouter (Captain 10-08): an optional button in Settings → AI services. OAuth PKCE
 // (https://openrouter.ai/docs/guides/overview/auth/oauth): no client registration, no app secret; OpenRouter mints a key the person
 // controls (and can revoke in their OpenRouter account), and 1Helm then uses it exactly like a pasted key (src/byok.js).
 //   1. GET /w/<slug>/byok/openrouter/start (a top-level navigation from the app, same tab everywhere: desktop, phone, installed app):
@@ -10,7 +10,7 @@
 //      the cookie and the row must belong to the signed-in account and be under 10 minutes old (OpenRouter's codes live 10 minutes).
 //      Then the code is exchanged server-side (POST https://openrouter.ai/api/v1/auth/keys { code, code_verifier, S256 }).
 //      The key is checked like a pasted key (byok.js KEY_RE) and sealed into byok_or_key (one per account), waiting for the person to
-//      pick a model. → 302 back to the app's Settings → Use my own AI key with ?orauth=ok, or ?orauth=err&orwhy=<reason>.
+//      pick a model. → 302 back to the app's Settings → AI services with ?orauth=ok, or ?orauth=err&orwhy=<reason>.
 //   3. Save (POST /api/byok/save { source: "openrouter", model, fast, ack }) runs byok.js's same path as a pasted key: the base is
 //      https://openrouter.ai/api/v1, the key comes from byok_or_key (or the saved OpenRouter key, when only the models change), then
 //      the connection test, the ZDR tick, and the same sealed byok row (source = 'openrouter'). byok_or_key is then emptied.
@@ -120,6 +120,13 @@ export async function orView(env, tid, row) {
 // ---- the model list (public; no key needed): only models that can call tools, as 1Helm needs ----
 let MODELS = null;   // { at, list }
 const price = (x) => { const n = Number(x); return Number.isFinite(n) && n >= 0 ? Math.round(n * 1e6 * 1000) / 1000 : null; };   // $ per million tokens
+// The reasoning levels OpenRouter's list states for a model, as the model catalog reads them ("none" is offered unless reasoning is mandatory); none when it states none.
+const KNOWN = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+function effortsOf(r) {
+  const e = (Array.isArray(r?.supported_efforts) ? r.supported_efforts : []).filter((x) => KNOWN.includes(x));
+  if (e.length && !r?.mandatory && !e.includes("none")) e.unshift("none");
+  return [...new Set(e)];
+}
 export async function orModels({ fetchImpl = globalThis.fetch } = {}) {
   if (MODELS && now() - MODELS.at < 15 * 60e3) return MODELS.list;
   const r = await fetchImpl(OR_MODELS_URL, { headers: { accept: "application/json" }, redirect: "manual", signal: AbortSignal.timeout(15000) });
@@ -127,7 +134,7 @@ export async function orModels({ fetchImpl = globalThis.fetch } = {}) {
   const bytes = await cappedResponseBytes(r, 8 << 20);
   if (!bytes) throw new Error("models list too big");
   const list = (JSON.parse(new TextDecoder().decode(bytes))?.data || []).filter((m) => typeof m?.id === "string" && (m.supported_parameters || []).includes("tools"))
-    .map((m) => ({ id: m.id.slice(0, 200), name: String(m.name || m.id).slice(0, 120), ctx: Number(m.context_length) || 0, in: price(m.pricing?.prompt), out: price(m.pricing?.completion) }))
+    .map((m) => ({ id: m.id.slice(0, 200), name: String(m.name || m.id).slice(0, 120), ctx: Number(m.context_length) || 0, in: price(m.pricing?.prompt), out: price(m.pricing?.completion), efforts: effortsOf(m.reasoning) }))
     .sort((a, b) => a.name.localeCompare(b.name));
   MODELS = { at: now(), list };
   return list;

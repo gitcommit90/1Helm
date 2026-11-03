@@ -5,6 +5,7 @@ import { deliverText } from "./texting.js";
 import { BeeSync } from "./bee-sync.js";
 import { LiveNotes } from "./live-notes.js";
 import { Ledger } from "./ledger.js";
+import { ClaudeEngine } from "./claude-engine.js";
 export const enabled = (env) => env?.ONEHELM_EE === "1hc";
 
 const FEATURES = Object.freeze(["connected_apps", "ambient", "texting", "smart_routing", "billing"]);
@@ -40,7 +41,7 @@ const EMPTY = Object.freeze({ routes: Object.freeze({ global: [], workspace: [] 
 export const registry = (env) => enabled(env) ? {
   routes: { global: [...GLOBAL], workspace: [...WORKSPACE] },
   tools: [...EE_TOOL_NAMES], crons: [...EE_CRONS],
-  durableObjects: { BeeSync, LiveNotes, Ledger }, skills: [...EE_SKILLS], features: [...FEATURES],
+  durableObjects: { BeeSync, LiveNotes, Ledger, ClaudeEngine }, skills: [...EE_SKILLS], features: [...FEATURES],
 } : EMPTY;
 export const features = (env) => registry(env).features;
 export const routeEnabled = (env, path, scope = "global") =>
@@ -69,6 +70,7 @@ export { deciderModel } from "./decider.js";
 export { hintNudge, integrationHint } from "./integration-hint.js";
 export { clip, leanJSON, readMail } from "./lean.js";
 export { Ledger };
+export { ClaudeEngine };
 export { linkApi, linkCreatePurchase, linkDisconnect, linkGetPurchase, linkListPurchases, linkNoteFill, linkNoteHandoff, linkStartConnect, linkStatus } from "./link.js";
 export { lnAudio } from "./live-mic.js";
 export { LiveNotes };
@@ -94,8 +96,14 @@ export { customMcpRoute, isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED, wit
 
 export { ambientQuery, addLocalTimes, tzOf, AMBIENT_QUERY_TOOL } from "./ambient-query.js";
 
-export { customView, readCustom, saveCustom, pickerModels, statusOfRow, ownChorePlan } from "./custom-models.js";
-export { ownKeyKind, ownKindForStatus, ownViewFor, ownPicker, saveOwn, byokRouteTurn, planForCall, byokChatChain } from "./byok-custom.js";
+export { customView, readCustom, saveCustom, pickerModels, statusOfRow, ownChorePlan, parse as parseOwn } from "./custom-models.js";
+export { ownKeyKind, ownKindForStatus, ownViewFor, ownPicker, saveOwn, byokRouteTurn, planForCall, byokChatChain, listedRecords, warmLists } from "./byok-custom.js";
+// The licensed AI services layer (several own-key connections at once, ChatGPT and OpenCode sign-in, Claude Code through the Claude engine). src/byok.js calls it only behind enabled(env).
+export { CC_SOURCE, isCcModel, claudeChat, ccModelsJson, ccStart, ccFinish, ccWarm, claudeUsage } from "./byok-claudecode.js";
+export { usageCache, refreshUsage, dropUsage } from "./byok-usage.js";
+export { listRows, viewRows, connCfgs, splitModel, connDdl, plainFromForm, addPlain, addSealed, addChatgpt, addClaudeCode, adoptPending, removeConnection, saveTest, testConnection, setOcPlan, CONN_KEY_RE } from "./byok-connections.js";
+export { OC_SOURCE, ocBase, ocPlan, opencodeChat, opencodeModelsJson } from "./byok-opencode.js";
+export { CG_SOURCE, CG_USAGE_PAGE, CG_WHY_TEXT, cgStart, cgDdl, cgFinish, chatgptChat, chatgptModelsJson, chatgptUsage } from "./byok-chatgpt.js";
 export { beeLibraryRoute } from "./bee-library.js";
 export { modelSettingsEnv, readModelSettings, jobModel, jobModels, jobCost, modelFacts } from "./model-settings.js";
 export { MOONDREAM } from "./model-seed.js";

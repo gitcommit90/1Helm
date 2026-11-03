@@ -316,7 +316,7 @@ export function withoutToolsWhenNoneUnsafe(settings, payload) {
 // fetchImpl: the transport for the request (the Sandbox passes one that records what is sent). Without it, globalThis.fetch is used as always.
 export async function orFetch(env, payload, meta = {}, extraHeaders = {}, signal = null, fetchImpl = globalThis.fetch) {
   // Own AI key: a chore (the browser agent's planner) on the fast model. Failures come back as an error body, like OpenRouter's.
-  if (env.BYOK) { try { return await byokChat(env.BYOK, payload, { fast: true, signal, privacy: await privacyOf(env, meta?.tenant) }); } catch (e) { if (signal?.aborted) throw e; return new Response(JSON.stringify({ error: { message: e.message } }), { status: 502, headers: { "content-type": "application/json" } }); } }
+  if (env.BYOK) { try { return await byokChat(env.BYOK, payload, { fast: true, signal, purpose: "browser", privacy: await privacyOf(env, meta?.tenant) }); } catch (e) { if (signal?.aborted) throw e; return new Response(JSON.stringify({ error: { message: e.message } }), { status: 502, headers: { "content-type": "application/json" } }); } }
   if (isCloudflareModel(payload.model)) return cloudflareChat(env, payload, payload.provider?.zdr ? { ...meta, _privacy: "zdr" } : meta, signal);
   // AI data privacy (privacy.js): the one chokepoint for every OpenRouter chat call validates the request against the account's current
   // level (twoChat passes the level it just read; anything else reads it now). Ineligible → PrivacyBlocked, nothing is sent.

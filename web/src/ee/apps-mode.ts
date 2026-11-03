@@ -1,4 +1,4 @@
-// Settings → Connected accounts → "How apps connect" (10-06, 1HC composio-upgrade part 2): the switch between Managed (1Helm's Composio
+// Settings → Connected Apps → "How apps connect" (10-06, 1HC composio-upgrade part 2): the switch between Managed (1Helm's Composio
 // account, the default) and Self-managed (the person's own Composio account, signed in with Composio). It says plainly that apps get
 // reconnected once on the new side. Server (1HC src/index.js, src/composio-self.js):
 //   GET  <api>/apps/mode → { mode, available, signin: "none" | "ok" | "ended", who, managed_left, signin_url }
@@ -45,7 +45,7 @@ export function cmLoad(force = false) {
     .catch(() => { CM.at = 0; });
 }
 
-// The section, at the top of Settings → Connected accounts.
+// The section, at the top of Settings → Connected Apps.
 export function cmHtml() {
   cmLoad();
   if (!CM.loaded && !CM.mode) return "";

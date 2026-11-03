@@ -152,4 +152,4 @@
 /* the global button: in the rail foot (desktop) or the header (phone) */
 #rail .foot .pmw.g .pmbtn.m{width:44px;height:44px}
 /* the "started · scope" toast must say its scope in full on a phone: let the line wrap */
-#toast:has([data-pmswitch],[data-pmreplace]) .tmsg b{white-space:normal}
+#toast .bdts-t:has([data-pmswitch],[data-pmreplace]) .tmsg b{white-space:normal}

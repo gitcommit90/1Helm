@@ -21,7 +21,7 @@ for (const value of [undefined, "", "true", "1", "1HC"]) {
 const on = { ...providerKeys, ONEHELM_EE: "1hc" };
 assert.equal(enabled(on), true);
 assert.equal(features(on).length, 5);
-assert.deepEqual(Object.keys(registry(on).durableObjects).sort(), ["BeeSync", "Ledger", "LiveNotes"]);
+assert.deepEqual(Object.keys(registry(on).durableObjects).sort(), ["BeeSync", "ClaudeEngine", "Ledger", "LiveNotes"]);
 assert.deepEqual(registry(on).skills, ["gmail", "google-calendar", "google-drive"]);
 assert.ok(registry(on).crons.includes("bee"));
 assert.equal(routeEnabled(on, "/api/apps", "workspace"), true);

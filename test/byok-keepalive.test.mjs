@@ -43,3 +43,15 @@ test("a real event after a long comment-only wait still answers (reasoning model
     assert.ok(r instanceof Response, String(r?.message || r));
   } finally { mock.timers.reset(); }
 });
+
+test("Stop while the first event is awaited ends the call at once and cancels the upstream body", async () => {
+  let cancelled = false;
+  const fetchImpl = async () => new Response(new ReadableStream({ start(c) { c.enqueue(enc.encode(": hello\n\n")); }, cancel() { cancelled = true; } }), { status: 200, headers: { "content-type": "text/event-stream" } });
+  const ac = new AbortController(), stop = Object.assign(new Error("stopped"), { stopped: true });
+  const p = byokChat(cfg, { messages: [{ role: "user", content: "hi" }], stream: true }, { fetchImpl, signal: ac.signal }).then(() => "resolved", (e) => e);
+  await new Promise((r) => setTimeout(r, 20));
+  ac.abort(stop);
+  const e = await Promise.race([p, new Promise((r) => setTimeout(() => r("still waiting"), 500))]);
+  assert.strictEqual(e, stop, "the call ends with the Stop error, not after the idle limit");
+  assert.ok(cancelled, "the upstream body was cancelled");
+});

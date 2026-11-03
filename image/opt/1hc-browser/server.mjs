@@ -9,14 +9,18 @@ import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
+import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { controllerRequest } from "./request-guard.mjs";
 const require = createRequire(import.meta.url);
-const { WebSocketServer, WebSocket } = require("/opt/1hc-browser/node_modules/ws");
+const { WebSocketServer, WebSocket } = require(process.env.HC_WS || "/opt/1hc-browser/node_modules/ws");
 
-const PORT = 6080, DISPLAY = ":99", W = 1280, H = 800, CDP_PORT = 9222;
-const LAST_URL = "/workspace/.browser/last_url";
-const PROFILE = "/workspace/.browser/profile", HOME = "/tmp/1hc-browser-home";
+// The HC_ variables exist so a test can run this server against a local Chrome in a scratch folder; in the container none is set.
+const PORT = Number(process.env.HC_PORT) || 6080, DISPLAY = process.env.HC_DISPLAY || ":99", W = 1280, H = 800, CDP_PORT = Number(process.env.HC_CDP_PORT) || 9222;
+const VNC_VIEW = Number(process.env.HC_VNC_VIEW) || 5900, VNC_CTL = Number(process.env.HC_VNC_CTL) || 5901;
+const BROWSER_DIR = process.env.HC_BROWSER_DIR || "/workspace/.browser", CHROME = process.env.HC_CHROME || "/opt/chrome/chrome";
+const LAST_URL = `${BROWSER_DIR}/last_url`;
+const PROFILE = `${BROWSER_DIR}/profile`, HOME = process.env.HC_HOME || "/tmp/1hc-browser-home";
 const CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 const NOVNC = "/opt/1hc-browser/novnc";
 const sleep = (ms) => new Promise((z) => setTimeout(z, ms));
@@ -44,9 +48,9 @@ async function startStack() {
   const t0 = Date.now();
   fs.mkdirSync(HOME, { recursive: true }); fs.mkdirSync(PROFILE, { recursive: true });
   if (!procs.xvfb) {
-    try { fs.rmSync("/tmp/.X99-lock", { force: true }); } catch {}
+    try { fs.rmSync(`/tmp/.X${DISPLAY.slice(1)}-lock`, { force: true }); } catch {}
     run("xvfb", "Xvfb", [DISPLAY, "-screen", "0", `${W}x${H}x24`, "-nolisten", "tcp", "-ac"]);
-    await waitFor(() => fs.existsSync("/tmp/.X11-unix/X99"), 10e3, "display");
+    await waitFor(() => fs.existsSync(`/tmp/.X11-unix/X${DISPLAY.slice(1)}`), 10e3, "display");
   }
   if (!procs.chrome || !(await portOpen(CDP_PORT))) {
     // Sentinel mode terminates HTTPS with a per-container CA; Chrome reads trust from its own NSS store, not the system bundle.
@@ -58,9 +62,9 @@ async function startStack() {
     for (const f of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) try { fs.rmSync(path.join(PROFILE, f), { force: true }); } catch {}
     // The computer stops Chrome by killing it on sleep; mark the last exit clean so there's no "Restore pages?" bubble.
     try { const pf = path.join(PROFILE, "Default", "Preferences"); if (fs.existsSync(pf)) { const j = JSON.parse(fs.readFileSync(pf, "utf8")); j.profile = { ...(j.profile || {}), exit_type: "Normal", exited_cleanly: true }; fs.writeFileSync(pf, JSON.stringify(j)); } } catch {}
-    run("chrome", "/opt/chrome/chrome", ["--no-sandbox", "--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage", "--disable-gpu",
+    run("chrome", CHROME, ["--no-sandbox", "--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage", "--disable-gpu",
       "--password-store=basic", "--test-type", "--disable-session-crashed-bubble", "--hide-crash-restore-bubble", "--noerrdialogs", "--disable-features=Translate,MediaRouter,OptimizationHints", "--disable-background-networking",
-      `--user-data-dir=${PROFILE}`, "--disk-cache-dir=/tmp/1hc-chrome-cache", `--remote-debugging-port=${CDP_PORT}`, "--remote-debugging-address=127.0.0.1",
+      `--user-data-dir=${PROFILE}`, `--disk-cache-dir=${HOME}/chrome-cache`, `--remote-debugging-port=${CDP_PORT}`, "--remote-debugging-address=127.0.0.1",
       `--window-size=${W},${H}`, "--window-position=0,0", "--start-maximized", "--lang=en-US", "about:blank"]);
     await waitFor(() => portOpen(CDP_PORT), 20e3, "Chrome");
     // A killed Chrome restores its old tabs on the next start, and each sleep/wake adds more. The tab Chrome starts with
@@ -88,9 +92,9 @@ async function startStack() {
           const loaded = c0.once("Page.loadEventFired", 15e3); await c0.send("Page.navigate", { url: last }).catch(() => {}); await loaded; c0.close(); log(`reopened ${last}`); } } } catch (e) { log("reopen failed", e.message); }
   }
   // Two VNC servers on the same screen: one that ignores all input (what the person sees by default), one that accepts it (only after "Take control").
-  if (!procs.vncView) run("vncView", "x11vnc", ["-display", DISPLAY, "-localhost", "-rfbport", "5900", "-nopw", "-shared", "-forever", "-viewonly", "-quiet", "-noxdamage", "-cursor", "arrow"]);
-  if (!procs.vncCtl) run("vncCtl", "x11vnc", ["-display", DISPLAY, "-localhost", "-rfbport", "5901", "-nopw", "-shared", "-forever", "-quiet", "-noxdamage", "-cursor", "arrow"]);
-  await waitFor(async () => (await portOpen(5900)) && (await portOpen(5901)), 10e3, "VNC");
+  if (!procs.vncView) run("vncView", "x11vnc", ["-display", DISPLAY, "-localhost", "-rfbport", String(VNC_VIEW), "-nopw", "-shared", "-forever", "-viewonly", "-quiet", "-noxdamage", "-cursor", "arrow"]);
+  if (!procs.vncCtl) run("vncCtl", "x11vnc", ["-display", DISPLAY, "-localhost", "-rfbport", String(VNC_CTL), "-nopw", "-shared", "-forever", "-quiet", "-noxdamage", "-cursor", "arrow"]);
+  await waitFor(async () => (await portOpen(VNC_VIEW)) && (await portOpen(VNC_CTL)), 10e3, "VNC");
   await browserConn().catch((e) => log("browser connection failed", e.message));
   log(`stack up in ${Date.now() - t0} ms`);
   return { cold: true, start_ms: Date.now() - t0 };
@@ -137,7 +141,7 @@ async function quiet(c, cap = 8e3) {
 // except the one tab's own page and URL in an op's answer.
 const TAB_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const tabKey = (b) => (TAB_RE.test(String(b?._tab ?? "")) ? String(b._tab) : "");
-const TABS_FILE = "/workspace/.browser/tabs.json";
+const TABS_FILE = `${BROWSER_DIR}/tabs.json`;
 const TAB_IDLE_MS = Number(process.env.TAB_IDLE_MS) || 20 * 60e3;   // a task's tabs close after this long with no browser call from it
 const TAB_PIN_MS = 2 * 3600e3;                                       // a tab shown to the person (handoff) is kept this long
 const TAB_MAX = 10;                                                  // most task tabs at once; the least recently used one closes to make room
@@ -145,7 +149,7 @@ const tabs = new Map();    // key -> { key, targets: Set<targetId>, current, las
 const owned = new Map();   // targetId -> key
 const conns = new Map();   // targetId -> CDP (quiet mode keeps one connection per tab)
 const chains = new Map();  // key -> promise: calls on one tab run one after the other
-let front = null, pin = null, bconn = null;   // front: key last brought to the front. pin: { key, at } while a handoff shows that tab.
+let front = null, pin = null, bconn = null, pageOpens = 0;   // front: key last brought to the front. pin: { key, at } while a handoff shows that tab.
 const mkTab = (key, id) => { const rec = { key, targets: new Set([id]), current: id, last: Date.now(), url: "" }; tabs.set(key, rec); owned.set(id, key); return rec; };
 function dropTarget(id) {
   const key = owned.get(id); owned.delete(id);
@@ -163,15 +167,17 @@ function onBrowserEvent(d) {
   const i = d.params?.targetInfo;
   if (d.method === "Target.targetCreated" && i?.type === "page") {
     const key = i.openerId ? owned.get(i.openerId) : undefined;
-    if (key !== undefined && !owned.has(i.targetId)) { const rec = tabs.get(key); if (rec) { rec.targets.add(i.targetId); rec.current = i.targetId; owned.set(i.targetId, key); } }
+    if (key !== undefined && !owned.has(i.targetId)) { const rec = tabs.get(key); if (rec) { rec.targets.add(i.targetId); rec.current = i.targetId; owned.set(i.targetId, key); pageOpens++; } }
   } else if (d.method === "Target.targetDestroyed") dropTarget(d.params.targetId);
 }
 async function browserConn() {
   if (bconn && bconn.ws.readyState === 1) return bconn;
   const v = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json();
   const c = new CDP(v.webSocketDebuggerUrl); await c.open();
-  c.ev.push(onBrowserEvent); c.ws.on("close", () => { if (bconn === c) bconn = null; });
+  c.ev.push(onBrowserEvent, onDownloadEvent); c.ws.on("close", () => { if (bconn === c) bconn = null; });
   await c.send("Target.setDiscoverTargets", { discover: true });
+  // "default" keeps the managed policy's download folder; eventsEnabled makes Chrome report each download's name, size and state to this connection.
+  await c.send("Browser.setDownloadBehavior", { behavior: "default", eventsEnabled: true }).catch((e) => log("download events not enabled", e.message));
   bconn = c; return c;
 }
 function serial(key, fn) {
@@ -211,6 +217,12 @@ async function connectTarget(t) {
   if (c) { clearInterval(c.reset); conns.delete(t.id); }
   c = new CDP(t.webSocketDebuggerUrl); await c.open(); c.targetId = t.id;
   await c.send("Page.enable"); await c.send("Runtime.enable");
+  // A JavaScript dialog freezes the page (a click that opens an alert never returns). Answer it at once and keep a record for the effects list:
+  // alerts and "leave this page" boxes are accepted, confirm and prompt boxes are cancelled.
+  c.dialogs = [];
+  c.ev.push((d) => { if (d.method !== "Page.javascriptDialogOpening") return; const q = d.params || {}, accept = q.type === "alert" || q.type === "beforeunload";
+    c.dialogs.push({ type: q.type, message: String(q.message || "").replace(/\s+/g, " ").slice(0, 120), handled: accept ? "accepted" : "cancelled", at: Date.now() }); if (c.dialogs.length > 20) c.dialogs.shift();
+    c.send("Page.handleJavaScriptDialog", { accept }, 5e3, d.sessionId).catch(() => {}); });
   if (FAST) { const pend = new Set(); c.inflight = 0; await c.send("Network.enable");
     c.ev.push((d) => { if (d.method === "Network.requestWillBeSent" && !/^(EventSource|WebSocket)$/.test(d.params.type || "")) pend.add(d.params.requestId);
       else if (d.method === "Network.loadingFinished" || d.method === "Network.loadingFailed") pend.delete(d.params.requestId); c.inflight = pend.size; });
@@ -259,9 +271,93 @@ async function settle(c, ms = 10e3) {
   await sleep(300);
 }
 
+// ---- What an action did (2026-11-03) ----
+// "Nothing visible changed" used to be a guess from two copies of the outline. It was wrong whenever the effect was not in the outline: a download,
+// a window the browser blocked, a request that saved something, a change inside a frame. Now every act watches the tab through CDP while it runs
+// (the page and every frame, including frames in their own process) and the answer lists what happened. Only addresses without query strings
+// leave this computer in that list (host and path).
+const DOWNLOADS_DIR = process.env.HC_DOWNLOADS || "/workspace/files/downloads";
+const hostPath = (u) => { try { const x = new URL(u); return x.host + x.pathname; } catch { return String(u || "").slice(0, 60); } };
+const dls = new Map();   // guid -> { name, from, bytes, total, state, at }; fed by the browser connection's download events
+function onDownloadEvent(d) {
+  const p = d.params || {};
+  if (d.method === "Browser.downloadWillBegin") { dls.set(p.guid, { guid: p.guid, name: p.suggestedFilename || "download", from: hostPath(p.url), bytes: 0, total: 0, state: "inProgress", at: Date.now() }); if (dls.size > 60) dls.delete(dls.keys().next().value); }
+  else if (d.method === "Browser.downloadProgress") { const r = dls.get(p.guid); if (!r) return; r.bytes = p.receivedBytes || r.bytes; r.total = p.totalBytes || r.total; r.state = p.state; if (p.filePath) r.name = path.basename(p.filePath); }
+}
+const dlSince = (t) => [...dls.values()].filter((r) => r.at >= t);
+async function waitDownloads(since, ms) { const t0 = Date.now(); while (Date.now() - t0 < ms && dlSince(since).some((r) => r.state === "inProgress")) await sleep(200); }
+const DL_WAIT = Number(process.env.HC_DL_WAIT) || 60e3;   // the longest an act waits for a download it started
+const FX_SKIP_TYPES = /^(Image|Font|Media|Stylesheet|Ping|CSPViolationReport|Preflight|Manifest|TextTrack|SignedExchange|Prefetch)$/;
+const FX_JS = `(() => { if (!window.__1hcfx) { const s = window.__1hcfx = { n: 0 }; try { new MutationObserver((ms) => { for (const m of ms) if (!(m.type === 'attributes' && /^data-1hc/.test(m.attributeName || ''))) s.n++; }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); } catch {} } return window.__1hcfx.n; })()`;
+async function startEffects(c) {
+  const fx = { t0: Date.now(), navs: [], reqs: [], windows: [], chooser: 0, quiet: false, open: new Set(), opens0: pageOpens, handled: 0, mut0: null, blockedOpened: [] };
+  fx.on = (d) => {
+    const p = d.params || {}, key = (d.sessionId || "") + (p.requestId || "");
+    if (d.method === "Page.frameNavigated") { const f = p.frame; if (f && /^https?:/.test(f.url || "")) fx.navs.push({ main: !f.parentId, url: hostPath(f.url) }); }
+    else if (d.method === "Page.navigatedWithinDocument") { if (/^https?:/.test(p.url || "")) fx.navs.push({ main: true, same: true, url: hostPath(p.url) }); }
+    else if (d.method === "Network.requestWillBeSent") { if (!p.redirectResponse && !FX_SKIP_TYPES.test(p.type || "") && /^https?:/.test(p.request?.url || "")) { fx.reqs.push(`${p.request.method} ${hostPath(p.request.url)}`); fx.open.add(key); } }
+    else if (d.method === "Network.loadingFinished" || d.method === "Network.loadingFailed") fx.open.delete(key);
+    else if (d.method === "Page.windowOpen") { if (p.url) fx.windows.push(String(p.url)); }
+    else if (d.method === "Page.fileChooserOpened") { if (!fx.quiet) fx.chooser++; }
+  };
+  fx.reset = () => { fx.t0 = Date.now(); fx.navs = []; fx.reqs = []; fx.windows = []; fx.chooser = 0; fx.open.clear(); fx.opens0 = pageOpens; fx.handled = 0; };
+  fx.stop = () => { c.ev = c.ev.filter((x) => x !== fx.on); c.send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {}); };
+  fx.intercept = () => c.send("Page.setInterceptFileChooserDialog", { enabled: true }).catch(() => {});   // a click that opens the native file chooser is reported instead of leaving a dialog on the screen
+  c.ev.push(fx.on);
+  await c.send("Network.enable").catch(() => {}); await fx.intercept();
+  return fx;
+}
+// Count of DOM changes per frame, counted by a MutationObserver that lives in an isolated world of each frame (the page's own scripts cannot see it).
+async function fxMut(c) {
+  const out = new Map(); c.fxw ||= new Map();
+  const read = async (frameId, loader, session) => {
+    let w = c.fxw.get(frameId);
+    if (!w || w.loader !== loader) { const r = await c.send("Page.createIsolatedWorld", { frameId, worldName: "1hc-fx" }, 8e3, session).catch(() => null); w = r && { ctx: r.executionContextId, loader }; if (w) c.fxw.set(frameId, w); else c.fxw.delete(frameId); }
+    if (!w) return;
+    const r = await c.send("Runtime.evaluate", { expression: FX_JS, returnByValue: true, contextId: w.ctx }, 8e3, session).catch(() => null);
+    if (typeof r?.result?.value === "number") out.set(frameId + ":" + loader, r.result.value);
+  };
+  const trees = [];
+  try { trees.push({ t: (await c.send("Page.getFrameTree")).frameTree }); } catch {}
+  await Promise.all([...(c.frames?.values() || [])].filter((f) => f.session).map(async (f) => { try { trees.push({ t: (await c.send("Page.getFrameTree", {}, 8e3, f.session)).frameTree, session: f.session }); } catch {} }));
+  const jobs = []; const walk = (t, session) => { jobs.push(read(t.frame.id, t.frame.loaderId, session)); for (const ch of t.childFrames || []) walk(ch, session); };
+  for (const x of trees) walk(x.t, x.session);
+  await Promise.all(jobs); return out;
+}
+const mutDiff = (a, b) => { let n = 0; if (!a || !b) return 0; for (const [k, v] of b) n += Math.max(0, v - (a.get(k) || 0)); return n; };
+// A window.open that the browser did not open (no user gesture left, e.g. called after a slow request) leaves no tab and no sign on the page.
+// The page meant to show something, so open that address as a tab of this task and say so.
+async function openBlocked(fx, ctx) {
+  const opened = pageOpens - fx.opens0, blocked = fx.windows.slice(Math.max(fx.handled, opened)); fx.handled = fx.windows.length;
+  for (const u of blocked.slice(0, 1)) {
+    if (!/^https?:/.test(u)) continue;
+    try { const r = await (await browserConn()).send("Target.createTarget", { url: u }); const rec = tabs.get(ctx.key);
+      if (rec && r.targetId) { rec.targets.add(r.targetId); rec.current = r.targetId; owned.set(r.targetId, ctx.key); fx.blockedOpened.push(hostPath(u)); } } catch {}
+  }
+  return blocked.map(hostPath);
+}
+// A tab that shows a PDF in Chrome's viewer has no readable outline and no download. Save a copy through the page's own session (its cookies) into the downloads folder.
+const pdfSaved = new Map();   // url -> { name, at }
+async function savePdfView(c) {
+  try {
+    const info = await evalJS(c, "({ type: document.contentType, url: location.href })");
+    if (info?.type !== "application/pdf" || !/^https?:/.test(info.url)) return null;
+    const prev = pdfSaved.get(info.url); if (prev && Date.now() - prev.at < 10 * 60e3 && fs.existsSync(path.join(DOWNLOADS_DIR, prev.name))) return { name: prev.name, again: true };
+    const b64 = await evalJS(c, `fetch(location.href, { credentials: 'include' }).then((r) => { if (!r.ok) throw new Error('status ' + r.status); return r.blob(); }).then((b) => { if (b.size > 40e6) throw new Error('too big'); return new Promise((z) => { const f = new FileReader(); f.onload = () => z(String(f.result).split(',')[1] || ''); f.readAsDataURL(b); }); })`);
+    if (!b64) return null;
+    let base = ""; try { base = decodeURIComponent(new URL(info.url).pathname.split("/").filter(Boolean).pop() || ""); } catch {}
+    base = base.replace(/[^\w.\- ]+/g, "_").replace(/^\.+/, "").slice(0, 80) || "document"; if (!/\.pdf$/i.test(base)) base += ".pdf";
+    fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+    let name = base; for (let i = 2; fs.existsSync(path.join(DOWNLOADS_DIR, name)); i++) name = base.replace(/\.pdf$/i, "") + ` (${i}).pdf`;
+    const buf = Buffer.from(b64, "base64"); fs.writeFileSync(path.join(DOWNLOADS_DIR, name), buf);
+    pdfSaved.set(info.url, { name, at: Date.now() }); if (pdfSaved.size > 50) pdfSaved.delete(pdfSaved.keys().next().value);
+    return { name, bytes: buf.length };
+  } catch { return null; }
+}
+
 // Page → readable outline for a text-only model. Interactive elements get refs like [e7] that browser_act uses.
 const SNAPSHOT_JS = String.raw`(() => {
-  const MAX = 14000; let n = 0, out = [], len = 0; const WANT = __WANT__;
+  const MAX = 200000; let n = 0, out = [], len = 0; const WANT = __WANT__;
   // Choices of a dropdown: the first 12, then up to 8 more that match a value the job needs (so a 250-item list still shows "United States").
   const low = (s) => String(s).toLowerCase();
   const wanted = (o) => WANT.some((w) => low(o) === low(w) || (w.length >= 3 && o.length >= 3 && (low(o).includes(low(w)) || low(w).includes(low(o)))));
@@ -323,7 +419,8 @@ async function frames(c) {
   if (!c.frames) {
     c.frames = new Map();
     c.ev.push((d) => {
-      if (d.method === "Target.attachedToTarget" && d.params.targetInfo.type === "iframe") c.frames.set(d.params.targetInfo.targetId, { session: d.params.sessionId, id: d.params.targetInfo.targetId, url: d.params.targetInfo.url });
+      if (d.method === "Target.attachedToTarget" && d.params.targetInfo.type === "iframe") { c.frames.set(d.params.targetInfo.targetId, { session: d.params.sessionId, id: d.params.targetInfo.targetId, url: d.params.targetInfo.url });
+        for (const m of ["Page.enable", "Network.enable"]) c.send(m, {}, 10e3, d.params.sessionId).catch(() => {}); }   // navigations, requests and dialogs inside the frame reach the effects list
       else if (d.method === "Target.detachedFromTarget") for (const [k, f] of c.frames) if (f.session === d.params.sessionId) c.frames.delete(k);
     });
     await c.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
@@ -347,19 +444,30 @@ async function frames(c) {
 }
 const snapJS = (c) => SNAPSHOT_JS.replace("__WANT__", () => JSON.stringify(c.want || []));
 const FRAME_JS = (n, c) => snapJS(c).replace("const ref = 'e' + (++n)", `const ref = 'f${n}e' + (++n)`);
-async function snapshot(c) {
+const OUTLINE_CHARS = 22000;
+// The outline is cut into windows of lines, never in the middle of a line. The refs stay valid on the whole page, so a ref listed further
+// down can be used by browser_act without reading its window first; from_line reads a later window. The hash is of the whole outline.
+async function snapshot(c, from = 0) {
   const s = await evalJS(c, snapJS(c));
   let text = s.text, extra = "";
   for (const f of await frames(c).catch(() => [])) {
     try {
       const r = await evalJS(c, FRAME_JS(f.n, c), f);
-      if (!r || !r.refs) continue;   // invisible or non-interactive frames (analytics, captcha shells) are left out
+      if (!r || (!r.refs && !String(r.text || "").trim())) continue;   // invisible frames with nothing to read (analytics, captcha shells) are left out; a frame with only text is listed
       extra += `\n--- inside frame f${f.n} (${(() => { try { return new URL(f.url).host; } catch { return ""; } })()}) ---\n${r.text}`;
     } catch {}
   }
-  if (extra) text = text.replace(/\[iframe ([^\]]*?) — its contents are not readable here; use the live view\]/g, "[iframe $1 — its fields are listed below]") + extra;
-  if (text.length > 22000) text = text.slice(0, 22000) + "\n[page outline truncated — scroll or act to see more]";
-  return { url: s.url, title: s.title, snapshot: text + (s.truncated ? "\n[page outline truncated — scroll or act to see more]" : "") };
+  if (extra) text = text.replace(/\[iframe ([^\]]*?) — its contents are not readable here; use the live view\]/g, "[iframe $1 — its text and fields are listed below, if it has any]") + extra;
+  if (s.truncated) text += "\n[the page has more elements than the outline holds; the rest of the page is not listed]";
+  const lines = text.split("\n"), start = Math.max(0, Math.min(lines.length, Math.floor(Number(from)) || 0)), out = []; let size = 0;
+  for (let i = start; i < lines.length; i++) { if (out.length && size + lines[i].length + 1 > OUTLINE_CHARS) break; out.push(lines[i]); size += lines[i].length + 1; }
+  const next = start + out.length;
+  let shown = out.join("\n");
+  if (start > 0) shown = `[outline lines ${start + 1} to ${next} of ${lines.length}]\n` + shown;
+  if (next < lines.length) shown += `\n[outline continues: ${lines.length - next} more line(s) not shown here. Their refs already work in browser_act. To read them, call browser_snapshot with from_line: ${next}]`;
+  const o = { url: s.url, title: s.title, snapshot: shown };
+  Object.defineProperty(o, "full", { value: text }); Object.defineProperty(o, "hash", { value: crypto.createHash("sha1").update(text).digest("hex") });   // not sent to the Worker
+  return o;
 }
 const BOX_JS = (ref) => `(() => { let e = document.querySelector('[data-1hc="${String(ref).replace(/[^a-z0-9]/gi, "")}"]'); if (!e) return null; const r0 = e.getBoundingClientRect(); if ((r0.width < 2 || r0.height < 2 || getComputedStyle(e).opacity === '0') && e.type && /checkbox|radio/.test(e.type)) e = e.closest('label') || document.querySelector('label[for="' + CSS.escape(e.id) + '"]') || e; e.scrollIntoView({ block: 'center', inline: 'center' }); const b = e.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2, tag: e.tagName.toLowerCase() }; })()`;
 async function frameOf(c, ref) {
@@ -749,9 +857,9 @@ const OPS = {
     let u; try { u = new URL(String(b.url)); } catch { throw new Error("url must be a full http(s) URL"); }
     if (!/^https?:$/.test(u.protocol) || u.username || u.password) throw new Error("only http(s) URLs without embedded credentials");
     const r = await c.send("Page.navigate", { url: u.href }); if (r.errorText) throw new Error(`navigation failed: ${r.errorText}`);
-    await settle(c, 15e3); return await snapshot(c);
+    await settle(c, 15e3); const pdf = await savePdfView(c); return { ...(await snapshot(c)), ...(pdf ? { saved_pdf: pdf.name } : {}) };
   },
-  async snapshot(b, c) { if (FAST) await quiet(c, 1.5e3); return await snapshot(c); },
+  async snapshot(b, c) { if (FAST) await quiet(c, 1.5e3); return await snapshot(c, b.from_line); },
   async back(b, c, ctx) {
     // A tab a page opened has no history to go back to: close it and return to the task's other tab.
     const rec = tabs.get(ctx.key);
@@ -773,15 +881,23 @@ const OPS = {
     return out;
   },
   async act(b, c, ctx = { key: "", opened: [] }) {
-    const acts = Array.isArray(b.actions) ? b.actions : []; if (!acts.length || acts.length > 20) throw new Error("actions: 1–20 steps");
+    await browserConn().catch(() => {});   // the connection that reports downloads
+    const fx = await startEffects(c);
+    try { return await this.actRun(b, c, ctx, fx); } finally { fx.stop(); }
+  },
+  async actRun(b, c, ctx, fx) {
+    const c0 = c, acts = Array.isArray(b.actions) ? b.actions : []; if (!acts.length || acts.length > 20) throw new Error("actions: 1–20 steps");
     let done = 0, uploaded = false, switched = false; const notes = []; const before = await snapshot(c).catch(() => null);
+    fx.reset(); fx.mut0 = await fxMut(c).catch(() => null);   // from here on, everything the page does is the steps' effect
     // A click can open a new tab or window. The opener relationship (onBrowserEvent) put it in this task's tab set and made it current;
     // from then on the rest of this call, and the answer, are about that tab.
     const follow = async () => {
       const rec = tabs.get(ctx.key); if (!rec?.current || rec.current === c.targetId) return false;
       const t = (await targets()).find((x) => x.id === rec.current); if (!t) return false;
-      const c2 = await connectTarget(t); if (!c2.persistent) ctx.opened.push(c2);
-      c2.want = c.want; c = c2; await activateTab(rec); await settle(c, 10e3); switched = true; return true;
+      // A tab that turns into a download closes itself while we look at it: keep the task's earlier tab then; the download is in the effects list.
+      const prev = c; let c2;
+      try { c2 = await connectTarget(t); if (!c2.persistent) ctx.opened.push(c2); c2.want = c.want; c = c2; await activateTab(rec); await settle(c, 10e3); switched = true; return true; }
+      catch { c = prev; fetch(`http://127.0.0.1:${CDP_PORT}/json/close/${t.id}`).catch(() => {}); dropTarget(t.id); const back = [...rec.targets].includes(prev.targetId) ? prev.targetId : rec.current; rec.current = back; return false; }
     };
     const h0 = (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries.length;
     for (const a of acts) {
@@ -803,7 +919,7 @@ const OPS = {
             } else if (kind === "press") { await press(c, String(a.key || "Enter")); await settle(c, 8e3); }
       else if (kind === "scroll") { await c.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: W / 2, y: H / 2, deltaX: 0, deltaY: a.direction === "up" ? -600 : 600 }); await sleep(400); }
       else if (kind === "wait") { const want = Number(a.ms) || 1000, ms = Math.min(WAIT_MAX, Math.max(0, want)); if (want > WAIT_MAX) notes.push(`wait shortened from ${want} to ${WAIT_MAX} ms (the most one wait step waits; use several wait steps, or check the page between waits)`); await sleep(ms); }
-      else if (kind === "upload") { notes.push(await upload(c, a)); uploaded = true; await settle(c, 8e3); }
+      else if (kind === "upload") { fx.quiet = true; try { notes.push(await upload(c, a)); } finally { fx.quiet = false; await fx.intercept(); } uploaded = true; await settle(c, 8e3); }
       else if (kind === "select_or_fill") {   // expiry month/year can be a dropdown or a text box
         const fs_ = await frameOf(c, a.ref), sel = `document.querySelector('[data-1hc="${String(a.ref).replace(/[^a-z0-9]/gi, "")}"]')`;
         const isSel = await evalJS(c, `(${sel})?.tagName === 'SELECT'`, fs_);
@@ -820,20 +936,40 @@ const OPS = {
     if (FAST) { const n = (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries.length; await quiet(c, n > h0 ? 15e3 : 3e3); }
     const lastClick = FAST ? null : [...acts].reverse().find((a) => a.kind === "click");
     if (lastClick && before) {
-      const line = before.snapshot.split("\n").find((l) => l.startsWith(`[${lastClick.ref}] `)) || "";
+      const line = before.full.split("\n").find((l) => l.startsWith(`[${lastClick.ref}] `)) || "";
       if (/\b(pay|place order|buy|purchase|submit|confirm|complete order|checkout)\b/i.test(line)) {
         for (let i = 0; i < 20; i++) { const n = (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries.length; if (n > h0) { await settle(c, 10e3); break; } await sleep(1000); }
       }
     }
-    await follow();   // a tab opened late (a timer, a slow redirect)
-    let after = await snapshot(c);
-    for (let i = 0; i < (FAST || switched ? 0 : 6) && before && after.snapshot === before.snapshot && after.url === before.url; i++) { await sleep(2000); after = await snapshot(c); }
-    // Tell the model plainly when its steps had no visible effect, so it can't narrate a success that didn't happen.
-    const changed = uploaded || switched || !before || before.snapshot !== after.snapshot || before.url.replace(/[?#]$/, "") !== after.url.replace(/[?#]$/, "");
+    // Anything the steps started is collected here: a window the page tried to open, a download, requests still in flight.
+    const late = async () => { const popups = await openBlocked(fx, ctx); if (popups.length) fx.popups = [...(fx.popups || []), ...popups];
+      await follow(); };   // a tab opened late (a timer, a slow redirect) or one made for a blocked window
+    const collect = async (after) => {
+      let mut = 0; if (!switched) { try { mut = mutDiff(fx.mut0, await fxMut(c0)); } catch {} }
+      const d = dlSince(fx.t0), dialogs = c0.dialogs.filter((x) => x.at >= fx.t0);
+      const e = { outline_changed: !!(before && after && before.hash !== after.hash), address_changed: !!(before && after && before.url.replace(/[?#]$/, "") !== after.url.replace(/[?#]$/, "")),
+        ...(uploaded ? { uploaded: true } : {}), ...(switched ? { new_tab: true } : {}),
+        ...(d.length ? { downloads: d.map((r) => ({ name: r.name, bytes: r.bytes || r.total || 0, state: r.state === "inProgress" ? "in_progress" : r.state })) } : {}),
+        ...(fx.navs.length ? { navigations: fx.navs.slice(0, 6) } : {}), ...(fx.popups?.length ? { popups_blocked: fx.popups.slice(0, 3), popup_opened_for_you: fx.blockedOpened.length > 0 } : {}),
+        ...(dialogs.length ? { dialogs: dialogs.map(({ type, message, handled }) => ({ type, message, handled })) } : {}), ...(fx.chooser ? { file_chooser: true } : {}),
+        ...(fx.reqs.length ? { requests: { count: fx.reqs.length, items: fx.reqs.slice(0, 4) } } : {}), ...(mut ? { mutations: mut } : {}) };
+      e.visible = !!(e.outline_changed || e.address_changed || e.uploaded || e.new_tab || e.downloads || e.navigations || e.popups_blocked || e.dialogs || e.file_chooser);
+      return e;
+    };
+    await late();
+    let after = await snapshot(c), eff = await collect(after);
+    // No visible effect yet: give the page time (12 s, and while a request is still in flight up to 40 s), then look again.
+    const w0 = Date.now();
+    for (let i = 0; !(FAST || switched) && before && !eff.visible && (Date.now() - w0 < 12e3 || (fx.open.size > 0 && Date.now() - w0 < 40e3)); i++) { await sleep(2000); await late(); after = await snapshot(c); eff = await collect(after); }
+    await waitDownloads(fx.t0, DL_WAIT);
+    if (dlSince(fx.t0).length) eff = await collect(after);   // the finished state and size
+    if (switched || eff.new_tab) { const pdf = await savePdfView(c); if (pdf) { eff.pdf_saved = pdf.name; eff.visible = true; } }
+    else { const pdf = eff.outline_changed || eff.address_changed ? await savePdfView(c) : null; if (pdf) { eff.pdf_saved = pdf.name; eff.visible = true; } }
+    if (eff.pdf_saved) { await waitDownloads(fx.t0, 1e3); }
     // Pages passed through during the steps (e.g. /checkout/success before an automatic redirect home).
     const hist = switched ? [] : (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries;
     const visited = hist.slice(Math.max(0, h0 - 1)).map((e) => e.url).filter((u, i, a) => u !== a[i - 1]);
-    return { completed: done, page_changed: changed, ...(switched ? { new_tab: true } : {}), ...(notes.length ? { notes } : {}), ...(visited.length > 1 ? { visited } : {}), ...after };
+    return { completed: done, page_changed: eff.visible, effects: eff, ...(switched ? { new_tab: true } : {}), ...(notes.length ? { notes } : {}), ...(visited.length > 1 ? { visited } : {}), ...after };
   },
 };
 
@@ -878,7 +1014,7 @@ server.on("upgrade", async (req, sock, head) => {
   const u = new URL(req.url, "http://x");
   if (!u.pathname.endsWith("/vnc") || !controllerRequest(req.headers)) return sock.destroy();
   try { await ensureStack(); } catch (e) { log("stack failed", e.message); return sock.destroy(); }
-  const port = u.searchParams.get("mode") === "control" ? 5901 : 5900;
+  const port = u.searchParams.get("mode") === "control" ? VNC_CTL : VNC_VIEW;
   wss.handleUpgrade(req, sock, head, (ws) => {
     const t = net.connect(port, "127.0.0.1"); t.setNoDelay(true);
     t.on("data", (d) => ws.readyState === 1 && ws.send(d));

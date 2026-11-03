@@ -53,6 +53,7 @@ import { beeRoute, beeOps, beeCron, beePendingFacts, beePendingSpeakers, beeNote
 import { beeLibraryRoute, statusOfRow, ownKindForStatus } from "./ee/index.js";   // Bee conversations in the Library, and the Custom Model Selection status (licensed)
 export { BeeSync } from "./ee/index.js";
 export { LiveNotes } from "./ee/index.js";
+export { ClaudeEngine } from "./ee/index.js";
 export { FilePrep } from "./sidecar.js";   // file sidecars: one object per file version prepares its text in the background
 import { prepJobOn, prepJobAlarm } from "./sidecar.js";
 import { lnName } from "./ee/index.js";   // Bee Live notes: one DO per task (SPEC §9): the polling job, the note-taker, the final pass, caps   // Bee live sync: one DO per person, a 5-min alarm, conversations → General's memory + R2 transcripts
@@ -92,6 +93,7 @@ import { betterDesignView, betterDesignChoice } from "./better-design.js";   // 
 const NANO = 1e9;                         // balances in nano-dollars (integers)
 import { PLANS } from "./plans-def.js";
 import { byokApi, BYOK_PLAN, ledgerByok, switchNow } from "./byok.js";
+import { cgStart, adoptPending } from "./ee/index.js";   // licensed AI services layer: Continue with ChatGPT and the OpenRouter key becoming a connection (both only with ONEHELM_EE)
 import { orStart, orFinish, orCookie, orCookieOf } from "./byok-openrouter.js";   // Sign in with OpenRouter (the BYOK panel's optional button)   // own AI key: the byok plan's settings + routing (+ a backup key on a full plan)
 import { People, aliasesFor } from "./people.js";
 import { seenAdd, seenSet, backfillSeen, seenBackfillAdmin, hsWalls } from "./walls.js";   // HS_WALLS: Contacts visibility per channel, General's front door
@@ -185,7 +187,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "349";
+const APP_V = "351";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -1089,7 +1091,7 @@ export default {
         // Deleting a chat, a channel or the account (deletion.js). Before the access check: deleting always works, even unpaid.
         { const dr = await deletionRoute(req, env, t, url, sub); if (dr) return dr; }
         // Settings → General → Your account: name, sign-in email, signed-in devices (account.js). Also before the access check.
-        { const ar = await accountRoute(req, env, t, user, url, sub, { stripe }); if (ar) return ar; }
+        { const ar = await accountRoute(req, env, t, user, url, sub, { stripe, waitUntil: (p) => ctx?.waitUntil?.(p) }); if (ar) return ar; }
         // Everything the app needs on load: channels (from the imported archive) + each channel's tasks, jobs and memory.
         // Global focus timer (pomodoro.js): /api/pomodoro/global (GET the timer · POST {action: start|pause|resume|skip|stop, replace?, work_min…}); not tied to any task or channel.
         if (sub === "/api/pomodoro/global") {
@@ -1357,7 +1359,7 @@ export default {
         if (sub === "/api/state") return json({ ...(await L.state()), access });
         if (sub === "/api/history") return json(await L.history(200));
         // Settings → Use my own AI key (src/byok.js): GET /api/byok, POST /api/byok/test|save|delete|mode. The key is sealed and never returned.
-        if (sub.startsWith("/api/byok")) { const r = await byokApi(req, env, t, sub, { json, stripe, PLANS, planPrices, planOfPrice }); if (r) return r; }
+        if (sub.startsWith("/api/byok")) { const r = await byokApi(req, env, t, sub, { json, stripe, PLANS, planPrices, planOfPrice, waitUntil: (p) => ctx?.waitUntil?.(p) }); if (r) return r; }
         // Sign in with OpenRouter (src/byok-openrouter.js): start → OpenRouter's own page → callback → back to Settings → Use my own AI key.
         // A same-tab navigation from the app (works the same in a browser tab, on a phone and in the installed app). The state is bound to
         // this account (D1) and this browser (an HttpOnly cookie on this path); the code is exchanged here and the key sealed, never sent on.
@@ -1366,9 +1368,17 @@ export default {
           const r = await orStart(env, t, origin);
           return new Response(null, { status: 302, headers: { location: r.url, "set-cookie": orCookie(t.slug, r.state), "cache-control": "no-store", "referrer-policy": "no-referrer" } });
         }
+        // Continue with ChatGPT (src/ee/byok-chatgpt.js, licensed): a new tab from the app goes to OpenAI's own page. OpenAI sends the browser to a 127.0.0.1 address that can't load here,
+        // so the person pastes that address back in the app (POST /api/byok/chatgpt/finish). Nothing about the sign-in rides on a cookie: the state is bound to this account in D1.
+        if (sub === "/byok/chatgpt/start" && req.method === "GET" && eeEnabled(env)) {
+          if (req.headers.get("sec-fetch-site") === "cross-site") return Response.redirect(`${origin}/w/${t.slug}/app?settings=byok`, 302);   // only the app starts one
+          const r = await cgStart(env, t);
+          return new Response(null, { status: 302, headers: { location: r.url, "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+        }
         if (sub === "/byok/openrouter/callback" && req.method === "GET") {
           const sp = url.searchParams;
           const r = await orFinish(env, { tenantId: t.id, code: sp.get("code") || "", state: sp.get("state") || "", cookieState: orCookieOf(req) }).catch((e) => { console.log("byok openrouter: callback", String(e?.message || e).slice(0, 80)); return { error: "network" }; });
+          if (r.ok && eeEnabled(env)) await adoptPending(env, t.id).catch((e) => console.log("byok openrouter: connect", String(e?.message || e).slice(0, 80)));   // with the licensed services layer the new key is the OpenRouter connection at once
           return new Response(null, { status: 302, headers: { location: `${origin}/w/${t.slug}/app?settings=byok&orauth=${r.ok ? "ok" : `err&orwhy=${r.error}`}`,
             "set-cookie": orCookie(t.slug, "", 0), "cache-control": "no-store", "referrer-policy": "no-referrer" } });
         }

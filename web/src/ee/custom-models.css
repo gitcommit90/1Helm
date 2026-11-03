@@ -9,7 +9,8 @@
 .cmslot{display:grid;grid-template-columns:104px minmax(0,1fr) 120px;align-items:center;gap:6px 10px;padding:6px 0}
 .cmlab{font-size:13px;color:var(--mute)}
 .cmmodel{min-width:0;height:36px;padding:0 30px 0 12px;border-radius:10px;background:var(--sheet);box-shadow:0 0 0 1px var(--line);text-align:left;font:inherit;font-size:14px;color:var(--ink);position:relative}
-.cmmodel span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmmodel>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmmn{display:flex!important;align-items:center;min-width:0}.cmmt{flex:0 1 auto;min-width:3em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cmmn .cmsvc{flex:none;display:flex;align-items:center;white-space:nowrap}.cmmn .lgc{vertical-align:baseline}
 .cmmodel::after{content:"";position:absolute;right:12px;top:50%;width:6px;height:6px;margin-top:-5px;border-right:2px solid var(--mute);border-bottom:2px solid var(--mute);transform:rotate(45deg)}
 .cmmodel:hover{background:color-mix(in srgb,var(--hover) 70%,var(--sheet))}
 .cmeff{height:36px;padding:0 8px;border-radius:10px;background:var(--sheet);box-shadow:0 0 0 1px var(--line);font:inherit;font-size:13.5px;color:var(--ink);min-width:0;width:100%}.cmeff:disabled{opacity:.6;cursor:default}
@@ -47,3 +48,32 @@
   .cmback{align-items:flex-end;padding:0}.cmpick{width:100%;border-radius:20px 20px 0 0;max-height:86vh}
 }
 .cmbg{box-shadow:0 -1px 0 var(--line)}.cmbgnote{margin:0 0 8px;font-size:13px;line-height:1.4;color:var(--mute);max-width:60ch}
+/* an own AI key (task byok-multi): models of every connected service, with the service's name, and the effort slider under each */
+.cmsvc{font-style:normal;font-weight:400;color:var(--faint);font-size:12px;margin-left:8px}
+.cmmodel .cmsvc{display:inline}
+.cmitem .cmin .cmsvc{display:inline}
+.cmslot.cmown{grid-template-columns:104px minmax(0,1fr) 58px}
+/* the reasoning slider sits in the normal flow under the model box: same column, same width, never over it */
+.cmown .cmeffw{grid-column:2;grid-row:2;min-width:0;padding:0 2px 2px}
+.cmown .cmrmgap,.cmown .cmrm{grid-column:3;grid-row:1}
+.cmmodel.cmempty span{color:var(--faint)}
+.meta.cmerr{display:block;height:auto;background:none;border-radius:0;padding:0;white-space:normal}
+.cmnone{margin:12px 6px 0!important;white-space:normal;overflow-wrap:anywhere;color:var(--mute)}
+@media (max-width:767px){
+  .cmslot.cmown{grid-template-columns:minmax(0,1fr) 58px}.cmown .cmlab{grid-column:1 / -1}.cmown .cmeffw{grid-column:1;grid-row:3}.cmown .cmrmgap,.cmown .cmrm{grid-column:2;grid-row:2}.cmown .cmmodel{grid-column:1;grid-row:2}
+}
+
+/* the picker on an own key: one section for each connected service (task picker-speed) */
+.cmpick .cmchips{display:flex;gap:6px;overflow-x:auto;flex:none;padding:2px 0 4px;scrollbar-width:none}.cmpick .cmchips:empty{display:none}.cmpick .cmchips::-webkit-scrollbar{display:none}
+.cmchip{display:inline-flex;align-items:center;gap:6px;flex:none;min-height:32px;padding:0 12px;border-radius:16px;font-size:13px;font-weight:600;color:var(--mute);background:var(--hover);white-space:nowrap}
+.cmchip.on{color:var(--ink);box-shadow:inset 0 0 0 1.5px var(--ink)}
+.cmpick .cmlist{gap:0;overscroll-behavior:contain}
+.cmsec{display:flex;flex-direction:column;gap:2px;padding-bottom:6px}
+.cmsech{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0;padding:8px 12px 6px;background:var(--sheet);font-size:12.5px;font-weight:600;color:var(--mute)}
+.cmsech .cmsl{display:inline-flex;align-items:center;gap:8px;min-width:0}.cmsech b{font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmsech .cmcount{font-weight:500;font-variant-numeric:tabular-nums}
+.cmpick .cmsec .cmsecs{margin:0;padding:10px 12px;min-height:40px}
+.cmitem .cmnow{margin-left:8px;font-style:normal;font-size:11.5px;font-weight:600;color:var(--mute)}.cmitem.cur{box-shadow:inset 0 0 0 1.5px var(--line)}
+
+/* the frame of a section whose first answer hasn't come yet (no text, so nothing reads as loading) */
+.cmskel{min-height:96px}

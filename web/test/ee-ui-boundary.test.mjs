@@ -11,7 +11,7 @@ assert.match(source, /LIVE && hasFeature\("ambient"\) && !BOOT\?\.look \? `<butt
 assert.match(source, /case "perm": if \(LIVE\) return pmHtml\(\) \+ \(!hasFeature\("connected_apps"\)/);
 assert.match(source, /if \(hasFeature\("connected_apps"\)\) registerShortcut\(\{ id: "apps"/);
 // Licensed Custom Model Selection and Bee conversations in the Library load only behind their features.
-assert.match(source, /import \{ cmodelsInit, cmodelsCard, cmodelsPrivacy \} from "\.\/ee\/custom-models"/);
+assert.match(source, /import \{ cmodelsInit, cmodelsCard, cmodelsPrivacy, cmodelsDragging, cmodelsAfter \} from "\.\/ee\/custom-models"/);
 assert.match(source, /if \(hasFeature\("smart_routing"\)\) cmodelsInit\(/);
 assert.match(source, /hasFeature\("smart_routing"\) \? `\$\{cmcpPage\(\)\}\$\{cmodelsCard\(\)\}` : cmcpPage\(\)/);
 assert.match(source, /import \{ beeLibInit, beeLibParts, beeLibReset, beeLibEnsure \} from "\.\/ee\/bee-library"/);

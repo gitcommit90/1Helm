@@ -204,7 +204,7 @@ export async function dispatch(env, jobId, request = {}, { meta = {}, signal = n
   // so this check comes first. Every other job (no messages: the browser's next step, the screen look, speech, ...) falls through to the saved settings below.
   // A task's route is checked by routedChat first (a task that began on managed models stops when the mode changed to an own key).
   if (env.BYOK && Array.isArray(request?.messages) && !route?.taskAffinity) {
-    return byokChat(env.BYOK, request, { fast: route ? byokFast(route, request) : true, signal, privacy: level ?? await privacyOf(env, meta?.tenant) });
+    return byokChat(env.BYOK, request, { fast: route ? byokFast(route, request) : true, signal, session, purpose: jobId ? String(jobId) : null, privacy: level ?? await privacyOf(env, meta?.tenant) });
   }
   env = await modelSettingsEnv(env);
   // The main chat: a route (a running task's profile, or the routing policy) says which models to try, in which order; each attempt reads its limits from its saved job.

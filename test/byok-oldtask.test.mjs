@@ -5,6 +5,7 @@ import assert from "node:assert"; import { DatabaseSync } from "node:sqlite"; im
 import { test } from "node:test";
 import { Resident } from "../src/resident.js";
 import { byokChat, loadByok, effortFields } from "../src/byok.js";
+import { connDdl } from "../src/ee/byok-connections.js";
 import { HANDOFF_PREFIX } from "../src/ee/route2.js";
 import { sealSecret } from "../src/sentinel.js";
 import { saveOwn, readOwn, ownPicker, ownKeyPlan, byokChatChain, endpointRecords, listedRecords, ownKeyKind, _resetLists, recordOfListed } from "../src/ee/byok-custom.js";
@@ -53,10 +54,11 @@ globalThis.fetch = async (u, init = {}) => {
 };
 const cfgOf = (base = BASE, model = "main-1") => Object.defineProperty({ base, host: new URL(base).hostname, model, fast: "fast-1", last4: KEY.slice(-4) }, "key", { value: KEY });
 async function saveRow({ base = BASE, model = "main-1", fast = "fast-1" } = {}) {
+  await connDdl(env); d1.exec("DELETE FROM byok_connections; DELETE FROM byok_multi;");   // the account still has the one saved key of before: it becomes a connection when first read
   d1.prepare("INSERT OR REPLACE INTO byok (tenant_id,base_url,model,fast_model,key_sealed,key_last4,created_at,updated_at) VALUES ('t1',?,?,?,?,?,?,?)").run(base, model, fast, await sealSecret(env, KEY), KEY.slice(-4), Date.now(), Date.now());
 }
 const reset = (level = "unrestricted") => { d1.exec("UPDATE tenants SET custom_models_own_on=0, custom_models_own=NULL, custom_models_on=0, custom_models=NULL, plan='byok' WHERE id='t1'"); _resetLists(); failModels = new Set(); modelList = null; return setPrivacy({ DB: D1 }, "t1", level); };
-const entry = (model, effort = null) => ({ model, effort });
+const entry = (model, effort = null) => ({ model: model.includes(":") ? model : `p_main:${model}`, effort });
 const cat = (id, title, ...chain) => ({ id, title, chain, max_price: null });
 const rec = (id, efforts = ["none", "low", "high"], levels = ["unrestricted", "no_training", "zdr"]) => ({ id, source: "OR", kinds: ["chat", "chore"], name: `Name ${id.split("/")[1]}`, eligible: true, reasons: [], efforts, default_effort: efforts[1] || efforts[0], levels, hosts: ["acme"],
   terms: { zdr: levels.includes("zdr"), no_training: levels.includes("no_training") }, context_length: 100000, max_output: 8000, input_modalities: ["text"], pricing: { prompt: 1, completion: 2 }, json: true, tool_choice: ["auto", "none"] });

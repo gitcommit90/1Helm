@@ -1,8 +1,8 @@
 // The self-hosted owner's AI service. Plan switching and credits live in ee/byok-billing.ts.
 import { ask } from "./dialog";
 
-export const BYK_SEC = "byok";
-export const BYK_TITLE = "Use my own AI key";
+export const BYK_SEC = "ai";   // ?settings=byok (the older name) opens it too
+export const BYK_TITLE = "AI services";
 type Test = { ok?: boolean; checks?: Record<string, { ok?: boolean; error?: string }> };
 type Saved = { base: string; host: string; model: string; fast?: string; last4?: string; source?: string; saved_at?: number; test?: Test };
 type State = { saved: Saved | null; openrouter?: { pending?: { last4?: string } | null; manage?: string } };
@@ -31,12 +31,7 @@ export function bykLoad(force = false) {
     .catch(() => { B.error = "Couldn't load your AI service. Try again."; })
     .finally(() => { B.loading = false; D?.repaint(); });
 }
-export function bykRow(): string {
-  if (!D) return "";
-  bykLoad();
-  const s = B.state?.saved, title = s ? s.source === "openrouter" ? "OpenRouter" : s.host : "Use my own AI key";
-  return D.srow(D.icon("key"), title, s ? `${esc(s.model)} · Your provider bills you directly` : "Add an AI service to start a task", s ? "On" : "Needed", "data-bykrow");
-}
+export const bykWarm = (_login = false) => {};   // the licensed page warms the Claude engine; the core page has nothing to warm
 export const bykUsageNote = () => "";
 const field = (name: "base" | "model" | "fast", title: string, hint: string) => `<label class="sf"><span>${title}</span><input data-bykf="${name}" value="${esc(B.form[name])}" placeholder="${esc(hint)}" autocapitalize="none" spellcheck="false">${B.field === name ? `<em class="bykerr" role="alert">${esc(B.error)}</em>` : ""}</label>`;
 const testLine = (test: Test | null) => !test ? "" : `<p class="byktest${test.ok ? "" : " fail"}" role="status">${test.ok ? "Connection and tool calling passed." : "The connection test did not pass."}</p>`;
@@ -98,7 +93,6 @@ export function bykInit(d: Deps) {
     const t = e.target as HTMLElement;
     const a = t.closest?.<HTMLAnchorElement>('a[href*="settings=byok"]');
     if (a) { try { const u = new URL(a.href, location.href); if (u.origin === location.origin) { e.preventDefault(); e.stopPropagation(); D?.open(); return; } } catch {} }
-    if (t.closest("[data-bykrow]")) { B.state = null; B.edit = false; B.error = ""; }
     if (t.closest("[data-bykretry]")) { bykLoad(true); return; }
     if (t.closest("[data-bykedit]")) { startEdit(); D?.repaint(); return; }
     if (t.closest("[data-bykcancel]")) { bykDiscard(); D?.repaint(); return; }
@@ -114,7 +108,7 @@ export function bykInit(d: Deps) {
   });
   document.addEventListener("change", e => { const t = e.target as HTMLInputElement; if (t.matches?.("[data-bykack]")) { B.form.ack = t.checked; D?.repaint(); } });
   document.addEventListener("submit", e => { if ((e.target as HTMLElement).id !== "bykf") return; e.preventDefault(); e.stopImmediatePropagation(); save(); }, true);
-  const q = new URLSearchParams(location.search), sec = q.get("settings"), oa = q.get("orauth");
+  const q = new URLSearchParams(location.search), sec = q.get("settings") === "byok" ? BYK_SEC : q.get("settings"), oa = q.get("orauth");
   if (oa) { B.state = null; if (oa === "ok") startEdit(); else B.error = "OpenRouter sign-in did not finish. Try again."; q.delete("orauth"); q.delete("orwhy"); }
   if (sec === BYK_SEC || oa) { q.delete("settings"); const qs = q.toString(); history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash); setTimeout(() => D?.open(), 300); }
 }

@@ -15,7 +15,7 @@ const files = walk("src"), text = Object.fromEntries(files.map((f) => [f, strip(
 // The dispatcher and the two transport modules it calls (OpenRouter requests in model.js, Workers AI requests in cloudflare-models.js) may hold the network
 // code. selfhost-models.js is the transport of models 1Helm runs in its own container (it calls a Durable Object, not an AI endpoint). The public catalog and the person's own key (byok) are not model calls made on the account's behalf.
 const TRANSPORT = new Set(["src/ee/model-dispatch.js", "src/model.js", "src/cloudflare-models.js", "src/selfhost-models.js"]);
-const OTHER_ALLOWED = { "src/ee/model-catalog.js": "public OpenRouter catalog reads, no key", "src/byok-openrouter.js": "sign in with OpenRouter for the person's own key", "src/byok.js": "the person's own AI key and endpoint" };
+const OTHER_ALLOWED = { "src/ee/model-catalog.js": "public OpenRouter catalog reads, no key", "src/byok-openrouter.js": "sign in with OpenRouter for the person's own key", "src/byok.js": "the person's own AI key and endpoint", "src/byok-single.js": "the self-hosted owner's one saved own AI key and endpoint (Sign in with OpenRouter)", "src/ee/byok-connections.js": "the Test button of the person's own AI services (OpenRouter key check)" };
 const CALL = /\bAI\??\.(?:run|websearch)\s*\(|openrouter\.ai\/api|gateway\.ai\.cloudflare\.com|\bOR_API\b|\bOR_BASE\b/;
 
 test("only the dispatcher and its transport modules call an AI endpoint", () => {

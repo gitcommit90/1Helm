@@ -8,9 +8,10 @@ import assert from "node:assert"; import { DatabaseSync } from "node:sqlite"; im
 import { test } from "node:test";
 import { Resident } from "../src/resident.js";
 import { byokChat, loadByok, effortFields } from "../src/byok.js";
+import { connDdl } from "../src/ee/byok-connections.js";
 import { HANDOFF_PREFIX } from "../src/ee/route2.js";
 import { sealSecret } from "../src/sentinel.js";
-import { saveOwn, readOwn, ownPicker, ownKeyPlan, byokChatChain, endpointRecords, listedRecords, ownKeyKind, _resetLists, recordOfListed } from "../src/ee/byok-custom.js";
+import { saveOwn, readOwn, ownPicker, ownViewFor, ownKeyPlan, byokChatChain, endpointRecords, listedRecords, ownKeyKind, _resetLists, recordOfListed } from "../src/ee/byok-custom.js";
 import { validateCategories, statusOfRow, saveCustom } from "../src/ee/custom-models.js";
 import { setPrivacy } from "../src/privacy.js";
 import { accountRoute } from "../src/account.js";
@@ -54,11 +55,16 @@ globalThis.fetch = async (u, init = {}) => {
   if (!body.stream) return jres({ model: body.model, choices: [{ finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({ title: "T", result: "R", summary: "S", chat_title: "C", why: {} }) } }], usage: { prompt_tokens: 5, completion_tokens: 2 } });
   return sse([{ model: body.model, choices: [{ delta: { content: `answer from ${body.model}` } }] }, { model: body.model, choices: [{ delta: {}, finish_reason: "stop" }] }, { choices: [], usage: { prompt_tokens: 100, completion_tokens: 5, cost: 0.5 } }]);
 };
-const cfgOf = (base = BASE, model = "main-1") => Object.defineProperty({ base, host: new URL(base).hostname, model, fast: "fast-1", last4: KEY.slice(-4) }, "key", { value: KEY });
-async function saveRow({ base = BASE, model = "main-1", fast = "fast-1" } = {}) {
-  d1.prepare("INSERT OR REPLACE INTO byok (tenant_id,base_url,model,fast_model,key_sealed,key_last4,created_at,updated_at) VALUES ('t1',?,?,?,?,?,?,?)").run(base, model, fast, await sealSecret(env, KEY), KEY.slice(-4), Date.now(), Date.now());
+const cfgOf = (base = BASE, model = "main-1") => Object.defineProperty({ base, host: new URL(base).hostname, model, fast: "fast-1", last4: KEY.slice(-4) }, "key", { value: KEY });   // one service, no connections: the single-service path of byokChat
+// Connected services of the account (byok-connections.js): rows written directly, and the account marked as upgraded so nothing is read from the old byok row.
+async function connect(...list) {
+  await connDdl(env); d1.exec("DELETE FROM byok_connections; DELETE FROM byok;"); d1.prepare("INSERT OR REPLACE INTO byok_multi (tenant_id, upgraded_at) VALUES ('t1', 1)").run();
+  for (const [id, kind, base] of list.length ? list : [["p_main", "plain", BASE]])
+    d1.prepare("INSERT INTO byok_connections (tenant_id,id,kind,label,base_url,key_sealed,key_last4,created_at,updated_at) VALUES ('t1',?,?,?,?,?,?,1,1)").run(id, kind, kind === "openrouter" ? "OpenRouter" : new URL(base).hostname, base, await sealSecret(env, KEY), KEY.slice(-4));
 }
-const reset = (level = "unrestricted") => { d1.exec("UPDATE tenants SET custom_models_own_on=0, custom_models_own=NULL, custom_models_on=0, custom_models=NULL, plan='byok' WHERE id='t1'"); _resetLists(); failModels = new Set(); modelList = null; return setPrivacy({ DB: D1 }, "t1", level); };
+const P = (m) => `p_main:${m}`, O = (m) => `openrouter:${m}`;
+
+const reset = async (level = "unrestricted", ...conns) => { d1.exec("UPDATE tenants SET custom_models_own_on=0, custom_models_own=NULL, custom_models_on=0, custom_models=NULL, plan='byok' WHERE id='t1'"); _resetLists(); failModels = new Set(); modelList = null; await connect(...conns); return setPrivacy({ DB: D1 }, "t1", level); };
 const entry = (model, effort = null) => ({ model, effort });
 const cat = (id, title, ...chain) => ({ id, title, chain, max_price: null });
 const rec = (id, efforts = ["none", "low", "high"], levels = ["unrestricted", "no_training", "zdr"]) => ({ id, source: "OR", kinds: ["chat", "chore"], name: `Name ${id.split("/")[1]}`, eligible: true, reasons: [], efforts, default_effort: efforts[1] || efforts[0], levels, hosts: ["acme"],
@@ -66,8 +72,9 @@ const rec = (id, efforts = ["none", "low", "high"], levels = ["unrestricted", "n
 const FAKE = { "acme/a": rec("acme/a"), "acme/b": rec("acme/b"), "acme/c": rec("acme/c"), "acme/open": rec("acme/open", ["low"], ["unrestricted"]) };
 const lookup = async (id) => FAKE[id] || null;
 const PLAIN = { data: [{ id: "main-1" }, { id: "llama-3.3-70b", name: "Llama 3.3 70B", context_length: 131072 }, { id: "o-reason", supported_reasoning_efforts: ["low", "medium", "high"] }, { id: "qwen-coder" }, { id: "mistral-small", pricing: { prompt: "0.0000002", completion: "0.0000006" } },
-  { id: "embed-only", supported_parameters: ["max_tokens"] }, { id: "gemma-2" }, { id: "bad id with spaces" }] };
+  { id: "embed-only", supported_parameters: ["max_tokens"] }, { id: "gemma-2" }, { id: "bad id with spaces" }, { id: "fast-1" }] };
 const refuses = (p, re, status = 400) => assert.rejects(p, (e) => { assert.equal(e.status, status); assert.match(e.message, re); assert.ok(!String(e.message).includes(KEY)); return true; });
+const base = { settings: { ...SETTINGS, catalog: {} }, lookup };
 
 // ---- the Resident ----
 const dodb = new DatabaseSync(":memory:");
@@ -86,91 +93,82 @@ async function turn(text) {
   return { r, calls, main, chores: calls.filter((c) => !main.includes(c)), sorter: sorter.slice(s0), res: led.res.slice(r0), S };
 }
 
+
 // ===== the model list =====
-test("a plain endpoint's model list: GET <base>/models with their key, no redirect, only what the list says", async () => {
-  await reset(); await saveRow(); modelList = PLAIN;
+test("a plain service's model list: GET <base>/models with its key, no redirect, only what the list says; the picker names the service", async () => {
+  await reset(); modelList = PLAIN;
   const list = await endpointRecords(cfgOf(), "t1");
-  assert.deepEqual(list.map((r) => r.id).sort(), ["gemma-2", "llama-3.3-70b", "main-1", "mistral-small", "o-reason", "qwen-coder"], "six models: no tool-less one, no unusable id");
+  assert.deepEqual(list.map((r) => r.id).sort(), ["fast-1", "gemma-2", "llama-3.3-70b", "main-1", "mistral-small", "o-reason", "qwen-coder"], "no tool-less one, no unusable id");
   assert.deepEqual(gets.at(-1), { url: `${BASE}/models`, auth: `Bearer ${KEY}`, redirect: "manual" });
   const by = Object.fromEntries(list.map((r) => [r.id, r]));
   assert.deepEqual(by["o-reason"].efforts, ["low", "medium", "high"]); assert.equal(by["o-reason"].default_effort, "medium");
   assert.deepEqual(by["qwen-coder"].efforts, [], "no reasoning level is invented");
-  assert.equal(by["llama-3.3-70b"].context_length, 131072); assert.deepEqual(by["mistral-small"].pricing, { prompt: 0.2, completion: 0.6 });
-  assert.equal(by["qwen-coder"].pricing, null);
+  assert.equal(by["llama-3.3-70b"].context_length, 131072); assert.deepEqual(by["mistral-small"].pricing, { prompt: 0.2, completion: 0.6 }); assert.equal(by["qwen-coder"].pricing, null);
   const n = gets.length; await endpointRecords(cfgOf(), "t1"); assert.equal(gets.length, n, "asked once for a minute of searches");
-  // The picker view: the six models, a search, no terms, and nothing that carries the key.
-  const t = { id: "t1" }, p = await ownPicker(env, t, "plain", "", { cfg: cfgOf() });
-  assert.equal(p.models.length, 6); assert.ok(p.models.every((m) => m.allowed === true && m.source === "BYOK"));
-  assert.deepEqual((await ownPicker(env, t, "plain", "llama", { cfg: cfgOf() })).models.map((m) => m.id), ["llama-3.3-70b"]);
+  const t = { id: "t1" }, p = await ownPicker(env, t, "own", "");
+  assert.equal(p.models.length, 7); assert.ok(p.models.every((m) => m.allowed === true && m.source === "BYOK" && m.id.startsWith("p_main:") && m.service === HOST));
+  assert.deepEqual((await ownPicker(env, t, "own", "llama")).models.map((m) => m.id), ["p_main:llama-3.3-70b"]);
   assert.ok(!JSON.stringify(p).includes(KEY));
-  // Refused or broken lists are one plain ByokError, never followed.
   for (const bad of [new Response(null, { status: 302, headers: { location: "http://169.254.169.254/" } }), jres({ error: { message: `bad key ${KEY}` } }, 401), new Response("<html>", { status: 200 })]) {
     _resetLists(); modelList = bad;
     await assert.rejects(endpointRecords(cfgOf(), "t1"), (e) => e.byok && !e.message.includes(KEY));
+    const q = await ownPicker(env, t, "own", ""); assert.deepEqual([q.models.length, q.errors.map((x) => x.id)], [0, ["p_main"]], "a service that can't be read is named, nothing is thrown");
   }
   assert.equal(listedRecords({ models: [{ model: "a/b" }] })[0].id, "a/b"); assert.equal(recordOfListed({ id: "x", supported_parameters: ["tools", "reasoning_effort"] }).efforts.length, 3);
+  assert.equal(recordOfListed({ id: "x", tools: false }), null, "a model that says it has no tools"); assert.equal(recordOfListed({ id: "x", family: "responses" }).family, "responses");
 });
 
 test("on OpenRouter the picker is the same catalog and privacy filter as a full plan", async () => {
-  await reset("zdr"); await saveRow({ base: OR_BASE, model: "acme/a" });
+  await reset("zdr", ["openrouter", "openrouter", OR_BASE]);
   const search = async () => Object.values(FAKE), t = { id: "t1" };
-  const p = await ownPicker(env, t, "openrouter", "acme", { cfg: cfgOf(OR_BASE), settings: { ...SETTINGS, catalog: {} }, search });
-  assert.deepEqual(p.models.map((m) => m.id).sort(), ["acme/a", "acme/b", "acme/c"], "zdr: the unrestricted-only model is not offered");
-  assert.deepEqual(p.models[0].efforts, ["none", "low", "high"]); assert.ok(p.models[0].pricing); assert.equal(p.endpoint, "openrouter");
+  const p = await ownPicker(env, t, "own", "acme", { settings: { ...SETTINGS, catalog: {} }, search });
+  assert.deepEqual(p.models.map((m) => m.id).sort(), [O("acme/a"), O("acme/b"), O("acme/c")], "zdr: the unrestricted-only model is not offered");
+  assert.deepEqual(p.models[0].efforts, ["none", "low", "high"]); assert.ok(p.models[0].pricing); assert.equal(p.models[0].service, "OpenRouter");
   await setPrivacy({ DB: D1 }, "t1", "unrestricted");
-  assert.ok((await ownPicker(env, t, "openrouter", "acme", { cfg: cfgOf(OR_BASE), settings: { ...SETTINGS, catalog: {} }, search })).models.some((m) => m.id === "acme/open"));
+  assert.ok((await ownPicker(env, t, "own", "acme", { settings: { ...SETTINGS, catalog: {} }, search })).models.some((m) => m.id === O("acme/open")));
 });
 
 // ===== saving =====
-test("a plain endpoint: starts from the main model, validates against the list, one to three models, no max price", async () => {
-  await reset(); await saveRow(); modelList = PLAIN;
-  const base = { cfg: cfgOf(), kind: "plain" };
-  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("main-1"))] }, base), /Turn on Custom Model Selection first/, 409);
-  const on = await saveOwn(env, "t1", { on: true }, base);
-  assert.equal(on.on, true); assert.equal(on.endpoint, "plain"); assert.equal(on.own_key, true);
-  assert.deepEqual(on.categories, [{ id: "general", title: "General", chain: [{ model: "main-1", effort: null }], max_price: null }], "General starts with the main model, nothing else, no reasoning level");
-  assert.equal((await readOwn(env, "t1")).on, true); assert.equal(d1.prepare("SELECT custom_models_on n FROM tenants WHERE id='t1'").get().n, 0, "the setting for our models is untouched");
-  const ok = await saveOwn(env, "t1", { categories: [cat("general", "General", entry("main-1"), entry("o-reason", "high"), entry("llama-3.3-70b")), cat("c_code0001", "Coding", entry("qwen-coder"), entry("main-1"))] }, base);
-  assert.equal(ok.categories.length, 2); assert.deepEqual(ok.categories[0].chain.map((e) => e.model), ["main-1", "o-reason", "llama-3.3-70b"]); assert.equal(ok.categories[0].chain[1].effort, "high");
-  assert.equal(ok.models["o-reason"].allowed, true);
-  // Validation against the list and the model's facts.
-  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("not-served"))] }, base), /isn't in your AI service's model list/);
-  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("qwen-coder", "high"))] }, base), /doesn't support the reasoning level "high"/);
-  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("o-reason", "max"))] }, base), /doesn't support the reasoning level "max"/);
-  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("main-1"), entry("main-1"))] }, base), /different models/);
-  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("main-1"), entry("gemma-2"), entry("qwen-coder"), entry("mistral-small"))] }, base), /up to two fallbacks/);
+test("a plain service: nothing is chosen for the account, then models are validated against the list, one to three, no max price", async () => {
+  await reset(); modelList = PLAIN;
+  const none = await ownViewFor(env, { id: "t1" }, "own");
+  assert.deepEqual(none.categories, [{ id: "general", title: "General", chain: [], max_price: null }]); assert.equal(none.no_model, true, "no model is picked on the account's behalf"); assert.deepEqual(none.connections.map((c) => c.id), ["p_main"]);
   await refuses(saveOwn(env, "t1", { categories: [cat("general", "General")] }, base), /first model/);
-  await refuses(saveOwn(env, "t1", { categories: [{ ...cat("general", "General", entry("main-1")), max_price: { prompt: 1, completion: 2 } }] }, base), /only available on OpenRouter/);
-  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("main-1")), cat("c_dup00001", "general", entry("gemma-2"))] }, base), /different name/);
+  const ok0 = await saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")))] }, base);
+  assert.equal(ok0.no_model, false); assert.equal(ok0.own_key, true); assert.equal(ok0.on, true);
+  assert.equal(d1.prepare("SELECT custom_models_on n FROM tenants WHERE id='t1'").get().n, 0, "the setting for our models is untouched");
+  const ok = await saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")), entry(P("o-reason"), "high"), entry(P("llama-3.3-70b"))), cat("c_code0001", "Coding", entry(P("qwen-coder")), entry(P("main-1")))] }, base);
+  assert.equal(ok.categories.length, 2); assert.deepEqual(ok.categories[0].chain.map((e) => e.model), [P("main-1"), P("o-reason"), P("llama-3.3-70b")]); assert.equal(ok.categories[0].chain[1].effort, "high");
+  assert.equal(ok.models[P("o-reason")].allowed, true); assert.equal(ok.models[P("o-reason")].service, HOST);
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("not-served")))] }, base), /isn't in the model list of/);
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("qwen-coder"), "high"))] }, base), /doesn't support the reasoning level "high"/);
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("o-reason"), "max"))] }, base), /doesn't support the reasoning level "max"/);
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")), entry(P("main-1")))] }, base), /different models/);
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")), entry(P("gemma-2")), entry(P("qwen-coder")), entry(P("mistral-small")))] }, base), /up to two fallbacks/);
+  await refuses(saveOwn(env, "t1", { categories: [{ ...cat("general", "General", entry(P("main-1"))), max_price: { prompt: 1, completion: 2 } }] }, base), /only available on OpenRouter/);
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1"))), cat("c_dup00001", "general", entry(P("gemma-2")))] }, base), /different name/);
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("gone:main-1"))] }, base), /isn't connected/);
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("main-1"))] }, base), /isn't connected|choose a model/, 400);
   assert.equal((await readOwn(env, "t1")).config.categories.length, 2, "a refused save changes nothing");
-  // A list that can't be read: models already saved stay, others can't be checked.
   _resetLists(); modelList = jres({ error: { message: "nope" } }, 500);
-  const same = await saveOwn(env, "t1", { categories: ok.categories }, base); assert.equal(same.categories.length, 2);
-  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("gemma-2"))] }, base), /Couldn't read your AI service's model list/, 503);
-  // Turning it off keeps the choices; the full-plan setting never moved.
-  const off = await saveOwn(env, "t1", { on: false }, base); assert.equal(off.on, false); assert.equal(off.categories.length, 2);
+  assert.equal((await saveOwn(env, "t1", { categories: ok.categories }, base)).categories.length, 2, "a list that can't be read: models already saved stay");
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("gemma-2")))] }, base), /Couldn't read the model list of/, 503);
+  const gone = await saveOwn(env, "t1", { on: false }, base); assert.equal(gone.categories.length, 2, "an own key has no off state: on is ignored");
 });
 
-test("an OpenRouter key: validated by the same catalog rules as a full plan, with max price and the privacy level, and a chain of one to three", async () => {
-  await reset("zdr"); await saveRow({ base: OR_BASE, model: "acme/a" });
-  const base = { cfg: cfgOf(OR_BASE, "acme/a"), kind: "openrouter", settings: { ...SETTINGS, catalog: {} }, lookup };
-  const on = await saveOwn(env, "t1", { on: true }, base);
-  assert.equal(on.endpoint, "openrouter"); assert.equal(on.categories[0].chain.length, 1); assert.equal(on.categories[0].chain[0].model, "acme/a"); assert.equal(on.categories[0].chain[0].effort, null, "no level sent until they choose one");
-  assert.equal(on.needs_choice, false);
-  const ok = await saveOwn(env, "t1", { categories: [{ ...cat("general", "General", entry("acme/a"), entry("acme/b", "high")), max_price: { prompt: 0.5, completion: 3 } }] }, base);
-  assert.deepEqual(ok.categories[0].max_price, { prompt: 0.5, completion: 3 }); assert.equal(ok.categories[0].chain.length, 2);
-  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("acme/open", "low"))] }, base), /Zero Data Retention/);
-  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("acme/a", "max"))] }, base), /reasoning level "max"/);
-  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("acme/nope", "low"))] }, base), /no longer offered/);
-  // The full plan keeps exactly three models.
+test("an OpenRouter connection: the same catalog rules as a full plan, with max price and the privacy level", async () => {
+  await reset("zdr", ["openrouter", "openrouter", OR_BASE]);
+  const ok = await saveOwn(env, "t1", { categories: [{ ...cat("general", "General", entry(O("acme/a")), entry(O("acme/b"), "high")), max_price: { prompt: 0.5, completion: 3 } }] }, base);
+  assert.deepEqual(ok.categories[0].max_price, { prompt: 0.5, completion: 3 }); assert.equal(ok.categories[0].chain.length, 2); assert.equal(ok.has_openrouter, true); assert.equal(ok.models[O("acme/a")].service, "OpenRouter");
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(O("acme/open"), "low"))] }, base), /Zero Data Retention/);
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(O("acme/a"), "max"))] }, base), /reasoning level "max"/);
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(O("acme/nope"), "low"))] }, base), /no longer offered/);
   await refuses(validateCategories(env, [cat("general", "General", entry("acme/a", "low"), entry("acme/b", "low"))], "zdr", { settings: SETTINGS, lookup }), /choose a first model and two fallbacks/);
-  // A privacy change that rules a model out needs a new choice, as on a full plan; a model with no facts (the main model it started from) never does.
-  await setPrivacy({ DB: D1 }, "t1", "unrestricted"); await saveOwn(env, "t1", { categories: [cat("general", "General", entry("acme/open", "low"))] }, base);
+  await setPrivacy({ DB: D1 }, "t1", "unrestricted"); await saveOwn(env, "t1", { categories: [cat("general", "General", entry(O("acme/open"), "low"))] }, base);
   await setPrivacy({ DB: D1 }, "t1", "zdr");
   const row = d1.prepare("SELECT * FROM tenants WHERE id='t1'").get();
-  const st = statusOfRow(row, "openrouter"); assert.equal(st.needs_choice, true); assert.equal(st.problems[0].model, "acme/open"); assert.equal(st.own_key, true);
-  assert.equal(statusOfRow(row, "plain").needs_choice, false, "another endpoint has no provider data to filter by");
-  await assert.rejects(ownKeyPlan(env, "t1", cfgOf(OR_BASE, "acme/a")), (e) => e.code === "custom_models_required" && /Nothing was sent/.test(e.message));
+  const st = statusOfRow(row, "own"); assert.equal(st.needs_choice, true); assert.equal(st.problems[0].model, O("acme/open")); assert.equal(st.own_key, true);
+  await assert.rejects(ownKeyPlan(env, "t1", { settings: "s" }), (e) => e.code === "custom_models_required" && /Nothing was sent/.test(e.message));
 });
 
 // ===== sending =====
@@ -184,67 +182,58 @@ test("effort is sent the way each endpoint takes it", async () => {
   const o = prov.at(-1).body; assert.deepEqual(o.reasoning, { effort: "high" }); assert.deepEqual(o.provider, { zdr: true, data_collection: "deny", max_price: { prompt: 0.5, completion: 3 } }); assert.equal(o.model, "acme/a");
   await byokChat(cfgOf(), msg, { model: "o-reason", effort: "medium", maxPrice: { prompt: 1, completion: 1 } });
   const p = prov.at(-1).body; assert.equal(p.reasoning_effort, "medium"); assert.ok(!("reasoning" in p) && !("provider" in p), "no OpenRouter fields to a plain endpoint, no max price");
-  await byokChat(cfgOf(), msg); assert.ok(!("reasoning_effort" in prov.at(-1).body) && prov.at(-1).body.model === "main-1", "no choice: exactly as before");
-  assert.equal(prov.length, p0 + 3);
+  assert.equal(prov.length, p0 + 2);
 });
 
 test("a model that fails hands the call to the next one in the chain; a bad key and Stop do not", async () => {
-  await reset(); await saveRow(); failModels = new Set(["a-1"]);
-  const plan = { title: "General", maxPrice: null, chain: [{ model: "a-1", effort: null, facts: null }, { model: "b-2", effort: "high", facts: null }, { model: "c-3", effort: null, facts: null }] };
+  await reset(); failModels = new Set(["a-1"]);
+  const cfg = await loadByok(env, "t1");
+  const plan = { title: "General", maxPrice: null, chain: [{ model: P("a-1"), effort: null, facts: null }, { model: P("b-2"), effort: "high", facts: null }, { model: P("c-3"), effort: null, facts: null }] };
   const body = { messages: [{ role: "user", content: "hi" }], stream: true }, p0 = prov.length;
-  const r = await byokChatChain(cfgOf(), body, plan);
-  assert.equal(r.pick.model, "b-2"); assert.equal(r.pick.slot, 1); assert.equal(r.pick.failed[0].model, "a-1"); assert.match(r.pick.failed[0].error, /overloaded/);
-  assert.deepEqual(prov.slice(p0).map((c) => [c.body.model, c.body.reasoning_effort ?? null]), [["a-1", null], ["b-2", "high"]], "the third is never asked");
+  const r = await byokChatChain(cfg, body, plan);
+  assert.equal(r.pick.model, P("b-2")); assert.equal(r.pick.slot, 1); assert.equal(r.pick.failed[0].model, P("a-1")); assert.match(r.pick.failed[0].error, /overloaded/);
+  assert.deepEqual(prov.slice(p0).map((c) => [c.body.model, c.body.reasoning_effort ?? null]), [["a-1", null], ["b-2", "high"]], "the service gets its own model name; the third is never asked");
   failModels = new Set(["a-1", "b-2", "c-3"]);
-  await assert.rejects(byokChatChain(cfgOf(), body, plan), (e) => e.byok && /Use my own AI key/.test(e.message) && !e.message.includes(KEY), "all fail: the plain message with the Settings link");
+  await assert.rejects(byokChatChain(cfg, body, plan), (e) => e.byok && /Settings → AI services/.test(e.message) && !e.message.includes(KEY), "all fail: the plain message with the Settings link");
   const ac = new AbortController(); ac.abort(); failModels = new Set(["a-1"]); const p1 = prov.length;
-  await assert.rejects(byokChatChain(cfgOf(), body, plan, { signal: ac.signal })); assert.ok(prov.length - p1 <= 1, "Stop ends the chain");
+  await assert.rejects(byokChatChain(cfg, body, plan, { signal: ac.signal })); assert.ok(prov.length - p1 <= 1, "Stop ends the chain");
+  await assert.rejects(byokChat(cfg, body, { model: "gone:x" }), /disconnected/); await assert.rejects(byokChat(cfg, body), /no model is chosen/);
 });
 
-test("a real turn: off and on-with-nothing-saved use the one main model; the chain answers; chores stay on the fast model", async () => {
-  await reset(); await saveRow(); const t1 = await turn("hello");
-  assert.deepEqual(t1.main.map((c) => c.body.model), ["main-1"]); assert.ok(!("reasoning_effort" in t1.main[0].body)); assert.ok(t1.chores.every((c) => c.body.model === "fast-1")); assert.deepEqual(t1.sorter, []);
-  assert.ok(t1.r.models.every((x) => /main-1 \[byok\/main\]/.test(x)), t1.r.models.join());
-  // On, nothing saved: the same single main model with no extra fields; nothing changes until they edit.
-  modelList = PLAIN; await saveOwn(env, "t1", { on: true }, { cfg: cfgOf(), kind: "plain" });
-  const t2 = await turn("hello again"); assert.deepEqual(t2.main.map((c) => c.body.model), ["main-1"]); assert.ok(!("reasoning_effort" in t2.main[0].body)); assert.deepEqual(t2.sorter, [], "General alone asks nobody");
-  // On with a chain: the first fails, the second answers with its effort. The chores are still on the fast model.
-  await saveOwn(env, "t1", { categories: [cat("general", "General", entry("qwen-coder"), entry("o-reason", "high"), entry("gemma-2"))] }, { cfg: cfgOf(), kind: "plain" });
+test("a real turn: nothing chosen says so and sends nothing; the chain answers; chores use Background jobs, else General's first model", async () => {
+  await reset(); modelList = PLAIN; const p0 = prov.length;
+  const t0 = await turn("hello"); assert.match(t0.r.reply, /no model is chosen/); assert.equal(prov.length, p0, "no request went to any service");
+  await saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("qwen-coder")), entry(P("o-reason"), "high"), entry(P("gemma-2")))] }, base);
   failModels = new Set(["qwen-coder"]);
   const t3 = await turn("who answers?");
   assert.deepEqual(t3.main.map((c) => [c.body.model, c.body.reasoning_effort ?? null]), [["qwen-coder", null], ["o-reason", "high"]]);
-  if (process.env.BYOK_STATS_OUT) writeFileSync(process.env.BYOK_STATS_OUT, `Chain: qwen-coder (first, failing), o-reason (second, reasoning_effort high), gemma-2 (third). The endpoint answers 503 for qwen-coder.\nRequests sent, in order: ${t3.main.map((c) => `${c.body.model}${c.body.reasoning_effort ? ` (reasoning_effort ${c.body.reasoning_effort})` : ""}`).join(" -> ")}\nTurn stats (models): ${t3.r.models.join(" | ")}\nReply: ${t3.r.reply}\n`);
-  assert.equal(t3.r.reply, "answer from o-reason"); assert.ok(t3.chores.every((c) => c.body.model === "fast-1"), "chores keep the fast model");
-  assert.ok(t3.r.models.some((x) => /o-reason \[byok\/General 2\] \[fallback: qwen-coder:/.test(x)), `the turn stats say which model answered: ${t3.r.models.join(" | ")}`);
+  assert.equal(t3.r.reply, "answer from o-reason"); assert.ok(t3.chores.every((c) => c.body.model === "qwen-coder" || c.body.model === "o-reason"), `no Background jobs chosen: chores use General's first model, falling back down its chain: ${t3.chores.map((c) => c.body.model)}`);
+  assert.ok(t3.r.models.some((x) => /o-reason \[byok\/General 2\] \[fallback: p_main:qwen-coder:/.test(x)), `the turn stats say which model answered: ${t3.r.models.join(" | ")}`);
   assert.ok(!t3.res.some(([id]) => id.startsWith("res:") || id.startsWith("rtr:")), "the AI itself is never reserved or charged");
-  // Off again: the single main model.
-  failModels = new Set(); await saveOwn(env, "t1", { on: false }, { cfg: cfgOf(), kind: "plain" });
-  assert.deepEqual((await turn("off")).main.map((c) => c.body.model), ["main-1"]);
+  failModels = new Set(); await saveOwn(env, "t1", { background: { chain: [entry(P("fast-1"))] } }, base);
+  const t4 = await turn("again"); assert.ok(t4.chores.length > 0 && t4.chores.every((c) => c.body.model === "fast-1"), "chores keep the Background jobs model");
 });
 
 test("categories: General alone asks nobody; with more the request sorter picks among the titles, and the main turn stays on General (a worker takes the other categories: test/byok-handoff.test.mjs)", async () => {
-  await reset(); await saveRow(); modelList = PLAIN; const base = { cfg: cfgOf(), kind: "plain" };
-  await saveOwn(env, "t1", { on: true }, base);
-  await saveOwn(env, "t1", { categories: [cat("general", "General", entry("main-1")), cat("c_code0001", "Coding", entry("qwen-coder"), entry("gemma-2")), cat("c_wrte0001", "Writing", entry("mistral-small", null))] }, base);
+  await reset(); modelList = PLAIN;
+  await saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")))] }, base);
+  assert.deepEqual((await turn("alone")).sorter, []);
+  await saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1"))), cat("c_code0001", "Coding", entry(P("qwen-coder")), entry(P("gemma-2"))), cat("c_wrte0001", "Writing", entry(P("mistral-small"), null))], background: { chain: [entry(P("fast-1"))] } }, base);
   sorterPick = "Coding"; const a = await turn("fix this bug");
-  assert.equal(a.sorter.length, 1, "the request sorter was asked once"); assert.deepEqual(Object.keys(JSON.stringify(a.sorter[0]).match(/"(General|Coding|Writing)"/g) || {}).length > 0, true);
+  assert.equal(a.sorter.length, 1, "the request sorter was asked once");
   assert.ok(/General/.test(JSON.stringify(a.sorter[0])) && /Coding/.test(JSON.stringify(a.sorter[0])) && /Writing/.test(JSON.stringify(a.sorter[0])), "the account's titles");
   assert.ok(a.main.length >= 1 && a.main.every((c) => c.body.model === "main-1"), `Primary stays on General's model: ${a.main.map((c) => c.body.model)}`); assert.ok(a.res.some(([id]) => id.startsWith("byok-route:")), "reserved first, like every part 1Helm runs on an own key");
   assert.ok(a.chores.every((c) => c.body.model === "fast-1"));
   const settled = led.settles.filter(([id]) => id.startsWith("byok-route:")).at(-1); assert.equal(settled[1], Math.ceil(0.0004 * 1e9 * 1.15), "the sorter is charged at its cost + 15%");
-  sorterPick = "Writing"; const b = await turn("write a letter"); assert.ok(b.main.every((c) => c.body.model === "main-1"));
   sorterPick = "General"; const c = await turn("hi"); assert.deepEqual(c.main.map((x) => x.body.model), ["main-1"]);
   assert.ok(a.r.models.every((x) => /\[byok\/General 1\]/.test(x)), a.r.models.join());
-  // A sorter that can't be paid for answers from General.
   const real = ledger.reserve; ledger.reserve = async (id, n) => (id.startsWith("byok-route:") ? { ok: false } : real(id, n)); sorterPick = "Coding";
   try { const d = await turn("again"); assert.equal(d.sorter.length, 0); assert.deepEqual(d.main.map((x) => x.body.model), ["main-1"]); } finally { ledger.reserve = real; }
 });
 
-test("an OpenRouter key sends reasoning.effort and max price with the privacy fields, and its models fall back in order", async () => {
-  await reset("zdr"); await saveRow({ base: OR_BASE, model: "acme/a" });
-  const base = { cfg: cfgOf(OR_BASE, "acme/a"), kind: "openrouter", settings: { ...SETTINGS, catalog: {} }, lookup };
-  await saveOwn(env, "t1", { on: true }, base);
-  await saveOwn(env, "t1", { categories: [{ ...cat("general", "General", entry("acme/b", "high"), entry("acme/c", "low")), max_price: { prompt: 0.5, completion: 3 } }] }, base);
+test("an OpenRouter connection sends reasoning.effort and max price with the privacy fields, and its models fall back in order", async () => {
+  await reset("zdr", ["openrouter", "openrouter", OR_BASE]);
+  await saveOwn(env, "t1", { categories: [{ ...cat("general", "General", entry(O("acme/b"), "high"), entry(O("acme/c"), "low")), max_price: { prompt: 0.5, completion: 3 } }] }, base);
   failModels = new Set(["acme/b"]); const t = await turn("hello");
   assert.deepEqual(t.main.map((c) => c.body.model), ["acme/b", "acme/c"]); assert.ok(t.main.every((c) => c.url === `${OR_BASE}/chat/completions`));
   assert.deepEqual(t.main[0].body.reasoning, { effort: "high" }); assert.deepEqual(t.main[1].body.reasoning, { effort: "low" });
@@ -254,20 +243,18 @@ test("an OpenRouter key sends reasoning.effort and max price with the privacy fi
 
 // ===== the account routes =====
 test("the account routes on an own key: state, picker, save; a full plan still gets its own editor", async () => {
-  await reset(); await saveRow(); modelList = PLAIN;
+  await reset(); modelList = PLAIN;
   const origin = "https://app.example.test", user = { id: "u1", email: "a@example.com" }, deps = { modelSettings: async () => SETTINGS, search: async () => [], lookup };
   const call = async (method, sub, body) => { const url = new URL(origin + "/w/ck1" + sub); sub = sub.split("?")[0];
     const res = await accountRoute(new Request(url, { method, headers: { origin, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }), env, d1.prepare("SELECT * FROM tenants WHERE id='t1'").get(), user, url, sub, deps); return { status: res.status, body: await res.json() }; };
-  assert.equal(await ownKeyKind(env, { id: "t1", plan: "byok" }), "plain");
-  let r = await call("GET", "/api/account/custom-models"); assert.deepEqual([r.status, r.body.on, r.body.own_key, r.body.endpoint, r.body.categories], [200, false, true, "plain", []]);
-  assert.deepEqual((await call("GET", "/api/account")).body.custom_models, { on: false, level: "unrestricted", own_key: true, needs_choice: false, problems: [], endpoint: "plain" });
-  r = await call("POST", "/api/account/custom-models", { on: true }); assert.equal(r.status, 200); assert.equal(r.body.categories[0].chain[0].model, "main-1");
-  r = await call("GET", "/api/account/custom-models/catalog?q=o-re"); assert.deepEqual(r.body.models.map((m) => m.id), ["o-reason"]); assert.equal(r.body.endpoint, "plain");
-  r = await call("POST", "/api/account/custom-models", { categories: [cat("general", "General", entry("main-1"), entry("gemma-2"))] }); assert.equal(r.status, 200); assert.equal(r.body.categories[0].chain.length, 2);
-  r = await call("POST", "/api/account/custom-models", { categories: [cat("general", "General", entry("zzz"))] }); assert.equal(r.status, 400); assert.match(r.body.error, /model list/);
+  assert.equal(await ownKeyKind(env, { id: "t1", plan: "byok" }), "own");
+  let r = await call("GET", "/api/account/custom-models"); assert.deepEqual([r.status, r.body.on, r.body.own_key, r.body.no_model, r.body.categories[0].chain], [200, true, true, true, []]);
+  assert.deepEqual((await call("GET", "/api/account")).body.custom_models, { on: true, level: "unrestricted", own_key: true, needs_choice: false, no_model: true, problems: [], endpoint: "own" });
+  r = await call("GET", "/api/account/custom-models/catalog?q=o-re"); assert.deepEqual(r.body.models.map((m) => m.id), ["p_main:o-reason"]); assert.equal(r.body.endpoint, "own");
+  r = await call("POST", "/api/account/custom-models", { categories: [cat("general", "General", entry(P("main-1")), entry(P("gemma-2")))] }); assert.equal(r.status, 200); assert.equal(r.body.categories[0].chain.length, 2);
+  r = await call("POST", "/api/account/custom-models", { categories: [cat("general", "General", entry(P("zzz")))] }); assert.equal(r.status, 400); assert.match(r.body.error, /model list/);
   assert.equal(JSON.stringify(r.body).includes(KEY), false);
-  assert.equal((await call("GET", "/api/account")).body.custom_models.on, true);
-  // The same account on a full plan: its own setting, three models, our catalog.
+  assert.equal((await call("GET", "/api/account")).body.custom_models.no_model, false);
   d1.exec("UPDATE tenants SET plan='plus' WHERE id='t1'"); d1.exec("DELETE FROM byok");
   r = await call("GET", "/api/account/custom-models"); assert.equal(r.body.own_key, undefined); assert.equal(r.body.on, false);
   assert.equal((await call("GET", "/api/account")).body.custom_models.own_key, undefined);
@@ -275,51 +262,31 @@ test("the account routes on an own key: state, picker, save; a full plan still g
 
 // ===== Background jobs: the chores' own chain =====
 const chat = { messages: [{ role: "user", content: "title this" }], max_tokens: 50 };
-test("Background jobs starts from the fast model, and the chores use its chain with fallback while the setting is on; off uses the fast field", async () => {
-  await reset(); _resetLists(); await saveRow({ fast: "gemma-2" }); modelList = PLAIN; failModels = new Set();
-  const fastCfg = Object.assign(cfgOf(), { fast: "gemma-2" }), base = { cfg: fastCfg, kind: "plain" };
-  // Off: the fast field answers a chore, as before.
-  let p0 = prov.length; await byokChat(await loadByok(env, "t1"), chat, { fast: true }); assert.deepEqual(prov.slice(p0).map((c) => c.body.model), ["gemma-2"]);
-  // On, nothing edited: the start is the fast model with no effort.
-  const on = await saveOwn(env, "t1", { on: true }, base);
-  assert.deepEqual(on.background, { title: "Background jobs", chain: [{ model: "gemma-2", effort: null }] });
-  p0 = prov.length; await byokChat(await loadByok(env, "t1"), chat, { fast: true }); const sent = prov.slice(p0); assert.deepEqual(sent.map((c) => c.body.model), ["gemma-2"]); assert.ok(!("reasoning_effort" in sent[0].body));
-  // A setting saved before Background jobs existed (no background in the row) still starts from the fast model, in the editor and in routing.
-  const row = JSON.parse(d1.prepare("SELECT custom_models_own c FROM tenants WHERE id='t1'").get().c); delete row.background;
-  d1.prepare("UPDATE tenants SET custom_models_own=? WHERE id='t1'").run(JSON.stringify(row));
-  assert.equal((await loadByok(env, "t1")).background[0].model, "gemma-2");
-  const env2 = { ...env }; const viewed = await (await import("../src/ee/byok-custom.js")).ownViewFor(env2, { id: "t1" }, "plain", { cfg: fastCfg, fetchImpl: globalThis.fetch });
-  assert.deepEqual(viewed.background.chain, [{ model: "gemma-2", effort: null }]); assert.ok(viewed.models["gemma-2"]);
-  // Edited: a first model with a reasoning level plus a fallback. The first fails, the second answers; categories and the main model are untouched.
-  const saved = await saveOwn(env, "t1", { background: { chain: [entry("qwen-coder"), entry("o-reason", "high")] } }, base);
-  assert.deepEqual(saved.background.chain, [{ model: "qwen-coder", effort: null }, { model: "o-reason", effort: "high" }]); assert.deepEqual(saved.categories[0].chain, [{ model: "main-1", effort: null }]);
-  assert.ok(saved.models["qwen-coder"] && saved.models["o-reason"]);
+test("Background jobs: the chores use its chain with fallback; with none chosen they use General's first model", async () => {
+  await reset(); modelList = PLAIN;
+  await saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")))] }, base);
+  let p0 = prov.length; await byokChat(await loadByok(env, "t1"), chat, { fast: true }); assert.deepEqual(prov.slice(p0).map((c) => c.body.model), ["main-1"]);
+  const saved = await saveOwn(env, "t1", { background: { chain: [entry(P("qwen-coder")), entry(P("o-reason"), "high")] } }, base);
+  assert.deepEqual(saved.background.chain, [{ model: P("qwen-coder"), effort: null }, { model: P("o-reason"), effort: "high" }]); assert.deepEqual(saved.categories[0].chain, [{ model: P("main-1"), effort: null }]);
   failModels = new Set(["qwen-coder"]); p0 = prov.length; await byokChat(await loadByok(env, "t1"), chat, { fast: true });
   assert.deepEqual(prov.slice(p0).map((c) => [c.body.model, c.body.reasoning_effort ?? null]), [["qwen-coder", null], ["o-reason", "high"]]);
-  // Saving only the categories keeps Background jobs.
-  const again = await saveOwn(env, "t1", { categories: [cat("general", "General", entry("main-1"), entry("llama-3.3-70b"))] }, base);
-  assert.deepEqual(again.background.chain.map((e) => e.model), ["qwen-coder", "o-reason"]);
-  // A real turn: the chores (title, hand-off note) go to the Background jobs chain, the chat to General.
+  const again = await saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")), entry(P("llama-3.3-70b")))] }, base);
+  assert.deepEqual(again.background.chain.map((e) => e.model), [P("qwen-coder"), P("o-reason")], "saving only the categories keeps Background jobs");
   failModels = new Set(); const t = await turn("hello");
   assert.deepEqual(t.main.map((c) => c.body.model), ["main-1"]); assert.ok(t.chores.length > 0 && t.chores.every((c) => c.body.model === "qwen-coder" && c.body.reasoning_effort === undefined), t.chores.map((c) => c.body.model).join());
-  // Off again: the fast field is used again, and the saved choices stay.
-  await saveOwn(env, "t1", { on: false }, base); p0 = prov.length; await byokChat(await loadByok(env, "t1"), chat, { fast: true }); assert.deepEqual(prov.slice(p0).map((c) => c.body.model), ["gemma-2"]);
-  assert.deepEqual((await readOwn(env, "t1")).config.background.chain.map((e) => e.model), ["qwen-coder", "o-reason"]);
+  const none = await saveOwn(env, "t1", { background: { chain: [] } }, base); assert.deepEqual(none.background.chain, []);
+  p0 = prov.length; await byokChat(await loadByok(env, "t1"), chat, { fast: true }); assert.deepEqual(prov.slice(p0).map((c) => c.body.model), ["main-1"]);
 });
 
 test("Background jobs is validated like a category and exists only for own-key accounts", async () => {
-  await reset(); await saveRow(); modelList = PLAIN;
-  const base = { cfg: cfgOf(), kind: "plain" };
-  await refuses(saveOwn(env, "t1", { background: { chain: [entry("qwen-coder")] } }, base), /Turn on Custom Model Selection first/, 409);
-  await saveOwn(env, "t1", { on: true }, base);
-  await refuses(saveOwn(env, "t1", { background: { chain: [entry("not-served")] } }, base), /isn't in your AI service's model list/);
-  await refuses(saveOwn(env, "t1", { background: { chain: [entry("qwen-coder", "high")] } }, base), /Background jobs, first choice|doesn't support the reasoning level "high"/);
-  await refuses(saveOwn(env, "t1", { background: { chain: [entry("main-1"), entry("main-1")] } }, base), /Background jobs: choose different models/);
-  await refuses(saveOwn(env, "t1", { background: { chain: [entry("main-1"), entry("gemma-2"), entry("qwen-coder"), entry("mistral-small")] } }, base), /Background jobs: choose a first model and up to two fallbacks/);
-  await refuses(saveOwn(env, "t1", { background: { chain: [] } }, base), /Background jobs: choose a first model/);
-  await refuses(saveOwn(env, "t1", { background: { chain: [entry("main-1")], extra: 1 } }, base), /Invalid Background jobs/);
-  assert.equal((await readOwn(env, "t1")).config.background.chain[0].model, "fast-1", "a refused save changes nothing");
-  // A full plan has none: its setting (custom_models) never carries one, the save route there refuses it, and a plain loadByok has no chain.
+  await reset(); modelList = PLAIN;
+  await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("qwen-coder"))] } }, base), /Choose a model for General first/, 409);
+  await saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")))] }, base);
+  await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("not-served"))] } }, base), /isn't in the model list of/);
+  await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("qwen-coder"), "high")] } }, base), /Background jobs, first choice|doesn't support the reasoning level "high"/);
+  await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("main-1")), entry(P("main-1"))] } }, base), /Background jobs: choose different models/);
+  await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("main-1")), entry(P("gemma-2")), entry(P("qwen-coder")), entry(P("mistral-small"))] } }, base), /Background jobs: choose a first model and up to two fallbacks/);
+  await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("main-1"))], extra: 1 } }, base), /Invalid Background jobs/);
   await assert.rejects(saveCustom(env, "t1", { background: { chain: [entry("acme/a")] } }, { settings: SETTINGS }), /Nothing to change/);
   d1.exec("UPDATE tenants SET plan='plus' WHERE id='t1'"); assert.equal(await loadByok(env, "t1"), null);
 });

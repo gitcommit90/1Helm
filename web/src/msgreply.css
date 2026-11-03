@@ -24,6 +24,9 @@
   .m.agent .mact{left:100%;padding-left:8px}
   .m.user .mact{right:100%;padding-right:8px;flex-direction:row-reverse}
   .bubble:hover>.mact{opacity:1;pointer-events:auto}
+  /* Invisible hover area: extends the strip 12px above, below and past its far side, so a diagonal path from the bubble to a button keeps it open. It also reaches 10px back over the bubble's rounded corner, which is outside the bubble's hover area. */
+  .mact::before{content:"";position:absolute;z-index:-1;top:-12px;bottom:-12px;left:-10px;right:-12px}
+  .m.user .mact::before{left:-12px;right:-10px}
 }
 /* Touch: a held bubble reveals only its controls under it. A normal tap leaves them hidden. */
 @media (hover:none){

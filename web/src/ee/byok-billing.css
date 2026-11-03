@@ -1,4 +1,4 @@
-/* 1HC's own-key plan, backup, switching and credit UI (ee/byok-billing.ts). */
+/* 1HC's AI services, own-key plan, backup, switching and credit UI (ee/byok-billing.ts). */
 .bykneed{color:var(--warn)!important;font-weight:600}
 .bykplan{display:flex;align-items:flex-start;gap:10px;margin:0 0 14px;padding:12px 14px;border-radius:14px;background:var(--sheet);box-shadow:0 0 0 1px var(--line);font-size:13.5px;color:var(--mute)}
 .bykplan>svg{flex:none;margin-top:2px;color:var(--accent)}
@@ -88,3 +88,51 @@ h3.bykh{margin:22px 6px 8px}
   .bykml li b{font-size:15px}.bykml li>span{font-size:13px}
 }
 .bykset p{margin:0 4px}
+
+/* Continue with ChatGPT: OpenAI's button (white logo on a dark button, label as OpenAI's guidelines say) and the paste step */
+.bykcgbtn{flex:none;display:inline-flex;align-items:center;justify-content:center;gap:10px;white-space:nowrap;min-height:40px;padding:0 18px;border:0;border-radius:999px;background:#000;color:#fff;font:inherit;font-weight:600;font-size:14.5px;cursor:pointer;box-shadow:0 0 0 1px rgba(255,255,255,.18)}
+.bykcgbtn .bykcglogo{flex:none;display:block}
+.bykcgbtn:disabled{opacity:.55;cursor:default}
+.bykcgsteps{margin:2px 4px 12px!important;max-width:620px}
+@media (max-width:767px){
+  .bykorrow .bykcgbtn{flex:1 1 100%}
+}
+#bykcgf .sbtns,#bykccf .sbtns{flex-wrap:wrap}
+@media (max-width:767px){#bykcgf .sbtns .sprim,#bykccf .sbtns .sprim{flex:1 1 100%}}
+.bykeff{margin-top:10px}
+/* several services: the list of connected ones, and the buttons that add one */
+.bykconn{margin-bottom:10px}
+.bykadd{padding:14px 16px}
+.bykaddrow{display:flex;flex-wrap:wrap;gap:10px}
+.bykaddrow>.sprim,.bykaddrow>.bykaddb,.bykaddrow>.bykcgbtn{flex:none;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;min-height:40px;padding:0 18px;border-radius:999px;font-size:14.5px}
+.bykaddb{border:0;background:var(--page);box-shadow:0 0 0 1px var(--line);color:var(--ink);font:inherit;font-size:14.5px;font-weight:600;cursor:pointer}.bykaddb:hover{background:var(--hover)}.bykaddb:disabled{opacity:.55;cursor:default}
+.bykchoose .sa{align-self:center}
+@media (max-width:767px){.bykaddrow>*{flex:1 1 100%}}
+.bykcgsteps a{color:var(--accent)}
+/* Logos from logo.dev (src/logo.ts): the ChatGPT button's mark, a form heading's icon, and the small chip inside the add buttons. Same sizes as the icons they sit over. */
+.bykcgbtn .bykcglogo{position:relative;display:grid;place-items:center;width:22px;height:22px;border-radius:6px;overflow:hidden}
+.bykhl{position:relative;display:inline-grid;place-items:center;flex:none;width:22px;height:22px;border-radius:6px;overflow:hidden}
+.bykaddrow .lgc{margin-right:8px;width:20px;height:20px;vertical-align:0}
+/* Use OpenCode: the numbered steps */
+.bykol{padding-left:22px;display:grid;gap:10px;font-size:14px;line-height:1.5}
+.bykol a{color:var(--accent)}
+.bykplans{border:0;margin:2px 4px 12px;padding:0;display:flex;flex-direction:column;gap:6px;max-width:620px}
+.bykplans legend{padding:0;margin-bottom:6px;font-size:13px;color:var(--muted)}
+.bykplans label{display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer}
+/* plan usage under a connected service (src/byok.ts usageBlock): space is kept while the numbers load */
+.bykusage{padding:10px 12px 12px;box-shadow:0 -1px 0 var(--line);display:grid;gap:9px}
+.bykusage.bukwait{min-height:98px}
+.bukw{display:grid;gap:5px}
+.bukt{display:flex;align-items:baseline;gap:8px;font-size:12.5px;color:var(--mute);min-width:0}
+.bukt b{font-weight:600;color:var(--ink);flex:none}
+.bukt span{flex:none}
+.bukt em{font-style:normal;margin-left:auto;text-align:right;color:var(--faint);white-space:nowrap}
+.bukbar{height:4px;border-radius:2px;background:var(--line);overflow:hidden}
+.bukbar i{display:block;height:100%;border-radius:2px;background:var(--accent)}
+.bukw.full .bukbar i{background:var(--warn)}
+.bykusage p{margin:0;font-size:12.5px;color:var(--mute);line-height:1.4}
+.bykusage p.bukhit{color:var(--warn);font-weight:600}
+.bykusage p.bukmore{text-align:right}
+.bukmanage{color:var(--accent);font-weight:600;text-decoration:none}.bukmanage:hover{text-decoration:underline}
+.bykusage.bukno{padding:9px 12px}
+@media (max-width:767px){.bukt{flex-wrap:wrap;row-gap:0}.bukt em{flex:1 1 auto}}

@@ -16,6 +16,7 @@
 // v3.ts hooks in: beeInit() once, beeSec() as the "ambient" section.
 import { encode } from "uqr";
 import { choose, ask } from "../dialog";
+import { logoOver } from "../logo";   // Bee's logo from logo.dev drawn over the yellow tile
 
 type Pairing = { request_id: string; url: string; expires_at: number; expires_in?: number; waiting?: boolean };
 type Sync = { at: number | null; convs: number; note?: string | null };
@@ -56,8 +57,8 @@ const ic = {
   warn: I('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>', 16),
   keypad: I('<circle cx="6" cy="5" r="1.4"/><circle cx="12" cy="5" r="1.4"/><circle cx="18" cy="5" r="1.4"/><circle cx="6" cy="11" r="1.4"/><circle cx="12" cy="11" r="1.4"/><circle cx="18" cy="11" r="1.4"/><circle cx="6" cy="17" r="1.4"/><circle cx="12" cy="17" r="1.4"/><circle cx="18" cy="17" r="1.4"/><circle cx="12" cy="22" r="1.1"/>', 15, 1.5),
 };
-// A plain mark for the card (a yellow tile with three dots), not Bee's logo.
-export const beeMark = (s = 38) => `<span class="beemark" style="width:${s}px;height:${s}px" aria-hidden="true"><svg viewBox="0 0 24 24" width="${Math.round(s * .58)}" height="${Math.round(s * .58)}"><circle cx="8" cy="9" r="3.2"/><circle cx="15.5" cy="8.5" r="2.4"/><circle cx="13" cy="15.5" r="3.6"/></svg></span>`;
+// Bee's mark: the logo from logo.dev (bee.computer) drawn over a yellow tile with three dots, which shows only if the logo can't load.
+export const beeMark = (s = 38) => `<span class="beemark lgo-host" style="width:${s}px;height:${s}px" aria-hidden="true"><svg viewBox="0 0 24 24" width="${Math.round(s * .58)}" height="${Math.round(s * .58)}"><circle cx="8" cy="9" r="3.2"/><circle cx="15.5" cy="8.5" r="2.4"/><circle cx="13" cy="15.5" r="3.6"/></svg>${logoOver("bee.computer", s)}</span>`;
 
 // ---------- the QR code (drawn here; black on white whatever the theme, so any camera reads it) ----------
 export function qrSvg(text: string, px = 200) {

@@ -6,6 +6,7 @@
 // account with a switch already scheduled, refusing without a working key, a Stripe failure changing nothing, and fallback unchanged.
 import assert from "node:assert"; import { DatabaseSync } from "node:sqlite"; import { readFileSync } from "node:fs";
 import worker, { Ledger } from "../src/index.js";
+import { connDdl } from "../src/ee/byok-connections.js";
 import { byokApi, loadByok, fallbackNotice, creditsLine, CREDITS_TOOL_ERR, BYOK_PLAN, METER } from "../src/byok.js";
 const METER_HS = Math.ceil(METER.mem_search * 1.15);
 import { HANDOFF_PREFIX } from "../src/ee/route2.js";
@@ -26,7 +27,7 @@ d1.exec(`CREATE TABLE tenants (id TEXT PRIMARY KEY, slug TEXT, owner_user_id TEX
   CREATE TABLE stripe_events (id TEXT PRIMARY KEY, type TEXT NOT NULL, received_at INTEGER NOT NULL);
   CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT); INSERT INTO users VALUES ('u1','sam@example.com');
   CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, user_id TEXT, expires_at INTEGER);`);
-for (const f of ["0022_031_byok", "0025_034_byok_mode", "0017_026_plan_cancel", "0020_029_storage"]) d1.exec(readFileSync(new URL(`../db/migrations/${f}.sql`, import.meta.url), "utf8"));
+for (const f of ["0022_031_byok", "0025_034_byok_mode", "0017_026_plan_cancel", "0020_029_storage", "0038_046_ai_privacy", "0065_custom_models_own_key"]) d1.exec(readFileSync(new URL(`../db/migrations/${f}.sql`, import.meta.url), "utf8"));
 const D1 = { prepare: (q) => { const st = d1.prepare(q); let a = []; const o = { bind: (...x) => { a = x; return o; }, first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }),
   run: async () => { const r = st.run(...a); return { meta: { changes: Number(r.changes) } }; } }; return o; } };
 const T = () => d1.prepare("SELECT * FROM tenants WHERE id='t1'").get();
@@ -73,6 +74,7 @@ globalThis.fetch = async (u, init = {}) => {
   }
   const url = new URL(u);
   if (url.hostname === HOST && keyBad) return jres({ error: "bad key" }, 401);
+  if (url.hostname === HOST && init.method === "GET") return jres({ data: [{ id: "main-model-1" }, { id: "fast-model-1" }] });   // the connection test: the model list
   if (url.hostname === HOST) {
     const body = JSON.parse(init.body || "{}"); prov.push({ auth: init.headers?.authorization, body });
     if (!body.stream) {
@@ -88,6 +90,7 @@ globalThis.fetch = async (u, init = {}) => {
 };
 
 async function saveRow(mode = "fallback") {
+  await connDdl(env); d1.exec("DELETE FROM byok_connections; DELETE FROM byok_multi;");
   d1.prepare("INSERT OR REPLACE INTO byok (tenant_id,base_url,model,fast_model,key_sealed,key_last4,created_at,updated_at,mode) VALUES ('t1',?,?,?,?,?,?,?,?)").run(BASE, "main-model-1", "fast-model-1", await sealSecret(env, KEY), KEY.slice(-4), Date.now(), Date.now(), mode);
 }
 
@@ -112,7 +115,7 @@ const spend = async (id, nano) => { await L.reserve(id, nano); await L.settle(id
 // A fresh Personal account: $20 of plan usage this period, plus $3 of credits bought, $5 spent. Unused plan usage: $15. Balance: $18.
 async function fresh(mode = "") {
   ldb.exec("DELETE FROM grants; DELETE FROM spend; DELETE FROM res;"); try { ldb.exec("DELETE FROM kv"); } catch {}
-  stripeCalls.length = 0; stripeFail = false; keyBad = false; price = "price_personal"; setPlan("personal"); d1.exec("DELETE FROM byok; DELETE FROM stripe_events; DELETE FROM byok_tests");
+  stripeCalls.length = 0; stripeFail = false; keyBad = false; price = "price_personal"; setPlan("personal"); await connDdl(env); d1.exec("DELETE FROM byok; DELETE FROM byok_connections; DELETE FROM byok_multi; DELETE FROM stripe_events; DELETE FROM byok_tests");
   await L.grantIncluded("invoice:in_p1", 20e9); await L.grant("pi:topup1", 3e9, "topup"); await spend("s1", 5e9);
   if (mode !== "none") await saveRow(mode);
 }
@@ -136,7 +139,7 @@ await fresh("");
   assert.match(rows()[0].key, /^unused-plan-balance-to-credits:/);
   assert.strictEqual(modeOf(), "");
   // AI goes to their endpoint from the next call: the byok plan with their key
-  const cfg = await loadByok(env, "t1"); assert.ok(cfg && !cfg.missing && !cfg.fallback && cfg.base === BASE && cfg.model === "main-model-1");
+  const cfg = await loadByok(env, "t1"); assert.ok(cfg && !cfg.missing && !cfg.fallback && cfg.connections.p_main.base === BASE && cfg.model === "p_main:main-model-1");
 }
 ok("switch now: plan byok at once, Stripe price swap with no proration, the $15 unused plan usage becomes credits, balance unchanged");
 
@@ -206,7 +209,7 @@ ok("a scheduled switch: Switch now converts and flips at once without a second p
 // ===== 6. refused without a working key; nothing changes =====
 {
   await fresh("none");
-  let x = await api("/byok/switch-now", {}); assert.strictEqual(x.status, 409); assert.match(x.d.error, /Save your AI key first/);
+  let x = await api("/byok/switch-now", {}); assert.strictEqual(x.status, 409); assert.match(x.d.error, /Connect your AI service first/);
   assert.deepStrictEqual(posts(), []); assert.strictEqual(T().plan, "personal"); assert.strictEqual(await balance(), 18e9); assert.strictEqual(rows().length, 0);
   await saveRow(""); keyBad = true;
   x = await api("/byok/switch-now", {}); assert.strictEqual(x.status, 409); assert.match(x.d.error, /connection test/); assert.ok(x.d.test && x.d.test.ok === false);

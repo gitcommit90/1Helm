@@ -302,11 +302,11 @@ test("an account answered by its own AI key: own_key, no pause, on every route a
   const own = { own_key: true, needs_choice: false, problems: [] };
   const pick = (c) => ({ own_key: c.own_key, needs_choice: c.needs_choice, problems: c.problems });
   assert.equal(await answersOnOwnKey(ENV, { id: "t1", plan: "byok" }), true);
-  assert.deepEqual(pick(statusOfRow(row("byok"), "plain")), own);
+  assert.deepEqual(pick(statusOfRow(row("byok"), "own")), own);
   assert.deepEqual(pick((await call("byok", ENV, "GET", "/api/account")).custom_models), own);
   assert.deepEqual(pick(await call("byok", ENV, "GET", "/api/account/custom-models")), own);
   assert.deepEqual(pick((await call("byok", ENV, "POST", "/api/account/privacy", { level: "zdr" })).custom_models), own);
-  assert.equal((await call("byok", ENV, "GET", "/api/account/custom-models")).on, false, "the setting for our models is not the one for the own key");
+  assert.equal((await call("byok", ENV, "GET", "/api/account/custom-models")).no_model, true, "the setting for our models is not the one for the own key: nothing is chosen there");
   // Chat goes to the key: no CustomModelsRequired, and no call to our models.
   const cfg = Object.defineProperty({ base: "https://llm.example/v1", host: "llm.example", model: "own-main", fast: "own-main", last4: "1234" }, "key", { value: "sk-test", enumerable: false });
   const calls = []; const realFetch = globalThis.fetch;

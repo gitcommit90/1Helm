@@ -189,3 +189,65 @@ The templates embed Latin subsets of Google Fonts families (`app-assets/deck-tem
 ## img-fx, React and three.js (the Zone effect)
 
 `app-assets/app-static/zone/imgfx.js` is a prebuilt bundle of img-fx (https://libraries.dev/image, MIT, Copyright (c) 2026 Jakub Antalik) with React (MIT, Meta Platforms, Inc. and affiliates) and three.js (MIT, 2010 to 2026 three.js Authors). The notices are kept in the file.
+
+## Components by Bruno Delorence (web app)
+
+Several looks and small behaviors of the web app are ported to plain TypeScript and CSS from the components by Bruno Delorence, https://brunodelorence.com/components. The ported files are `web/src/sidebar-glide.ts` (the gliding hover behind the side panel rows, from sidebar-nav), `web/src/ee/effort-slider.ts` and `web/src/ee/effort-slider.css` (the reasoning level slider, from effort-slider), `web/src/toast-stack.ts` and `web/src/toast-stack.css` (the stack of toasts, from toast-stack), `web/src/bdqr.ts` with the QR card rules in `web/src/share.css` (from qr-share) and `web/src/bd-composer.css` (the look of the message boxes, from composer-states). Only looks and small behaviors are ported, and the app's own markup and logic are kept. The built `app.js` and `style.css` carry the result.
+
+License: MIT, Copyright (c) 2026 Bruno Delorence. The full text follows.
+
+```
+MIT License
+
+Copyright (c) 2026 Bruno Delorence
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Claude Subscription DirectSDK (Nous Research Hermes plugin)
+
+The Claude engine's model-call relay in `src/ee/claude-engine/relay/` (`native.mjs`, `complete.mjs`, `inert-mcp.mjs`) is a JavaScript port of `admission.py`, `directsdk.py`, `model_catalog.py` and `inert_mcp.py` from the Hermes plugin `claude-subscription-directsdk`. It covers the one-request relay, history replay, request building and cache breakpoint handling.
+
+Source: https://github.com/NousResearch/hermes-official-plugins/tree/main/claude-subscription-directsdk
+
+License: MIT
+
+```
+MIT License
+
+Copyright (c) 2026 Nous Research and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

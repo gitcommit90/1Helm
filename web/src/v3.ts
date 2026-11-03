@@ -16,15 +16,17 @@ import { rpInit, rpMailto } from "./report";
 import { piKind, piOn, piInstall, piLabel, piSub, PI_ICON } from "./pwainstall";   // Install 1Helm as an app: catches beforeinstallprompt at import, before the UI renders   // Report an issue (its sheet's Esc, too; and it keeps the last log lines from the start)
 import { beeInit, beeOverview, beeSec, beeMark } from "./ee/bee";
 import { notebookBeeUnread } from "./ee/notebook-bee-unread";
+import { paintChannelDots } from "./channel-dots";
 import { wkMdFromHtml, wkRichOk } from "./wk-rich";
 import { dpInit, dpSec, dpSheetMaybe, dpSheetOpen, dpLoc, dpShareNow, DP_ICON } from "./devperm";   // location + mic, asked once up front (its sheet's Esc, too)   // Settings → Ambient → Bee: the card and the Connect sheet (its sheet's Esc, too)
 import { beeLibInit, beeLibParts, beeLibReset, beeLibEnsure } from "./ee/bee-library";   // General's Library: the saved Bee conversations (a filter and a section)
 import { secInit, secPlus, secList, secRow, secOf, moveMenu, canMove, type CS } from "./sections";   // custom sections of the task list
 import { delInit, rowMore, headDelete, channelMore, sheetRows, MORE } from "./delete";   // deleting a chat / channel / the account
 import { openNewChannel, createViaApi, type NewChannel } from "./newchannel";   // second, for the same reason (New channel sheet)
+import { bdqrHtml } from "./bdqr";
 import { shInit, shFiles, shCards, shEvent, shCardHtml, shFold, shFileBtn, shViewerBtns, shBadge, shLibHtml, shFileGone, shHeadBtn, shChatGone } from "./share";   // share links + published pages (its sheet's Esc, too)
 import { orb } from "./activity-orb";
-import { cmodelsInit, cmodelsCard, cmodelsPrivacy } from "./ee/custom-models";   // Settings → Advanced → Custom Model Selection (chat categories of this account; licensed)
+import { cmodelsInit, cmodelsCard, cmodelsPrivacy, cmodelsDragging, cmodelsAfter } from "./ee/custom-models";   // Settings → Advanced → Custom Model Selection (chat categories of this account); an own key edits its models in Settings → AI services
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { fileUrl as fileResUrl } from "./file-url.mjs";
@@ -51,9 +53,10 @@ import { settleBrowserCards } from "./browser-card";
 import { initAppDetail, openAppDetail, appDetailSync, appDetailRepaint } from "./ee/app-detail";
 import { appIsSoon } from "./apps-availability";
 import { initAcctNote, onAcctNote, acctNoteHtml, acctNoteReset, acctNoteAfter } from "./ee/acct-note";   // a note per connected account, for the helper
-import { cmInit as amInit, cmHtml, cmClick, cmSet, cmNewTab, cmBack, cmMode } from "./ee/apps-mode";   // Settings → Connected accounts: Managed vs Self-managed (1HC composio-self.js)
+import { cmInit as amInit, cmHtml, cmClick, cmSet, cmNewTab, cmBack, cmMode } from "./ee/apps-mode";   // Settings → Connected Apps: Managed vs Self-managed (1HC composio-self.js)
 import { keepPaneFloats } from "./pane-float";
 import { todoBtn, todoSet, todoSync, todoInit } from "./todos";
+import { tsShow, tsHide } from "./toast-stack";
 import { pomoBtn, pomoGlobalBtn, pomoShortcut, pomoSet, pomoSync, pomoInit } from "./pomodoro";
 import { lnSpeakers, lnBtn, lnSet, lnSync, lnInit, lnWrap, lnDot, lnRefineCard, lnStartFor, lnCanStart } from "./ee/livenotes";
 import { mtInit } from "./ee/meetings";   // Meeting reminders for notes: "Your 2:00 “Weekly sync” is starting. Take notes?"   // Bee Live notes: header button, split view, chip, presence
@@ -86,6 +89,7 @@ import { sidebarInit, sidebarSync, sidebarReveal, sidebarCollapseButton, sidebar
 import { stInit, sync as stSync, headStop, rowStop, composerStop, stopTask, stopMany, stopBusy, pausedNote, SQ } from "./stop";   // Stop / Stop all
 import { nfInit, nfHtml, nfSeen, nfPerm, nfAsk, nfElsewhere } from "./notif";   // Settings → Notifications: switches, this device (Web Push), sounds
 import { maInit, maActs, maOpenCls, maQuote, rqHtml, rqTake, rqPut, rqClear, refOf, copyPlain, excerpt, type Pin, type Role } from "./msgreply";   // Copy + Reply on chat bubbles, the reply pinned above the composer
+import { sideGlideSync } from "./sidebar-glide";
 import { createRankedSearch, rankedRows } from "./task-search";   // sidebar and drawer Search: the server ranks every task after a pause
 import { sgInit, pauseSet, usageSet, usageAdd, usageNote } from "./spendguard";   // core runaway guard and per-task usage
 import { sgBillingInit, monthLine, noticeShow } from "./ee/spendguard-billing";   // 1HC monthly plan meter and credit notices
@@ -103,9 +107,9 @@ const earlyBoot: Promise<any> | undefined = (window as any).__1HC_BOOT; (window 
 const BOOT: any = LIVE ? await (earlyBoot || fetch(`${LIVE.api}/app/boot?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "")}`, { credentials: "same-origin" }).then(r => r.json()).catch(() => ({ channels: [] }))) : null;
 const hasFeature = (feature: string) => !LIVE || Array.isArray(BOOT?.features) && BOOT.features.includes(feature);
 const byok = () => hasFeature("billing") ? billingByok : coreByok;
-const BYK_SEC = coreByok.BYK_SEC, BYK_TITLE = coreByok.BYK_TITLE;
+const BYK_SEC = coreByok.BYK_SEC;
 const bykInit = (d: Parameters<typeof billingByok.bykInit>[0]) => byok().bykInit(d);
-const bykRow = () => byok().bykRow();
+const bykWarm = (login = false) => byok().bykWarm(login);
 const bykPage = () => byok().bykPage();
 const bykAfter = () => byok().bykAfter();
 const bykBusy = () => byok().bykBusy();
@@ -273,6 +277,7 @@ const live = (s: Session) => s.status === "open" || s.status === "waiting";
 const needsYou = (x: Session) => !x.done && x.status === "waiting";
 const rowLit = (x: Session) => needsYou(x) || (!x.done && !!x.unread);
 const rowDot = (x: Session) => rowLit(x) ? `<i class="dot" title="${x.unread ? "New result" : "Needs you"}"></i>` : "";
+const chDotKind = (slug: string) => { const c = channels.find(x => x.slug === slug); return !c || !c.sessions.some(rowLit) ? null : c.sessions.some(needsYou) ? "Needs you" as const : "New result" as const; };
 const rowTail = (x: Session, when = true) => `<span class="tail">${rowDot(x) || (when ? `<span class="when">${ago(x.done ? doneAt(x) : x.updated)}</span>` : "")}</span>`;
 function ago(t: number) {
   const m = Math.round((Date.now() - t) / 60e3);
@@ -417,7 +422,7 @@ function renderStage() {
     <div class="drawer">
       <a class="drow${isSch() ? " on" : ""}" href="#/${ch.slug}/scheduled" title="Repeats, follow-ups and messages set to send later">${ic.clock}<span>Scheduled</span></a>
     </div><button class="sidesrch" data-sidesrch aria-label="Search tasks">${ic.search}<span>Search</span></button>`;
-  sidebarSync();
+  sidebarSync(); sideGlideSync();
   { const l = document.querySelector<HTMLElement>("#side .sessions"); if (l) { l.scrollTop = sideTop; const on = l.querySelector<HTMLElement>(".sess.on"); if (on && (on.offsetTop < l.scrollTop || on.offsetTop + on.offsetHeight > l.scrollTop + l.clientHeight)) on.scrollIntoView({ block: "nearest" }); } }   // only an off-screen selected row moves the list
   if (focused) { const i = $("#q") as HTMLInputElement; i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
 
@@ -831,6 +836,9 @@ if (LIVE) {
     // Same as the old +: the device's file picker, uploads start at once. Picks made so far are kept.
     if (t.closest("[data-pkup]")) { e.preventDefault(); const key = PK.key, slug = PK.slug; pkApply(); pkClose(false); pickFiles(l => upload(key, slug, l)); return; }
   }, true);
+  // Claude Code: warm the account's engine when the composer gets focus and when a channel opens (the server does nothing unless General's model is Claude Code).
+  document.addEventListener("focusin", e => { const id = (e.target as HTMLElement)?.id; if (id === "box" || id === "nbox") bykWarm(); });
+  window.addEventListener("hashchange", () => bykWarm()); setTimeout(bykWarm, 1500);
   document.addEventListener("focusout", e => { const t = e.target as HTMLInputElement; if (t.id === "q" && !t.value) setTimeout(() => { const q = document.getElementById("q"); if (document.activeElement !== q) document.getElementById("side")?.classList.remove("sopen"); }, 150); });
 document.addEventListener("input", e => { const t = e.target as HTMLInputElement; if (t.id === "pkq" && PK.open) { PK.q = t.value; pkPaint(); } });
   window.addEventListener("keydown", e => {
@@ -1286,28 +1294,20 @@ function sendNew() {
   const x = startTask(to, text, files);
   closeNew(); refresh(); toast(to, x);
 }
-let toastT = 0;
 // Contacts import (contacts-import.ts): reads the file here, sends parsed contacts to /api/contacts/import, then Contacts re-reads.
 if (LIVE) ciInit({ api, phone, helper: () => who(main), onContacts: () => isCt(),
   me: () => ({ name: LIVE.person || BOOT?.person?.name || "", email: LIVE.email || BOOT?.person?.email || "" }),
   existing: () => CT.list.filter(c => c.sid).map(c => ({ sid: c.sid!, name: c.name, phone: c.phone, email: c.email, phones: numsOf(c).phones.map(x => x.v), emails: numsOf(c).emails.map(x => x.v), aka: c.aka, rel: c.rel })),
   imported: async () => { const d = await api("/contacts"); if (Array.isArray(d?.contacts)) { const had = new Set(CT.list.map(c => c.sid)); CT.list = d.contacts.map(ctFromApi); for (const c of CT.list) if (!had.has(c.sid)) c.fresh = true; } if (Array.isArray(d?.dups)) CT.dups = d.dups; if (isCt()) ctRefresh(); else render(); } });
 function toast(ch: Channel, x: Session) {
-  let el = document.getElementById("toast"); if (!el) { el = document.createElement("div"); el.id = "toast"; el.setAttribute("role", "status"); document.body.appendChild(el); }
-  el.innerHTML = `<span class="tok">${ic.check}</span>${av(ch, "av sm")}<span class="tmsg"><b>Task sent to ${esc(who(ch))}</b><span>${esc(x.title)}</span></span>
-    <button class="tview" data-tview="#/${ch.slug}/s/${x.id}">View task</button><button class="tx" data-tclose aria-label="Dismiss">${I('<path d="M18 6 6 18M6 6l12 12"/>', 15)}</button>`;
-  el.classList.remove("on"); void el.offsetWidth; el.classList.add("on");
-  clearTimeout(toastT); toastT = window.setTimeout(hideToast, 5000);
-  el.onmouseenter = () => clearTimeout(toastT); el.onmouseleave = () => { toastT = window.setTimeout(hideToast, 2500); };
+  tsShow(`<span class="tok">${ic.check}</span>${av(ch, "av sm")}<span class="tmsg"><b>Task sent to ${esc(who(ch))}</b><span>${esc(x.title)}</span></span>
+    <button class="tview" data-tview="#/${ch.slug}/s/${x.id}">View task</button><button class="tx" data-tclose aria-label="Dismiss">${I('<path d="M18 6 6 18M6 6l12 12"/>', 15)}</button>`);
 }
 function note(icon: string, title: string, sub: string, action: string) {
-  let el = document.getElementById("toast"); if (!el) { el = document.createElement("div"); el.id = "toast"; el.setAttribute("role", "status"); document.body.appendChild(el); }
-  el.innerHTML = `<span class="tok ink">${icon}</span><span class="tmsg"><b>${esc(title)}</b><span>${esc(sub)}</span></span>${action}<button class="tx" data-tclose aria-label="Dismiss">${I('<path d="M18 6 6 18M6 6l12 12"/>', 15)}</button>`;
-  el.classList.remove("on"); void el.offsetWidth; el.classList.add("on");
-  clearTimeout(toastT); toastT = window.setTimeout(hideToast, 5000);
-  el.onmouseenter = () => clearTimeout(toastT); el.onmouseleave = () => { toastT = window.setTimeout(hideToast, 2500); };
+  tsShow(`<span class="tok ink">${icon}</span><span class="tmsg"><b>${esc(title)}</b><span>${esc(sub)}</span></span>${action}<button class="tx" data-tclose aria-label="Dismiss">${I('<path d="M18 6 6 18M6 6l12 12"/>', 15)}</button>`);
 }
-function hideToast() { document.getElementById("toast")?.classList.remove("on"); }
+// With no argument every toast goes; inside a click on a toast, that toast; or pass what is in the toast to take only it.
+function hideToast(inside?: string) { tsHide(inside); }
 
 // ---------- Pins: any task can be pinned to the top of its channel ----------
 const pinBtn = (x: Session) => `<span class="pin${x.pinned ? " on" : ""}" role="button" tabindex="0" data-pin="${x.id}" title="${x.pinned ? "Unpin" : "Pin to the top"}" aria-label="${x.pinned ? "Unpin" : "Pin"} ${esc(x.title)}">${ic.pin}</span>`;
@@ -1316,6 +1316,7 @@ function togglePin(id: any) {
   const x = ch.sessions.find(y => String(y.id) === String(id))!; x.pinned = !x.pinned; repaint(ch); livePatch(ch, x, { pinned: !!x.pinned });
 }
 function repaint(ch: Channel) {
+  paintChannelDots(document, chDotKind);   // any channel's task can change, so the rail / channel list dots follow every repaint
   const { s } = route(); if (route().ch !== ch) return;
   const side = document.querySelector(".sessions"); if (side) morph(side, sideList(ch, s, (document.getElementById("q") as HTMLInputElement | null)?.value ?? ""));
   const ht = document.getElementById("htasks"); if (ht) morph(ht, tasksHtml(ch));
@@ -1381,7 +1382,7 @@ function toggleDone(id: any, fromUndo = false) {
   const ch = channels.find(c => c.sessions.some(x => String(x.id) === String(id))); if (!ch) return;
   const x = ch.sessions.find(y => String(y.id) === String(id))!; if (isTexts(x) && !x.done) return; x.done = !x.done; if (x.done) x.unread = false; setDoneAt(x, x.done ? Date.now() : null); repaint(ch); livePatch(ch, x, { done: !!x.done });
   if (!fromUndo && x.done) note(`${ic.check}`, "Marked done", x.title, `<button class="tview" data-undo="${x.id}">Undo</button>`);
-  else if (!fromUndo) hideToast();
+  else if (!fromUndo) hideToast(`[data-undo="${x.id}"]`);
 }
 // Repaint #hdone only when its markup changed, so the status dot animation is not restarted, and refit the header at once so a
 // folded .ho item is never painted visible for a frame (the new markup has no hhid class until hFit runs).
@@ -1503,6 +1504,7 @@ function refresh() {
   } else if (!typing) render();
   else morph($(".sessions"), sideList(ch, s, ($("#q") as HTMLInputElement)?.value ?? ""));
   clearFresh(ch);
+  paintChannelDots(document, chDotKind);   // the rail / channel list dots follow the tasks even when only the open page was repainted above
   paintMobileStatus(ch, s);
   stNow();
 }
@@ -1972,7 +1974,9 @@ const G: Record<string, string> = {
 };
 const g = (k: string, s = 17) => I(G[k], s);
 G.loc = DP_ICON.loc;   // Settings → Location & mic
-const brand = (k: string) => { const [d, c] = BRAND[k]; return `<span class="bico"><svg viewBox="0 0 24 24" width="20" height="20" fill="${c}" aria-hidden="true"><path d="${d}"/></svg></span>`; };
+// The brand's logo from logo.dev (src/logo.ts, /logo/<domain>) drawn over its vendored mark: the mark only shows if the logo can't load (offline, the design sandbox). Link by Stripe is link.com's logo.
+const BRAND_SITE: Record<string, string> = { gmail: "gmail.com", googlecalendar: "calendar.google.com", googledrive: "drive.google.com", google: "google.com", notion: "notion.so", youtube: "youtube.com", dropbox: "dropbox.com", slack: "slack.com", imessage: "apple.com", whatsapp: "whatsapp.com", stripe: "link.com" };
+const brand = (k: string) => { const [d, c] = BRAND[k]; return `<span class="bico lgo-host"><svg viewBox="0 0 24 24" width="20" height="20" fill="${c}" aria-hidden="true"><path d="${d}"/></svg>${logoOver(BRAND_SITE[k] || "", 40)}</span>`; };
 const APP: Record<string, [string, string]> = {
   gmail: ["Gmail", "Read, sort and draft your email"], googlecalendar: ["Google Calendar", "See your schedule and add events"], googledrive: ["Google Drive", "Find and create documents"],
   notion: ["Notion", "Read and update your pages"], slack: ["Slack", "Read and send messages"], dropbox: ["Dropbox", "Find and save files"], youtube: ["YouTube", "Your channel, videos and comments"],
@@ -2010,7 +2014,7 @@ function walletHtml() {
 }
 // Official store destinations: https://link.com/download. Notifications and approvals belong to Link.
 function linkAppHtml() {
-  return `<h3>Link on your phone</h3><div class="sc lkapp"><p>Get push notifications for agent purchase requests, approve or decline them, and manage your saved payment methods in the Link app. Allow notifications when prompted to receive alerts.</p><div class="lkdownloads"><a class="sa" href="https://apps.apple.com/app/link-a-smarter-way-to-pay/id1623228342" target="_blank" rel="noopener noreferrer">Download for iOS</a><a class="sa" href="https://play.google.com/store/apps/details?id=com.stripe.link.android" target="_blank" rel="noopener noreferrer">Download for Android</a></div></div>`;
+  return `<h3>Link on your phone</h3><div class="sc lkapp bdqr-card"><p>Get push notifications for agent purchase requests, approve or decline them, and manage your saved payment methods in the Link app. Allow notifications when prompted to receive alerts.</p><div class="lkdownloads"><a class="sa" href="https://apps.apple.com/app/link-a-smarter-way-to-pay/id1623228342" target="_blank" rel="noopener noreferrer">Download for iOS</a><a class="sa" href="https://play.google.com/store/apps/details?id=com.stripe.link.android" target="_blank" rel="noopener noreferrer">Download for Android</a></div>${bdqrHtml("link-app", [{ url: "https://apps.apple.com/app/link-a-smarter-way-to-pay/id1623228342", label: "iOS" }, { url: "https://play.google.com/store/apps/details?id=com.stripe.link.android", label: "Android" }])}</div>`;
 }
 // Add credits (live): $10 / $25 / $50 on the card already on file; falls back to Stripe Checkout if that card can't be charged.
 const CR: { open: boolean; busy: number; pick: number; info: { card: { brand: string; last4: string } | null; confirm: string } | null } = { open: false, busy: 0, pick: 0, info: null };
@@ -2037,7 +2041,7 @@ async function creditsRefresh() {
     }
   }
 }
-// Connected apps (live): ONE store for Settings → Connected accounts and the Apps popup. Last known list is cached per workspace
+// Connected apps (live): ONE store for Settings → Connected Apps and the Apps popup. Last known list is cached per workspace
 // (localStorage) and drawn at once; GET /api/apps refreshes it quietly at boot, on open, and after a sign-in. Rows are Composio's own data.
 // Several accounts per app (two Gmails…): each has a label (its email/username, else "Account 2") and one per app is the default.
 type Acct = { id: string; app: string; name: string; logo: string; status: string; email: string; label?: string; default?: boolean; since: string; retired?: boolean; note?: string; memo?: string };   // note: the retired-app notice; memo: their note for the helper (acct-note.ts)
@@ -2117,7 +2121,7 @@ function appConnect(app: string, from: string, label = "", offer: { ch: string; 
   ask(0);
 }
 const fmtDay = (iso: string) => { const d = new Date(iso); return isNaN(+d) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); };
-// App logos (Connected accounts, the connect card, the Apps list, app detail): logo.ts appLogo — tinted initial tile at once, the
+// App logos (Connected Apps, the connect card, the Apps list, app detail): logo.ts appLogo — tinted initial tile at once, the
 // logo fades in over it via /applogo/<app> on live, and the tile stays if it fails.
 const appImg = (a: { logo: string; name: string }) => appLogo(a.logo, a.name, "bico", 24);
 // Long lists: one entry per app (a multi-account app is one entry), 8 entries a page with Prev/Next, and a search box once there are more than 8.
@@ -2358,18 +2362,19 @@ document.addEventListener("change", e => {
   window.addEventListener("dragleave", e => { if (!ok(e)) return; e.stopPropagation(); PI.drag = Math.max(0, PI.drag - 1); mark(); }, true);
   window.addEventListener("dragover", e => { if (!ok(e)) return; e.stopPropagation(); e.preventDefault(); }, true);
   window.addEventListener("drop", e => { if (!ok(e)) return; e.stopPropagation(); e.preventDefault(); PI.drag = 0; mark(); piRead(e.dataTransfer?.files?.[0]); }, true); }
-const SECS: [string, string, string][] = [["general", "General", "gear"], ["accounts", "Connected accounts", "grid"], ["wallet", "Wallet", "wallet"], ["keys", "Passwords & keys", "key"],
+const SECS: [string, string, string][] = [["general", "General", "gear"], [BYK_SEC, "AI services", "spark"], ["accounts", "Connected Apps", "grid"], [NETWORK_SEC, "Computers", "mon"], ["wallet", "Wallet", "wallet"], ["keys", "Passwords & keys", "key"],
   ["perm", "Permissions", "hand"], ["device", "Location & mic", "loc"], ["texting", "Texting", "msg"], ["ambient", "Ambient", "wave"], ["notif", "Notifications", "bell"], [CMCP_SEC, "Advanced", "sliders"], ["", "", ""], ["help", "Help & support", "help"], ["legal", "Legal", "legal"]];
 const LIVE_HIDE = new Set<string>([]);   // not real yet on Cloud: hidden, not faked (none today)
 const secShown = (k: string) => {
-  if (!k || !LIVE) return true;
+  if (!k) return true;
+  if (k === NETWORK_SEC) return !!LIVE;
+  if (!LIVE) return true;
   const gated: Record<string, string> = { accounts: "connected_apps", [CMCP_SEC]: "connected_apps", wallet: "billing", texting: "texting", ambient: "ambient" };
   return !LIVE_HIDE.has(k) && (!gated[k] || hasFeature(gated[k]));
 };
-const secName = (k: string) => k === NETWORK_SEC ? "Computer connections" : k === "shortcuts" ? "Keyboard shortcuts" : k === "account" ? "Your account" : k === BYK_SEC ? BYK_TITLE : k === AP_SEC ? AP_TITLE : SECS.find(x => x[0] === k)?.[1] ?? "Settings";
+const secName = (k: string) => k === "shortcuts" ? "Keyboard shortcuts" : k === "account" ? "Your account" : k === AP_SEC ? AP_TITLE : SECS.find(x => x[0] === k)?.[1] ?? "Settings";
 // Sub-pages: where their back button goes (and, on desktop, which section stays highlighted). Your account goes back to General on
-// desktop; on phone, to wherever it was opened from (AC.back).
-const secParent = (k: string, desk = !phone()) => k === NETWORK_SEC ? (hasFeature("connected_apps") ? "accounts" : "perm") : k === "shortcuts" ? "help" : k === BYK_SEC || k === AP_SEC ? "general" : k === "account" ? (desk ? "general" : AC.back) : "";
+const secParent = (k: string, desk = !phone()) => k === "shortcuts" ? "help" : k === AP_SEC ? "general" : k === "account" ? (desk ? "general" : AC.back) : "";
 const tg = (k: string, label: string) => `${LIVE ? SP : ""}<button class="tg${S.sw[k] ? " on" : ""}" role="switch" aria-checked="${S.sw[k]}" aria-label="${esc(label)}" ${LIVE ? `data-soon="${k === "text" || k === "quiet" ? "texting" : "notif"}"` : `data-sw="${k}"`}><i></i></button>`;
 // Settings → General → AI data privacy (proto src/privacy.js, POST /api/account/privacy { level }): which AI providers may handle the
 // person's requests. One server-validated choice per account; the same three options as onboarding. Unset accounts read as ZDR. A change
@@ -2642,10 +2647,9 @@ function secHtml(sec: string): string {
 </div>
       ${piRow()}
       <h3>Your AI</h3>
-      <div class="sc">${apRow()}${bykRow()}</div>
+      <div class="sc">${apRow()}</div>
       <div class="sdanger">${sa("Delete account", LIVE ? "data-delacct" : 'data-snote="delete"', "red")}</div>`;
-    case "accounts": return `<h2>Connected accounts</h2><p class="slead">Let ${esc(who(main))} read and act in your apps. You can disconnect anytime.</p>
-      ${LIVE ? `<div class="sc">${srow(g("mon"), "Computer connections", "Native SSH keys, sessions and Tailscale for each channel computer", chev(), nav(NETWORK_SEC))}</div>` : ""}
+    case "accounts": return `<h2>Connected Apps</h2><p class="slead">Let ${esc(who(main))} read and act in your apps. You can disconnect anytime.</p>
       ${LIVE ? cmHtml() : ""}<button class="sbrowse cxbrowse" data-apps>${ic.apps}<span>Browse all apps</span><em>1,500+</em>${ic.chev}</button>
       ${LIVE ? accountsHtml() : `<div class="sc">${srow(brand("google"), `${esc(EMAIL)}<em class="stag">Primary</em>`, "Connected Sep 26, 2026", `${ok("Connected")}${sa("Disconnect", 'data-snote="disc"', "mute")}`)}
         ${["gmail", "googlecalendar", "googledrive"].map(k => srow(brand(k), APP[k][0], APP[k][1], S.conn[k] ? `${ok("On")}${sa("Turn off", `data-conn="${k}"`, "mute")}` : sa("Enable", `data-conn="${k}"`, "blue"))).join("")}</div>`}
@@ -2712,7 +2716,7 @@ function sPhone() {
     const r = (k: string) => { const [, l, i] = SECS.find(x => x[0] === k)!; return srow(g(i), l, "", chev(), nav(k)); };
     return `<div class="smodal sphone" role="dialog" aria-modal="true" aria-label="Settings"><div class="sph"><span class="sp"></span><h1>Settings</h1><button class="cb" data-sclose aria-label="Close settings">${g("x", 20)}</button></div>
       <section class="sbody"><div class="sc">${accountRow(true)}</div>${usageCard()}${storCard()}
-        <div class="sc">${["accounts", "wallet", "keys", "perm", "device", "texting", "ambient"].filter(secShown).map(r).join("")}</div>
+        <div class="sc">${[BYK_SEC, "accounts", NETWORK_SEC, "wallet", "keys", "perm", "device", "texting", "ambient"].filter(secShown).map(r).join("")}</div>
         <div class="sc">${secShown("notif") ? r("notif") : ""}${secShown(CMCP_SEC) ? r(CMCP_SEC) : ""}${srow(g("sun"), "Appearance & more", "", chev(), nav("general"))}</div>
         <div class="sc">${r("help")}${r("legal")}</div>
         <div class="sc">${srow("", `<span class="red">Log out</span>`, "", "", snote("logout"))}</div></section></div>`;
@@ -2752,6 +2756,7 @@ function bindSettingsGesture(page: HTMLElement) {
   page.addEventListener("touchcancel", release);
 }
 function sRender(keep = true, dir = 0) {
+  if (cmodelsDragging()) return;   // a reasoning level is being dragged: the row stays the same element until the pointer is released
   cmcpBefore();
   if (LIVE) networkVisible(S.open && S.sec === NETWORK_SEC);
   const w = document.getElementById("setw"); if (!w || !S.open) return;
@@ -2787,6 +2792,7 @@ function sRender(keep = true, dir = 0) {
   cmcpAfter();   // Advanced: typed fields back in, polling
   bykAfter();   // the typed AI key goes back into its field (never into the HTML)
   acctNoteAfter();   // an open account-note box keeps its focus
+  cmodelsAfter();   // the reasoning sliders of an own key's models
   pmAfter();
 }
 function openSettings(sec: string) {
@@ -2830,7 +2836,7 @@ const SNOTE: Record<string, [string, string]> = {
   account: ["Your account", "Opens password, sign-in and personal details."], plan: ["Change plan", "Opens plans and billing."], credits: ["Add credits", "Opens a one-time top-up."],
   lang: ["Language", "Opens the language list."], delete: ["Delete account", "Asks you to confirm twice, then deletes everything."], disc: ["Disconnect Google", "Turns off Gmail, Calendar and Drive for your helper."],
   limit: ["Spending limit", "Lets you pick the most your helper can ask for."], rmkey: ["Remove key", "Removes it from every channel."], bug: ["Report an issue", "Opens a short form with an optional screenshot."],
-  contact: ["Contact us", `Opens an email to ${supportEmail}.`], apps: ["Download apps", "Opens the Mac, iPhone and Android downloads."], logout: ["Log out", "Signs you out on this device."], "google-next": ["Connect Google", "Google connection is the next fresh-customer slice; this account is not connected."], "wallet-chat": ["Wallet", "Ask your helper to set up Link when you want it to make a purchase."], "connections-next": ["Connected accounts", "More one-click app connections are the next fresh-customer slice."],
+  contact: ["Contact us", `Opens an email to ${supportEmail}.`], apps: ["Download apps", "Opens the Mac, iPhone and Android downloads."], logout: ["Log out", "Signs you out on this device."], "google-next": ["Connect Google", "Google connection is the next fresh-customer slice; this account is not connected."], "wallet-chat": ["Wallet", "Ask your helper to set up Link when you want it to make a purchase."], "connections-next": ["Connected Apps", "More one-click app connections are the next fresh-customer slice."],
   terms: ["Terms of service", "Opens in a new tab."], privacy: ["Privacy policy", "Opens in a new tab."], licenses: ["Open-source licenses", "Opens in a new tab."],
 };
 document.addEventListener("click", e => {
@@ -3081,13 +3087,13 @@ nfInit({ live: LIVE, look: !!BOOT?.look, blocked: () => dpSheetOpen(), texting: 
 rpInit({ live: LIVE, before: () => { closeMenu(); if (mState.sheet === "set") closeSheet(); } , note: (t, s) => note(ic.check, t, s, "") });
 if (hasFeature("smart_routing")) cmodelsInit({ api: LIVE ? (path, init) => fetch(`${LIVE.api}/${path}`, { method: init?.method || "GET", credentials: "same-origin", cache: "no-store", ...(init?.body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) } : {}) })
     .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok || d?.error) throw new Error(typeof d?.error === "string" ? d.error : `Something went wrong (${r.status}).`); return d; }) : null,
-  repaint: () => sRender(), shown: () => S.open && S.sec === CMCP_SEC, srow: (i, t, s, r, a = "") => srow(i, t, s, r, a), ask: o => ask(o),
-  openAdvanced: () => { if (S.open) sGo(CMCP_SEC); else openSettings(CMCP_SEC); }, version: String((LIVE as any)?.v || ""), noteBoot: v => { if (BOOT?.account) BOOT.account.custom_models = v; } }, BOOT?.account?.custom_models);
+  repaint: () => sRender(), shown: () => S.open && (S.sec === CMCP_SEC || S.sec === BYK_SEC), srow: (i, t, s, r, a = "") => srow(i, t, s, r, a), ask: o => ask(o),
+  openAdvanced: () => { if (S.open) sGo(CMCP_SEC); else openSettings(CMCP_SEC); }, openAi: () => { if (S.open) sGo(BYK_SEC); else openSettings(BYK_SEC); }, version: String((LIVE as any)?.v || ""), noteBoot: v => { if (BOOT?.account) BOOT.account.custom_models = v; } }, BOOT?.account?.custom_models);
 if (hasFeature("connected_apps")) cmcpInit({ api: LIVE ? (path, init) => fetch(`${LIVE.api}/${path}`, { method: init?.method || "GET", credentials: "same-origin", ...(init?.body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) } : {}) })
     .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) { const er = d?.error, e: any = new Error((typeof er === "string" ? er : er?.message) || `Something went wrong (${r.status}).`); e.status = r.status; e.code = er?.code; throw e; } return d; }) : null,
   repaint: () => sRender(), shown: () => S.open && S.sec === CMCP_SEC, srow: (i, t, s, r, a = "") => srow(i, t, s, r, a), icon: (k, z = 17) => G[k] ? g(k, z) : (ic as any)[k] || "",
   ask: o => ask(o), note: (good, t, s) => note(good ? ic.check : g("help", 14), t, s, ""), go: url => location.assign(url) });
-bykInit({ api: LIVE ? api : null, orStart: LIVE ? `${LIVE.api.replace(/\/api$/, "")}/byok/openrouter/start` : null, repaint: () => sRender(), open: () => openSettings(BYK_SEC), note: (good, t, s) => note(good ? ic.check : g("help", 14), t, s, ""), who: () => who(main),
+bykInit({ api: LIVE ? api : null, orStart: LIVE ? `${LIVE.api.replace(/\/api$/, "")}/byok/openrouter/start` : null, cgStart: LIVE ? `${LIVE.api.replace(/\/api$/, "")}/byok/chatgpt/start` : null, repaint: () => sRender(), open: () => openSettings(BYK_SEC), note: (good, t, s) => note(good ? ic.check : g("help", 14), t, s, ""), who: () => who(main),
   srow: (i, t, s, r, a = "") => srow(i, t, s, r, a), icon: (k, z = 17) => G[k] ? g(k, z) : (ic as any)[k] || "", shown: () => S.open && (S.sec === "general" || S.sec === BYK_SEC || (phone() && !S.sec)),
   // Add credits (a reply's "Add credits" link, the backup-in-use banner): Settings → Usage with the $10 / $25 / $50 picker open.
   credits: () => { CR.open = true; if (phone()) { if (!S.open) openSettings(""); else sGo(""); } else if (!S.open) openSettings("general"); else sGo("general");
@@ -4045,10 +4051,10 @@ if (LIVE && new URLSearchParams(location.search).get("plan") === "byok") {
 }
 // Back from Stripe (Manage billing, Add credits, Fix payment) or an email link: 1HC sends ?settings=<section> (usage: Settings → Usage),
 // plus ?topup=1 / ?resubscribed=1 after a payment. Open that section, say what happened, then drop the flags so a refresh doesn't repeat it.
-// (?settings=byok and ?settings=credits are byok.ts's.)
+// (?settings=byok, ?settings=ai and ?settings=credits are byok.ts's.)
 if (LIVE) {
   const u = new URL(location.href), sec = u.searchParams.get("settings") || "", topup = u.searchParams.get("topup") === "1", resub = u.searchParams.get("resubscribed") === "1";
-  const known = sec === "usage" || sec === "account" || sec === "bee" || SECS.some(x => x[0] && x[0] === sec);
+  const known = sec === "usage" || sec === "account" || sec === "bee" || SECS.some(x => x[0] && x[0] === sec);   // "ai" is in SECS; "byok" (old name) is byok.ts's
   if (known || topup || resub) {
     if (known) u.searchParams.delete("settings"); u.searchParams.delete("topup"); u.searchParams.delete("resubscribed");
     history.replaceState(null, "", u.pathname + u.search + u.hash);
@@ -4867,8 +4873,8 @@ function ctPage() {
 }
 function ctImport() {
   return `<div class="cximp"><div class="sback" data-cximpx></div><div class="cximpbox" role="dialog" aria-modal="true" aria-label="Import contacts"><div class="aphead"><div><h2>Import contacts</h2><p>${esc(who(main))} only reads names, numbers, emails and birthdays. Nothing is shared or sent.</p></div><button class="cb" data-cximpx aria-label="Close">${g("x", 18)}</button></div>
-    <button class="cximprow" data-cxfrom="google">${appIco("googlecontacts")}<span><b>Google Contacts</b><small>One click. Stays in sync when you add people in Google.</small></span>${ic.chev}</button>
-    <button class="cximprow" data-cxfrom="iphone"><span class="aplogo cxapple"><svg viewBox="0 0 24 24" width="22" height="22" fill="#111"><path d="M16.4 12.6c0-2.6 2.1-3.8 2.2-3.9-1.2-1.8-3.1-2-3.7-2-1.6-.2-3.1.9-3.9.9-.8 0-2-.9-3.4-.9-1.7 0-3.3 1-4.2 2.6-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.2 2.6 1.3-.1 1.8-.8 3.3-.8 1.6 0 2 .8 3.4.8 1.4 0 2.3-1.3 3.1-2.5 1-1.4 1.4-2.8 1.4-2.9 0 0-2.7-1-2.7-4.1zM13.8 4.9c.7-.9 1.2-2 1.1-3.2-1 0-2.3.7-3 1.6-.7.8-1.2 2-1.1 3.1 1.1.1 2.3-.6 3-1.5z"/></svg></span><span><b>iPhone or iCloud</b><small>Text “send my contacts” from your iPhone and share them. Or upload a .vcf file.</small></span>${ic.chev}</button>
+    <button class="cximprow" data-cxfrom="google"><span class="aplogo cxapple lgo-host"><b aria-hidden="true">G</b>${logoOver("google.com", 40)}</span><span><b>Google Contacts</b><small>One click. Stays in sync when you add people in Google.</small></span>${ic.chev}</button>
+    <button class="cximprow" data-cxfrom="iphone"><span class="aplogo cxapple lgo-host"><b aria-hidden="true">i</b>${logoOver("apple.com", 40)}</span><span><b>iPhone or iCloud</b><small>Text “send my contacts” from your iPhone and share them. Or upload a .vcf file.</small></span>${ic.chev}</button>
     <button class="cximprow" data-cxfrom="csv"><span class="aplogo cxapple">${KIND.sheet ? I(KIND.sheet[1], 20) : ""}</span><span><b>A spreadsheet</b><small>Upload a CSV or Excel file, or pick a Google Sheet.</small></span>${ic.chev}</button>
     <p class="apfoot cxnote">${g("lock", 14)}You can delete any imported contact, or all of them, anytime.</p></div></div>`;
 }
@@ -5016,7 +5022,7 @@ document.addEventListener("click", e => {
   const ct = t.closest<HTMLElement>("[data-acat]"); if (ct) { AS.cat = +ct.dataset.acat!; appsFilter(); document.getElementById("apgrid")!.scrollTop = 0; return; }
   const cn = t.closest<HTMLElement>("[data-acon]"); if (cn) { const k = cn.dataset.acon!, a = AS.all.find(x => x.s === k)!;
     if (LIVE) {
-      if (ACON[k]) { closeApps(); openSettings("accounts"); return; }   // disconnecting lives in Settings → Connected accounts
+      if (ACON[k]) { closeApps(); openSettings("accounts"); return; }   // disconnecting lives in Settings → Connected Apps
       if (a?.x || a?.b) return;
       appConnect(k, "apps", a?.n); return;
     }
@@ -5035,7 +5041,7 @@ if (hasFeature("connected_apps")) initAcctNote({ api: () => LIVE?.api || null, h
 if (hasFeature("connected_apps")) amInit({ api: () => LIVE?.api || null, helper: () => who(main), ask, note: (t, sub, good) => note(good ? ic.check : g("help", 14), t, sub, ""), repaint: () => { if (S.open && S.sec === "accounts") sRender(); },
   reloadApps: () => { CX.at = 0; cxLoad(true); }, go: (u) => location.assign(u) });
 if (hasFeature("connected_apps")) onAcctNote(cxSet, () => { if (S.open && S.sec === "accounts") cxListPaint(); });
-// Tap an app (Apps popup, its search, Settings → Connected accounts) → its own page: full description, what the helper can do, Connect.
+// Tap an app (Apps popup, its search, Settings → Connected Apps) → its own page: full description, what the helper can do, Connect.
 if (hasFeature("connected_apps")) initAppDetail({ api: LIVE?.api || null, helper: () => who(main), info: s => AS.all.find(x => x.s === s), connected: s => !!ACON[s], busy: () => !!CX.busy,
   connect: (s, n, another) => appConnect(s, AS.open ? "apps" : "settings", n, cxoFrom(s), !!another), setAccounts: cxSet, manage: () => { closeApps(); openSettings("accounts"); }, computerConnections: () => { closeApps(); openSettings(NETWORK_SEC); }, note: (a, b) => note(g("help", 14), a, b, ""), draft: cxoDraftHtml });
 // "Connect YouTube?" cards the helper puts in chat (connect-card.ts), and the app-page link a texted offer carries (?appinfo=).

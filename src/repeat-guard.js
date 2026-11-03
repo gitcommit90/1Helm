@@ -6,12 +6,16 @@
 //   exact   the same chunk (period ≤ 400 chars) repeated ≥ 20 times over ≥ 4,000 chars ("the the the", one paragraph again and again);
 //   folded  with every run of digits read as one "#", the same short pattern (period ≤ 80) repeated ≥ 100 times over ≥ 8,000 folded chars
 //           (a counting loop: dates, ids, "row 1, row 2…"). A 365-day list or a normal CSV with names in it stays far below this.
+//   blank   the last 2,000 chars hold at most 20 characters that are not whitespace (spaces and newlines written endlessly, usually as a tool
+//           call's arguments). Live 2026-11-03: one step wrote 60,427 such chars over 5 minutes because the whitespace had no short period, so
+//           the two rules above only fired when the last 4,399 chars happened to repeat.
 // Checked every 512 new chars once a stream holds 4,000; each check walks back from the end and stops at the first mismatch, so a
 // normal step costs almost nothing. Pure: the Resident (callModelOnce) feeds it and decides what to do (resident.js callModel:
 // abort, drop the partial call, retry once with REPEAT_NOTE, then REPEAT_FALLBACK as a plain message; the spend guard counts it).
 export const REPEAT = { checkEvery: 512, minChars: 4000, keep: 40000,
   exactMaxPeriod: 400, exactMinSpan: 4000, exactMinRepeats: 20,
-  foldMaxPeriod: 80, foldMinSpan: 8000, foldMinRepeats: 100 };
+  foldMaxPeriod: 80, foldMinSpan: 8000, foldMinRepeats: 100,
+  blankSpan: 2000, blankMaxVisible: 20 };
 
 // A model step cannot pre-author hundreds of operations before seeing feedback.
 // Independent of optional spend pauses; reject the whole step, never a prefix.
@@ -100,6 +104,7 @@ const fold = (s) => s.replace(/\d+/g, "#").replace(/[ \t]+/g, " ");
 // → null, or { kind: "exact" | "folded", period, span, unit } for a tail that's looping.
 export function degenerate(s, o = REPEAT) {
   s = String(s || ""); if (s.length < o.minChars) return null;
+  if (o.blankSpan && s.slice(-o.blankSpan).replace(/\s/g, "").length <= o.blankMaxVisible) return { kind: "blank", period: 0, span: o.blankSpan, unit: "whitespace only" };
   const ex = periodicTail(s, o.exactMaxPeriod, o.exactMinSpan, o.exactMinRepeats); if (ex) return { kind: "exact", ...ex };
   const f = periodicTail(fold(s), o.foldMaxPeriod, o.foldMinSpan, o.foldMinRepeats); if (f) return { kind: "folded", ...f };
   return null;

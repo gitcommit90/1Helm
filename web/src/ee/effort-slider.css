@@ -1,0 +1,31 @@
+/* Copyright (c) 2026 Bruno Delorence. MIT License.
+   Ported to plain CSS from the Effort slider (https://brunodelorence.com/components/effort-slider). The full license text is in THIRD-PARTY-NOTICES.md.
+
+   Bruno's track, step dots, fill and gliding thumb, in the app's colours. The thumb is a plain round dot, there is no card, and the track takes the
+   width of the column. The thumb and fill read one --pos (0 to 1) along the track less half a thumb at each end. */
+.efs{--t:18px;display:block;width:100%;min-width:0;max-width:100%;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+.efs-header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;column-gap:10px;row-gap:2px;min-height:16px;font-size:12.5px;line-height:16px}
+.efs-name{color:var(--mute)}
+.efs-level{display:inline-grid;color:var(--ink);font-weight:500}
+.efs-in,.efs-out{grid-area:1 / 1;white-space:nowrap}
+.efs-letter{display:inline-block}
+.efs-in .efs-letter{animation:efs-letter-in 170ms cubic-bezier(.2,.7,.3,1) calc(var(--i) * 22ms) both}
+.efs-first .efs-letter{animation:none}
+.efs-out .efs-letter{animation:efs-letter-out 110ms ease-in calc(var(--i) * 10ms) both}
+@keyframes efs-letter-in{from{opacity:0;transform:translateY(.3em);filter:blur(.14em)}}
+@keyframes efs-letter-out{to{opacity:0;transform:translateY(-.3em);filter:blur(.14em)}}
+.efs-control{position:relative;height:var(--t);margin-top:6px;touch-action:pan-y;cursor:pointer}
+.efs-still .efs-control{cursor:default;opacity:.6}
+.efs-track{position:absolute;inset:0;overflow:hidden;border-radius:calc(var(--t) / 2);background:var(--hover);box-shadow:inset 0 0 0 1px var(--line)}
+/* The fill ends under the thumb's middle. */
+.efs-fill{position:absolute;left:0;top:0;bottom:0;width:calc(var(--t) / 2 + var(--pos) * (100% - var(--t)));background:linear-gradient(90deg,color-mix(in srgb,var(--accent) 35%,transparent),var(--accent))}
+.efs-dot{position:absolute;top:50%;left:calc(var(--t) / 2 + var(--stop) * (100% - var(--t)));width:3px;height:3px;border-radius:50%;transform:translate(-50%,-50%);background:var(--faint);opacity:.8}
+.efs-rail{position:absolute;top:0;bottom:0;left:calc(var(--t) / 2);right:calc(var(--t) / 2)}
+.efs-thumb{position:absolute;top:50%;left:calc(var(--pos) * 100%);width:var(--t);height:var(--t);margin:calc(var(--t) / -2) 0 0 calc(var(--t) / -2);box-sizing:border-box;border-radius:50%;background:var(--sheet);box-shadow:0 0 0 2px var(--accent),0 1px 3px rgb(0 0 0 / .25);cursor:grab}
+.efs-thumb:active{cursor:grabbing}.efs-still .efs-thumb{cursor:default}
+.efs-thumb:focus{outline:none}
+.efs-thumb:focus-visible{box-shadow:0 0 0 2px var(--accent),0 0 0 5px color-mix(in srgb,var(--accent) 35%,transparent),0 1px 3px rgb(0 0 0 / .25)}
+@media (prefers-reduced-motion:reduce){
+  .efs-in .efs-letter,.efs-out .efs-letter{animation:none}
+  .efs-out{display:none}
+}

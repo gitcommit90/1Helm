@@ -28,8 +28,7 @@ import { emailChangePage } from "./onboarding.js";
 import { boundedForm, boundedJson, BodyTooLargeError } from "./bounded-body.js";
 import { privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // Settings → General → AI data privacy
 import { betterDesignView, betterDesignChoice, setBetterDesign } from "./better-design.js";   // Settings: Better Design as a design source
-import { enabled as eeEnabled, customView, readCustom, saveCustom, pickerModels, statusOfRow, ownKeyKind, ownKindForStatus, ownViewFor, ownPicker, saveOwn, readModelSettings } from "./ee/index.js";   // Settings → Advanced: Custom Model Selection (licensed; off unless ONEHELM_EE)
-import { loadByok } from "./byok.js";
+import { enabled as eeEnabled, customView, readCustom, saveCustom, pickerModels, statusOfRow, ownKeyKind, ownKindForStatus, ownViewFor, ownPicker, saveOwn, warmLists, readModelSettings } from "./ee/index.js";   // Settings → Advanced: Custom Model Selection (licensed; off unless ONEHELM_EE)
 import { hsWalls, frontDoorSet } from "./walls.js";   // HS_WALLS: General's front door setting
 
 const enc = new TextEncoder();
@@ -106,7 +105,7 @@ const savedSettings = async (env, deps) => deps.modelSettings ? deps.modelSettin
 // Model search reads OpenRouter's public lists, so it is limited per account (best effort, per isolate): 20 searches a minute.
 const searches = new Map();
 function catalogAllowed(id, now = Date.now()) {
-  const list = (searches.get(id) || []).filter((x) => now - x < 60000); if (list.length >= 20) { searches.set(id, list); return false; }
+  const list = (searches.get(id) || []).filter((x) => now - x < 60000); if (list.length >= 60) { searches.set(id, list); return false; }
   list.push(now); searches.set(id, list); if (searches.size > 500) searches.clear(); return true;
 }
 export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
@@ -120,15 +119,19 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
       ...(hsWalls(env) ? { front_door_available: true, front_door: Number(t.front_door) === 1 } : {}) });   // HS_WALLS: General's front door (walls.js)
   if (eeEnabled(env) && req.method === "GET" && sub === "/api/account/custom-models") {
     const own = await ownKeyKind(env, t);
-    if (own) { try { return json(await ownViewFor(env, t, own, { lookup: deps.lookup })); } catch { return json({ error: "Couldn't load this. Try again in a minute." }, 503); } }
+    if (own) { try { return json(await ownViewFor(env, t, own)); } catch { return json({ error: "Couldn't load this. Try again in a minute." }, 503); } }
     return json(customView(await readCustom(env, t.id)));
   }
   if (eeEnabled(env) && req.method === "GET" && sub === "/api/account/custom-models/catalog") {
     if (!catalogAllowed(t.id)) return json({ error: "Too many searches. Wait a moment and try again." }, 429);
     const st = await readCustom(env, t.id), q = String(url.searchParams.get("q") || "").slice(0, 120), own = await ownKeyKind(env, t);
     if (own) {   // the models their own endpoint serves (OpenRouter: the same catalog and privacy filter as a full plan)
-      try { return json(await ownPicker(env, t, own, q, { cfg: await loadByok(env, t.id), settings: await savedSettings(env, deps), search: deps.search, fetchImpl: deps.fetchImpl || globalThis.fetch })); }
-      catch (e) { return json({ error: e?.byok ? "Couldn't load the models from your AI service. Check it in Settings, Use my own AI key." : "Model search failed. Try again." }, 503); }
+      try {
+        const fetchImpl = deps.fetchImpl || globalThis.fetch, settings = await savedSettings(env, deps);
+        if (url.searchParams.get("warm") === "1") { await warmLists(env, t.id, { fetchImpl, waitUntil: deps.waitUntil, settings, search: deps.search }); return json({ ok: true }); }   // the AI services page and a new connection: fill the copies
+        return json(await ownPicker(env, t, own, q, { settings, search: deps.search, fetchImpl, waitUntil: deps.waitUntil, conn: String(url.searchParams.get("conn") || "") || null }));
+      }
+      catch (e) { return json({ error: "Model search failed. Try again." }, 503); }
     }
     try { return json({ level: st.level, models: await pickerModels(env, st.level, { q, settings: await savedSettings(env, deps), have: st.config?.catalog, search: deps.search }) }); }
     catch (e) { return json({ error: e?.status === 503 || e?.code === "model_catalog_unavailable" ? "Model search is unavailable right now. Try again shortly." : "Model search failed. Try again." }, 503); }
@@ -187,7 +190,7 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
     if (JSON.stringify(b).length > 65536) return json({ error: "That is too large to save." }, 413);
     const own = await ownKeyKind(env, t);
     try {
-      if (own) return json({ ok: true, ...(await saveOwn(env, t.id, b, { cfg: await loadByok(env, t.id), kind: own, settings: await savedSettings(env, deps), lookup: deps.lookup, fetchImpl: deps.fetchImpl || globalThis.fetch, at })) });
+      if (own) return json({ ok: true, ...(await saveOwn(env, t.id, b, { settings: await savedSettings(env, deps), lookup: deps.lookup, fetchImpl: deps.fetchImpl || globalThis.fetch, at })) });
       return json({ ok: true, ...(await saveCustom(env, t.id, b, { settings: await savedSettings(env, deps), at, lookup: deps.lookup })) });
     }
     catch (e) { const s = [400, 409, 413, 503].includes(e?.status) ? e.status : 503; return json({ error: e?.status === s ? e.message : "Couldn't save. Try again." }, s); }
@@ -199,7 +202,7 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
     const r = await setPrivacy(env, t.id, level, at);
     // Custom Model Selection: the account's own models are checked against the new level now (and again at every send). custom_models says which need replacing.
     const ownKind = eeEnabled(env) ? await ownKeyKind(env, t) : null;
-    const custom = !eeEnabled(env) ? null : await (ownKind ? ownViewFor(env, t, ownKind, { lookup: deps.lookup }) : readCustom(env, t.id).then((st) => customView(st))).catch(() => null);
+    const custom = !eeEnabled(env) ? null : await (ownKind ? ownViewFor(env, t, ownKind) : readCustom(env, t.id).then((st) => customView(st))).catch(() => null);
     return json({ ok: true, ai_privacy: { level: r.level, chosen: true, version: r.version, at: r.at }, ...(custom ? { custom_models: { on: custom.on, level: custom.level, ...(custom.own_key ? { own_key: true } : {}), needs_choice: custom.needs_choice, problems: custom.problems } } : {}) });
   }
 

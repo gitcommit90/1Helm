@@ -17,7 +17,8 @@ test('app.js loads the Zone on demand and holds none of it', () => {
   const app = read(`${A}/app.js`);
   if (!app.includes('zone/zone.js')) return;   // not shipped yet
   assert.doesNotMatch(app, /__zb|pixels-mechanic|plaintext-only|ImageGeneration/, 'the in-frame scripts and the effect are not in app.js');
-  assert.ok(statSync(new URL(`../${A}/app.js`, import.meta.url)).size < 1_250_000, 'app.js stays about the size it was (the Zone and the effect are 0.9 MB on their own)');
+  // The cap was raised from 1,250,000 to 1,350,000 on 2026-11-02: ordinary features (ChatGPT sign-in, effort slider, toast stack, composer, QR share) grew app.js to about 1.25 MB, and the Zone would add 0.9 MB more.
+  assert.ok(statSync(new URL(`../${A}/app.js`, import.meta.url)).size < 1_350_000, 'app.js stays about the size it was (the Zone and the effect are 0.9 MB on their own)');
   for (const f of ['zone/zone.js', 'zone/zone-ui.css', 'zone/imgfx.js']) assert.ok(existsSync(new URL(`../${A}/${f}`, import.meta.url)), `${f} is shipped`);
   const fx = read(`${A}/zone/imgfx.js`);
   assert.match(fx.slice(0, 400), /MIT License/, 'the effect keeps its license notice');

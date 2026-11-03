@@ -15,6 +15,7 @@
 @import "./delete.css";
 @import "./newchannel.css";
 @import "./dictate.css";
+@import "./bd-composer.css";
 @import "./interview.css";
 @import "./ee/apps-pick.css";
 @import "./interview-card.css";
@@ -36,6 +37,7 @@
 @import "./perms.css";
 @import "./byok.css";
 @import "./ee/byok-billing.css";
+@import "./ee/effort-slider.css";
 @import "./ee/acct-note.css";
 @import "./ee/bee.css";
 @import "./devperm.css";
@@ -47,6 +49,7 @@
 @import "./channel-sidebar.css";
 @import "./chat-attachments.css";
 @import "./deck-styles.css";
+@import "./toast-stack.css";
 .nbbeedot{display:inline-block;width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:#d5af45;opacity:.8}
 .nbbeedot[hidden]{display:none}
 .dti:has(.nbbeedot){position:relative}.dti>.nbbeedot{position:absolute;right:0;top:0}
@@ -397,8 +400,6 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .nopt b{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nopt span{color:var(--mute);font-size:13px}.nopt svg{color:var(--accent);margin-left:auto}
 .nkbd{font-size:12px;color:var(--faint);margin-right:6px;display:inline-flex;align-items:center;gap:5px}
 .ngo{height:40px;padding:0 18px;margin-left:4px;border-radius:999px;background:var(--ink);color:var(--sheet);font-weight:600;font-size:14px;transition:opacity .15s}.ngo:disabled{opacity:.35;cursor:default}
-#toast{position:fixed;right:22px;bottom:96px;z-index:70;display:flex;align-items:center;gap:10px;max-width:440px;padding:10px 10px 10px 14px;background:var(--sheet);border:1px solid var(--line);border-radius:20px;box-shadow:var(--lift);opacity:0;transform:translateY(14px);pointer-events:none;transition:opacity .22s,transform .3s cubic-bezier(.2,.8,.2,1)}
-#toast.on{opacity:1;transform:none;pointer-events:auto}
 .tok{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--live);color:#fff;flex:none}
 #toast .av.sm{width:26px;height:26px}
 .tmsg{min-width:0;display:flex;flex-direction:column;margin-right:6px}.tmsg b{font-weight:600;font-size:14px;white-space:nowrap}.tmsg span{font-size:12.5px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -412,7 +413,6 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
   #nbox{font-size:17px;min-height:88px}
   .nkbd{display:none}.ngo{height:44px;padding:0 20px;font-size:16px}
   .nlist{top:auto;bottom:42px}
-  #toast{left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom));max-width:none;transform:translateY(20px)}
   /* drawer open: the chat sheet covers the right 16% of the screen, so centre the toast on the drawer (the visible list) */
   body:has(#m .cv.open) #toast{right:calc(16% + 12px)}
   .tview{height:38px}}
@@ -1161,7 +1161,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .fvxl td{padding:6px 12px;border-right:1px solid var(--line);min-width:64px}
 .fvxl td.xr{text-align:right}
 .fvxl td.xf{color:var(--mute);font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
-/* Connected accounts: each row is Composio's own app logo + name (10-02) */
+/* Connected Apps: each row is Composio's own app logo + name (10-02) */
 /* The app's initial on a tinted tile right away; the logo (on its own white chip) fades in over it once loaded (logo.ts appLogo):
    Settings rows, the connect card (.cxo-logo), the Apps list (.aplogo) and app detail (.apdlogo, .apdaccl). */
 .cxlogo{position:relative;overflow:hidden;background:hsl(var(--h,220) 40% 93%);color:hsl(var(--h,220) 32% 36%);font-weight:600;font-size:15px}
@@ -1473,7 +1473,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .sr[data-acpend]{flex-wrap:wrap}.sr[data-acpend] .srt{flex:1 1 calc(100% - 54px)}.sr[data-acpend] .sa{margin-left:auto}
   .sr[data-kyrow]{gap:10px}.sr[data-kyrow] .sa{padding:0 6px}.sr[data-kyrow] .srt>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 
-/* Settings → Connected accounts: Browse all apps sits under the lead sentence; long lists get a search box and Prev/Next pages */
+/* Settings → Connected Apps: Browse all apps sits under the lead sentence; long lists get a search box and Prev/Next pages */
 .sbrowse.cxbrowse{margin:0 0 14px}
 .cxfind{margin:0 0 10px}
 .cxpager{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:10px 4px 0}
@@ -1699,6 +1699,8 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 /* Back and Forward arrows: the top row of the channel rail, either side of the logo (nav-history.ts). The row is as tall as the logo row was, so nothing moves. */
 .navh{display:flex;align-items:center;justify-content:center;width:80px;padding:0 2px;box-sizing:border-box;height:40px;margin-bottom:10px}
 .navh .brand{margin:0;flex:none}
+/* The logo row stays at the top of the rail while the channels scroll under it. */
+#rail .chs>.navh{position:sticky;top:0;z-index:2;flex:none;background:var(--rail)}
 .navhb{display:grid;place-items:center;flex:none;width:18px;height:30px;padding:0;border-radius:8px;color:var(--mute)}
 .navhb:hover:not(:disabled){background:var(--hover);color:var(--ink)}
 .navhb:disabled{opacity:.35;cursor:default}
@@ -1715,3 +1717,13 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 #ma-sel .mas-x{position:sticky;top:0;display:block;margin:0 0 4px auto;width:44px;height:44px;padding:0;border:0;border-radius:50%;background:var(--chip);color:var(--ink)}
 #ma-sel .mas-x svg{margin:auto;display:block}
 #ma-sel .mas-tx{font:400 16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;-webkit-user-select:text;user-select:text;-webkit-touch-callout:default;outline:0}
+
+/* Gliding hover behind the side panel rows (ported from Bruno Delorence's sidebar-nav, see src/sidebar-glide.ts). Mouse only. */
+.bdsn-mark{display:none}
+@media (hover:hover) and (pointer:fine){
+  #side{position:relative;isolation:isolate}
+  .bdsn-mark{display:block;position:absolute;z-index:-1;top:0;left:0;width:0;height:0;background:var(--hover);opacity:0;pointer-events:none;transition:top .22s cubic-bezier(.23,1,.32,1),height .22s cubic-bezier(.23,1,.32,1),left .22s cubic-bezier(.23,1,.32,1),width .22s cubic-bezier(.23,1,.32,1),opacity .15s ease}
+  #side .bdsn-mark~.new:hover,#side .bdsn-mark~.navrow:not(.on):hover,#side .bdsn-mark~.search:hover:not(:focus-within),#side .bdsn-mark~.sessions .sess:not(.on):hover,#side .bdsn-mark~.drawer .drow:not(.on):hover,#side .bdsn-mark~.sidesrch:hover{background:transparent}
+}
+@media (prefers-reduced-motion:reduce){.bdsn-mark{transition:none!important}}
+.cxapple b{font-size:16px;font-weight:600;color:var(--ink2)}

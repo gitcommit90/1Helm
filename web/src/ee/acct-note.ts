@@ -1,4 +1,4 @@
-// Account notes (Captain, 10-06): under each connected account, on the app's own page and in Settings → Connected accounts, a quiet
+// Account notes (Captain, 10-06): under each connected account, on the app's own page and in Settings → Connected Apps, a quiet
 // "Add a note for <helper>" opens a small text box (one or two lines, 300 characters) with Save / Cancel / Delete. The saved note shows
 // under the account in a quiet style, and the helper reads it when choosing which account to use ("my work email; use for anything
 // Tennis Channel"). Server: POST <api>/apps/note { id, note } → { ok, note, accounts } (an empty note deletes it).

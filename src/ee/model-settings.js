@@ -5,7 +5,7 @@
 // Storage: append-only versions in model_job_settings_versions (new in migration 058). The earlier slot-based table
 // (model_settings_versions) is only read, once, to carry an environment's existing choices into the first version.
 import { PRIVACY_LEVELS } from "../privacy.js";
-import { modelCatalog, validCatalogRecord, validModelId, unlistedIds, listedKinds, NO_LONGER_OFFERED } from "./model-catalog.js";
+import { modelCatalog, validCatalogRecord, validModelId, unlistedIds, listedKinds, NO_LONGER_OFFERED, withLivePrivacy } from "./model-catalog.js";
 import { SORTS, CHAT_JOB, CATEGORY_FIELDS, JOBS, JOB_IDS, MODEL_PAGE_JOBS, JOB_KINDS, GROUPS, takesChat, canChat, nativeFor, zdrApplies, ModelSettingsError, jobDef, jobSetting, settingsOf, entriesOf, factsOf, zdrBlocked, privacyCoverage, configuredHosts } from "./model-jobs.js";
 import { seedFromLegacy, mergeLevels, SEED_FACTS, ROUTING_ZDR_THIRD_MODEL, JOB_FIELDS, OPTIONAL_JOB_IDS, optionalJobDefault } from "./model-seed.js";
 import { quirksFromRecord } from "../model-quirks.js";
@@ -334,7 +334,9 @@ export async function modelSettingsEnv(env) {
   // Without the EE switch nothing reads the shared settings table: a deployment gets the first-run data, unchanged and in memory only.
   if (env?.ONEHELM_EE !== "1hc") return Object.assign(Object.create(env || null), { MODEL_SETTINGS: firstRunSettings(), MODEL_SETTINGS_REVISION: 0 });
   const s = await readModelSettings(env);
-  return Object.assign(Object.create(env || null), { MODEL_SETTINGS: s.config, MODEL_SETTINGS_REVISION: s.revision, ...(s.stale ? { MODEL_SETTINGS_STALE: true } : {}) });
+  // The privacy facts of the models in use follow OpenRouter's live catalog (model-catalog.js withLivePrivacy), so dispatch agrees with what a new save would see.
+  const config = await withLivePrivacy(s.config, { env }).catch(() => s.config);
+  return Object.assign(Object.create(env || null), { MODEL_SETTINGS: config, MODEL_SETTINGS_REVISION: s.revision, ...(s.stale ? { MODEL_SETTINGS_STALE: true } : {}) });
 }
 
 // The saved main model of one job, for callers that only need the model's name (speech, search index, pictures).
@@ -383,6 +385,7 @@ export async function recentVersions(env, limit = 60) {
 }
 export async function modelSettingsView(env) {
   const db = dbOf(env), s = await readModelSettings(env);
+  s.config = await withLivePrivacy(s.config, { env }).catch(() => s.config);   // the page shows the live privacy facts
   const history = (await db.prepare(`SELECT revision,at,by,action FROM ${TABLE} WHERE environment=? ORDER BY revision DESC LIMIT 30`).bind(settingsEnvironment(env)).all()).results || [];
   return { dynamicRouting: dynamicRoutingOn(env), environment: settingsEnvironment(env), revision: s.revision, config: s.config, stale: !!s.stale, options: modelSettingsOptions(s.config), history,
     effective: "New tasks and background calls use these settings. Running tasks keep the model and reasoning level they started with. Privacy restrictions and explicit operator revocations still apply immediately." };
@@ -447,7 +450,10 @@ async function validatedSelection(env, config, current) {
     const m = next.catalog[e.model], eq = SEED_FACTS[e.model]?.embedding_equivalents;
     if (m && typeof m === "object" && !m.eligible && eq && !own(m, "embedding_equivalents")) m.embedding_equivalents = clone(eq);
   }
-  return validateModelSettings(pruneCatalog(next));
+  // The save is judged on OpenRouter's current privacy terms for the models it uses, so a model that gained zero data retention since its record was saved can be picked
+  // for a job that needs it. The refreshed facts are what gets saved, the same facts the page showed.
+  const live = await withLivePrivacy(next, { env }).catch(() => next);
+  return validateModelSettings(pruneCatalog(live));
 }
 export async function saveModelSettings(env, { revision, config }, by, action = "save") {
   revisionOf(revision);

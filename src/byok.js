@@ -4,7 +4,7 @@ import { boundedJson } from "./bounded-body.js";
 // so they pay their provider and 1Helm charges $0 for the AI. Everything else 1Helm runs (the computer, Browser Run, web search,
 // memory, embeddings) is metered at our cost + 15% from the prepaid credits they top up (src/resident.js byokHold / byokMeter). Each
 // part is reserved before it runs; if the balance can't cover it, it's skipped (memory: no recall or saving that turn), never run on credit.
-//   - Settings → Use my own AI key: endpoint base URL, key, main model, optional fast model (chores: titles/labels, hand-off notes,
+//   - Settings → AI services: endpoint base URL, key, main model, optional fast model (chores: titles/labels, hand-off notes,
 //     memory summaries, the browser agent's planner). Test connection checks reach, tool calling and streaming.
 //   - The key is sealed with VAULT_KEY (sentinel.js sealSecret, like Passwords & keys), never returned (•••• + last 4) or logged.
 //     The loaded config keeps it in a non-enumerable property, so logging or JSON-encoding the config can't print it.
@@ -35,8 +35,15 @@ import { boundedJson } from "./bounded-body.js";
 //   - Removing the key ends fallback (the row goes); with a switch pending, the app asks whether to cancel the switch too.
 // On the byok plan there's no choice: the key is simply their AI.
 import { sealSecret, openSecret } from "./sentinel.js";
-import { enabled as eeEnabled, effortBody, ownChorePlan, changePlan, nextPlan } from "./ee/index.js";
-import { OR_SOURCE, OR_BASE, orDdl, orPendingKey, orForget, orView, orModels } from "./byok-openrouter.js";
+import { enabled as eeEnabled, effortBody, ownChorePlan, parseOwn, listedRecords, changePlan, nextPlan,
+  CC_SOURCE, isCcModel, claudeChat, ccModelsJson, ccStart, ccFinish, ccWarm, claudeUsage,
+  usageCache, refreshUsage, dropUsage,
+  listRows, viewRows, connCfgs, splitModel, connDdl, plainFromForm, addPlain, addSealed, addChatgpt, addClaudeCode, adoptPending, removeConnection, saveTest, testConnection, setOcPlan, CONN_KEY_RE,
+  OC_SOURCE, ocBase, ocPlan, opencodeChat, opencodeModelsJson,
+  CG_SOURCE, CG_USAGE_PAGE, CG_WHY_TEXT, cgDdl, cgFinish, chatgptChat, chatgptModelsJson, chatgptUsage } from "./ee/index.js";   // the licensed services layer: several AI services at once (every call into it is behind eeEnabled or a provider only it can save)
+import { replayFor } from "./model.js";
+import { singleKeyConfig, singleKeyApi } from "./byok-single.js";   // one saved key: the core path without ONEHELM_EE
+import { OR_SOURCE, OR_BASE, orDdl, orForget, orView } from "./byok-openrouter.js";
 import { byokPrivacyFields, isOpenRouterBase, POLICY_REFUSAL_RE, byokPrivacyText } from "./privacy.js";   // AI data privacy on Sign in with OpenRouter keys   // Sign in with OpenRouter: the same key path, filled in
 
 export const BYOK_PLAN = "byok";
@@ -88,11 +95,13 @@ export function endpointUrl(base) { const u = new URL(base); u.pathname = `${u.p
 
 // ---- messages ----
 const hostOf = (cfg) => cfg?.host || (() => { try { return new URL(cfg.base).hostname; } catch { return "your AI service"; } })();
-const settingsLink = (cfg) => cfg?.settings ? `[Settings → Use my own AI key](${cfg.settings})` : "Settings → Use my own AI key";
+const settingsLink = (cfg) => cfg?.settings ? `[Settings → AI services](${cfg.settings})` : "Settings → AI services";
 // One plain message for every failure, with a short detail (status code or reason, key stripped).
 export const TEST_FAIL = "Couldn't connect to that AI service. Check the address, key and model, then try again.";
-export const failText = (cfg, detail) => `Your AI service (${hostOf(cfg)}) didn't work${detail ? ` (${detail})` : ""}, so I couldn't finish this. Check the address, key and model in ${settingsLink(cfg)}.${cfg?.fallback ? ` I'm using it because your 1Helm credits are used up; adding credits brings back 1Helm's AI.` : ""}`;
-const fail = (cfg, detail, http = 0) => new ByokError(failText(cfg, detail), http, detail);
+export const TEST_FAIL_CG = "ChatGPT didn't accept that model. Pick a model from the list, then try again.";
+export const TEST_FAIL_CG_SIGNIN = "ChatGPT didn't accept the sign-in. Continue with ChatGPT again, then try again.";
+export const failText = (cfg, detail) => `Your AI service (${hostOf(cfg)}) didn't work${detail ? ` (${detail})` : ""}, so I couldn't finish this. ${cfg?.provider === CG_SOURCE ? "Check your ChatGPT sign-in" : cfg?.provider === OC_SOURCE ? ("Check your OpenCode key and plan") : "Check the address and key"} in ${settingsLink(cfg)}.${cfg?.fallback ? ` I'm using it because your 1Helm credits are used up; adding credits brings back 1Helm's AI.` : ""}`;
+export const fail = (cfg, detail, http = 0) => new ByokError(failText(cfg, detail), http, detail);
 export const missingText = (cfg) => cfg?.unreadable ? `Your AI service is set up, but 1Helm couldn't read your saved key just now. Save the key again in ${settingsLink(cfg)}.`
   : `Your AI service isn't set up yet: your plan uses your own AI key, and none is saved. Add it in ${settingsLink(cfg)}.`;
 // Provider error text, cleaned: the key itself and anything key-shaped are never echoed back.
@@ -136,7 +145,7 @@ function applyQuirks(cfg, req) {
 }
 
 // Reads at most `max` bytes of a body; more → ByokError.
-async function readCapped(cfg, body, max, what = "answer") {
+export async function readCapped(cfg, body, max, what = "answer") {
   if (!body) return "";
   const reader = body.getReader(), dec = new TextDecoder(); let n = 0, s = "";
   for (;;) {
@@ -146,7 +155,7 @@ async function readCapped(cfg, body, max, what = "answer") {
   }
   return s + dec.decode();
 }
-async function errorDetail(cfg, r) {
+export async function errorDetail(cfg, r) {
   let t = ""; try { const reader = r.body?.getReader(); if (reader) { const dec = new TextDecoder(); let n = 0;
     for (;;) { const { value, done } = await reader.read(); if (done) break; n += value.byteLength; t += dec.decode(value, { stream: true }); if (n >= MAX_ERR_BYTES) { reader.cancel().catch(() => {}); break; } } } } catch {}
   let msg = t; try { const j = JSON.parse(t); msg = j?.error?.message || j?.message || j?.detail || (typeof j?.error === "string" ? j.error : "") || t; } catch {}
@@ -195,9 +204,15 @@ async function byokPost(cfg, req, { signal = null, fetchImpl = globalThis.fetch 
 // ": OPENROUTER PROCESSING", which gateways send every few seconds while a model is still working) does not reset it, so a call that
 // never produces an event ends after IDLE_MS instead of running until TOTAL_MS (a live turn waited that way with nothing on screen).
 const EVENT_LINE = /(^|\n)[ \t]*data:/;
-function guardStream(cfg, body, signal) {
-  const reader = body.getReader(), dec = new TextDecoder(), t0 = Date.now(); let bytes = 0, lastEvent = t0, events = 0, tail = "";
+export function guardStream(cfg, body, signal) {
+  const reader = body.getReader(), dec = new TextDecoder(), t0 = Date.now(); let bytes = 0, lastEvent = t0, events = 0, tail = "", onAbort = null;
   return new ReadableStream({
+    // The person's Stop ends the upstream read at once, also while the first event is still awaited (firstEventOk), when nothing else listens to the signal.
+    start(c) {
+      if (!signal) return;
+      onAbort = () => { reader.cancel(signal.reason).catch(() => {}); try { c.error(signal.reason); } catch {} };
+      if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
+    },
     async pull(c) {
       const now = Date.now(), left = TOTAL_MS - (now - t0), idleLeft = IDLE_MS - (now - lastEvent);
       let timer;
@@ -213,12 +228,12 @@ function guardStream(cfg, body, signal) {
       } catch (e) { reader.cancel().catch(() => {}); c.error(signal?.aborted ? e : e?.byok ? e : fail(cfg, "the connection dropped in the middle of the answer")); }
       finally { clearTimeout(timer); }
     },
-    cancel(x) { return reader.cancel(x); },
+    cancel(x) { if (signal && onAbort) signal.removeEventListener("abort", onAbort); return reader.cancel(x); },
   });
 }
 // Up to the first real event: an error event before any output throws (with the provider's words); otherwise the bytes already read
 // are put back in front of the rest.
-async function firstEventOk(cfg, stream) {
+export async function firstEventOk(cfg, stream) {
   const reader = stream.getReader(), dec = new TextDecoder(), seen = []; let text = "";
   for (;;) {
     const { value, done } = await reader.read(); if (done) break;
@@ -250,18 +265,48 @@ export function effortFields(cfg, effort, model, facts = null) {
   if (isOpenRouterBase(cfg?.base)) return effortBody(effort, model, { catalog: facts ? { [model]: facts } : {} });
   return { reasoning_effort: effort };
 }
-export async function byokChat(cfg, body, { fast = false, signal = null, fetchImpl = globalThis.fetch, privacy = null, model: pick = null, effort = null, facts = null, maxPrice = null } = {}) {
+// Several AI services (byok-connections.js): cfg.connections maps a connection id to the config of one service, and a model is named <connection id>:<model>. byokChat sends the call to
+// the connection the model belongs to, with that connection's key and API; the rest (one call to one service) is byokChatOne. A cfg with no connections is one service, as it always was.
+export const chooseModelText = (cfg) => `Your AI service is connected, but no model is chosen for this yet. Choose one in ${cfg?.settings ? `[Settings, Advanced, Custom Model Selection](${cfg.settings.replace(/settings=byok/, "settings=advanced")})` : "Settings, Advanced, Custom Model Selection"}.`;
+const goneText = (cfg, ns) => `Your AI service for ${String(ns).slice(0, 80)} was disconnected. Choose another model in Settings, Advanced, Custom Model Selection.`;
+export async function byokChat(cfg, body, opts = {}) {
   if (!cfg || cfg.missing || typeof cfg.key !== "string") throw new ByokError(missingText(cfg));   // "" = no key (Ollama, LM Studio, vLLM…)
-  // Chores while Custom Model Selection is on: Background jobs' models in order, a failing one hands the call to the next (a bad key and the person's Stop do not).
+  const { fast = false, signal = null, fetchImpl = globalThis.fetch, privacy = null, maxPrice = null, session = null, purpose = null } = opts;
+  let { model: pick = null, effort = null, facts = null } = opts;
+  if (!cfg.connections) return byokChatOne(cfg, body, opts);
+  // Chores: Background jobs' models in order, a failing one hands the call to the next (a bad key and the person's Stop do not).
   if (fast && !pick && cfg.background?.length) {
     let last;
     for (const e of cfg.background) {
-      try { return await byokChat(cfg, body, { signal, fetchImpl, privacy, model: e.model, effort: e.effort, facts: e.facts }); }
+      try { return await byokChat(cfg, body, { signal, fetchImpl, privacy, session, purpose: purpose || "background", model: e.model, effort: e.effort, facts: e.facts }); }
       catch (err) { if (signal?.aborted || err?.http === 401 || !(err instanceof ByokError)) throw err; last = err; console.log("byok background: model failed", e.model, String(err.detail || "").slice(0, 100)); }
     }
     throw last;
   }
-  const model = pick || (fast ? (cfg.fast || cfg.model) : cfg.model), req = { ...byokBody(body, model), ...byokPrivacyFields(cfg, privacy), ...(pick ? effortFields(cfg, effort, model, facts) : {}) };
+  if (!pick) { pick = fast ? (cfg.fast || cfg.model) : cfg.model; if (pick === cfg.model && !fast) { effort = cfg.effort || null; facts = cfg.facts || null; } }
+  if (!pick) throw new ByokError(chooseModelText(cfg));
+  const s = splitModel(pick), conn = s && cfg.connections[s.conn];
+  if (!conn) throw new ByokError(goneText(cfg, pick));
+  body = { ...body, messages: replayFor(body.messages, pick) };   // opaque reasoning (Claude Code's signed thinking) goes back only to the model that wrote it; every other model gets the messages without it
+  return byokChatOne(conn, body, { signal, fetchImpl, privacy, model: s.model, effort, facts, maxPrice, session, purpose: purpose || (fast ? "chores" : null) });
+}
+async function byokChatOne(cfg, body, { fast = false, signal = null, fetchImpl = globalThis.fetch, privacy = null, model: pick = null, effort = null, facts = null, maxPrice = null, session = null, purpose = null } = {}) {
+  if (!cfg || cfg.missing || typeof cfg.key !== "string") throw new ByokError(missingText(cfg));
+  // Chores while Custom Model Selection is on: Background jobs' models in order, a failing one hands the call to the next (a bad key and the person's Stop do not).
+  if (fast && !pick && cfg.background?.length) {
+    let last;
+    for (const e of cfg.background) {
+      try { return await byokChatOne(cfg, body, { signal, fetchImpl, privacy, session, purpose: purpose || "background", model: e.model, effort: e.effort, facts: e.facts }); }
+      catch (err) { if (signal?.aborted || err?.http === 401 || !(err instanceof ByokError)) throw err; last = err; console.log("byok background: model failed", e.model, String(err.detail || "").slice(0, 100)); }
+    }
+    throw last;
+  }
+  const model = pick || (fast ? (cfg.fast || cfg.model) : cfg.model);
+  const level = pick ? effort : (fast ? cfg.fastEffort : cfg.effort) || null;   // the chosen model's own level, else the one saved for this model (none: the service's default)
+  if (cfg.provider === CC_SOURCE) return claudeChat(cfg, body, { signal, model, effort: level, session });   // Continue with Claude: the signed-in Claude Code, one model call at a time (byok-claudecode.js)
+  if (cfg.chatgptHandle) return chatgptChat(cfg, body, { signal, fetchImpl, model, effort: level, session, purpose: purpose || (fast ? "chores" : "chat") });   // Continue with ChatGPT: the Responses API, answered in chat/completions shape
+  if (cfg.provider === OC_SOURCE) return opencodeChat(cfg, body, { signal, fetchImpl, model, effort: level, session, purpose: purpose || (fast ? "chores" : "chat") });   // Use OpenCode: its own transport (byok-opencode.js)
+  const req = { ...byokBody(body, model), ...byokPrivacyFields(cfg, privacy), ...(level ? effortFields(cfg, level, model, pick ? facts : null) : {}) };
   if (pick && maxPrice && isOpenRouterBase(cfg.base) && Number.isFinite(maxPrice.prompt) && Number.isFinite(maxPrice.completion)) req.provider = { ...req.provider, max_price: { prompt: maxPrice.prompt, completion: maxPrice.completion } };
   if (body.response_format?.type === "json_schema" && isOpenRouterBase(cfg.base)) {
     req.provider = { ...req.provider, require_parameters: true };
@@ -289,6 +334,9 @@ export async function byokChat(cfg, body, { fast = false, signal = null, fetchIm
 export const MODELS_MS = 15e3, MAX_MODELS_BYTES = 4 << 20;
 export async function byokModelsJson(cfg, { fetchImpl = globalThis.fetch, signal = null } = {}) {
   if (!cfg || cfg.missing || typeof cfg.key !== "string") throw new ByokError(missingText(cfg));
+  if (cfg.provider === CC_SOURCE) return ccModelsJson();   // a fixed list: the names the Claude Code command takes
+  if (cfg.chatgptHandle) return chatgptModelsJson(cfg, { fetchImpl, signal });
+  if (cfg.provider === OC_SOURCE) return opencodeModelsJson(cfg, { fetchImpl, signal });
   const chk = checkBase(cfg.base); if (!chk.ok) throw fail(cfg, chk.error.replace(/\.$/, ""));
   const u = new URL(chk.base); u.pathname = `${u.pathname.replace(/\/+$/, "")}/models`;
   const ac = new AbortController(), onAbort = () => ac.abort(signal?.reason);
@@ -306,60 +354,47 @@ export async function byokModelsJson(cfg, { fetchImpl = globalThis.fetch, signal
   } finally { clearTimeout(timer); if (signal) signal.removeEventListener("abort", onAbort); }
 }
 
-// ---- Test connection: reach + tool calling (main model), streaming (main model), and the fast model if it's different ----
-// Every failed check: the one standard message, then a short detail line from the actual error (key stripped).
-const testErr = (cfg, e, prefix = "") => {
-  const detail = `${prefix}${e?.byok ? e.detail || "" : redact(e?.message || e, cfg.key, 100)}`.replace(/\.$/, "");
-  return { ok: false, error: detail ? `${TEST_FAIL} Details: ${detail}.` : TEST_FAIL, detail };
-};
-const PING_TOOL = { type: "function", function: { name: "ping", description: "Connection test. Call it with word set to \"ok\".", parameters: { type: "object", properties: { word: { type: "string" } }, required: ["word"] } } };
-export async function testByok(cfg, { fetchImpl = globalThis.fetch } = {}) {
-  const t0 = Date.now(), checks = {};
-  const done = () => ({ ok: ["reach", "tools", "stream", "fast"].every((k) => !checks[k] || checks[k].ok), checks, ms: Date.now() - t0, at: Date.now() });
-  try {
-    const s = Date.now(), r = await byokChat(cfg, { messages: [{ role: "system", content: "This is a connection test. Answer only by calling the ping tool." }, { role: "user", content: "Call the ping tool with word set to \"ok\"." }],
-      tools: [PING_TOOL], max_tokens: 2000 }, { fetchImpl }), j = await r.json();
-    checks.reach = { ok: true, ms: Date.now() - s, model: String(j.model || cfg.model).slice(0, 120) };
-    const call = (j.choices?.[0]?.message?.tool_calls || [])[0];
-    checks.tools = call?.function?.name === "ping" ? { ok: true } : testErr(cfg, { byok: true, detail: "the model answered in words instead of calling a tool; 1Helm needs a model with tool (function) calling" });
-  } catch (e) { checks.reach = testErr(cfg, e); return done(); }
-  try {
-    const r = await byokChat(cfg, { messages: [{ role: "user", content: "Reply with the word OK." }], stream: true, max_tokens: 400 }, { fetchImpl });
-    const text = await readCapped(cfg, r.body, 1 << 20);
-    const evs = text.split("\n").filter((l) => l.startsWith("data:") && l.slice(5).trim() !== "[DONE]").map((l) => { try { return JSON.parse(l.slice(5)); } catch { return null; } }).filter(Boolean);
-    checks.stream = evs.some((e) => Array.isArray(e.choices)) ? { ok: true, events: evs.length } : testErr(cfg, { byok: true, detail: "the service didn't stream its answer; 1Helm needs streaming (stream: true)" });
-  } catch (e) { checks.stream = testErr(cfg, e); }
-  if (cfg.fast && cfg.fast !== cfg.model) {
-    try { const r = await byokChat(cfg, { messages: [{ role: "user", content: "Reply with the word OK." }], max_tokens: 400 }, { fast: true, fetchImpl }); await r.json(); checks.fast = { ok: true, model: cfg.fast }; }
-    catch (e) { checks.fast = testErr(cfg, e, `fast model ${cfg.fast}: `); }
-  }
-  return done();
-}
-
 // ---- stored config ----
-const appUrl = (env, slug, sec = "byok") => `https://${env.GATEWAY_HOST || env.APP_HOST}/w/${slug}/app?settings=${sec}`;
-function withKey(o, key) { Object.defineProperty(o, "key", { value: key, enumerable: false, writable: false }); return o; }
-// The account's own-AI-key config: on the byok plan { base, host, model, fast, settings, credits, last4, key (hidden) }, or
-// { missing: true } when no key is saved yet. On a full plan with mode "fallback" and a readable key: the same with fallback: true
-// (used only once its credits run out: Resident.byokRefresh / byokFallbackOn decide). null otherwise (AI goes to 1Helm's own models).
+const appUrl = (env, slug, sec = "ai") => `https://${env.GATEWAY_HOST || env.APP_HOST}/w/${slug}/app?settings=${sec}`;
+export function withKey(o, key) { Object.defineProperty(o, "key", { value: key, enumerable: false, writable: false }); return o; }
+// Continue with ChatGPT: no key; the token is fetched (and refreshed) for each call from the sealed record (byok-chatgpt.js). The handle is hidden like the key.
+export function withChatgpt(o, env, tid) { const c = withKey({ ...o, provider: CG_SOURCE, host: "ChatGPT" }, ""); Object.defineProperty(c, "chatgptHandle", { value: { env, tid }, enumerable: false, writable: false }); return c; }
+const CC_WARMED = new Map();
+// Claude Code: no key either; the sign-in lives in the account's engine container. The handle is hidden like the key.
+export function withClaudeCode(o, env, tid) { const c = withKey({ ...o, provider: CC_SOURCE, host: "Claude Code" }, ""); Object.defineProperty(c, "ccHandle", { value: { env, tid }, enumerable: false, writable: false }); return c; }
+// The account's own-AI-key config: on the byok plan { connections, model, fast, settings, credits, background, … }, or { missing: true } when no service is connected yet. On a full plan with mode
+// "fallback" and a connected service: the same with fallback: true (used only once its credits run out: Resident.byokRefresh / byokFallbackOn decide). null otherwise (AI goes to 1Helm's own models).
+// connections (hidden, like every key): the config of each connected service by id (byok-connections.js). model, fast, effort and background come from the own-key Custom Model Selection
+// setting, General's first model, Background jobs and the facts of each model. With nothing chosen yet, model is "" and byokChat says so.
 async function byokRow(env, tenantId) {
-  const q = (mode) => env.DB.prepare(`SELECT t.plan, t.slug, t.helper_name, b.base_url, b.model, b.fast_model, b.key_sealed, b.key_last4${mode ? ", b.mode" : ""} FROM tenants t LEFT JOIN byok b ON b.tenant_id=t.id WHERE t.id=?`).bind(tenantId).first();
-  try { return await q(true); } catch (e) { if (/no such column/i.test(String(e?.message))) return q(false); throw e; }   // before migration 033
+  const q = (cols) => env.DB.prepare(`SELECT t.plan, t.slug, t.helper_name${cols} FROM tenants t LEFT JOIN byok b ON b.tenant_id=t.id WHERE t.id=?`).bind(tenantId).first();
+  for (const cols of [", b.mode", ""]) { try { return await q(cols); } catch (e) { if (!/no such column/i.test(String(e?.message)) || !cols) throw e; } }   // before migration 033 (mode)
 }
 export async function loadByok(env, tenantId) {
   if (!env?.DB || !tenantId) return null;
+  if (!eeEnabled(env)) return singleKeyConfig(env, tenantId);   // core: the one saved key (byok-single.js)
   const r = await byokRow(env, tenantId);
   if (!r) return null;
-  const onPlan = !eeEnabled(env) || r.plan === BYOK_PLAN;
+  const onPlan = r.plan === BYOK_PLAN;
   if (!onPlan && r.mode !== "fallback") return null;
   const settings = appUrl(env, r.slug), credits = appUrl(env, r.slug, "credits");
-  if (r.key_sealed == null || !r.base_url || !r.model) return onPlan ? { missing: true, settings } : null;
-  const chk = checkBase(r.base_url);
-  let key = ""; if (r.key_sealed) try { key = await openSecret(env, r.key_sealed); } catch { return onPlan ? { missing: true, unreadable: true, settings } : null; }   // never fall back to 1Helm's AI
-  const o = { base: r.base_url, host: chk.host || "", model: r.model, fast: r.fast_model || r.model, last4: r.key_last4 || "", settings, credits, helper: r.helper_name || "", ...(onPlan ? {} : { fallback: true }) };
-  // Custom Model Selection on: the chores use Background jobs' chain (byokChat, fast: true). Before migration 080 there is nothing to read.
-  if (eeEnabled(env)) try { const c = ownChorePlan(await env.DB.prepare("SELECT custom_models_own_on, custom_models_own FROM tenants WHERE id=?").bind(tenantId).first(), o); if (c) o.background = c; } catch {}
-  return withKey(o, key);
+  const rows = await listRows(env, tenantId);
+  const conns = await connCfgs(env, tenantId, { settings, credits, helper: r.helper_name || "" });
+  const usable = Object.keys(conns).filter((k) => !conns[k].missing);
+  if (!usable.length) return onPlan ? { missing: true, ...(rows.length ? { unreadable: true } : {}), settings } : null;   // never fall back to 1Helm's AI
+  const cfg = withKey({ base: "", host: usable.map((k) => conns[k].host || conns[k].label).join(", "), model: "", fast: "", last4: "", effort: "", fastEffort: "", settings, credits, helper: r.helper_name || "", ...(onPlan ? {} : { fallback: true }) }, "");
+  Object.defineProperty(cfg, "connections", { value: conns, enumerable: false, writable: false });
+  for (const c of Object.values(conns)) c.fallback = !onPlan;
+  try {
+    const t = await env.DB.prepare("SELECT custom_models_own_on, custom_models_own FROM tenants WHERE id=?").bind(tenantId).first(), config = parseOwn(t?.custom_models_own);
+    if (config) {
+      const general = config.categories.find((c) => c.id === "general")?.chain?.[0];
+      if (general) { cfg.model = general.model; cfg.effort = general.effort || ""; Object.defineProperty(cfg, "facts", { value: config.catalog?.[general.model] || null, enumerable: false }); }
+      const chain = ownChorePlan(t, cfg); if (chain) cfg.background = chain;
+      cfg.fast = chain?.[0]?.model || cfg.model;
+    }
+  } catch (e) { if (!/no such column/i.test(String(e?.message))) throw e; }   // before migration 080 there is nothing chosen
+  return cfg;
 }
 // The Ledger side of fallback (mixed into the per-tenant Ledger in index.js, next to spendguard's ledgerGuard: its guardKv, sql,
 // totals, expire). One episode at a time: kv byok_fb = when it started. It ends when credits come back: any new positive grant
@@ -437,41 +472,7 @@ export async function answersOnOwnKey(env, t) {
 }
 
 // ---- Settings API (/api/byok…) ----
-const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/;
-const KEY_RE = /^[^\x00-\x1f\x7f]{0,4000}$/;   // any length, even empty (no key); only no line breaks/control characters (it goes into a header)
 const now = () => Date.now();
-async function savedRow(env, tid) { return env.DB.prepare("SELECT * FROM byok WHERE tenant_id=?").bind(tid).first(); }
-function view(row) {
-  if (!row) return null;
-  let test = null; try { test = row.test_json ? JSON.parse(row.test_json) : null; } catch {}
-  return { base: row.base_url, host: checkBase(row.base_url).host || "", model: row.model, fast: row.fast_model || "", last4: row.key_last4 || "", saved_at: row.updated_at, tested_at: row.tested_at || null, test, ...(row.source === OR_SOURCE ? { source: OR_SOURCE } : {}) };   // source: signed in with OpenRouter
-}
-// Fields from the form → a config to test/save. The key may be left empty: with a saved key, that keeps it, but only for the same
-// origin (scheme + host + port): pointing the saved key at a different address needs the key typed again. With no saved key (or a
-// saved empty one), empty means no key at all (self-hosted servers like Ollama, LM Studio, vLLM): no Authorization header is sent.
-// source "openrouter" (Sign in with OpenRouter, byok-openrouter.js): the address is OpenRouter's and the key is the one the sign-in
-// gave (waiting in byok_or_key), or the saved one when it came from that sign-in too (only the models change). Never a typed key.
-async function formCfg(env, t, b, row) {
-  const or = b.source === OR_SOURCE;
-  const chk = checkBase(or ? OR_BASE : b.base); if (!chk.ok) return { error: chk.error, field: "base" };
-  const model = String(b.model ?? "").trim(), fast = String(b.fast ?? "").trim();
-  if (!MODEL_RE.test(model)) return { error: "Enter the model name exactly as your service lists it, like gpt-4o-mini.", field: "model" };
-  if (fast && !MODEL_RE.test(fast)) return { error: "Enter the fast model's name exactly as your service lists it, or leave it empty.", field: "fast" };
-  let key = or ? "" : String(b.key ?? "").trim();
-  if (or) {
-    const waiting = await orPendingKey(env, t.id);
-    if (waiting != null) key = waiting;
-    else if (row?.source === OR_SOURCE && row.key_sealed) { try { key = await openSecret(env, row.key_sealed); } catch { return { error: "Sign in with OpenRouter again.", field: "or" }; } }
-    else return { error: "Sign in with OpenRouter first.", field: "or" };
-    if (!key || !KEY_RE.test(key)) return { error: "Sign in with OpenRouter again.", field: "or" };
-  } else if (!key) {
-    if (row?.key_sealed) {
-      if (checkBase(row.base_url).origin !== chk.origin) return { error: "You changed the address, so enter the key again.", field: "key" };
-      try { key = await openSecret(env, row.key_sealed); } catch { return { error: "Enter your key again.", field: "key" }; }
-    }
-  } else if (!KEY_RE.test(key)) return { error: "That key doesn't look right: it should be one line, up to 4000 characters.", field: "key" };
-  return { cfg: withKey({ base: chk.base, host: chk.host, model, fast: fast && fast !== model ? fast : model, last4: key.slice(-4) }, key), fastIn: fast && fast !== model ? fast : "", source: or ? OR_SOURCE : "" };
-}
 async function rateOk(env, tid) {
   await env.DB.prepare("DELETE FROM byok_tests WHERE at<?").bind(now() - 3600e3).run().catch(() => {});
   const n = Number((await env.DB.prepare("SELECT COUNT(*) n FROM byok_tests WHERE tenant_id=? AND at>?").bind(tid, now() - TEST_WINDOW_MS).first())?.n || 0);
@@ -481,11 +482,13 @@ async function rateOk(env, tid) {
 }
 const RATE_MSG = "That's a lot of tests in a few minutes. Wait a few minutes and try again.";
 // ---- the two options on a full plan ----
-const setMode = (env, tid, mode) => env.DB.prepare("UPDATE byok SET mode=? WHERE tenant_id=?").bind(mode, tid).run().catch((e) => { if (!/no such column/i.test(String(e?.message))) throw e; });
+// The row of byok holds only the plan option (mode) now: the services are in byok_connections. It is made when an option is chosen.
+const setMode = (env, tid, mode) => env.DB.prepare("INSERT INTO byok (tenant_id,base_url,model,fast_model,key_sealed,key_last4,test_json,created_at,updated_at,mode) VALUES (?,'','','','','','',?,?,?) ON CONFLICT(tenant_id) DO UPDATE SET mode=excluded.mode").bind(tid, now(), now(), mode).run().catch((e) => { if (!/no such column|has no column/i.test(String(e?.message))) throw e; });
+const modeOf = async (env, tid) => { try { return (await env.DB.prepare("SELECT mode FROM byok WHERE tenant_id=?").bind(tid).first())?.mode || ""; } catch { return ""; } };
 const ledgerOf = (env, tid) => { try { return env.LEDGER.get(env.LEDGER.idFromName(`tenant:${tid}`)); } catch { return null; } };
 // ---- switch now ----
 const usdText = (nano) => `$${(Math.max(0, Number(nano) || 0) / 1e9).toFixed(2)}`;
-const SWITCH_TEST_FAIL = "Your AI key didn't pass the connection test, so your plan wasn't changed. Check it in Settings → Use my own AI key, then try again.";
+const SWITCH_TEST_FAIL = "Your AI key didn't pass the connection test, so your plan wasn't changed. Check it in Settings → AI services, then try again.";
 // What the confirm dialog says before a switch now: the unused plan usage that becomes credits, and when the next bill is. Reads only.
 export async function switchPreview(env, t, d) {
   if (!isFullPlan(t.plan)) return { error: "You're on the Bring your own key plan already.", status: 409 };
@@ -503,13 +506,12 @@ export async function switchNow(env, t, d, { fetchImpl = globalThis.fetch } = {}
   if (t.plan === BYOK_PLAN) return { ok: true, plan: BYOK_PLAN, already: true, moved_nano: 0, moved: usdText(0) };
   if (!d?.stripe || !d.PLANS?.[t.plan]) return { error: "Plans can't be changed right now. Try again in a minute.", status: 503 };
   if (!t.stripe_subscription) return { error: "No active plan to change yet.", status: 409 };
-  const row = await savedRow(env, t.id);
-  if (!row || row.key_sealed == null || !row.base_url || !row.model) return { error: "Save your AI key first, then switch.", status: 409 };
-  const chk = checkBase(row.base_url); if (!chk.ok) return { error: SWITCH_TEST_FAIL, status: 409 };
-  let key = ""; if (row.key_sealed) try { key = await openSecret(env, row.key_sealed); } catch { return { error: "1Helm couldn't read your saved key. Save it again in Settings → Use my own AI key, then switch.", status: 409 }; }
+  const conns = await connCfgs(env, t.id), ids = Object.keys(conns);
+  if (!ids.length) return { error: "Connect your AI service first, then switch.", status: 409 };
+  if (!(await ownModelChosen(env, t.id))) return { error: "Choose your models in Settings, Advanced, Custom Model Selection first, then switch.", status: 409 };
   if (!(await rateOk(env, t.id))) return { error: RATE_MSG, rate_limited: true, status: 429 };
-  const cfg = withKey({ base: row.base_url, host: chk.host, model: row.model, fast: row.fast_model || row.model, last4: row.key_last4 || "" }, key);
-  const test = await testByok(cfg, { fetchImpl });
+  const tests = await Promise.all(ids.map((id) => testConnection(conns[id], { fetchImpl })));
+  const test = tests.find((x) => x.ok) || tests[0];
   if (!test.ok) return { error: SWITCH_TEST_FAIL, test, status: 409 };
   // 1. Stripe: the byok price on the same subscription, no proration (nothing charged or refunded), billing date unchanged. Already
   //    there (a switch scheduled for the renewal, or a retry after a later step failed)? Leave it.
@@ -532,31 +534,31 @@ export async function switchNow(env, t, d, { fetchImpl = globalThis.fetch } = {}
 // { on, model } where model is General's first model (null until something is saved, then the main model below is the one in use).
 async function ownMain(env, tid) {
   try {
-    const r = await env.DB.prepare("SELECT custom_models_own_on, custom_models_own FROM tenants WHERE id=?").bind(String(tid)).first();
-    if (Number(r?.custom_models_own_on) !== 1) return { on: false, model: null };
-    let model = null, fast = null; try { const c = JSON.parse(r.custom_models_own); model = c?.categories?.find((x) => x.id === "general")?.chain?.[0]?.model || null; fast = c?.background?.chain?.[0]?.model || null; } catch {}
-    if (!fast) { const b = await env.DB.prepare("SELECT model, fast_model FROM byok WHERE tenant_id=?").bind(String(tid)).first().catch(() => null); fast = b?.fast_model || b?.model || null; }
-    return { on: true, model, fast };
-  } catch { return { on: false, model: null }; }
+    const r = await env.DB.prepare("SELECT custom_models_own FROM tenants WHERE id=?").bind(String(tid)).first(), c = parseOwn(r?.custom_models_own);
+    return { on: true, model: c?.categories?.find((x) => x.id === "general")?.chain?.[0]?.model || null, fast: c?.background?.chain?.[0]?.model || null };
+  } catch { return { on: true, model: null, fast: null }; }
 }
-async function stateOf(env, t, d, row, next) {
-  const onPlan = !eeEnabled(env) || t.plan === BYOK_PLAN, full = !onPlan, o = { on_plan: onPlan, full, plan: t.plan || "", plan_name: eeEnabled(env) ? d?.PLANS?.[t.plan]?.name || "" : "Self-hosted", price: eeEnabled(env) ? 10 : 0, warning: ZDR_WARNING, saved: view(row), mode: "",
-    openrouter: await orView(env, t.id, row).catch(() => ({ pending: null, manage: "" })), custom: eeEnabled(env) ? await ownMain(env, t.id) : { on: false, model: null } };
+// True once General has a model chosen in Custom Model Selection (own-key).
+async function ownModelChosen(env, tid) { return !!(await ownMain(env, tid)).model; }
+async function stateOf(env, t, d, next) {
+  const onPlan = t.plan === BYOK_PLAN, full = !onPlan, rows = await listRows(env, t.id), row = { mode: await modeOf(env, t.id) };
+  const o = { on_plan: onPlan, full, plan: t.plan || "", plan_name: d?.PLANS?.[t.plan]?.name || "", price: 10, warning: ZDR_WARNING, mode: "", connections: await viewRows(env, t.id, rows), custom: await ownMain(env, t.id),
+    openrouter: { manage: (await orView(env, t.id, rows.find((r) => r.kind === "openrouter") ? { source: OR_SOURCE, key_sealed: rows.find((r) => r.kind === "openrouter").key_sealed } : null).catch(() => ({}))).manage || "" }, chatgpt: { manage: CG_USAGE_PAGE }, usage: await usageCache(env, t.id, rows.map((r) => r.kind)) };
   if (onPlan) return o;
   if (next === undefined && d?.stripe && t.stripe_subscription) next = await nextPlan(env, t, d).catch((e) => { console.log("byok: subscription", String(e?.message || e).slice(0, 120)); return undefined; });
-  const stored = row?.mode || "";
+  const stored = row.mode || "", has = rows.length > 0;
   if (next === undefined) o.mode = stored;   // Stripe couldn't be read: what was chosen
-  else if (next?.plan === BYOK_PLAN) { o.mode = "switch"; o.switch_at = next.at || null; if (row && stored !== "switch") await setMode(env, t.id, "switch"); }
-  else { o.mode = stored === "fallback" ? "fallback" : ""; if (row && stored === "switch") await setMode(env, t.id, ""); }
-  if (row && o.mode === "fallback") { try { const L = ledgerOf(env, t.id); const f = typeof L?.byokFbState === "function" ? await L.byokFbState() : null; o.fallback = { active: !!f?.active, since: f?.since || null }; } catch { o.fallback = { active: false, since: null }; } }
+  else if (next?.plan === BYOK_PLAN) { o.mode = "switch"; o.switch_at = next.at || null; if (stored !== "switch") await setMode(env, t.id, "switch"); }
+  else { o.mode = stored === "fallback" ? "fallback" : ""; if (stored === "switch") await setMode(env, t.id, ""); }
+  if (has && o.mode === "fallback") { try { const L = ledgerOf(env, t.id); const f = typeof L?.byokFbState === "function" ? await L.byokFbState() : null; o.fallback = { active: !!f?.active, since: f?.since || null }; } catch { o.fallback = { active: false, since: null }; } }
   return o;
 }
 // Choose (or change, or undo) the option. "switch" schedules the byok plan from the next bill (plan-change.js: no proration, its
 // storage check); "fallback" and "" (keep my plan, key unused) put the plan's own price back first if a switch was pending.
-async function chooseMode(env, t, d, mode, row) {
+async function chooseMode(env, t, d, mode, has) {
   if (t.plan === BYOK_PLAN) return { error: "You're on the Bring your own key plan already, so your key is simply your AI.", status: 409 };
   if (!["fallback", "switch", ""].includes(mode)) return { error: "Choose one of the two options.", status: 400 };
-  if (mode && !row) return { error: "Save your key first, then choose how to use it.", status: 409 };
+  if (mode && !has) return { error: "Connect your AI service first, then choose how to use it.", status: 409 };
   if (!d?.stripe) return { error: "Plans can't be changed right now. Try again in a minute.", status: 503 };
   const next = t.stripe_subscription ? await nextPlan(env, t, d) : null, pending = next?.plan === BYOK_PLAN;
   if (mode === "switch") {
@@ -571,52 +573,117 @@ async function chooseMode(env, t, d, mode, row) {
     const r = await changePlan(env, t, t.plan, d);   // back to the plan already paid for: nothing charged
     if (r.error) return r;
   }
-  if (row) await setMode(env, t.id, mode);
+  if (has) await setMode(env, t.id, mode);
   return { next: null };
 }
 
 // t: the tenant row. Returns a Response, or null when `sub` isn't a BYOK route.
 // deps: { json, fetchImpl, stripe, PLANS, planPrices, planOfPrice } (the plan deps come from index.js, for the two options).
-export async function byokApi(req, env, t, sub, { json, fetchImpl = globalThis.fetch, ...d } = {}) {
-  if (!/^\/api\/byok(\/(test|save|delete|mode|switch-now|models|switch-preview|openrouter\/forget))?$/.test(sub)) return null;
-  const onPlan = !eeEnabled(env) || t.plan === BYOK_PLAN;
-  if (!eeEnabled(env) && (sub === "/api/byok/mode" || sub === "/api/byok/switch-now" || sub === "/api/byok/switch-preview")) return json({ error: "not found" }, 404);
-  await orDdl(env);
-  if (sub === "/api/byok" && req.method === "GET") return json(await stateOf(env, t, d, await savedRow(env, t.id)));
-  // OpenRouter's model list for the model fields (only models with tool calling; public, no key involved).
-  if (sub === "/api/byok/models" && req.method === "GET") { try { return json({ models: await orModels({ fetchImpl }) }); } catch (e) { console.log("byok: openrouter models", String(e?.message || e).slice(0, 80)); return json({ models: [], error: "Couldn't load OpenRouter's model list. You can still type a model name." }); } }
+// Routes: GET /api/byok (the services and the plan option), POST connections (a service with an address and a key), opencode (the key from the OpenCode console), test { id }, remove { id },
+// mode, switch-now, switch-preview, chatgpt/finish (the pasted address), chatgpt/forget and openrouter/forget (nothing is waiting any more; they answer the same state).
+export async function byokApi(req, env, t, sub, { json, fetchImpl = globalThis.fetch, waitUntil = null, ...d } = {}) {
+  if (!eeEnabled(env)) return singleKeyApi(req, env, t, sub, { json, fetchImpl });   // core: one saved key
+  if (!/^\/api\/byok(\/(connections|opencode|opencode-plan|test|remove|mode|switch-now|switch-preview|openrouter\/forget|chatgpt\/(finish|forget)|claudecode\/(start|finish|warm)|usage))?$/.test(sub)) return null;
+  const onPlan = t.plan === BYOK_PLAN;
+  await orDdl(env); await cgDdl(env); await connDdl(env);
+  await adoptPending(env, t.id);   // a key Sign in with OpenRouter just made becomes the OpenRouter connection
+  if (sub === "/api/byok" && req.method === "GET") return json(await stateOf(env, t, d));
+  // Plan usage bars: read again when the cache is stale (byok-usage.js: a failed source is remembered, so this never retries on every view). Always answers; no numbers means the page shows Manage usage.
+  if (sub === "/api/byok/usage" && req.method === "GET") {
+    const kinds = [...new Set((await listRows(env, t.id)).map((r) => r.kind))].filter((k) => k === "chatgpt" || k === "claudecode" || k === "opencode");
+    const getters = { chatgpt: () => chatgptUsage(env, t.id, { fetchImpl }), claudecode: () => claudeUsage(env, t.id), opencode: null };
+    const views = await Promise.all(kinds.map(async (k) => [k, await refreshUsage(env, t.id, k, getters[k])]));
+    return json({ usage: Object.fromEntries(views) });
+  }
   if (sub === "/api/byok/switch-preview" && req.method === "GET") { const r = await switchPreview(env, t, d); return json(r, r.error ? r.status || 400 : 200); }
   if (req.method !== "POST") return json({ error: "method" }, 405);
   if (sub === "/api/byok/switch-now") { const r = await switchNow(env, t, d, { fetchImpl }); return json(r, r.error ? r.status || 400 : 200); }
+  const has = async () => (await listRows(env, t.id)).length > 0;
   if (sub === "/api/byok/mode") {
-    const b = await boundedJson(req), row = await savedRow(env, t.id);
-    const r = await chooseMode(env, t, d, String(b.mode ?? ""), row);
-    if (r.error) return json({ error: r.error, ...(r.storage ? { storage: r.storage } : {}) }, r.status || 400);
-    return json({ ok: true, ...(await stateOf(env, t, d, await savedRow(env, t.id), r.next)) });
-  }
-  if (sub === "/api/byok/delete") {
-    // A switch to the byok plan pending: cancel_switch (the app asked) puts the plan's own price back first; otherwise the switch stays.
     const b = await boundedJson(req);
-    let next;
-    if (b.cancel_switch === true && !onPlan) { const r = await chooseMode(env, t, d, "", null); if (r.error) return json({ error: r.error }, r.status || 400); next = r.next; }
-    await env.DB.prepare("DELETE FROM byok WHERE tenant_id=?").bind(t.id).run();
-    await orForget(env, t.id);   // a key from Sign in with OpenRouter that was still waiting for its models goes too
-    return json({ ok: true, ...(await stateOf(env, t, d, null, next)) });
+    const r = await chooseMode(env, t, d, String(b.mode ?? ""), await has());
+    if (r.error) return json({ error: r.error, ...(r.storage ? { storage: r.storage } : {}) }, r.status || 400);
+    return json({ ok: true, ...(await stateOf(env, t, d, r.next)) });
   }
-  // Signed in with OpenRouter but changed their mind before saving: forget only the waiting key (a saved setup stays).
-  if (sub === "/api/byok/openrouter/forget") { await orForget(env, t.id); return json({ ok: true, ...(await stateOf(env, t, d, await savedRow(env, t.id))) }); }
-  const b = await boundedJson(req), row = await savedRow(env, t.id);
-  const f = await formCfg(env, t, b, row); if (f.error) return json({ error: f.error, field: f.field }, 400);
-  if (sub === "/api/byok/save" && b.ack !== true) return json({ error: "Read the note about your provider and tick the box to save.", field: "ack" }, 400);
+  if (sub === "/api/byok/openrouter/forget" || sub === "/api/byok/chatgpt/forget") return json({ ok: true, ...(await stateOf(env, t, d)) });
+  // Continue with ChatGPT: the person pastes the address their browser ended on (OpenAI's 127.0.0.1 page), and the code in it is exchanged here. The sign-in becomes the ChatGPT connection.
+  if (sub === "/api/byok/chatgpt/finish") {
+    const b = await boundedJson(req);
+    const r = await cgFinish(env, { tenantId: t.id, pasted: b.url, fetchImpl });
+    if (r.error) return json({ error: CG_WHY_TEXT[r.error] || CG_WHY_TEXT.exchange, why: r.error }, 400);
+    await addChatgpt(env, t.id);
+    return json({ ok: true, ...(await stateOf(env, t, d)) });
+  }
+  // Continue with Claude: start gives Anthropic's own address (the app opens it in a new tab), finish takes the code Anthropic shows there. The sign-in stays in the account's engine.
+  // Warm: the app calls it when a channel opens and when the composer gets focus. Only an account whose General model is Claude Code starts anything, at most once every 30 seconds.
+  if (sub === "/api/byok/claudecode/warm") {
+    const wb = await req.clone().json().catch(() => ({})), wk = wb?.login === true ? "login:" + t.id : t.id, last = CC_WARMED.get(wk) || 0;   // login: true is sent by Settings, AI services, so the sign-in start is fast
+    if (!(wb?.login === true || isCcModel((await ownMain(env, t.id)).model)) || Date.now() - last < 30e3) return json({ ok: true, warming: false });
+    CC_WARMED.set(wk, Date.now()); if (CC_WARMED.size > 500) CC_WARMED.clear();
+    const p = ccWarm(env, t.id); if (waitUntil) waitUntil(p);
+    return json({ ok: true, warming: true });
+  }
+  if (sub === "/api/byok/claudecode/start") {
+    if (!(await rateOk(env, t.id))) return json({ error: RATE_MSG, rate_limited: true }, 429);
+    const r = await ccStart(env, t.id); if (r.error) return json({ error: r.error }, r.status || 502);
+    return json({ ok: true, url: r.url });
+  }
+  if (sub === "/api/byok/claudecode/finish") {
+    if (!(await rateOk(env, t.id))) return json({ error: RATE_MSG, rate_limited: true }, 429);
+    const b = await boundedJson(req), r = await ccFinish(env, t.id, b.code);
+    if (r.error) return json({ error: r.error, field: "code" }, r.status || 400);
+    await addClaudeCode(env, t.id, r.account);
+    return json({ ok: true, id: "claudecode", ...(await stateOf(env, t, d)) });
+  }
+  const b = await boundedJson(req);
+  // Remove: the services' models leave Custom Model Selection too. Removing the last one ends the backup option; with a switch pending the app asks whether to cancel it (cancel_switch).
+  if (sub === "/api/byok/remove") {
+    const id = String(b.id ?? "");
+    const rows = await listRows(env, t.id); if (!rows.find((r) => r.id === id)) return json({ error: "That service isn't connected.", status: 404 }, 404);
+    let next;
+    if (rows.length === 1 && b.cancel_switch === true && !onPlan) { const r = await chooseMode(env, t, d, "", false); if (r.error) return json({ error: r.error }, r.status || 400); next = r.next; }
+    const r = await removeConnection(env, t.id, id, { fetchImpl });
+    if (r.error) return json({ error: r.error }, r.status || 400);
+    await dropUsage(env, t.id, id);
+    if (r.left === 0) await env.DB.prepare("DELETE FROM byok WHERE tenant_id=?").bind(t.id).run();   // the last one: the backup option ends with it
+    return json({ ok: true, removed_models: r.removed, ...(await stateOf(env, t, d, r.left === 0 ? next : undefined)) });
+  }
   if (!(await rateOk(env, t.id))) return json({ error: RATE_MSG, rate_limited: true }, 429);
-  const test = await testByok(f.cfg, { fetchImpl });
-  if (sub === "/api/byok/test") return json({ ok: test.ok, test });
-  if (!test.ok) return json({ error: "Not saved: the connection test didn't pass. Fix what it says and try again.", test }, 400);
-  const at = now();
-  await env.DB.prepare(`INSERT INTO byok (tenant_id,base_url,model,fast_model,key_sealed,key_last4,test_json,tested_at,created_at,updated_at,source) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(tenant_id) DO UPDATE SET base_url=excluded.base_url, model=excluded.model, fast_model=excluded.fast_model, key_sealed=excluded.key_sealed, key_last4=excluded.key_last4,
-      test_json=excluded.test_json, tested_at=excluded.tested_at, updated_at=excluded.updated_at, source=excluded.source`)
-    .bind(t.id, f.cfg.base, f.cfg.model, f.fastIn, f.cfg.key ? await sealSecret(env, f.cfg.key) : "", f.cfg.last4, JSON.stringify(test), test.at, at, at, f.source).run();
-  await orForget(env, t.id);   // saved: a waiting OpenRouter key is now this row (or was set aside for a pasted key)
-  return json({ ok: true, test, ...(await stateOf(env, t, d, await savedRow(env, t.id))) });
+  // Test one connection: no paid model call (see testConnection).
+  if (sub === "/api/byok/test") {
+    const id = String(b.id ?? ""), row = (await listRows(env, t.id)).find((r) => r.id === id);
+    if (!row) return json({ error: "That service isn't connected.", status: 404 }, 404);
+    const test = await testConnection((await connCfgs(env, t.id))[id], { fetchImpl });
+    await saveTest(env, t.id, id, test);
+    return json({ ok: test.ok, test, ...(await stateOf(env, t, d)) });
+  }
+  // Switch the OpenCode connection between the Go plan and pay as you go (no key needed again).
+  if (sub === "/api/byok/opencode-plan") {
+    if (b.plan !== "go" && b.plan !== "payg") return json({ error: "Choose the Go plan or pay as you go.", field: "plan" }, 400);
+    const r = await setOcPlan(env, t.id, b.plan); if (r.error) return json({ error: r.error }, r.status || 400);
+    return json({ ok: true, ...(await stateOf(env, t, d)) });
+  }
+  if (b.ack !== true) return json({ error: "Read the note about your provider and tick the box to connect.", field: "ack" }, 400);
+  // Use OpenCode: the key made in the OpenCode console, pasted here. The address is fixed.
+  if (sub === "/api/byok/opencode") {
+    const key = String(b.key ?? "").trim();
+    if (!key || !CONN_KEY_RE.test(key)) return json({ error: "Paste the key from your OpenCode console. It is one line.", field: "key" }, 400);
+    const plan = ocPlan(b.plan);
+    const cfg = withKey({ id: "opencode", kind: "opencode", base: ocBase(plan), plan, tenantId: t.id, host: "OpenCode", provider: OC_SOURCE, settings: "" }, key);
+    const test = await testConnection(cfg, { fetchImpl });
+    if (!test.ok) return json({ error: test.checks.reach.error, field: "key", test }, 400);
+    await addSealed(env, t.id, "opencode", key, plan); await saveTest(env, t.id, "opencode", test);
+    return json({ ok: true, id: "opencode", ...(await stateOf(env, t, d)) });
+  }
+  // Any service with an OpenAI-compatible API: its address and key. Tested before it is kept.
+  if (sub === "/api/byok/connections") {
+    const f = plainFromForm(b); if (f.error) return json({ error: f.error, field: f.field }, 400);
+    const cfg = withKey({ id: "p_test", kind: "plain", base: f.chk.base, host: f.chk.host, provider: "", settings: "" }, f.key);
+    const test = await testConnection(cfg, { fetchImpl });
+    if (!test.ok) return json({ error: "Not connected: the connection test didn't pass. Fix what it says and try again.", test }, 400);
+    const r = await addPlain(env, t.id, f); if (r.error) return json({ error: r.error }, r.status || 400);
+    await saveTest(env, t.id, r.id, test);
+    return json({ ok: true, id: r.id, ...(await stateOf(env, t, d)) });
+  }
+  return null;
 }
