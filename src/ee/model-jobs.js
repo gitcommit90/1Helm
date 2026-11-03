@@ -9,8 +9,8 @@ export class ModelSettingsError extends Error {
   constructor(message, status = 503) { super(message); this.name = "ModelSettingsError"; this.modelSettings = true; this.status = status; }
 }
 
-// Caps left at 0 on purpose. speech_cloudflare, workers_ai and vision call
-// env.AI.run with the one saved model (vision's non-dynamic path too), so a fallback would be saved and never run.
+// Caps left at 0 on purpose. speech_cloudflare and workers_ai call
+// env.AI.run with the one saved model, so a fallback would be saved and never run. Vision is not in that list: it calls the shared dispatcher, which tries the main model and then each fallback.
 // embedding_files may list fallbacks, but only models its main model lists in its catalog facts as embedding_equivalents (equivalentOnly): vectors
 // from a different model don't match an index made by the main model, so such a fallback would make search return wrong matches. The save
 // check (model-settings.js embeddingProblem) refuses any other fallback.
@@ -30,7 +30,7 @@ export const JOB_KINDS = {
   diarize: { fallbacks: 0, effort: false, noOutput: true, pick: "diarize", needs: "Needs a speaker labeling model." },
   embedding_files: { fallbacks: 2, equivalentOnly: true, effort: false, zdr: true, pick: "embedding_files", reindex: true, needs: "Needs a text embedding model." },
   // vision has a reasoning level (starting value "none": Gemma does not think). effortNullOk: a version saved before the level existed has null, which reads as "none" (model-settings.js).
-  vision: { fallbacks: 0, effort: true, effortNullOk: true, zdr: true, pick: "vision", needs: "Needs a model that can read pictures." },
+  vision: { fallbacks: 3, effort: true, effortNullOk: true, zdr: true, pick: "vision", needs: "Needs a model that can read pictures." },
   workers_ai: { fallbacks: 0, effort: false, pick: "workers_ai", needs: "Needs a Cloudflare Workers AI model." },
   workers_decider: { fallbacks: 3, effort: false, zdr: true, any: true, pick: "workers_decider" },
   classic: { fallbacks: 4, effort: false, zdr: true, pick: "classic" },
