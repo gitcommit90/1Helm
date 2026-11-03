@@ -35,10 +35,22 @@ export const ledgerGuard = {
   guardCarry(start) {
     if (!start) return 0;
     const put = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE at<? OR (kind='included_expire' AND at>=?)", start, start).toArray()[0].n);
-    const out = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM spend WHERE at<?", start).toArray()[0].n);
+    const out = this.tot("spent").spent - this.periodSpent(start);   // spend before the period = all spend less the period's
     const bought = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE kind='topup' AND nano>0 AND at<?", start).toArray()[0].n);
     return Math.max(0, Math.min(put - out, bought));   // never more than was bought before the period
   },
+  // Spend since `from` (ms). For the current period the sum is kept in tot (pfrom, pspent; the spend triggers add to it), so the usage meter does not add up a
+  // month of rows on every read; it is built from spend_at once when the period start changes. Any other start (the rolling 31 days) reads the spend_at range.
+  periodSpent(from) {
+    const start = this.guardPeriod();
+    if (!start || from !== start) return Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM spend WHERE at>=?", from).toArray()[0].n);
+    const have = this.tot("pfrom", "pspent"), cached = this.sql.exec("SELECT 1 x FROM tot WHERE k='pfrom'").toArray().length && have.pfrom === from;
+    if (cached) return have.pspent;
+    const sum = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM spend WHERE at>=?", from).toArray()[0].n);
+    this.ctx.storage.transactionSync ? this.ctx.storage.transactionSync(() => this.putPeriod(from, sum)) : this.putPeriod(from, sum);
+    return sum;
+  },
+  putPeriod(from, sum) { this.sql.exec("INSERT INTO tot (k,v) VALUES ('pfrom',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", from); this.sql.exec("INSERT INTO tot (k,v) VALUES ('pspent',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", sum); },
   guardInfo() {
     const d = this.dayInfo(), now = Date.now(), start = this.guardPeriod();
     const sum = (kind) => Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE kind=? AND nano>0 AND at>=?", kind, start).toArray()[0].n);
@@ -46,7 +58,7 @@ export const ledgerGuard = {
     if (allowance) allowance += sum("topup") + this.guardCarry(start);
     const from = start || now - 31 * 86400e3;
     if (!allowance) allowance = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE nano>0 AND kind IN ('included','topup','test') AND at>=?", from).toArray()[0].n);
-    const used = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM spend WHERE at>=?", from).toArray()[0].n);
+    const used = this.periodSpent(from);
     const dayKey = `day_ok:${this.dayStart()}`;
     return { spend_pauses: this.spendPreferences().enabled, allowance_nano: allowance, period_start: start, period_spent_nano: used, pct: allowance ? Math.min(100, Math.round(used / allowance * 100)) : 0,
       day_spent_nano: d.spent_nano + d.reserved_nano, day_share_nano: dayShare(allowance), day_ok_nano: Number(this.guardKv(dayKey)) || 0, day_cap_nano: d.cap_nano,

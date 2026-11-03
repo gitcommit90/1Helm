@@ -270,7 +270,10 @@ export class AmbientStore {
     CREATE TABLE IF NOT EXISTS ambient_attempts (id TEXT PRIMARY KEY,at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS ambient_link_old ON ambient_links(old_id);
     CREATE INDEX IF NOT EXISTS ambient_queue ON ambient_chunks(active,state,retry_at);
-    CREATE INDEX IF NOT EXISTS ambient_item_source ON ambient_items(source,source_id);`);
+    CREATE INDEX IF NOT EXISTS ambient_item_source ON ambient_items(source,source_id);
+    CREATE INDEX IF NOT EXISTS ambient_chunk_open ON ambient_chunks(source,source_id,ordinal) WHERE active=1 AND state<>'done';
+    CREATE INDEX IF NOT EXISTS ambient_chunk_processing ON ambient_chunks(state) WHERE state='processing';
+    CREATE INDEX IF NOT EXISTS ambient_item_at ON ambient_items(COALESCE(source_at,0) DESC,id);`);
     // The old passage index and its embeddings are gone: drop their tables and the column that tracked them.
     for (const t of ["ambient_passages", "ambient_item_vec", "ambient_vocab", "ambient_qvec"]) this.sql.exec(`DROP TABLE IF EXISTS ${t}`);
     if (this.rows("PRAGMA table_info(ambient_chunks)").some((c) => c.name === "passages_built")) this.sql.exec("ALTER TABLE ambient_chunks DROP COLUMN passages_built");
@@ -366,14 +369,14 @@ export class AmbientStore {
   sessionAt() { return Number(this.host.get("ambient_model_at") || 0) + RUN_GAP_MS; }
   // Chunks the model may work on now: not done, past their retry time, and in a finished conversation (or one quiet for QUIET_MS).
   eligible(fixture, limit) {
-    return this.rows("SELECT c.* FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1 AND c.state<>'done' AND c.retry_at<=? AND (?=1 OR s.live=0 OR s.ingested_at<=?) AND NOT EXISTS(SELECT 1 FROM ambient_chunks p WHERE p.source=c.source AND p.source_id=c.source_id AND p.active=1 AND p.ordinal<c.ordinal AND p.state IN ('failed','processing')) ORDER BY s.source_at,c.ordinal LIMIT ?", now(), fixture ? 1 : 0, now() - QUIET_MS, limit);
+    return this.rows("SELECT c.* FROM ambient_chunks c INDEXED BY ambient_chunk_open JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1 AND c.state<>'done' AND c.retry_at<=? AND (?=1 OR s.live=0 OR s.ingested_at<=?) AND NOT EXISTS(SELECT 1 FROM ambient_chunks p INDEXED BY ambient_chunk_open WHERE p.source=c.source AND p.source_id=c.source_id AND p.active=1 AND p.state<>'done' AND p.ordinal<c.ordinal AND p.state IN ('failed','processing')) ORDER BY s.source_at,c.ordinal LIMIT ?", now(), fixture ? 1 : 0, now() - QUIET_MS, limit);
   }
   dueAt() {
     // No configured managed provider: do not spin a rapid alarm (BYOK indexing can be explicitly enabled).
     if (!this.host.env.OPENROUTER_API_KEY && !this.host.env.BYOK && !this.host.get("ambient_indexing")) return Infinity;
     if (this.backlog()) return now() + 1000;
     // A chunk of a still-open conversation becomes due QUIET_MS after the conversation's last revision.
-    const r = this.rows("SELECT MIN(MAX(c.retry_at,CASE WHEN s.live=1 THEN s.ingested_at+? ELSE 0 END)) at FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1 AND c.state<>'done' AND NOT EXISTS(SELECT 1 FROM ambient_chunks p WHERE p.source=c.source AND p.source_id=c.source_id AND p.active=1 AND p.state<>'done' AND p.ordinal<c.ordinal)", QUIET_MS)[0];
+    const r = this.rows("SELECT MIN(MAX(c.retry_at,CASE WHEN s.live=1 THEN s.ingested_at+? ELSE 0 END)) at FROM ambient_chunks c INDEXED BY ambient_chunk_open JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1 AND c.state<>'done' AND NOT EXISTS(SELECT 1 FROM ambient_chunks p INDEXED BY ambient_chunk_open WHERE p.source=c.source AND p.source_id=c.source_id AND p.active=1 AND p.state<>'done' AND p.ordinal<c.ordinal)", QUIET_MS)[0];
     if (r?.at == null) return Infinity;
     return Math.max(now() + 1000, Number(r.at), this.sessionOpen() ? 0 : this.sessionAt());
   }
@@ -397,12 +400,20 @@ export class AmbientStore {
     return allowed;
   }
   previous(lines) {
-    const recent = this.query({ limit: 30 }).items, selected = new Map(recent.map((x) => [x.id, x]));
+    // The same lines against the same stored items give the same answer, and every write that changes the items bumps ambient_revision, so one chunk's
+    // repeated checks (before the model call, before publishing, in checkContext) read the store once. The item queries are lean: no coverage counts.
+    const rev = String(this.host.get("ambient_revision") || "0"), key = `${rev}|${lines.map((l) => l.text).join("\n")}`;
+    if (this._prev && this._prev.key === key) return this._prev.value.map((x) => structuredClone(x));
+    const value = this.previousUncached(lines); this._prev = { key, value };
+    return value.map((x) => structuredClone(x));
+  }
+  previousUncached(lines) {
+    const recent = this.query({ limit: 30, lean: true }).items, selected = new Map(recent.map((x) => [x.id, x]));
     const signal = lines.filter((l) => /\b(need|should|remind|remember|idea|actually|done|finished|returned|cancel|still|instead|already)\b/i.test(l.text));
     const ignored = new Set(["remember", "reminder", "actually", "instead", "already", "should", "tomorrow", "because", "something", "anything", "another", "really", "please", "finished"]);
     // ASR changes word endings and spellings ("returned", "returnd"), so look up by a word stem, not the whole word.
     const words = [...new Set(norm((signal.length ? signal : lines).map((l) => l.text).join(" ")).split(" ").filter((w) => w.length > 5 && !ignored.has(w)).map((w) => w.slice(0, Math.max(5, Math.ceil(w.length * 0.7)))))].slice(0, 10);
-    for (const word of words) for (const item of this.query({ query: word, limit: 4 }).items) selected.set(item.id, item);
+    for (const word of words) for (const item of this.query({ query: word, limit: 4, lean: true }).items) selected.set(item.id, item);
     return [...selected.values()].slice(0, 70);
   }
   async releaseAttempts() {
@@ -418,9 +429,14 @@ export class AmbientStore {
   // Near-empty speech: done with no items and no model call, at once and whatever the gate or the conversation state is. The counters stay
   // complete so coverage reads the same as for a chunk that had no items.
   skipShort() {
+    // The queued set only changes when ambient_revision does (ingest, retry, clear, publish), and a chunk that was looked at and kept is never short later,
+    // so a pass that read every candidate is remembered under the revision and not repeated until it changes (it read every queued chunk's lines each alarm).
+    const rev = String(this.host.get("ambient_revision") || "0"); if (this.host.get("ambient_short_rev") === rev) return;
     const none = JSON.stringify({ model_items: 0, located: 0, approximate: 0, unlocated: 0, malformed: 0, duplicate: 0, filtered_nonpersonal: 0, over_limit: 0, review_dropped: 0, privacy_removed: 0, skipped_short: 1 });
     // Only chunks with under 400 characters of text can be that short, so a long chunk is never read into memory.
-    for (const c of this.rows("SELECT source,source_id,hash,lines FROM ambient_chunks c WHERE active=1 AND state='queued' AND (SELECT COALESCE(SUM(length(json_extract(j.value,'$.text'))),0) FROM json_each(c.lines) j)<400 LIMIT 200")) {
+    const short = this.rows("SELECT source,source_id,hash,lines FROM ambient_chunks c WHERE active=1 AND state='queued' AND (SELECT COALESCE(SUM(length(json_extract(j.value,'$.text'))),0) FROM json_each(c.lines) j)<400 LIMIT 200");
+    if (short.length < 200) this.host.put("ambient_short_rev", rev);
+    for (const c of short) {
       if (speechWords(parse(c.lines, [])) >= MIN_SPEECH_WORDS) continue;
       this.transaction(() => {
         this.sql.exec("UPDATE ambient_chunks SET state='done',error=NULL,retry_at=0,draft_key=NULL,draft_json=NULL,fallback_json=NULL,grounding_json=?,claim_token=NULL WHERE source=? AND source_id=? AND hash=? AND state='queued'", none, c.source, c.source_id, c.hash);
@@ -666,21 +682,25 @@ export class AmbientStore {
     if (to != null) { scope.push(`(${coverageFrom}<=? OR ${coverageFrom} IS NULL)`); scopeArgs.push(to); }
     if (o.source_id) { scope.push("s.source_id=?"); scopeArgs.push(String(o.source_id)); }
     const scopeSql = scope.length ? ` WHERE ${scope.join(" AND ")}` : "";
-    const sourceStats = this.rows(`SELECT COUNT(*) n,MIN(s.source_at) first,MAX(s.source_until) last,MAX(s.ingested_at) ingested,MAX(s.processed_at) processed,SUM(s.live) live,SUM(CASE WHEN s.processed_at IS NULL THEN 1 ELSE 0 END) pending,SUM(CASE WHEN s.chunks=0 THEN 1 ELSE 0 END) empty,SUM(CASE WHEN s.live=0 AND s.source_state IS NOT NULL AND UPPER(s.source_state) NOT IN ('COMPLETED','PROCESSED') THEN 1 ELSE 0 END) nonfinal FROM ambient_sources s${scopeSql}`, ...scopeArgs)[0] || {};
-    const counts = Object.fromEntries(this.rows(`SELECT c.state,COUNT(*) n FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1${scope.length ? ` AND ${scope.join(" AND ")}` : ""} GROUP BY c.state`, ...scopeArgs).map((r) => [r.state, Number(r.n)]));
-    const recovery = this.rows(`SELECT COUNT(*) n,SUM(CASE WHEN c.state='done' THEN 1 ELSE 0 END) done FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1 AND c.recovery_mode>0${scope.length ? ` AND ${scope.join(" AND ")}` : ""}`, ...scopeArgs)[0] || {};
-    const grounding = this.rows(`SELECT COUNT(*) chunks,SUM(CASE WHEN c.grounding_json IS NULL THEN 1 ELSE 0 END) uncounted,SUM(COALESCE(json_extract(c.grounding_json,'$.located'),0)) located,SUM(COALESCE(json_extract(c.grounding_json,'$.approximate'),0)) approximate,SUM(COALESCE(json_extract(c.grounding_json,'$.unlocated'),0)) unlocated,SUM(COALESCE(json_extract(c.grounding_json,'$.malformed'),0)) malformed,SUM(COALESCE(json_extract(c.grounding_json,'$.review_dropped'),0)) review_dropped FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1 AND c.state='done'${scope.length ? ` AND ${scope.join(" AND ")}` : ""}`, ...scopeArgs)[0] || {};
-    const backlog = this.backlog();
-    const coverage = { extractor_version: AMBIENT_VERSION, status: h.tid() ? h.get("status") || "off" : "never_synced", sources: Number(sourceStats.n || 0), queued: counts.queued || 0, processing: counts.processing || 0, failed: counts.failed || 0, backfill_sources: backlog,
-      earliest_available_at: sourceStats.first || null, latest_source_at: sourceStats.last || null, latest_ingested_at: sourceStats.ingested || null, latest_processed_at: sourceStats.processed || null, live_sources: Number(sourceStats.live || 0),
-      incomplete: !sourceStats.n || !!(backlog || sourceStats.pending || sourceStats.live || sourceStats.nonfinal || h.get("status") !== "active"), note: h.get("ambient_note") || null,
-      nonfinal_sources: Number(sourceStats.nonfinal || 0), processing_complete: !!sourceStats.n && !backlog && !sourceStats.pending,
-      empty_sources: Number(sourceStats.empty || 0), scope: { from, to, source_id: o.source_id || null }, matching_sources_pending: Number(sourceStats.pending || 0),
-      capture_cues_note: h.get("ambient_cue_note") || null,
-      recovery: { strategy: AMBIENT_RECOVERY_VERSION, source_only_chunks: Number(recovery.n || 0), processed_source_only_chunks: Number(recovery.done || 0), legacy_activations: Number(h.get("ambient_recovery_migrated") || 0), alarm_pending: h.get("ambient_recovery_arm") === "1", historical_reconciliation_limited: !!recovery.n, note: recovery.n ? "Source-only recovery attempts withhold historical notes; processing counters separately show whether they finished. Old tasks and unresolved updates must not be treated as independent confirmed commitments or a fully reconciled list." : null },
-      grounding: { located: Number(grounding.located || 0), approximate: Number(grounding.approximate || 0), unlocated: Number(grounding.unlocated || 0), malformed_model_items: Number(grounding.malformed || 0), dropped_by_review: Number(grounding.review_dropped || 0), chunks_without_counts: Number(grounding.uncounted || 0),
-        note: "located: evidence copied from matching speech. approximate: best-guess span, needs review. unlocated: the extractor reported it but no matching speech was found, so treat it as unverified. Chunks without counts were processed before grounding states existed; their item text is the raw transcript quote." },
-      history: "Only recordings synced into 1Helm are covered. Older Bee history may require Import past conversations.", reconciliation: "Related intentions use up to 70 recent and topic-matching prior items.", reminders: "Captured only; no notifications have been scheduled." };
+    // lean (previous(): only the items are read): the coverage counts scan every source and chunk and are not returned to the caller.
+    let coverage = null;
+    if (!o.lean) {
+      const sourceStats = this.rows(`SELECT COUNT(*) n,MIN(s.source_at) first,MAX(s.source_until) last,MAX(s.ingested_at) ingested,MAX(s.processed_at) processed,SUM(s.live) live,SUM(CASE WHEN s.processed_at IS NULL THEN 1 ELSE 0 END) pending,SUM(CASE WHEN s.chunks=0 THEN 1 ELSE 0 END) empty,SUM(CASE WHEN s.live=0 AND s.source_state IS NOT NULL AND UPPER(s.source_state) NOT IN ('COMPLETED','PROCESSED') THEN 1 ELSE 0 END) nonfinal FROM ambient_sources s${scopeSql}`, ...scopeArgs)[0] || {};
+      const counts = Object.fromEntries(this.rows(`SELECT c.state,COUNT(*) n FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1${scope.length ? ` AND ${scope.join(" AND ")}` : ""} GROUP BY c.state`, ...scopeArgs).map((r) => [r.state, Number(r.n)]));
+      const recovery = this.rows(`SELECT COUNT(*) n,SUM(CASE WHEN c.state='done' THEN 1 ELSE 0 END) done FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1 AND c.recovery_mode>0${scope.length ? ` AND ${scope.join(" AND ")}` : ""}`, ...scopeArgs)[0] || {};
+      const grounding = this.rows(`SELECT COUNT(*) chunks,SUM(CASE WHEN c.grounding_json IS NULL THEN 1 ELSE 0 END) uncounted,SUM(COALESCE(json_extract(c.grounding_json,'$.located'),0)) located,SUM(COALESCE(json_extract(c.grounding_json,'$.approximate'),0)) approximate,SUM(COALESCE(json_extract(c.grounding_json,'$.unlocated'),0)) unlocated,SUM(COALESCE(json_extract(c.grounding_json,'$.malformed'),0)) malformed,SUM(COALESCE(json_extract(c.grounding_json,'$.review_dropped'),0)) review_dropped FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id WHERE c.active=1 AND c.state='done'${scope.length ? ` AND ${scope.join(" AND ")}` : ""}`, ...scopeArgs)[0] || {};
+      const backlog = this.backlog();
+      coverage = { extractor_version: AMBIENT_VERSION, status: h.tid() ? h.get("status") || "off" : "never_synced", sources: Number(sourceStats.n || 0), queued: counts.queued || 0, processing: counts.processing || 0, failed: counts.failed || 0, backfill_sources: backlog,
+        earliest_available_at: sourceStats.first || null, latest_source_at: sourceStats.last || null, latest_ingested_at: sourceStats.ingested || null, latest_processed_at: sourceStats.processed || null, live_sources: Number(sourceStats.live || 0),
+        incomplete: !sourceStats.n || !!(backlog || sourceStats.pending || sourceStats.live || sourceStats.nonfinal || h.get("status") !== "active"), note: h.get("ambient_note") || null,
+        nonfinal_sources: Number(sourceStats.nonfinal || 0), processing_complete: !!sourceStats.n && !backlog && !sourceStats.pending,
+        empty_sources: Number(sourceStats.empty || 0), scope: { from, to, source_id: o.source_id || null }, matching_sources_pending: Number(sourceStats.pending || 0),
+        capture_cues_note: h.get("ambient_cue_note") || null,
+        recovery: { strategy: AMBIENT_RECOVERY_VERSION, source_only_chunks: Number(recovery.n || 0), processed_source_only_chunks: Number(recovery.done || 0), legacy_activations: Number(h.get("ambient_recovery_migrated") || 0), alarm_pending: h.get("ambient_recovery_arm") === "1", historical_reconciliation_limited: !!recovery.n, note: recovery.n ? "Source-only recovery attempts withhold historical notes; processing counters separately show whether they finished. Old tasks and unresolved updates must not be treated as independent confirmed commitments or a fully reconciled list." : null },
+        grounding: { located: Number(grounding.located || 0), approximate: Number(grounding.approximate || 0), unlocated: Number(grounding.unlocated || 0), malformed_model_items: Number(grounding.malformed || 0), dropped_by_review: Number(grounding.review_dropped || 0), chunks_without_counts: Number(grounding.uncounted || 0),
+          note: "located: evidence copied from matching speech. approximate: best-guess span, needs review. unlocated: the extractor reported it but no matching speech was found, so treat it as unverified. Chunks without counts were processed before grounding states existed; their item text is the raw transcript quote." },
+        history: "Only recordings synced into 1Helm are covered. Older Bee history may require Import past conversations.", reconciliation: "Related intentions use up to 70 recent and topic-matching prior items.", reminders: "Captured only; no notifications have been scheduled." };
+    }
     const revision = Number(h.get("ambient_revision") || 0), signature = JSON.stringify([o.mode || "items", o.source_id || null, o.kind || "all", o.status || "all", String(o.query || ""), from, to, o.evidence_id || null]);
     let cursor = null;
     if (o.cursor) { try { cursor = decodeCursor(String(o.cursor)); } catch {} if (!cursor || cursor.revision !== revision || cursor.signature !== signature) return { items: [], ...(o.mode === "transcript" ? { transcripts: [] } : {}), ...(o.mode === "locations" ? { locations: [] } : {}), coverage, next_cursor: null, error: "Ambient records or query changed. Restart from the first page." }; }
@@ -700,10 +720,11 @@ export class AmbientStore {
       if (to != null) { within.push("ni.source_at<=?"); args.push(to); }
       where.push(`NOT EXISTS(SELECT 1 FROM ambient_links l JOIN ambient_items ni ON ni.id=l.new_id JOIN ambient_chunks nc ON nc.source=ni.source AND nc.source_id=ni.source_id AND nc.hash=ni.chunk_hash WHERE l.old_id=i.id AND nc.active=1 AND nc.state='done'${within.length ? ` AND ${within.join(" AND ")}` : ""})`);
     }
-    const joins = "FROM ambient_items i JOIN ambient_sources s ON s.source=i.source AND s.source_id=i.source_id JOIN ambient_chunks c ON c.source=i.source AND c.source_id=i.source_id AND c.hash=i.chunk_hash";
+    // CROSS JOIN keeps ambient_items first, so the page comes from ambient_item_at in order and stops at LIMIT (the planner started from every done chunk).
+    const joins = "FROM ambient_items i CROSS JOIN ambient_sources s ON s.source=i.source AND s.source_id=i.source_id CROSS JOIN ambient_chunks c ON c.source=i.source AND c.source_id=i.source_id AND c.hash=i.chunk_hash";
     // A query keeps the items whose clean text or real words hold every word of it (plain substring match, like the transcript mode). Ranked search by words is memory recall in ambient_query.
     if (o.query && !o.evidence_id) for (const word of String(o.query).trim().slice(0, 300).split(/\s+/).filter(Boolean).slice(0, 10)) { where.push("instr(lower(COALESCE(json_extract(i.data,'$.search_text'),json_extract(i.data,'$.text'),'')),lower(?))>0"); args.push(word); }
-    const total = Number(this.rows(`SELECT COUNT(*) n ${joins} WHERE ${where.join(" AND ")}`, ...args)[0]?.n || 0);
+    const total = o.lean ? null : Number(this.rows(`SELECT COUNT(*) n ${joins} WHERE ${where.join(" AND ")}`, ...args)[0]?.n || 0);
     if (cursor) { where.push("(COALESCE(i.source_at,0)<? OR (COALESCE(i.source_at,0)=? AND i.id>?))"); args.push(cursor.at, cursor.at, cursor.id); }
     const rows = this.rows(`SELECT i.*,s.revision,s.source_state${o.evidence_id ? ",c.lines" : ""} ${joins} WHERE ${where.join(" AND ")} ORDER BY COALESCE(i.source_at,0) DESC,i.id LIMIT ?`, ...args, limit + 1);
     // The page stops at PAGE_BUDGET (the first record always fits), and next_cursor continues after the last record returned.
@@ -719,7 +740,7 @@ export class AmbientStore {
   // HS_WRITERS (hindsight-writers.js, DESIGN section 7 option (a)): the voice inbox items as they stand now (an item a newer, still active one
   // replaced is left out), in id order, as plain rows { ...item, id, source, source_id, source_at }. after: the last id of the previous page.
   inboxRows(after = "", limit = 200) {
-    const rows = this.rows(`SELECT i.id,i.data,i.source,i.source_id,i.source_at FROM ambient_items i JOIN ambient_chunks c ON c.source=i.source AND c.source_id=i.source_id AND c.hash=i.chunk_hash
+    const rows = this.rows(`SELECT i.id,i.data,i.source,i.source_id,i.source_at FROM ambient_items i CROSS JOIN ambient_chunks c ON c.source=i.source AND c.source_id=i.source_id AND c.hash=i.chunk_hash
       WHERE c.active=1 AND c.state='done' AND i.id>? AND NOT EXISTS(SELECT 1 FROM ambient_links l JOIN ambient_items ni ON ni.id=l.new_id JOIN ambient_chunks nc ON nc.source=ni.source AND nc.source_id=ni.source_id AND nc.hash=ni.chunk_hash WHERE l.old_id=i.id AND nc.active=1 AND nc.state='done')
       ORDER BY i.id LIMIT ?`, String(after || ""), limit);
     return { rows: rows.map((r) => { const { search_text: _s, ...d } = parse(r.data, {}); return { ...d, id: r.id, source: r.source, source_id: r.source_id, source_at: r.source_at }; }), done: rows.length < limit };
@@ -741,7 +762,7 @@ export class AmbientStore {
     if (to != null) { where.push(`${at}<=?`); args.push(to); }
     for (const word of String(o.query || "").trim().slice(0, 300).split(/\s+/).filter(Boolean).slice(0, 10)) { where.push("instr(lower(json_extract(j.value,'$.text')),lower(?))>0"); args.push(word); }
     const joins = "FROM ambient_chunks c JOIN ambient_sources s ON s.source=c.source AND s.source_id=c.source_id JOIN json_each(c.lines) j";
-    const total = Number(this.rows(`SELECT COUNT(*) n ${joins} WHERE ${where.join(" AND ")}`, ...args)[0]?.n || 0);
+    const total = o.lean ? null : Number(this.rows(`SELECT COUNT(*) n ${joins} WHERE ${where.join(" AND ")}`, ...args)[0]?.n || 0);
     if (cursor) { where.push(`(${at}${after}? OR (${at}=? AND ${id}>?))`); args.push(cursor.at, cursor.at, cursor.id); }
     const fetch = o.model ? 800 : limit, rows = this.rows(`SELECT c.source,c.source_id,s.revision,s.source_state,c.state,${id} id,${at} at,j.value line ${joins} WHERE ${where.join(" AND ")} ORDER BY ${at} ${dir},${id} LIMIT ?`, ...args, fetch + 1);
     let chars = 0; const transcripts = [];

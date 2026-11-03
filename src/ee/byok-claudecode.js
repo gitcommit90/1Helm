@@ -28,6 +28,16 @@ export const ccModelsJson = () => ({ object: "list", data: CC_MODELS.map((m) => 
 export const CC_DOWN = "Claude Code isn't reachable right now. Try again in a minute.";
 export const CC_SIGNIN_AGAIN = "Claude Code isn't signed in. Open Settings, AI services, choose Continue with Claude and sign in again.";
 export const CC_BAD_CODE = "That code didn't work. Copy the whole code Anthropic shows, paste it here and try again.";
+export const CC_NO_CREDITS = "Continue with Claude runs on 1Helm's computer, which is paid from credits you add, at cost plus 15%. Add credits to go on. Your Claude plan pays for the AI itself.";
+export const CC_DAY_LIMIT = "The daily safety limit was reached, so Continue with Claude is paused until midnight Pacific. Nothing was lost.";
+// The engine's raw stop reasons (claude-engine.js payError) as { code, error } in plain words; anything else stays a short sentence, never a bare code.
+export function ccPlain(raw) {
+  const m = String(raw ?? "");
+  if (/out_of_credits?\b/.test(m)) return { code: "out_of_credits", error: CC_NO_CREDITS };
+  if (/daily safety limit/i.test(m)) return { code: "day_limit", error: CC_DAY_LIMIT };
+  const t = m.trim().slice(0, 200);
+  return { error: !t || /^\S+$/.test(t) ? CC_DOWN : t };
+}
 export const CC_CODE_RE = /^[^\x00-\x1f\x7f]{4,2000}$/;
 
 const engineOf = (env, tid) => { try { return claudeEngine(env, tid); } catch { return null; } };
@@ -42,7 +52,7 @@ export async function ccStart(env, tid) {
   const e = engineOf(env, tid); if (!e) return { error: CC_DOWN, status: 503 };
   try {
     const r = await e.loginStart();
-    if (r?.error) return { error: String(r.error).slice(0, 200) || CC_DOWN, status: 502 };
+    if (r?.error) { const p = ccPlain(r.error); return { ...p, status: p.code === "out_of_credits" ? 402 : p.code ? 429 : 502 }; }
     const url = String(r?.url || ""); let u; try { u = new URL(url); } catch { u = null; }
     if (!u || u.protocol !== "https:") return { error: CC_DOWN, status: 502 };
     return { url: u.href };
@@ -55,7 +65,7 @@ export async function ccFinish(env, tid, code) {
   const e = engineOf(env, tid); if (!e) return { error: CC_DOWN, status: 503 };
   try {
     const r = await e.loginFinish(c);
-    if (r?.error || !r?.ok) return { error: typeof r?.error === "string" && r.error ? r.error.slice(0, 200) : CC_BAD_CODE, status: 400 };
+    if (r?.error || !r?.ok) { const p = typeof r?.error === "string" && r.error ? ccPlain(r.error) : { error: CC_BAD_CODE }; return { ...p, status: p.code ? 402 : 400 }; }
     return { ok: true, account: accountOf(r.account) };
   } catch (err) { console.log("claudecode: login finish", String(err?.message || err).slice(0, 100)); return { error: CC_DOWN, status: 503 }; }
 }

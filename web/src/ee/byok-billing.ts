@@ -119,7 +119,7 @@ async function mock(path: string, body?: any): Promise<any> {
     const t: Test = { ok: true, at: Date.now(), checks: { reach: { ok: true, ms: 540 } } }; add({ ...c, test: t, tested_at: t.at! }); return { ok: true, test: t, ...mockSt }; }
   if (path === "/byok/remove") { mockSt = { ...mockSt, connections: mockSt.connections.filter(x => x.id !== body?.id), ...(!mockSt.connections.some(x => x.id !== body?.id) ? (body?.cancel_switch ? { mode: "" as Mode, switch_at: null } : mockSt.mode === "fallback" ? { mode: "" as Mode } : {}) : {}) }; return { ok: true, removed_models: 2, ...mockSt }; }
   if (path === "/byok/chatgpt/finish") { if (!/code=/.test(String(body?.url || ""))) return { error: CG_WHY.paste, why: "paste" }; add(MOCK_CONNS.chatgpt); return { ok: true, ...mockSt }; }
-  if (path === "/byok/claudecode/start") { await new Promise(z => setTimeout(z, QP.has("byokccslow") ? 6000 : 1200)); return QP.has("byokccfail") ? { error: "Claude isn't reachable right now. Try again in a minute." } : { ok: true, url: "https://claude.ai/oauth/authorize?code=true&client_id=sandbox" }; }
+  if (path === "/byok/claudecode/start") { await new Promise(z => setTimeout(z, QP.has("byokccslow") ? 6000 : 1200)); if (QP.has("byokccerr")) { const c = QP.get("byokccerr") || ""; return c === "day_limit" ? { error: "skipped: daily safety limit reached", code: "day_limit" } : { error: c }; } return QP.has("byokccfail") ? { error: "Claude isn't reachable right now. Try again in a minute." } : { ok: true, url: "https://claude.ai/oauth/authorize?code=true&client_id=sandbox" }; }
   if (path === "/byok/claudecode/finish") { if (String(body?.code || "").trim().length < 4 || /bad|wrong/.test(String(body?.code))) return { error: "That code didn't work. Copy the whole code Claude shows, paste it here and try again.", field: "code" }; add(MOCK_CONNS.claudecode); return { ok: true, ...mockSt }; }
   if (path === "/byok/opencode-plan") { const c = mockSt.connections.find(x => x.id === "opencode"); if (!c) return { error: "OpenCode isn't connected." }; add({ ...c, plan: body?.plan === "payg" ? "payg" : "go" }); return { ok: true, ...mockSt }; }
   if (path === "/byok/opencode") {
@@ -155,6 +155,19 @@ let sbCredits = "$5.00";   // sandbox only: what the usage card says in credits 
 export const bykSbOn = () => !D?.api && !!B.st?.on_plan;
 export const bykSbCredits = () => sbCredits;
 const call = (path: string, body?: any) => (D?.api || mock)(path, body);
+// Plain words for what a connect or sign-in step can answer. The server sends a message (and a code for billing stops); a bare code like out_of_credits, a status number or an engine error never reaches the page.
+export const BYK_CREDITS_MSG = "Continue with Claude runs on 1Helm's computer, which is paid from credits you add, at cost plus 15%. Add credits to go on. Your Claude plan pays for the AI itself.";
+export const BYK_DAY_MSG = "The daily safety limit was reached, so Continue with Claude is paused until midnight Pacific. Nothing was lost.";
+const RAW_ERR = /^(?:https?\s*)?[1-5]\d\d$|^\S{2,60}$/;   // one word with no spaces (out_of_credits, internal_error, 502, ETIMEDOUT) is a code, not a sentence
+export function say(m: any, fb: string, code?: string): string {
+  const t = String(m ?? "").trim(), c = String(code ?? "");
+  if (c === "out_of_credits" || /out_of_credits?\b|^402$/.test(t)) return BYK_CREDITS_MSG;
+  if (c === "day_limit" || /daily safety limit|^429$/i.test(t)) return /^429$/.test(t) ? "Too many tries in a short time. Wait a minute and try again." : BYK_DAY_MSG;
+  if (/^(?:https?\s*)?5\d\d$|timed? ?out|etimedout|econn|engine (?:is )?not ready|not_ready|container/i.test(t) && !/\s.*\s.*\s/.test(t)) return fb;
+  if (!t || RAW_ERR.test(t)) return fb;
+  return t;
+}
+
 
 // The page's state from any /byok answer (GET, add, remove, mode all return it).
 function stOf(d: any): St {
@@ -181,8 +194,8 @@ export function bykLoad(force = false) {
     if (d && !d.error) {
       const j = JSON.stringify(d);
       if (j !== B.last || !B.st) { B.st = stOf(d); B.last = j; changed = true; try { const k = ckey(); if (k) localStorage.setItem(k, j); } catch {} }
-      if (B.err) { B.err = ""; changed = true; }
-    } else if (!B.st) { B.err = d?.error || ""; changed = true; }
+      if (B.err && !B.step) { B.err = ""; changed = true; }
+    } else if (!B.st) { B.err = say(d?.error, "Couldn't load your AI key settings. Try again in a minute.", d?.code); changed = true; }
   })
     .catch(() => { if (!B.st) { B.err = "Couldn't load your AI key settings. Check your connection and try again."; changed = true; } })
     .finally(() => { B.loading = false; if (changed && D?.shown()) D.repaint(); });
@@ -312,7 +325,7 @@ function stepForm(): string {
       ? `<p class="sfine bykcgsteps">1Helm runs Claude Code with your Claude plan. Open Claude, sign in there and allow it, then copy the code Claude shows and paste it here.</p>
     <div class="sbtns"><button type="button" class="sprim" data-bykccopen>Open Claude sign-in</button></div>`
       : CC.s === "failed"
-        ? `<p class="bykerr" role="alert">${esc(B.err)}</p><div class="sbtns"><button type="button" class="sprim" data-bykcc>Try again</button></div>`
+        ? `<p class="bykerr" role="alert">${esc(B.err)}</p><div class="sbtns">${B.err === BYK_CREDITS_MSG ? `<button type="button" class="sprim" data-bykcredits>Add credits</button>` : `<button type="button" class="sprim" data-bykcc>Try again</button>`}</div>`
         : `<p class="sfine bykcgsteps" role="status">Getting Claude's sign-in page…</p>`;
     return `<form class="sc sform" id="bykccf" novalidate><div class="sfh">${svcHead("claudecode", D!.icon("spark"))}<b>Continue with Claude</b></div>
     ${st}
@@ -376,7 +389,7 @@ function applyState(d: any) { B.st = "on_plan" in d ? stOf(d) : B.st; }
 function test(id: string) {
   if (B.busy) return;
   B.busy = "test"; B.busyId = id; B.err = B.field = ""; D?.repaint();
-  call("/byok/test", { id }).then(d => { if (d.connections) applyState(d); else B.err = d.error || "Couldn't test the connection. Try again in a minute."; })
+  call("/byok/test", { id }).then(d => { if (d.connections) applyState(d); else B.err = say(d.error, "Couldn't test the connection. Try again in a minute.", d.code); })
     .catch(() => { B.err = "Couldn't test the connection. Check your internet and try again."; }).finally(() => { B.busy = ""; B.busyId = ""; D?.repaint(); });
 }
 // A service connected: read the models again, then bring the Models section into view (its first slot says Choose a model). Never picks one.
@@ -394,13 +407,13 @@ function add() {
   B.busy = "add"; B.err = B.field = ""; D?.repaint();
   call(oc ? "/byok/opencode" : "/byok/connections", oc ? { key: B.f.ock.trim(), plan: B.f.plan === "payg" ? "payg" : "go", ack: true } : { base: B.f.base.trim(), key: B.key.trim(), label: B.f.label.trim(), ack: true }).then(d => {
     if (d.ok) { applyState(d); const name = oc ? "OpenCode" : B.st?.connections.find(c => c.id === d.id)?.label || "Service"; closeStep(); afterAdd(name); }
-    else { B.err = d.error || "Couldn't connect. Try again in a minute."; B.field = d.field || ""; if (d.test?.checks?.reach?.error) B.err += ` ${d.test.checks.reach.error}`; }
+    else { B.err = say(d.error, "Couldn't connect. Try again in a minute.", d.code); B.field = d.field || ""; if (d.test?.checks?.reach?.error) B.err += ` ${d.test.checks.reach.error}`; }
   }).catch(() => { B.err = "Couldn't connect. Check your internet and try again."; }).finally(() => { B.busy = ""; D?.repaint(); });
 }
 function ocPlan(plan: string) {
   if (B.busy) return;
   B.busy = "plan"; B.err = B.field = ""; D?.repaint();
-  call("/byok/opencode-plan", { plan }).then(d => { if (d.connections) applyState(d); else B.err = d.error || "Couldn't switch the plan. Try again in a minute."; })
+  call("/byok/opencode-plan", { plan }).then(d => { if (d.connections) applyState(d); else B.err = say(d.error, "Couldn't switch the plan. Try again in a minute.", d.code); })
     .catch(() => { B.err = "Couldn't switch the plan. Check your internet and try again."; }).finally(() => { B.busy = ""; D?.repaint(); });
 }
 function remove(id: string) {
@@ -418,7 +431,7 @@ function remove(id: string) {
     if (pick === "no" || B.busy) return;
     B.busy = "del"; B.busyId = id; D?.repaint();
     call("/byok/remove", { id, ...(last && st.full && st.mode === "switch" && pick === "ok" ? { cancel_switch: true } : {}) }).then(d => {
-      if (d.error) throw new Error(d.error); applyState(d); B.ch.err = ""; B.ch.storage = false;
+      if (d.error) throw new Error(say(d.error, "Try again in a minute.", d.code)); applyState(d); B.ch.err = ""; B.ch.storage = false;
       D?.note(true, `${c.label} removed`, d.removed_models ? "Its models were taken out of Models. Choose replacements there." : "It's deleted from 1Helm."); void cmodelsRefresh().then(() => D?.repaint());
     }).catch(e => D?.note(false, "Couldn't remove it", e?.message || "Try again in a minute.")).finally(() => { B.busy = ""; B.busyId = ""; D?.repaint(); });
   });
@@ -435,7 +448,7 @@ async function pickMode(m: Mode | "undo") {
   B.ch = { busy: m, err: "", storage: false }; D?.repaint();
   try {
     const d = await call("/byok/mode", { mode });
-    if (d?.error) { B.ch.err = d.error; B.ch.storage = !!d.storage; if (m === "undo") D?.note(false, "Your plan didn't change", d.error); }
+    if (d?.error) { B.ch.err = say(d.error, "Couldn't change that. Try again in a minute.", d.code); B.ch.storage = !!d.storage; if (m === "undo") D?.note(false, "Your plan didn't change", B.ch.err); }
     else {
       B.st = stOf(d);
       if (mode === "switch") D?.note(true, `Switching on ${dateText(B.st.switch_at) || "your next bill"}`, `You keep ${plan} until then. Nothing was charged.`);
@@ -456,12 +469,12 @@ export async function bykSwitchNow() {
     if (!st.full) return end();
     if (!st.connections.length) { end(); D.note(false, "Connect an AI service first", "Add one in AI services, then switch."); D.open(); return; }
     const pv = await call("/byok/switch-preview");
-    if (!pv || pv.error) { end(pv?.error || ""); D.note(false, "Your plan didn't change", pv?.error || "Try again in a minute."); return; }
+    if (!pv || pv.error) { const m = say(pv?.error, "Try again in a minute.", pv?.code); end(pv?.error ? m : ""); D.note(false, "Your plan didn't change", m); return; }
     const plan = planName(), when = dateText(pv.next_bill_at) || "your next bill date";
     const ok = await ask({ title: `Switch to the $${pv.price} plan now?`, body: `Your plan changes now. ${Number(pv.unused_nano) > 0 ? `${pv.unused} of unused ${plan} usage becomes credits.` : `You have no unused ${plan} usage to move to credits.`} Your next bill is $${pv.price} on ${when}. There's no refund.`, confirm: "Switch now" });
     if (!ok) return end();
     const d = await call("/byok/switch-now", {});
-    if (d?.error) { end(d.error, !!d.storage); D.note(false, "Your plan didn't change", d.error); return; }
+    if (d?.error) { const m = say(d.error, "Try again in a minute.", d.code); end(m, !!d.storage); D.note(false, "Your plan didn't change", m); return; }
     if (D.api) { location.assign(`${location.pathname}?plan=byok&moved=${encodeURIComponent(String(d.moved || ""))}&bill=${encodeURIComponent(String(d.next_bill_at || ""))}${location.hash}`); return; }   // the app reloads so the plan, usage and storage are the new ones
     B.st = stOf(await call("/byok")); end();
     D.note(true, "You're on the Bring your own key plan", `${d.moved} of unused usage is now credits.`);
@@ -486,7 +499,7 @@ function cgFinish() {
   if (!url) { B.err = CG_WHY.paste; D?.repaint(); return; }
   B.busy = "cg"; B.err = ""; D?.repaint();
   call("/byok/chatgpt/finish", { url }).then(d => {
-    if (d?.ok) { applyState(d); closeStep(); afterAdd("ChatGPT"); } else B.err = d?.error || CG_WHY[d?.why] || CG_WHY.exchange;
+    if (d?.ok) { applyState(d); closeStep(); afterAdd("ChatGPT"); } else B.err = say(d?.error, CG_WHY[d?.why] || CG_WHY.exchange, d?.code) || CG_WHY.exchange;
   }).catch(() => { B.err = "Couldn't reach 1Helm. Check your internet and try again."; }).finally(() => { B.busy = ""; D?.repaint(); });
 }
 // ---- Continue with Claude: Anthropic's page opens in a new tab, the code it shows is pasted here ----
@@ -500,7 +513,7 @@ function ccSignIn() {
   call("/byok/claudecode/start", {}).then(d => {
     if (n !== CC.n) return;
     if (d?.url && CC_HOST.test(String(d.url))) { CC.s = "ready"; CC.url = String(d.url); D?.repaint(); setTimeout(() => document.getElementById("byk-cccode")?.focus(), 60); }
-    else fail(d?.url ? "Claude's sign-in page wasn't the one expected. Try again in a minute." : d?.error || "Claude isn't reachable right now. Try again in a minute.");
+    else fail(d?.url ? "Claude's sign-in page wasn't the one expected. Try again in a minute." : say(d?.error, "Claude isn't reachable right now. Try again in a minute.", d?.code));
   }).catch(() => fail("Couldn't reach 1Helm. Check your internet and try again."));
 }
 function ccOpen() { if (CC.url) window.open(CC.url, "_blank", "noopener"); }   // on the person's own click, so no popup blocker
@@ -510,7 +523,7 @@ function ccFinish() {
   if (!code) { B.err = "Paste the code Claude shows after you sign in."; D?.repaint(); return; }
   B.busy = "cc"; B.err = ""; D?.repaint();
   call("/byok/claudecode/finish", { code }).then(d => {
-    if (d?.ok) { applyState(d); closeStep(); afterAdd("Claude Code"); } else B.err = d?.error || "That code didn't work. Copy the whole code Claude shows and try again.";
+    if (d?.ok) { applyState(d); closeStep(); afterAdd("Claude Code"); } else B.err = say(d?.error, "That code didn't work. Copy the whole code Claude shows and try again.", d?.code);
   }).catch(() => { B.err = "Couldn't reach 1Helm. Check your internet and try again."; }).finally(() => { B.busy = ""; D?.repaint(); });
 }
 // Warm the account's Claude Code engine when a channel opens and when the composer gets focus. The server starts it only when General's model is Claude Code, and at most every 30 seconds.

@@ -625,13 +625,13 @@ export async function byokApi(req, env, t, sub, { json, fetchImpl = globalThis.f
   }
   if (sub === "/api/byok/claudecode/start") {
     if (!(await rateOk(env, t.id))) return json({ error: RATE_MSG, rate_limited: true }, 429);
-    const r = await ccStart(env, t.id); if (r.error) return json({ error: r.error }, r.status || 502);
+    const r = await ccStart(env, t.id); if (r.error) return json({ error: r.error, ...(r.code ? { code: r.code } : {}) }, r.status || 502);
     return json({ ok: true, url: r.url });
   }
   if (sub === "/api/byok/claudecode/finish") {
     if (!(await rateOk(env, t.id))) return json({ error: RATE_MSG, rate_limited: true }, 429);
     const b = await boundedJson(req), r = await ccFinish(env, t.id, b.code);
-    if (r.error) return json({ error: r.error, field: "code" }, r.status || 400);
+    if (r.error) return json({ error: r.error, field: "code", ...(r.code ? { code: r.code } : {}) }, r.status || 400);
     await addClaudeCode(env, t.id, r.account);
     return json({ ok: true, id: "claudecode", ...(await stateOf(env, t, d)) });
   }

@@ -18,9 +18,10 @@ for (const f of ["0022_031_byok", "0025_034_byok_mode", "0038_046_ai_privacy", "
 const D1 = { prepare: (q) => { const st = d1.prepare(q); let a = []; const o = { bind: (...x) => { a = x; return o; }, first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }),
   run: async () => { const r = st.run(...a); return { meta: { changes: Number(r.changes) } }; } }; return o; } };
 const calls = [], completes = []; let completeFail = "", think = false; const THINK = [{ type: "reasoning.text", text: "plan", signature: "SIG-123", index: 0, format: "anthropic-claude-v1" }]; let engineState = { signedIn: true, account: { email: "sam@claude.example", plan: "Max" }, version: "2.1.0" }, loginUrl = "https://claude.ai/oauth/authorize?code=true&state=abc", engineDown = false, goodCode = "CODE-123-abc";
+let startError = "";
 const engine = {
   warm: async () => { calls.push("warm"); return { ok: true, ms: 5 }; },
-  loginStart: async () => { calls.push("loginStart"); if (engineDown) throw new Error("no container"); return { url: loginUrl }; },
+  loginStart: async () => { calls.push("loginStart"); if (startError) return { error: startError }; if (engineDown) throw new Error("no container"); return { url: loginUrl }; },
   loginFinish: async (c) => { calls.push(`loginFinish:${c}`); return c === goodCode ? { ok: true, account: { email: "sam@claude.example", plan: "Max" } } : { error: "bad code" }; },
   status: async () => { calls.push("status"); if (engineDown) throw new Error("no container"); return engineState; },
   signOut: async () => { calls.push("signOut"); },
@@ -52,6 +53,14 @@ test("model ids are named like every connection's, and the list is the names Cla
   assert.deepEqual(CC_MODELS.map((m) => m.id), ["fable", "opus", "sonnet", "haiku"]); assert.equal(CC_MODELS.find((m) => m.id === "haiku").supported_reasoning_efforts, undefined);
 });
 
+test("sign in: the engine's stop reasons reach the app in plain words with a code, never as a bare code", async () => {
+  await wipe();
+  for (const [raw, code, status, re] of [["out_of_credits", "out_of_credits", 402, /paid from credits you add/], ["skipped: daily safety limit reached", "day_limit", 429, /midnight Pacific/], ["ETIMEDOUT", undefined, 502, /isn't reachable/]]) {
+    startError = raw; const r = await api("/api/byok/claudecode/start", {});
+    assert.equal(r.status, status); assert.equal(r.d.code, code); assert.match(r.d.error, re); assert.notEqual(r.d.error, raw);
+  }
+  startError = "";
+});
 test("sign in: start gives Anthropic's address, finish takes the pasted code; the row shows who is signed in; one per account", async () => {
   await wipe();
   let r = await api("/api/byok/claudecode/start", {}); assert.equal(r.status, 200); assert.equal(r.d.url, loginUrl); assert.ok(calls.includes("loginStart"));

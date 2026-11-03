@@ -1461,6 +1461,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .sf textarea{width:100%;min-height:64px;border:0;outline:0;border-radius:14px;background:var(--sheet);box-shadow:0 0 0 1px var(--line);padding:11px 14px;font:inherit;font-size:15px;line-height:1.4;color:var(--ink);resize:vertical}
 .sf textarea:focus{box-shadow:0 0 0 2px var(--accent)}.sf textarea:disabled{opacity:.6}
 .sf .sopt{font-style:normal;font-weight:500;color:var(--faint);margin-left:4px}
+.ksites{display:flex;flex-direction:column;gap:8px}.ksite{position:relative}.ksite input{padding-right:46px}.ksite .ksx{top:6px}.ksites.one .ksx{display:none}.ksites.one .ksite input{padding-right:14px}.sf>.sa[data-ksadd]{margin-top:8px}
 .sform .acfine{margin:10px 4px 0;font-size:13px;color:var(--mute)}
 .sc>.sform+.sr,.sc>.sr+.sform{box-shadow:0 -1px 0 var(--line)}
 .sr .stag.acthis{flex:none;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}

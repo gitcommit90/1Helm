@@ -11,13 +11,40 @@ export class Ledger extends DurableObject {
       CREATE TABLE IF NOT EXISTS spend (id TEXT PRIMARY KEY, nano INTEGER NOT NULL, at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS msgs (seq INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, content TEXT NOT NULL, at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS cap (k TEXT PRIMARY KEY, reserved INTEGER NOT NULL, spent INTEGER NOT NULL);`);
+    this.totInit();
   }
   one(q, ...a) { return this.sql.exec(q, ...a).toArray()[0]; }
+  // Running totals. Every balance read used to add up the whole spend table (one row per charge, so it grew for as long as the account lived, and
+  // each reserve, settle and state call read it several times: billions of Durable Object rows read a month). The table tot holds the sums,
+  // kept by triggers on grants, spend and res, so no code path that writes those tables can leave a sum behind. An existing object is filled once
+  // here, in one transaction with the triggers, so no write lands between the sums and the triggers. spend_at serves the per day and per period sums.
+  totInit() {
+    this.sql.exec("CREATE INDEX IF NOT EXISTS spend_at ON spend(at)");
+    if (this.one("SELECT 1 x FROM sqlite_master WHERE type='table' AND name='tot'")) return;
+    const make = () => {
+      this.sql.exec("CREATE TABLE tot (k TEXT PRIMARY KEY, v INTEGER NOT NULL)");
+      const sum = (q) => Number(this.one(q).n);
+      for (const [k, q] of [["granted", "SELECT COALESCE(SUM(nano),0) n FROM grants"], ["included", "SELECT COALESCE(SUM(nano),0) n FROM grants WHERE kind='included'"],
+        ["included_all", "SELECT COALESCE(SUM(nano),0) n FROM grants WHERE kind IN ('included','included_expire')"], ["spent", "SELECT COALESCE(SUM(nano),0) n FROM spend"], ["reserved", "SELECT COALESCE(SUM(nano),0) n FROM res"]]) this.sql.exec("INSERT INTO tot (k,v) VALUES (?,?)", k, sum(q));
+      const bump = (k, expr, when = "1") => `UPDATE tot SET v=v+(${expr}) WHERE k='${k}' AND (${when});`;
+      const grant = (row, sign) => [bump("granted", `${sign}${row}.nano`), bump("included", `${sign}${row}.nano`, `${row}.kind='included'`), bump("included_all", `${sign}${row}.nano`, `${row}.kind IN ('included','included_expire')`)].join(" ");
+      const spend = (row, sign) => [bump("spent", `${sign}${row}.nano`), bump("pspent", `${sign}${row}.nano`, `${row}.at>=(SELECT v FROM tot WHERE k='pfrom')`)].join(" ");
+      const trig = (name, ev, table, body) => this.sql.exec(`CREATE TRIGGER ${name} AFTER ${ev} ON ${table} BEGIN ${body} END`);
+      trig("tot_grants_i", "INSERT", "grants", grant("NEW", "")); trig("tot_grants_d", "DELETE", "grants", grant("OLD", "-"));
+      trig("tot_grants_u", "UPDATE", "grants", grant("OLD", "-") + " " + grant("NEW", ""));
+      trig("tot_spend_i", "INSERT", "spend", spend("NEW", "")); trig("tot_spend_d", "DELETE", "spend", spend("OLD", "-"));
+      trig("tot_spend_u", "UPDATE", "spend", spend("OLD", "-") + " " + spend("NEW", ""));
+      trig("tot_res_i", "INSERT", "res", bump("reserved", "NEW.nano")); trig("tot_res_d", "DELETE", "res", bump("reserved", "-OLD.nano"));
+      trig("tot_res_u", "UPDATE", "res", bump("reserved", "NEW.nano-OLD.nano"));
+    };
+    if (this.ctx.storage.transactionSync) this.ctx.storage.transactionSync(make); else make();
+  }
+  tot(...keys) {
+    const rows = this.sql.exec(`SELECT k,v FROM tot WHERE k IN (${keys.map(() => "?").join(",")})`, ...keys).toArray();
+    return Object.fromEntries(keys.map((k) => [k, Number(rows.find((r) => r.k === k)?.v ?? 0)]));
+  }
   totals() {
-    const granted = this.one("SELECT COALESCE(SUM(nano),0) n FROM grants").n;
-    const included = this.one("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE kind='included'").n;
-    const spent = this.one("SELECT COALESCE(SUM(nano),0) n FROM spend").n;
-    const reserved = this.one("SELECT COALESCE(SUM(nano),0) n FROM res").n;
+    const { granted, included, spent, reserved } = this.tot("granted", "included", "spent", "reserved");
     return { granted_nano: granted, included_nano: included, spent_nano: spent, reserved_nano: reserved, balance_nano: granted - spent - reserved };
   }
   // A reservation older than 10 minutes was never settled (a crashed call): charged at its full worst case. Each one is also noted in
@@ -43,8 +70,7 @@ export class Ledger extends DurableObject {
   async grantIncluded(key, nano) {
     if (this.one("SELECT 1 x FROM grants WHERE key=?", key)) return this.totals();
     this.guardMarkPeriod();   // spendguard.js: a new month starts here (its meter and its 50/80% notices)
-    const inc = this.one("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE kind IN ('included','included_expire')").n;
-    const spent = this.one("SELECT COALESCE(SUM(nano),0) n FROM spend").n;
+    const { included_all: inc, spent } = this.tot("included_all", "spent");
     const unusedIncluded = Math.max(0, inc - spent);
     this.ctx.storage.transactionSync(() => {
       if (unusedIncluded > 0) this.sql.exec("INSERT INTO grants (key,nano,kind,at) VALUES (?,?,?,?)", key + ":expire", -unusedIncluded, "included_expire", Date.now());
@@ -72,7 +98,7 @@ export class Ledger extends DurableObject {
     const override = this.one("SELECT v FROM kv WHERE k='day_cap_test'")?.v;
     const cap = override != null ? Number(override) : Math.max(floor, Math.round(put * pct / 100));
     const spent = this.one("SELECT COALESCE(SUM(nano),0) n FROM spend WHERE at>=? AND id NOT LIKE 'test-adjust:%'", start).n;
-    const reserved = this.one("SELECT COALESCE(SUM(nano),0) n FROM res").n;
+    const reserved = this.tot("reserved").reserved;
     const next = this.dayStart(start + 36 * 3600e3);
     return { spent_nano: spent, reserved_nano: reserved, cap_nano: cap, resets_at: next };
   }

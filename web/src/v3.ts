@@ -2227,7 +2227,7 @@ function applyTheme() { const r = document.documentElement; if (S.theme === "sys
 applyTheme();
 // Passwords & keys (live): saved logins (/api/logins) and keys (/api/vault). Passwords and key values go up once and are never sent back.
 // edit: the one login whose Edit form is open (in place of its row); note is null until its saved note has loaded.
-const KY: { logins: any[] | null; keys: any[] | null; err: string; at: number; busy: string; addkey: boolean; q: string; show: number; edit: null | { site: string; username: string; note: string | null } } = { logins: null, keys: null, err: "", at: 0, busy: "", addkey: false, q: "", show: 8, edit: null };
+const KY: { logins: any[] | null; keys: any[] | null; err: string; at: number; busy: string; addkey: boolean; kedit: string | null; q: string; show: number; edit: null | { site: string; username: string; note: string | null } } = { logins: null, keys: null, err: "", at: 0, busy: "", addkey: false, kedit: null, q: "", show: 8, edit: null };
 // Logins can number in the hundreds after a Chrome import: show a few, "Show more" adds 50, and search covers all of them.
 const KY_FIRST = 8, KY_MORE = 50;
 function kyLoginList() {
@@ -2267,7 +2267,7 @@ function keysLive() {
   kyLoad();
   const loading = srow(`<span class="bico"><i class="apspin"></i></span>`, "Loading…", "", ""), failed = srow("", "Couldn't load", "Check your connection and try again.", sa("Try again", "data-kyretry", "blue"));
   const loginRows = KY.logins === null ? `<div class="sc">${KY.err ? failed : loading}</div>` : `<div id="kylist">${kyLoginList()}</div>`;
-  const keyRows = KY.keys === null ? (KY.err ? failed : loading) : KY.keys.length ? KY.keys.map(k => srow(`<span class="favi">${g("key", 16)}${logoOver(keyHosts(k)[0] || "", 38)}</span>`, `<code>${esc(k.name)}</code>`, `Only ever sent to ${esc(keyHosts(k).join(", ") || "its sites")}`, sa(KY.busy === `k:${k.name}` ? "Removing…" : "Remove", `data-kyrmk="${esc(k.name)}"`, "mute"))).join("")
+  const keyRows = KY.keys === null ? (KY.err ? failed : loading) : KY.keys.length ? KY.keys.map(k => KY.kedit === k.name ? keyForm(k) : srow(`<span class="favi">${g("key", 16)}${logoOver(keyHosts(k)[0] || "", 38)}</span>`, `<code>${esc(k.name)}</code>`, `Only ever sent to ${esc(keyHosts(k).join(", ") || "its sites")}`, `${sa("Edit", `data-kyek="${esc(k.name)}"`, "blue")}${sa(KY.busy === `k:${k.name}` ? "Removing…" : "Remove", `data-kyrmk="${esc(k.name)}"`, "mute")}`)).join("")
     : srow("", "No keys yet", `For services ${esc(who(main))} uses from code, like a weather API.`, "");
   return `<h2>Passwords & keys</h2><p class="slead">Logins and keys ${esc(who(main))} can use, without ever seeing the real password or key. 1Helm fills it in only on the site it belongs to.</p>
       ${S.adding ? `<div class="sc">${loginForm(null)}</div>` : ""}
@@ -2279,15 +2279,23 @@ function keysLive() {
       ${PI.plan || PI.err ? "" : `<p class="sfine pihow">In Chrome: Password Manager → Settings → Export passwords. Then import that file here${phone() ? "" : " or drop it on this page"}.</p>`}
       <input type="file" id="pifile" accept=".csv,text/csv" hidden>
       <h3>Keys</h3>
-      ${KY.addkey ? `<form class="sc sform" id="keyf" novalidate data-unsaved="key"><div class="sfh">${g("key")}<b>Add a key</b></div>
-          <p>For a service ${esc(who(main))} uses from code. It only gets a stand-in; 1Helm swaps in the real key when it goes to these sites.</p>
-          <label class="sf"><span>Name</span><input id="kn" placeholder="OPENWEATHER_KEY" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>
-          <label class="sf"><span>Sites it's for</span><input id="kh" placeholder="api.openweathermap.org" autocomplete="off" autocapitalize="none" spellcheck="false" inputmode="url"></label>
-          ${pwField("kv", "Key")}
-          <div class="sbtns"><button class="sprim" type="submit">Save key</button>${sa("Cancel", 'type="button" data-addkey')}</div></form>` : ""}
+      ${KY.addkey ? `<div class="sc">${keyForm(null)}</div>` : ""}
       <div class="sc">${keyRows}</div>
       ${KY.addkey ? "" : `<div class="sadd">${sa(`${ic.plus}<span>Add a key</span>`, "data-addkey", "blue")}</div>`}
-      <p class="sfine">Saved passwords and keys can't be shown again. To change a login, tap Edit. To change a key, save it again with the same name.</p>`;
+      <p class="sfine">Saved passwords and keys can't be shown again. To change a login or a key, tap Edit.</p>`;
+}
+// Add a key / Edit a key (live): name, one to KEY_SITES_MAX sites (one input per row), and the key. Editing can leave the key
+// blank to keep the saved one; the saved key is never sent back to the browser.
+const KEY_SITES_MAX = 20;
+const kSiteRow = (val: string) => `<div class="ksite"><input class="kh" placeholder="api.openweathermap.org" aria-label="Site" autocomplete="off" autocapitalize="none" spellcheck="false" inputmode="url" value="${esc(val)}"><button type="button" class="seye ksx" data-ksrm aria-label="Remove this site">${g("x", 16)}</button></div>`;
+function keyForm(ed: { name: string; hosts: any } | null) {
+  const hs = ed ? keyHosts(ed) : [""];
+  return `<form class="sform" id="keyf" novalidate data-unsaved="key"${ed ? ` data-was="${esc(ed.name)}"` : ""}><div class="sfh">${g("key")}<b>${ed ? "Edit key" : "Add a key"}</b></div>
+    <p>For a service ${esc(who(main))} uses from code. It only gets a stand-in; 1Helm swaps in the real key when it goes to these sites.</p>
+    <label class="sf"><span>Name</span><input id="kn" placeholder="OPENWEATHER_KEY" autocomplete="off" autocapitalize="characters" spellcheck="false"${ed ? ` value="${esc(ed.name)}"` : ""}></label>
+    <div class="sf"><span>Sites it's for</span><div id="ksites" class="ksites${hs.length < 2 ? " one" : ""}">${(hs.length ? hs : [""]).map(kSiteRow).join("")}</div>${sa(`${ic.plus}<span>Add another site</span>`, 'type="button" data-ksadd', "blue")}</div>
+    ${pwField("kv", ed ? "New key" : "Key", ed ? "Leave blank to keep the saved key" : "")}
+    <div class="sbtns"><button class="sprim" type="submit">${ed ? "Save changes" : "Save key"}</button>${sa("Cancel", ed ? 'type="button" data-kyekx' : 'type="button" data-addkey')}</div></form>`;
 }
 // Add a login / Edit a login (live): website, username, password, optional note. Same store as Import from Chrome: one login per
 // website + username, so saving a pair that's already saved updates it instead of adding a second one. Editing can leave the
@@ -2311,7 +2319,7 @@ function piDrop() { PI.plan = null; PI.off = new Set(); PI.err = ""; PI.name = "
 function piRender() { const top = document.querySelector(".pilist")?.scrollTop || 0; kyRender(); const l = document.querySelector(".pilist"); if (l) l.scrollTop = top; }
 function piRead(f: File | undefined) {
   if (!f || !LIVE) return;
-  piDrop(); PI.done = null; S.adding = KY.addkey = false; PI.name = f.name;
+  piDrop(); PI.done = null; S.adding = KY.addkey = false; KY.kedit = null; PI.name = f.name;
   if (!/\.csv$/i.test(f.name) && !/csv/.test(f.type)) { PI.err = "That isn't a .csv file. Pick the “Chrome Passwords.csv” that Chrome saved."; piRender(); return; }
   if (f.size > 20e6) { PI.err = "That file is too big for a passwords export. Pick the “Chrome Passwords.csv” that Chrome saved."; piRender(); return; }
   f.text().then(t => { const p = planImport(t); if ("error" in p) PI.err = p.error; else PI.plan = p; piRender(); })
@@ -2612,17 +2620,17 @@ document.addEventListener("submit", e => {
 { const sbusy = (id: string) => () => /…$/.test(document.querySelector(`#${id} .sprim`)?.textContent?.trim() || "");   // "Saving…" while it saves
   const leave = "[data-sgo],[data-sclose],[data-apps]";
   const v = (el: HTMLElement, ids: string[]) => JSON.stringify(ids.map(i => (el.querySelector(`#${i}`) as HTMLInputElement | null)?.value.trim() || ""));
-  unsavedKind("login", { hash: false, leave: `${leave},[data-kyed],[data-addlogin],[data-addkey],[data-pipick]`, busy: sbusy("loginf"),
+  unsavedKind("login", { hash: false, leave: `${leave},[data-kyed],[data-kyek],[data-addlogin],[data-addkey],[data-pipick]`, busy: sbusy("loginf"),
     active: () => S.open && S.sec === "keys" && !!(S.adding || KY.edit),
     title: el => el.dataset.was ? `Save changes to the login for ${el.dataset.was}?` : "Save this login?",
     body: el => el.dataset.was ? "You changed this login but haven't saved it." : "You started a login but haven't saved it.",
     state: el => v(el, ["lw", "lu", "lp", "ln"]),
     discard: () => { S.adding = false; KY.edit = null; S.eye = false; sRender(); } });
-  unsavedKind("key", { hash: false, leave: `${leave},[data-kyed],[data-addlogin],[data-addkey],[data-pipick]`, busy: sbusy("keyf"),
-    active: () => S.open && S.sec === "keys" && KY.addkey,
-    title: () => "Save this key?", body: () => "You started a key but haven't saved it.",
-    state: el => v(el, ["kn", "kh", "kv"]),
-    discard: () => { KY.addkey = false; sRender(); } });
+  unsavedKind("key", { hash: false, leave: `${leave},[data-kyed],[data-kyek],[data-addlogin],[data-addkey],[data-pipick]`, busy: sbusy("keyf"),
+    active: () => S.open && S.sec === "keys" && !!(KY.addkey || KY.kedit),
+    title: el => el.dataset.was ? `Save changes to ${el.dataset.was}?` : "Save this key?", body: el => el.dataset.was ? "You changed this key but haven't saved it." : "You started a key but haven't saved it.",
+    state: el => JSON.stringify([v(el, ["kn", "kv"]), [...el.querySelectorAll<HTMLInputElement>(".kh")].map(i => i.value.trim())]),
+    discard: () => { KY.addkey = false; KY.kedit = null; S.eye = false; sRender(); } });
   unsavedKind("acname", { hash: false, leave: `${leave},[data-acedit]`, busy: sbusy("acnamef"),
     active: () => S.open && S.sec === "account" && AC.edit === "name",
     title: () => "Save your new name?", body: () => "You changed your name but haven't saved it.",
@@ -2800,14 +2808,14 @@ function openSettings(sec: string) {
   closeMenu(); closeNew(); hideToast();
   CXP.page = 0; CXP.q = ""; acctNoteReset();   // Connected accounts starts at page 1 each time Settings opens
   let w = document.getElementById("setw"); if (!w) { w = document.createElement("div"); w.id = "setw"; document.body.appendChild(w); }
-  S.open = true; S.sec = sec || (phone() ? "" : "general"); S.adding = KY.addkey = false; KY.edit = null; AC.edit = ""; KY.q = ""; KY.show = KY_FIRST; piDrop(); PI.done = null; sRender(false);
+  S.open = true; S.sec = sec || (phone() ? "" : "general"); S.adding = KY.addkey = false; KY.kedit = null; KY.edit = null; AC.edit = ""; KY.q = ""; KY.show = KY_FIRST; piDrop(); PI.done = null; sRender(false);
   requestAnimationFrame(() => requestAnimationFrame(() => w!.classList.add("on")));
   if (!touchy()) (w.querySelector(".sn.on, .sph .cb") as HTMLElement | null)?.focus();   // on touch a focus ring on ✕ just looks stuck
 }
 function closeSettings() { scReset(); const w = document.getElementById("setw"); S.open = false; settingsContact = null; networkVisible(false); slideEnd?.(); piDrop(); PI.done = null; if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!S.open) w.innerHTML = ""; }, 240); }
 function sGo(sec: string) { if (!secShown(sec)) sec = "general"; if (!S.open) return openSettings(sec); acctNoteReset(); if (sec !== "shortcuts") scReset(); if (!phone() && !sec) sec = "general"; if (sec === "account" && S.sec !== "account") AC.back = S.sec === "general" ? "general" : "";
   const depth = (k: string) => !k ? 0 : secParent(k) ? 2 : 1, dir = sec === S.sec ? 0 : depth(sec) < depth(S.sec) ? -1 : 1;
-  AC.edit = ""; KY.edit = null; S.sec = sec; S.adding = KY.addkey = false; KY.q = ""; KY.show = KY_FIRST; piDrop(); PI.done = null; sRender(false, phone() ? dir : 0); }
+  AC.edit = ""; KY.edit = null; S.sec = sec; S.adding = KY.addkey = false; KY.kedit = null; KY.q = ""; KY.show = KY_FIRST; piDrop(); PI.done = null; sRender(false, phone() ? dir : 0); }
 // Reply actions retain the current task/hash and pass through the same unsaved
 // editor guard as Settings navigation. No setting is changed by opening it.
 document.addEventListener("click", e => {
@@ -2903,7 +2911,7 @@ document.addEventListener("click", e => {
   const cn = t.closest<HTMLElement>("[data-conn]"); if (cn) { const k = cn.dataset.conn!; S.conn[k] = !S.conn[k]; sRender(); note(ic.check, `${APP[k][0]} ${S.conn[k] ? "connected" : "turned off"}`, S.conn[k] ? `${who(main)} can use it now.` : `${who(main)} can't use it anymore.`, ""); return; }
   if (t.closest("[data-link]")) { S.link = !S.link; sRender(); if (S.link) note(ic.check, "Link added", "You'll approve every purchase in the Link app.", ""); return; }
   if (t.closest("[data-addlogin]")) { S.adding = !S.adding; KY.addkey = false; KY.edit = null; S.eye = false; sRender(); if (S.adding) ($("#lw") as HTMLInputElement).focus(); return; }
-  if (LIVE && t.closest("[data-addkey]")) { KY.addkey = !KY.addkey; S.adding = false; S.eye = false; sRender(); if (KY.addkey) ($("#kn") as HTMLInputElement).focus(); return; }
+  if (LIVE && t.closest("[data-addkey]")) { KY.addkey = !KY.addkey; KY.kedit = null; S.adding = false; S.eye = false; sRender(); if (KY.addkey) ($("#kn") as HTMLInputElement).focus(); return; }
   if (t.closest("[data-eye]")) { const b = t.closest<HTMLElement>("[data-eye]")!; S.eye = !S.eye; const i = $(`#${b.dataset.eye || "lp"}`) as HTMLInputElement; i.type = S.eye ? "text" : "password"; b.classList.toggle("on", S.eye); return; }
   if (LIVE && t.closest("[data-pipick]") && !PI.busy) { ($("#pifile") as HTMLInputElement | null)?.click(); return; }
   if (LIVE && t.closest("[data-picancel]") && !PI.busy) { piDrop(); kyRender(); return; }
@@ -2925,10 +2933,20 @@ document.addEventListener("click", e => {
   // Edit one login: its form opens in place of its row; the saved note loads into it (the password never comes back).
   const ke = t.closest<HTMLElement>("[data-kyed]"); if (LIVE && ke && !KY.busy) {
     const site = ke.dataset.kyed!, username = ke.dataset.kyu ?? "", ed = { site, username, note: null as string | null };
-    KY.edit = ed; S.adding = KY.addkey = false; S.eye = false; kyRender(); ($("#lp") as HTMLInputElement | null)?.focus();
+    KY.edit = ed; S.adding = KY.addkey = false; KY.kedit = null; S.eye = false; kyRender(); ($("#lp") as HTMLInputElement | null)?.focus();
     kyApi(`logins/note?site=${encodeURIComponent(site)}&username=${encodeURIComponent(username)}`).then(d => { ed.note = String(d.note || ""); })
       .catch(() => { ed.note = ""; }).finally(() => { if (KY.edit !== ed) return; const keep = ["lw", "lu", "lp"].map(i => ($(`#${i}`) as HTMLInputElement | null)?.value); kyListPaint(); ["lw", "lu", "lp"].forEach((i, n) => { const el = $(`#${i}`) as HTMLInputElement | null; if (el && keep[n] != null) el.value = keep[n]!; }); });
     return;
+  }
+  const kek = t.closest<HTMLElement>("[data-kyek]"); if (LIVE && kek && !KY.busy) { KY.kedit = kek.dataset.kyek!; KY.edit = null; S.adding = KY.addkey = false; S.eye = false; kyRender(); ($("#kv") as HTMLInputElement | null)?.focus(); return; }
+  if (LIVE && t.closest("[data-kyekx]")) { KY.kedit = null; S.eye = false; kyRender(); return; }
+  if (LIVE && t.closest("[data-ksadd]")) {
+    const box = $("#ksites")!; if (box.children.length >= KEY_SITES_MAX) { note(g("help", 14), "That's the most sites", `A key can have up to ${KEY_SITES_MAX} sites.`, ""); return; }
+    box.insertAdjacentHTML("beforeend", kSiteRow("")); box.classList.remove("one"); (box.lastElementChild!.querySelector("input") as HTMLInputElement).focus(); return;
+  }
+  const ksr = t.closest<HTMLElement>("[data-ksrm]"); if (LIVE && ksr) {
+    const box = ksr.closest("#ksites")!; if (box.children.length < 2) return;
+    ksr.closest(".ksite")!.remove(); box.classList.toggle("one", box.children.length < 2); return;
   }
   if (LIVE && t.closest("[data-kyedx]")) { KY.edit = null; S.eye = false; kyRender(); return; }
   const kk = t.closest<HTMLElement>("[data-kyrmk]"); if (LIVE && kk && !KY.busy) {
@@ -2965,15 +2983,22 @@ document.addEventListener("submit", e => {
         else if (d.updated || dup) note(ic.check, "Login updated", `${acct} was already saved. Its password is replaced, not added twice.`, "");
         else note(ic.check, was ? "Login updated" : "Login saved", `${acct} · ${who(main)} can sign in now.`, ""); };
     } else {
-      const name = v("kn").trim().toUpperCase().replace(/[\s-]+/g, "_"), hosts = v("kh").split(/[\s,]+/).map(normHost).filter(Boolean), value = v("kv");
+      const name = v("kn").trim().toUpperCase().replace(/[\s-]+/g, "_"), value = v("kv"), was = f.dataset.was || "";
+      const inputs = [...f.querySelectorAll<HTMLInputElement>(".kh")].filter(i => i.value.trim());
+      inputs.forEach(i => { i.value = i.value.split(/[\s,]+/).filter(Boolean).map(normHost).join(", "); });
+      const hosts = [...new Set(inputs.flatMap(i => i.value.split(", ").filter(Boolean)))];
       if (!/^[A-Z][A-Z0-9_]{1,40}$/.test(name)) return bad("kn", "Check the name", "Use letters, numbers and _ and start with a letter, like OPENWEATHER_KEY.");
-      if (!hosts.length || hosts.some(h => !/^(\*\.)?[a-z0-9.-]+\.[a-z]{2,}$/.test(h))) return bad("kh", "Check the sites", "Type the address the key is for, like api.openweathermap.org. Separate several with commas.");
-      if (!value) return bad("kv", "Add the key", "Paste the key from the service's website.");
+      if (!hosts.length) { note(g("help", 14), "Add a site", "Type the address the key is for, like api.openweathermap.org.", ""); (f.querySelector(".kh") as HTMLInputElement).focus(); return; }
+      const badIn = inputs.find(i => i.value.split(", ").some(h => !/^(\*\.)?[a-z0-9.-]+\.[a-z]{2,}$/.test(h)));
+      if (badIn) { note(g("help", 14), "Check the site", `"${badIn.value.slice(0, 60)}" isn't a site address. Use one like api.openweathermap.org.`, ""); badIn.focus(); return; }
+      if (hosts.length > KEY_SITES_MAX) return bad("kn", "Too many sites", `A key can have up to ${KEY_SITES_MAX} sites.`);
+      if (!value && !was) return bad("kv", "Add the key", "Paste the key from the service's website.");
       if (value.length > 8000) return bad("kv", "That key is too long", "Keys can be up to 8,000 characters.");
-      ($("#kn") as HTMLInputElement).value = name; ($("#kh") as HTMLInputElement).value = hosts.join(", ");
-      path = "vault"; body = { name, hosts, value };
-      done = d => { KY.keys = [...(KY.keys || []).filter(x => x.name !== d.name), { name: d.name, hosts: d.hosts, created_at: Date.now() }].sort((a, b) => a.name.localeCompare(b.name)); KY.addkey = false;
-        note(ic.check, "Key saved", `${who(main)} can use $${d.name} with ${d.hosts.join(", ")}.`, ""); };
+      ($("#kn") as HTMLInputElement).value = name;
+      path = "vault"; body = { name, hosts, value, ...(was ? { was } : {}) };
+      done = d => { const old = was ? (KY.keys || []).find(x => x.name === was) : null;
+        KY.keys = [...(KY.keys || []).filter(x => x.name !== d.name && x.name !== was), { name: d.name, hosts: d.hosts, created_at: value || !old ? Date.now() : old.created_at }].sort((a, b) => a.name.localeCompare(b.name)); KY.addkey = false; KY.kedit = null;
+        note(ic.check, was ? "Key updated" : "Key saved", `${who(main)} can use $${d.name} with ${d.hosts.join(", ")}.`, ""); };
     }
     const label = btn.textContent; btn.disabled = true; btn.textContent = "Saving…";
     kyApi(path, body).then(d => { S.eye = false; done(d); sRender(); })
@@ -2990,8 +3015,8 @@ document.addEventListener("submit", e => {
 window.addEventListener("keydown", e => {
   if (e.key === "Escape" && document.querySelector(".cmback")) return;   // the model picker (custom-models.ts) closes first; Settings stays open behind it
   if (e.key === "Escape" && S.menu) { e.preventDefault(); e.stopImmediatePropagation(); closeMenu(); return; }
-  if (e.key === "Escape" && S.open) { e.preventDefault(); e.stopImmediatePropagation(); const form = S.adding || KY.addkey || KY.edit || AC.edit || ((PI.plan || PI.err) && !PI.busy), sec = S.sec;
-    guarded(() => { if (form) { S.adding = KY.addkey = false; KY.edit = null; AC.edit = ""; piDrop(); sRender(); } else if (phone() && sec) sGo(secParent(sec)); else closeSettings(); }); return; }
+  if (e.key === "Escape" && S.open) { e.preventDefault(); e.stopImmediatePropagation(); const form = S.adding || KY.addkey || KY.kedit || KY.edit || AC.edit || ((PI.plan || PI.err) && !PI.busy), sec = S.sec;
+    guarded(() => { if (form) { S.adding = KY.addkey = false; KY.kedit = null; KY.edit = null; AC.edit = ""; piDrop(); sRender(); } else if (phone() && sec) sGo(secParent(sec)); else closeSettings(); }); return; }
   if (S.open && (e.key === "Enter" || e.key === " ")) { const r = (e.target as HTMLElement).closest?.<HTMLElement>('[role="button"]'); if (r) { e.preventDefault(); r.click(); } }
 }, true);
 matchMedia("(max-width: 767px)").addEventListener("change", () => { if (S.open) { if (!phone() && !S.sec) S.sec = "general"; sRender(false); } });

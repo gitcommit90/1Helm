@@ -47,7 +47,7 @@ export { NativeTransport, NativeTransportState } from "./native-transport.js";
 export { Resident } from "./resident.js";
 export { UsageLedger };
 export { Sentinel } from "./sentinel.js";
-import { sealSecret, newStandin } from "./sentinel.js";
+import { saveVaultKey } from "./vault.js";
 import { linkStartConnect, linkStatus, linkDisconnect, linkListPurchases, linkGetPurchase, linkApi } from "./ee/index.js";
 import { beeRoute, beeOps, beeCron, beePendingFacts, beePendingSpeakers, beeNoteEdited, beeNoteDeleted, beeNoteRestored } from "./ee/index.js";   // Settings → Ambient → Bee: pairing, sealed token, /v1/me
 import { beeLibraryRoute, statusOfRow, ownKindForStatus } from "./ee/index.js";   // Bee conversations in the Library, and the Custom Model Selection status (licensed)
@@ -187,7 +187,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "351";
+const APP_V = "352";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -1384,15 +1384,7 @@ export default {
         }
         // Saved keys: the value is sealed here and never shown again by this API; Sentinel also scrubs literal upstream echoes.
         if (sub === "/api/vault" && req.method === "GET") return json((await env.DB.prepare("SELECT name, hosts, created_at FROM vault WHERE tenant_id=? ORDER BY name").bind(t.id).all()).results);
-        if (sub === "/api/vault" && req.method === "POST") {
-          const b = await boundedJson(req), name = String(b.name || "").toUpperCase(), hosts = (Array.isArray(b.hosts) ? b.hosts : String(b.hosts || "").split(/[\s,]+/)).map((h) => String(h).trim().toLowerCase()).filter(Boolean);
-          if (!/^[A-Z][A-Z0-9_]{1,40}$/.test(name)) return json({ error: "name: letters, digits, underscore (e.g. OPENWEATHER_KEY)" }, 400);
-          if (!hosts.length || hosts.some((h) => !/^(\*\.)?[a-z0-9.-]+\.[a-z]{2,}$/.test(h))) return json({ error: "hosts: the sites this key is for, e.g. api.openweathermap.org" }, 400);
-          if (!b.value || String(b.value).length > 8000) return json({ error: "value required" }, 400);
-          const sealed = await sealSecret(env, String(b.value)), standin = newStandin();
-          await env.DB.prepare("INSERT INTO vault (tenant_id,name,standin,hosts,sealed,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,name) DO UPDATE SET standin=excluded.standin, hosts=excluded.hosts, sealed=excluded.sealed, created_at=excluded.created_at").bind(t.id, name, standin, JSON.stringify(hosts), sealed, Date.now()).run();
-          return json({ ok: true, name, hosts });
-        }
+        if (sub === "/api/vault" && req.method === "POST") { const r = await saveVaultKey(env, t.id, await boundedJson(req)); return json(r.error ? { error: r.error } : r, r.status || 200); }
         // Saved logins: the password is sealed here and never returned; helpers use it only via browser_fill_login on the login's own site.
         if (sub === "/api/logins" && req.method === "GET") return json(await listLogins(env, t.id));
         if (sub === "/api/logins" && req.method === "POST") { const r = await saveLogin(env, t.id, await boundedJson(req)); return json(r, r.error ? 400 : 200); }
