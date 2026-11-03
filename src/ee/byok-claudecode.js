@@ -7,6 +7,7 @@
 //   - a Claude Code model is one more model for 1Helm's own helper loop (Captain 2026-11-03, like the Hermes plugin): claudeChat sends one chat/completions call through the engine's complete(), so chains, chores and
 //     Background jobs work as for any service. 1Helm's loop, tools, cards, plans and memory are unchanged.
 import { claudeEngine } from "./claude-engine.js";
+import { ccSignInUrlOk, ccUrlHost } from "./claude-signin-url.js";
 import { limitFromWindows, limitText, noteLimit } from "./byok-usage.js";
 import { ByokError, guardStream, firstEventOk, MAX_JSON_BYTES } from "../byok.js";
 import { withCacheBreakpoints } from "../model.js";
@@ -25,6 +26,7 @@ export const CC_MODELS = [
 ];
 // The same shape a service's model list has, so the picker and the saved setting treat it like any other list.
 export const ccModelsJson = () => ({ object: "list", data: CC_MODELS.map((m) => ({ ...m })) });
+export const CC_BAD_URL = "Claude's sign-in gave a page address 1Helm doesn't recognize, so it wasn't opened. Try again in a minute.";
 export const CC_DOWN = "Claude Code isn't reachable right now. Try again in a minute.";
 export const CC_SIGNIN_AGAIN = "Claude Code isn't signed in. Open Settings, AI services, choose Continue with Claude and sign in again.";
 export const CC_BAD_CODE = "That code didn't work. Copy the whole code Anthropic shows, paste it here and try again.";
@@ -53,9 +55,9 @@ export async function ccStart(env, tid) {
   try {
     const r = await e.loginStart();
     if (r?.error) { const p = ccPlain(r.error); return { ...p, status: p.code === "out_of_credits" ? 402 : p.code ? 429 : 502 }; }
-    const url = String(r?.url || ""); let u; try { u = new URL(url); } catch { u = null; }
-    if (!u || u.protocol !== "https:") return { error: CC_DOWN, status: 502 };
-    return { url: u.href };
+    const url = String(r?.url || "");
+    if (!ccSignInUrlOk(url)) { console.log("claudecode: sign-in address refused, host", ccUrlHost(url)); return { error: CC_BAD_URL, code: "bad_signin_url", status: 502 }; }
+    return { url: new URL(url).href };
   } catch (err) { console.log("claudecode: login start", String(err?.message || err).slice(0, 100)); return { error: CC_DOWN, status: 503 }; }
 }
 // Step two: the pasted code. → { ok, account: { email, plan } } or { error }.

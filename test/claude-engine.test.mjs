@@ -11,17 +11,20 @@ const aes = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, fa
 const sealSecret = async (_, s) => { const iv = crypto.getRandomValues(new Uint8Array(12)), ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aes, new TextEncoder().encode(s)); return Buffer.from(iv).toString('base64') + '.' + Buffer.from(ct).toString('base64'); };
 const openSecret = async (_, s) => { const [iv, ct] = s.split('.').map((x) => Buffer.from(x, 'base64')); return new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aes, ct)); };
 import { parseClaudeHeaders, parseClaudeUsage } from '../src/ee/byok-usage.js';
-globalThis.__ceTest = { parseClaudeHeaders, parseClaudeUsage, DurableObject, tolerantEnv: (e) => e, sealSecret, openSecret, isCapacityError: (e) => /no container instance/i.test(String(e?.message ?? e)), computerBusyError: () => Object.assign(new Error('All computers are busy right now. Try again in a minute.'), { status: 503 }), CAPACITY_RETRY_MS: 30 };
+import { pickSignInUrl } from '../src/ee/claude-signin-url.js';
+import '../src/byok.js';   // loaded first: byok-claudecode.js and byok-connections.js import each other
+import { ccStart } from '../src/ee/byok-claudecode.js';
+globalThis.__ceTest = { pickSignInUrl, parseClaudeHeaders, parseClaudeUsage, DurableObject, tolerantEnv: (e) => e, sealSecret, openSecret, isCapacityError: (e) => /no container instance/i.test(String(e?.message ?? e)), computerBusyError: () => Object.assign(new Error('All computers are busy right now. Try again in a minute.'), { status: 503 }), CAPACITY_RETRY_MS: 30 };
 let source = await readFile(new URL('../src/ee/claude-engine.js', import.meta.url), 'utf8');
 source = source.replace(/^import .*;\n/gm, '');
-const M = await import('data:text/javascript;base64,' + Buffer.from('const {parseClaudeHeaders,parseClaudeUsage,DurableObject,tolerantEnv,sealSecret,openSecret,isCapacityError,computerBusyError,CAPACITY_RETRY_MS}=globalThis.__ceTest;\n' + source).toString('base64'));
+const M = await import('data:text/javascript;base64,' + Buffer.from('const {pickSignInUrl,parseClaudeHeaders,parseClaudeUsage,DurableObject,tolerantEnv,sealSecret,openSecret,isCapacityError,computerBusyError,CAPACITY_RETRY_MS}=globalThis.__ceTest;\n' + source).toString('base64'));
 const { ClaudeEngine, runArgs, mcpConfig, runnerScript, tailScript, sessionUuid, loginReason, RATE_NANO_PER_SEC, IDLE_MS, MCP_SERVER_NAME } = M;
 const enc = new TextEncoder(), dec = new TextDecoder();
 const stream = (chunks) => new ReadableStream({ start(c) { for (const x of chunks) c.enqueue(enc.encode(x)); c.close(); } });
 const readAll = async (s) => { const r = s.getReader(); let out = ''; for (;;) { const { value, done } = await r.read(); if (done) return out; out += dec.decode(value); } };
 const bodyText = async (b) => (b ? await readAll(b) : '');
 
-function setup({ usageOut = '', completeLines = [], completeHang = false, capacityFails = 0, loginExit = 0, loginErr = '', runLines = [], runExit = 0, runErr = '' } = {}) {
+function setup({ loginOut = '', usageOut = '', completeLines = [], completeHang = false, capacityFails = 0, loginExit = 0, loginErr = '', runLines = [], runExit = 0, runErr = '' } = {}) {
   const db = new DatabaseSync(':memory:'); let alarm = null;
   const sql = { exec(q, ...a) { const st = db.prepare(q); if (/^\s*SELECT/i.test(q)) { const rows = st.all(...a); return { toArray: () => rows, one: () => rows[0] }; } if (/;\s*\S/.test(q.trim())) { db.exec(q); return { toArray: () => [], one: () => undefined }; } st.run(...a); return { toArray: () => [], one: () => undefined }; } };
   const fs = new Map(), calls = [], f = { starts: 0, destroyed: 0, killed: [], loginSent: [], fifo: false, loginDone: false, runDirs: new Set(), tailFrom: [] };
@@ -41,7 +44,7 @@ function setup({ usageOut = '', completeLines = [], completeHang = false, capaci
       if (script.startsWith('cat "$1" 2>/dev/null') && args[0].endsWith('credentials.json')) return fs.has(args[0]) ? done(0, fs.get(args[0])) : done(1);
       if (script.startsWith('cat "$1" 2>/dev/null') && args[0].endsWith('.claude.json')) return fs.has(args[0]) ? done(0, fs.get(args[0])) : done(1);
       if (script.includes('mkfifo')) { f.fifo = true; f.loginDone = false; f.loginSent = []; return done(0, 'started\n'); }
-      if (script.includes('cat "$1/out"')) return done(0, f.fifo ? 'Opening browser to sign in…\nIf the browser didn\'t open, visit: https://claude.com/cai/oauth/authorize?code=true&state=abc\nPaste code here if prompted > ' : '');
+      if (script.includes('cat "$1/out"')) return done(0, f.fifo && loginOut ? loginOut : f.fifo ? 'Opening browser to sign in…\nIf the browser didn\'t open, visit: https://claude.com/cai/oauth/authorize?code=true&state=abc\nPaste code here if prompted > ' : '');
       if (script.includes('[ -p "$1/in" ]')) return done(0, f.fifo && !f.loginDone ? 'yes' : 'no');
       if (script.startsWith('printf')) { f.loginSent.push(args[1]); f.loginDone = true; if (loginExit === 0) { fs.set('/home/node/.claude/.credentials.json', '{"claudeAiOauth":{"accessToken":"AT1","refreshToken":"RT1"}}'); fs.set('/home/node/.claude.json', '{"oauthAccount":{"emailAddress":"p@example.com"}}'); } return done(0); }
       if (script.includes('[ -f "$1/code" ] && cat "$1/code"')) return done(0, f.loginDone ? String(loginExit) : '');
@@ -94,6 +97,21 @@ test('a session id becomes the same uuid every time', async () => {
   assert.equal(loginReason('Login failed: That code wasn\'t accepted.\n'), 'That code wasn\'t accepted.');
 });
 
+const CLI_OUT = 'Opening browser to sign in…\nIf the browser didn\'t open, visit: https://claude.com/cai/oauth/authorize?code=true&state=abc\nPaste code here if prompted > ';
+test('sign-in link: the authorize link is chosen over an earlier docs link, and a wrong first link is handed on to be refused', async () => {
+  const docs = 'Need help? See https://docs.claude.com/en/docs/claude-code/troubleshooting\n';
+  const x = setup({ loginOut: docs + CLI_OUT });
+  assert.equal((await x.e.loginStart()).url, 'https://claude.com/cai/oauth/authorize?code=true&state=abc');
+  assert.equal(pickSignInUrl('see https://evil.io/oauth/authorize?x=1 or ' + CLI_OUT), 'https://claude.com/cai/oauth/authorize?code=true&state=abc', 'an authorize path on another host is skipped');
+  assert.equal(pickSignInUrl('visit https://claude.com/help only'), 'https://claude.com/help', 'with no authorize link the first https address is returned');
+  assert.equal(pickSignInUrl('nothing here'), '');
+});
+test('sign-in link end to end: the CLI output flows through loginStart and ccStart (the server rule) to the response', async () => {
+  const x = setup(); const env = { CLAUDE_ENGINE: { idFromName: (n) => n, get: () => x.e } };
+  assert.deepEqual(await ccStart(env, 't1'), { url: 'https://claude.com/cai/oauth/authorize?code=true&state=abc' });
+  const y = setup({ loginOut: 'visit https://login.evil.io/oauth/authorize?state=s\n' }); const bad = await ccStart({ CLAUDE_ENGINE: { idFromName: (n) => n, get: () => y.e } }, 't1');
+  assert.equal(bad.status, 502); assert.equal(bad.code, 'bad_signin_url'); assert.ok(!('url' in bad));
+});
 test('login: start returns Anthropic\'s address, finish saves the account and a sealed login', async () => {
   const x = setup();
   assert.equal((await x.e.status()).signedIn, false);

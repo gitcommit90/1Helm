@@ -503,7 +503,9 @@ function cgFinish() {
   }).catch(() => { B.err = "Couldn't reach 1Helm. Check your internet and try again."; }).finally(() => { B.busy = ""; D?.repaint(); });
 }
 // ---- Continue with Claude: Anthropic's page opens in a new tab, the code it shows is pasted here ----
-const CC_HOST = /^https:\/\/([a-z0-9-]+\.)*(claude\.ai|anthropic\.com)(\/|$)/i;   // only Anthropic's own pages are opened
+// only Anthropic's own sign-in pages are opened: https on claude.ai, claude.com or anthropic.com, or a subdomain of them (Claude Code 2.1.316 prints claude.com/cai/oauth/authorize)
+const CC_HOST = /^https:\/\/([a-z0-9-]+\.)*(claude\.ai|claude\.com|anthropic\.com)(:443)?(\/|\?|#|$)/i;
+export const ccHostOk = (u: string) => CC_HOST.test(u);
 function ccSignIn() {
   if (B.busy) return;
   bykWarm(true);
@@ -512,7 +514,7 @@ function ccSignIn() {
   const fail = (m: string) => { if (n !== CC.n) return; CC.s = "failed"; B.err = m; D?.repaint(); };
   call("/byok/claudecode/start", {}).then(d => {
     if (n !== CC.n) return;
-    if (d?.url && CC_HOST.test(String(d.url))) { CC.s = "ready"; CC.url = String(d.url); D?.repaint(); setTimeout(() => document.getElementById("byk-cccode")?.focus(), 60); }
+    if (d?.url && ccHostOk(String(d.url))) { CC.s = "ready"; CC.url = String(d.url); D?.repaint(); setTimeout(() => document.getElementById("byk-cccode")?.focus(), 60); }
     else fail(d?.url ? "Claude's sign-in page wasn't the one expected. Try again in a minute." : say(d?.error, "Claude isn't reachable right now. Try again in a minute.", d?.code));
   }).catch(() => fail("Couldn't reach 1Helm. Check your internet and try again."));
 }

@@ -10,4 +10,8 @@ assert.equal(url, "/api/res/family%2F..%2Fother/files/x%22%20onerror%3D%22alert(
 assert.ok(!url.includes('"'), "an ID cannot end an HTML URL attribute");
 assert.ok(!url.includes("../"), "a slug cannot add path segments");
 
+assert.equal(fileUrl("/api", "family", "0123-abc", false, 2), "/api/res/family/files/0123-abc?v=2");
+assert.equal(fileUrl("/api", "family", "0123-abc", true, 1), "/api/res/family/files/0123-abc?dl=1&v=1");
+assert.equal(fileUrl("/api", "family", "0123-abc", false, undefined), "/api/res/family/files/0123-abc");
+
 console.log("  ok Library file URLs keep IDs inside their path segments");

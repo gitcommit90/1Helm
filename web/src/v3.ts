@@ -145,7 +145,7 @@ const seed: any = BOOT ? { captured: Date.now(), channels: BOOT.channels.map((c:
 type Msg = { id: number; role: "user" | "agent"; body: string; at: number; steps: string[]; pre?: string[]; prog?: string[]; progressOmitted?: number; cards?: any[]; input_request?: InputRequest; files?: FileV[]; saved?: Saved[] };
 // Where a remember really saved, from the server (proto src/saved-to.js): the "Added to …" chips under the reply.
 type Saved = { to: "notebook" | "contact" | "memory" | "account"; channel?: string; sec?: string; text?: string; name?: string; fields?: string[] };
-type FileV = { id: string; name: string; mime: string; bytes: number; at: number; source?: string; session?: string | null; image?: boolean; tags?: string[]; tx?: string };
+type FileV = { version?: number; id: string; name: string; mime: string; bytes: number; at: number; source?: string; session?: string | null; image?: boolean; tags?: string[]; tx?: string };
 type Session = { id: any; srv?: any; loaded?: boolean; loading?: boolean; loadFailAt?: number; streaming?: boolean; attached?: boolean; tmp?: string; rawLine?: string; title: string; status: string; state: string; updated: number; messages: Msg[]; line?: string; unread?: boolean; fresh?: boolean; pinned?: boolean; done?: boolean };
 type Channel = { id: number; slug: string; name: string; purpose: string; memory: string[]; notes?: any[]; jobs: any[]; sessions: Session[]; cs?: CS };
 type Art = { tx?: string; name: string; kind: "doc" | "sheet" | "pdf" | "image" | "link" | "code"; sid: any; at: number; size: string; fresh?: boolean; fid?: string; you?: boolean; mime?: string; bytes?: number; tags?: string[] };
@@ -568,7 +568,8 @@ function fkind(name: string, mime = ""): Art["kind"] {
   if (/^(js|ts|py|json|html?|css|sh|zip|xml|sql|ipynb)$/.test(e)) return "code";
   return "doc";
 }
-const fileUrl = (slug: string, id: string, dl = false) => fileResUrl(LIVE!.api, slug, id, dl);
+// ver: the version a message's card shows (the server keeps every version a reply shared and serves it with ?v=); no ver = the current file.
+const fileUrl = (slug: string, id: string, dl = false, ver?: number) => fileResUrl(LIVE!.api, slug, id, dl, ver);
 const artHref = (ch: Channel, a: Art) => a.fid ? fileUrl(ch.slug, a.fid) : `#/${ch.slug}/s/${a.sid}`;
 const toArt = (f: FileV): Art => ({ name: f.name, kind: fkind(f.name, f.mime), sid: f.session, at: f.at, size: KB(f.bytes), fid: f.id, you: f.source === "upload", mime: f.mime, bytes: f.bytes, tags: f.tags, tx: f.tx });
 // Library files the person deleted: hidden at once, and kept hidden while the delete request runs, so a reload from the server can't bring them back.
@@ -933,8 +934,8 @@ if (LIVE) { document.addEventListener("click", e => { const z = (e.target as HTM
     const b = (e.target as HTMLElement).closest<HTMLElement>("[data-zone]"); if (!b) return; e.preventDefault(); e.stopPropagation(); const [slug, id] = b.dataset.zone!.split("|"); void zoneStart(slug, id); }, true);
   document.addEventListener("keydown", e => { const t = e.target as HTMLElement; if ((e.key === "Enter" || e.key === " ") && t?.matches?.("[data-zone]")) { e.preventDefault(); t.click(); } }); }
 function fileCard(ch: Channel, f: FileV, mine: boolean) {
-  const k = fkind(f.name, f.mime), u = fileUrl(ch.slug, f.id);
-  return `<div class="fcard chat-tile${mine ? " mine" : ""}" title="${esc(f.name)} · ${KIND[k][0]} · ${KB(f.bytes)}"><a class="chat-tile-open" href="${u}" data-fv="${esc(ch.slug)}|${esc(f.id)}" data-fvc aria-label="Open ${esc(f.name)}"><span class="chat-tile-preview${f.image ? " photo" : ""}">${f.image ? `<img src="${u}" alt="" loading="lazy">` : `<span class="aico k-${k}">${I(KIND[k][1], 28)}</span>`}</span><span class="chat-tile-name">${esc(f.name)}</span></a><span class="chat-tile-actions"><span class="chat-tile-kind">${dsIsDeck(f) ? "Deck" : KIND[k][0]}</span>${LIVE ? shFileBtn(ch.slug, f.id, f.name, f.mime, true) : ""}${dsBtn(ch.slug, f)}${zoBtn(ch.slug, f)}<a class="chat-tile-download" href="${fileUrl(ch.slug, f.id, true)}" download aria-label="Download ${esc(f.name)}" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 14)}</a></span></div>`;
+  const k = fkind(f.name, f.mime), u = fileUrl(ch.slug, f.id, false, f.version);
+  return `<div class="fcard chat-tile${mine ? " mine" : ""}" title="${esc(f.name)} · ${KIND[k][0]} · ${KB(f.bytes)}"><a class="chat-tile-open" href="${u}" data-fv="${esc(ch.slug)}|${esc(f.id)}${f.version ? `|${f.version}` : ""}" data-fvc aria-label="Open ${esc(f.name)}"><span class="chat-tile-preview${f.image ? " photo" : ""}">${f.image ? `<img src="${u}" alt="" loading="lazy">` : `<span class="aico k-${k}">${I(KIND[k][1], 28)}</span>`}</span><span class="chat-tile-name">${esc(f.name)}</span></a><span class="chat-tile-actions"><span class="chat-tile-kind">${dsIsDeck(f) ? "Deck" : KIND[k][0]}</span>${LIVE ? shFileBtn(ch.slug, f.id, f.name, f.mime, true) : ""}${dsBtn(ch.slug, f)}${zoBtn(ch.slug, f)}<a class="chat-tile-download" href="${fileUrl(ch.slug, f.id, true, f.version)}" download aria-label="Download ${esc(f.name)}" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 14)}</a></span></div>`;
 }
 if (LIVE) {
   document.addEventListener("click", async e => {
@@ -979,7 +980,7 @@ if (LIVE) {
 // audio/video play. Slide decks (.pptx…) and Word documents (.docx…) show the PDF the channel computer makes of them with
 // LibreOffice (GET …/files/<id>/preview, 1HC file-preview.js; the first open makes it, later opens are instant): a deck pages
 // slide by slide, a document scrolls like a PDF. Anything else gets a clean card with Download. ← → move through the list it was opened from.
-type FV = { slug: string; id: string; name: string; mime: string; bytes: number; at: number; sid?: any; you?: boolean; transcript?: string; tx?: string; spk?: { slug: string; task: string; n?: number } };
+type FV = { ver?: number; slug: string; id: string; name: string; mime: string; bytes: number; at: number; sid?: any; you?: boolean; transcript?: string; tx?: string; spk?: { slug: string; task: string; n?: number } };
 const FVS: { list: FV[]; i: number; zoom: number; gen: number; pdf?: any; slide?: (d: number, abs?: boolean) => boolean; transcript?: string; data?: any; speakers?: Speaker[] } = { list: [], i: 0, zoom: 1, gen: 0 };
 const fvExt = (n: string) => (n.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
 const fvKind = (f: FV) => { const e = (f.name.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase(), m = f.mime;
@@ -1067,7 +1068,7 @@ function openFile(list: FV[], i: number) {
 }
 function closeFile() { const w = document.getElementById("fv"); FVS.gen++; FVS.pdf?.destroy?.(); FVS.pdf = null; FVS.slide = undefined; document.body.classList.remove("fvopen"); if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!w.classList.contains("on")) w.remove(); }, 200); }
 function fvPaint() {
-  const w = document.getElementById("fv")!, f = FVS.list[FVS.i], k = fvKind(f), u = f.transcript || fileUrl(f.slug, f.id), x = fvTask(f), n = FVS.list.length, gen = ++FVS.gen;
+  const w = document.getElementById("fv")!, f = FVS.list[FVS.i], k = fvKind(f), u = f.transcript || fileUrl(f.slug, f.id, false, f.ver), x = fvTask(f), n = FVS.list.length, gen = ++FVS.gen;
   FVS.transcript = undefined; FVS.data = undefined; FVS.speakers = undefined; speakerEditorClose();
   FVS.zoom = 1; FVS.pdf?.destroy?.(); FVS.pdf = null; FVS.slide = undefined;
   const [kn0, kd] = KIND[fkind(f.name, f.mime)], kn = k === "deck" ? "Slide deck" : k === "word" ? "Document" : k === "html" ? "Web page" : kn0;
@@ -1213,14 +1214,14 @@ if (LIVE) {
     const a = t.closest<HTMLElement>("[data-fv]"); if (!a || t.closest("[data-fdel],[data-fdl]")) return;
     if (e.metaKey || e.ctrlKey || e.shiftKey || (e as MouseEvent).button === 1) return;   // ⌘-click still opens a tab on purpose
     e.preventDefault(); e.stopImmediatePropagation();
-    const [slug, id] = a.dataset.fv!.split("|");
+    const [slug, id, vs] = a.dataset.fv!.split("|"), ver = vs ? +vs : undefined;
     // The list to page through: the Library list as shown, or every file in this chat, or just this file.
     let list: FV[] = [];
     if (a.hasAttribute("data-fvl")) list = [...document.querySelectorAll<HTMLElement>("#lfiles [data-fv]")].map(el => { const [s, i] = el.dataset.fv!.split("|"); const x = (LIB[s] || []).find(y => y.fid === i); return x ? fvOf(s, x) : null; }).filter(Boolean) as FV[];
-    else if (a.hasAttribute("data-fvc")) { const { s } = route(); list = (s?.messages || []).flatMap(m => [...(m.files || []), ...(m.cards || []).filter(c => c.t === "file").map(c => c.f)]).map((f: FileV) => ({ slug, id: f.id, name: f.name, mime: f.mime, bytes: f.bytes, at: f.at, sid: f.session, you: f.source === "upload", tx: f.tx })); }
+    else if (a.hasAttribute("data-fvc")) { const { s } = route(); list = (s?.messages || []).flatMap(m => [...(m.files || []), ...(m.cards || []).filter(c => c.t === "file").map(c => c.f)]).map((f: FileV) => ({ slug, id: f.id, ver: f.version, name: f.name, mime: f.mime, bytes: f.bytes, at: f.at, sid: f.session, you: f.source === "upload", tx: f.tx })); }
     if (!list.some(f => f.id === id)) { const x = (LIB[slug] || []).find(y => y.fid === id); if (x) list = [fvOf(slug, x)]; }
     if (!list.length) return;
-    openFile(list, list.findIndex(f => f.id === id));
+    openFile(list, Math.max(0, list.findIndex(f => f.id === id && (ver == null || f.ver == null || f.ver === ver))));
   }, true);
   window.addEventListener("keydown", e => {
     if (!document.getElementById("fv") || document.querySelector(".spkpop")) return;   // the speaker name box handles its own keys
@@ -1599,8 +1600,9 @@ function claimFiles(m: Msg | undefined, text: string) {
 }
 function cardFile(ch: Channel, name: string, claim?: { byName: Map<string, FileV> }) {
   if (!LIVE) return null; const n = name.trim().replace(/^.*\//, "");
-  const t = claim?.byName.get(n), a = t ? { fid: t.id, kind: t.image ? "image" : "" } : (LIB[ch.slug] || []).find(x => x.fid && x.name.toLowerCase() === n.toLowerCase()); if (!a) return null;
-  return { fv: `${ch.slug}|${a.fid}`, href: fileUrl(ch.slug, a.fid!), dl: fileUrl(ch.slug, a.fid!, true), image: a.kind === "image" ? fileUrl(ch.slug, a.fid!) : undefined };
+  const t = claim?.byName.get(n), a = t ? { fid: t.id, kind: t.image ? "image" : "", ver: t.version } : (LIB[ch.slug] || []).find(x => x.fid && x.name.toLowerCase() === n.toLowerCase()); if (!a) return null;
+  const ver = (a as { ver?: number }).ver;   // a card the reply itself shared knows its version; a Library lookup by name is the current file
+  return { fv: `${ch.slug}|${a.fid}${ver ? `|${ver}` : ""}`, href: fileUrl(ch.slug, a.fid!, false, ver), dl: fileUrl(ch.slug, a.fid!, true, ver), image: a.kind === "image" ? fileUrl(ch.slug, a.fid!, false, ver) : undefined };
 }
 const cardIcon = (name: string) => { const k = fkind(name); return `<span class="aico k-${k}">${I(KIND[k][1], 30)}</span>`; };
 // Every message of a task, each knowing the next thing the person said after it (that locks a card's controls).

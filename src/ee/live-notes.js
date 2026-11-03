@@ -1291,7 +1291,7 @@ export function lnResidentMethods() { return {
     const g = this.sql.exec("SELECT version FROM files WHERE id=? AND deleted=0", f.id).toArray()[0];
     if (!g || Number(g.version || 1) !== v) { await stDelete(this.env, [{ key, size: b.byteLength }]).catch(() => {}); return g ? { conflict: true, version: Number(g.version || 1) } : { gone: true }; }
     this.sql.exec("UPDATE files SET r2key=?, bytes=?, prev_key=?, prev_bytes=?, version=?, view_key=NULL, at=?, synced=0 WHERE id=?", key, b.byteLength, f.r2key, f.bytes, v + 1, Date.now(), f.id);
-    try { await stDelete(this.env, [...(f.prev_key ? [{ key: f.prev_key, size: f.prev_bytes ?? null }] : []), ...(f.view_key ? [f.view_key] : [])]); } catch (e) { console.log("live notes old version", e.message); }
+    try { await stDelete(this.env, [...(f.prev_key && !this.heldKeys(f.id).has(f.prev_key) ? [{ key: f.prev_key, size: f.prev_bytes ?? null }] : []), ...(f.view_key ? [f.view_key] : [])]); } catch (e) { console.log("live notes old version", e.message); }
     try { await this.env.DB?.prepare("UPDATE share_links SET r2key=?, bytes=? WHERE tenant_id=? AND file_id=?").bind(key, b.byteLength, this.get("tenant"), f.id).run(); } catch {}
     return { version: v + 1, bytes: b.byteLength };
   },

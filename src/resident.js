@@ -1621,7 +1621,7 @@ export class Resident extends DurableObject {
         continue;
       }
       const f = this.addFileRow({ id, name, mime: mimeOf(name), bytes: up.bytes, r2key: key, source: "helper", session: tc?.session || null, turn: tc?.turn || null, synced: mv.ok && mv.path === `files/${name}` ? 1 : 0 });
-      tc?.emit?.({ t: "file", file: f });
+      tc?.emit?.({ t: "file", file: f }); this.recordShare(f, tc?.turn);
       files.push({ orig: d.name, file: f });
     }
     return { files, partial };
@@ -3720,7 +3720,7 @@ export class Resident extends DurableObject {
   liveOutputs(turn) {
     if (!turn) return {};
     try {
-      const shared = this.sql.exec("SELECT * FROM files WHERE turn=? AND deleted=0 AND source='helper' ORDER BY at", turn).toArray().map((x) => this.fileView(x));
+      const shared = this.sharedForTurn(turn);
       const images = this.sql.exec("SELECT id, url, caption FROM shots WHERE turn=? ORDER BY at", turn).toArray();
       return { ...(shared.length ? { shared } : {}), ...(images.length ? { images } : {}) };
     } catch { return {}; }
@@ -4870,8 +4870,8 @@ export class Resident extends DurableObject {
       if (toOrig && f.orig_key === f.r2key) return `error: "${f.name}" is already the person's original upload.`;
       if (!toOrig && !f.prev_key) return `error: "${f.name}" has no earlier version kept (only the version before the last update is kept).`;
       const to = toOrig ? { key: f.orig_key, bytes: f.orig_bytes ?? 0 } : { key: f.prev_key, bytes: f.prev_bytes ?? 0 };
-      this.sql.exec("UPDATE files SET r2key=?, bytes=?, prev_key=?, prev_bytes=?, view_key=NULL, at=?, synced=0 WHERE id=?", to.key, to.bytes, f.r2key, f.bytes, Date.now(), f.id);
-      const drop = [...(f.view_key ? [f.view_key] : []), ...(toOrig && f.prev_key && f.prev_key !== f.orig_key && f.prev_key !== f.r2key ? [{ key: f.prev_key, size: f.prev_bytes ?? null }] : [])];   // the original is never deleted
+      this.sql.exec("UPDATE files SET r2key=?, bytes=?, prev_key=?, prev_bytes=?, view_key=NULL, version=?, at=?, synced=0 WHERE id=?", to.key, to.bytes, f.r2key, f.bytes, Number(f.version || 1) + 1, Date.now(), f.id);   // a restore is a new version number, so a version number names one set of bytes
+      const drop = [...(f.view_key ? [f.view_key] : []), ...(toOrig && f.prev_key && f.prev_key !== f.orig_key && f.prev_key !== f.r2key && !this.heldKeys(f.id).has(f.prev_key) ? [{ key: f.prev_key, size: f.prev_bytes ?? null }] : [])];   // the original is never deleted
       if (drop.length) { try { await stDelete(this.env, drop); } catch {} }
       this.sidecarKick?.(this.sql.exec("SELECT * FROM files WHERE id=?", f.id).one());   // sidecar.js: the restored bytes get their own
       // path null: only pages made from the Library file are put back (a page from a computer folder shows what's on the computer)
@@ -4892,7 +4892,7 @@ export class Resident extends DurableObject {
         if (twin) { await dropNewBytes(this, key, r.bytes); const kept = adoptName(this, twin, name, ctx.emit); return `"${kept.name}" is already shared (${humanBytes(kept.bytes)}, exactly these bytes), so no second file was added. The person has one card for it.`; }
       }
       const f = this.addFileRow({ id, name, mime: mimeOf(name), bytes: r.bytes, r2key: key, source: "helper", session: ctx.session || null, turn: ctx.turn || null, synced: path === `files/${name}` ? 1 : 0, src_path: path });
-      ctx.emit?.({ t: "file", file: f });
+      ctx.emit?.({ t: "file", file: f }); this.recordShare(f, ctx.turn);
       const pages = await this.republishPages(f, key, path, ctx);   // a page published from this path (publish_page of a folder holding it)
       return `Shared "${f.name}" (${humanBytes(f.bytes)}). The card shows under your reply in this chat and in the Library. Don't paste its contents; one line about what it is is enough.${pages}${/\.html?$/i.test(f.name) ? " It's a web page: its card also has Publish (a live page at their own address); you can mention it, and if it loads files from its folder, publish that folder with publish_page instead." : ""}`;
     }
@@ -4909,7 +4909,7 @@ export class Resident extends DurableObject {
     const tenant = this.get("tenant");
     try { await this.env.DB?.prepare("UPDATE share_links SET r2key=?, bytes=? WHERE tenant_id=? AND file_id=?").bind(r2key, bytes, tenant, f.id).run(); } catch (e) { console.log("share links follow", e.message); }
     const v = this.fileView(this.sql.exec("SELECT * FROM files WHERE id=?", f.id).one());
-    ctx.emit?.({ t: "file", file: v });
+    ctx.emit?.({ t: "file", file: v }); this.recordShare(f, ctx.turn);
     const pages = await this.republishPages(f, r2key, path, ctx);
     return `${said} The card shows under your reply in this chat and in the Library; its share link, if it has one, now gives the new version.${pages}`;
   }
@@ -4991,6 +4991,7 @@ export class Resident extends DurableObject {
   // Zone A (zone-edit.js): the person's direct edits and "restore the previous version" of a Library .html file, with no model. Added methods only.
   async zoneEdit(fileId, base, body) { return zoneEditFile(this, fileId, base, body); }
   async zoneInfo(fileId) { return zoneInfo(this, fileId); }
+  async fileVersionKey(id, version) { return this.fvVersionKey(id, version); }   // index.js file route ?v=
   async fileRow(id) { return this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(id)).toArray()[0] || null; }
   async deleteFile(id) {
     id = String(id);
@@ -5003,7 +5004,8 @@ export class Resident extends DurableObject {
       try {
         await this.dropPreview(r.id);   // file-preview.js
         await this.dropSidecar?.(r.id); // sidecar.js
-        await stDelete(this.env, [...new Set([r.r2key, r.view_key, r.prev_key, r.orig_key].filter(Boolean))]);
+        await stDelete(this.env, [...new Set([r.r2key, r.view_key, r.prev_key, r.orig_key, ...this.shareKeys(r.id).map((x) => x.key)].filter(Boolean))]);   // every version a reply shared goes too
+        try { this.sql.exec("DELETE FROM file_shares WHERE file_id=?", r.id); } catch {}
       }
       catch { return { error: "Couldn't delete the file from storage. Try again.", status: 503 }; }
       this.sql.exec("UPDATE files SET deleted=1, synced=CASE WHEN synced=1 THEN -1 ELSE 0 END WHERE id=?", r.id);   // -1 = still on the computer, remove on next sync
@@ -5132,7 +5134,7 @@ export class Resident extends DurableObject {
         const images = this.sql.exec("SELECT id, url, caption FROM shots WHERE turn=? ORDER BY at", t.id).toArray();
         const ups = (() => { try { return JSON.parse(t.files || "[]"); } catch { return []; } })();
         const fr = this.sql.exec("SELECT * FROM files WHERE turn=? AND deleted=0 ORDER BY at", t.id).toArray();
-        const attached = ups.map((x) => this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(x)).toArray()[0]).filter(Boolean).map((x) => this.fileView(x)), shared = fr.filter((x) => x.source === "helper").map((x) => this.fileView(x));
+        const attached = ups.map((x) => this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(x)).toArray()[0]).filter(Boolean).map((x) => this.fileView(x)), shared = this.sharedForTurn(t.id);
 return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnHasDeckStyles(steps) ? { deck_styles: true } : {}), id: t.id, card: t.id, input_request: questionForTurn(this.sql,t.id), msgs, at: t.at, kind: t.kind, workflow_id: t.workflow_id, user_text: t.kind === "chat" && !handoffCard ? t.user_text : null, ...(react[t.id] ? { reaction: react[t.id] } : {}), reply: t.reply, ...(t.kind === "livenote" && t.notes ? (() => { try { const m = JSON.parse(t.notes); return m?.refine ? { livenote: { refine: m.refine } } : {}; } catch { return {}; } })() : {}), parts: (() => { try { return t.parts ? JSON.parse(t.parts) : null; } catch { return null; } })(), progress: (() => { try { return t.progress ? JSON.parse(t.progress) : null; } catch { return null; } })(), tool_calls: t.tool_calls, steps, total_ms: t.total_ms, charge_nano: t.charge_nano, error: t.error, images, attached, shared }; }).filter(Boolean);
     const jobs = this.sql.exec("SELECT id,kind,name,interval_seconds,next_run,last_run,run_count,status FROM workflows WHERE session=? AND status IN ('active','paused') ORDER BY id", id).toArray();
     const tc = this.liveTurn(id);

@@ -8,6 +8,9 @@ ARG CLAUDE_CODE_VERSION=2.1.316
 RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
  && cp "$(readlink -f /usr/local/bin/claude)" /claude && cp "$(readlink -f /usr/local/bin/node)" /node \
  && /claude --version | grep -F "${CLAUDE_CODE_VERSION}"
+# Build guard: the sign-in address this CLI carries must be https on the domains the app opens (src/ee/claude-signin-url.js). A new CLI version that moves it fails the build here, not on a person's screen.
+COPY relay/check-authorize-url.mjs /check-authorize-url.mjs
+RUN node /check-authorize-url.mjs /claude
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \

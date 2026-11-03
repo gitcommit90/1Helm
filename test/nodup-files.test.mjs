@@ -114,7 +114,7 @@ let IDX, PAGE1, LINK1;
   const row = R.sql.exec("SELECT * FROM files WHERE id=?", IDX).one(); assert.ok(row.orig_key && row.orig_key !== row.r2key && row.orig_key !== row.prev_key, "the original is neither current nor the one before it");
   assert.equal(new TextDecoder().decode(R2.get(row.orig_key).bytes), "<title>Mine</title>ORIGINAL index");
   out = await toolIn(S1, "share_file", { restore: "index.html", original: true });
-  assert.match(out, /^Put back the person's original upload of "index\.html"/, out); assert.match(out, /Versions kept: version 7 \(current\), the version before it/);
+  assert.match(out, /^Put back the person's original upload of "index\.html"/, out); assert.match(out, /Versions kept: version 8 \(current\), the version before it/);
   assert.equal(await fileBytes(IDX), "<title>Mine</title>ORIGINAL index"); assert.match((await text(PAGE1)).body, /ORIGINAL index/); assert.equal((await text(LINK1)).body, "<title>Mine</title>ORIGINAL index");
   assert.match(await toolIn(S1, "share_file", { restore: "index.html", original: true }), /^error: .* already the person's original/);
   // editing again after the restore keeps the original too
@@ -236,7 +236,7 @@ let IDX, PAGE1, LINK1;
 {
   const id = await upload("temp.txt", "ORIGINAL temp"); const T = await sid("temp");
   for (let i = 1; i <= 3; i++) { put("files/temp.txt", `temp ${i}`); await toolIn(T, "share_file", { path: "files/temp.txt" }); }
-  assert.equal(r2Under(`t/t1/files/main/${id}`).length, 3, "original, the version before, the current");
+  assert.equal(r2Under(`t/t1/files/main/${id}`).length, 4, "original, every version a reply shared, the current");
   await countsRight("temp before delete");
   const del = await fetchW(`https://selfhost.example/w/ck1/api/res/main/files/${id}/delete`, { method: "POST", headers: { cookie: "hc_session=aa11", "content-type": "application/json" }, body: "{}" });
   assert.equal(del.status, 200); assert.equal(r2Under(`t/t1/files/main/${id}`).length, 0, "all versions and the original are gone"); await countsRight("temp after delete");

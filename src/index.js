@@ -187,7 +187,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "352";
+const APP_V = "353";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -1710,7 +1710,9 @@ export default {
           if (fm[2] && !fm[3] && req.method === "GET") {
             const row = await R.fileRow(fm[2]); if (!row) return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
             const hd = servedHeaders(row.mime, row.name, url.searchParams.get("dl") === "1"), inm = req.headers.get("if-none-match");
-            const o = await env.WS.get(row.r2key, inm ? { onlyIf: { etagDoesNotMatch: inm.replace(/^W\//, "").replace(/"/g, "") } } : {}); if (!o) return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
+            // ?v=<n>: the bytes of version n, for a card whose reply shared that version (same channel wall and auth as the current file; the row above is checked first)
+            const vq = url.searchParams.get("v"), vk = vq != null && /^\d{1,6}$/.test(vq) ? await R.fileVersionKey(fm[2], Number(vq)) : null, vkey = vk?.key || row.r2key;
+            const o = await env.WS.get(vkey, inm ? { onlyIf: { etagDoesNotMatch: inm.replace(/^W\//, "").replace(/"/g, "") } } : {}); if (!o) return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
             if (!("body" in o) || !o.body) return new Response(null, { status: 304, headers: { ...hd, etag: o.httpEtag } });
             return new Response(o.body, { headers: { ...hd, etag: o.httpEtag, "content-length": String(o.size) } });
           }

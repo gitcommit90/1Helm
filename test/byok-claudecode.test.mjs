@@ -17,7 +17,7 @@ d1.exec(`CREATE TABLE tenants (id TEXT PRIMARY KEY, slug TEXT, owner_user_id TEX
 for (const f of ["0022_031_byok", "0025_034_byok_mode", "0038_046_ai_privacy", "0065_custom_models_own_key", "0069_byok_chatgpt", "0068_byok_effort", "0070_byok_connections"]) d1.exec(readFileSync(new URL(`../db/migrations/${f}.sql`, import.meta.url), "utf8"));
 const D1 = { prepare: (q) => { const st = d1.prepare(q); let a = []; const o = { bind: (...x) => { a = x; return o; }, first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }),
   run: async () => { const r = st.run(...a); return { meta: { changes: Number(r.changes) } }; } }; return o; } };
-const calls = [], completes = []; let completeFail = "", think = false; const THINK = [{ type: "reasoning.text", text: "plan", signature: "SIG-123", index: 0, format: "anthropic-claude-v1" }]; let engineState = { signedIn: true, account: { email: "sam@claude.example", plan: "Max" }, version: "2.1.0" }, loginUrl = "https://claude.ai/oauth/authorize?code=true&state=abc", engineDown = false, goodCode = "CODE-123-abc";
+const calls = [], completes = []; let completeFail = "", think = false; const THINK = [{ type: "reasoning.text", text: "plan", signature: "SIG-123", index: 0, format: "anthropic-claude-v1" }]; let engineState = { signedIn: true, account: { email: "sam@claude.example", plan: "Max" }, version: "2.1.0" }, loginUrl = "https://claude.com/cai/oauth/authorize?code=true&state=abc", engineDown = false, goodCode = "CODE-123-abc";
 let startError = "";
 const engine = {
   warm: async () => { calls.push("warm"); return { ok: true, ms: 5 }; },
@@ -64,7 +64,9 @@ test("sign in: the engine's stop reasons reach the app in plain words with a cod
 test("sign in: start gives Anthropic's address, finish takes the pasted code; the row shows who is signed in; one per account", async () => {
   await wipe();
   let r = await api("/api/byok/claudecode/start", {}); assert.equal(r.status, 200); assert.equal(r.d.url, loginUrl); assert.ok(calls.includes("loginStart"));
-  loginUrl = "http://claude.example/insecure"; r = await api("/api/byok/claudecode/start", {}); assert.equal(r.status, 502, "an address that isn't https is never handed to the app"); loginUrl = "https://claude.ai/oauth/authorize?code=true&state=abc";
+  loginUrl = "http://claude.example/insecure"; r = await api("/api/byok/claudecode/start", {}); assert.equal(r.status, 502, "an address that isn't https is never handed to the app"); assert.equal(r.d.code, "bad_signin_url"); assert.ok(!r.d.url); assert.match(r.d.error, /doesn't recognize/);
+  loginUrl = "https://claude.com.evil.io/cai/oauth/authorize?state=SECRET-STATE"; const logs = []; const log0 = console.log; console.log = (...a) => logs.push(a.join(" ")); r = await api("/api/byok/claudecode/start", {}); console.log = log0;
+  assert.equal(r.status, 502, "a lookalike host is refused on the server"); assert.ok(logs.some((l) => l.includes("claude.com.evil.io")) && !logs.some((l) => l.includes("SECRET-STATE")), "only the host is logged, never the address with its state"); loginUrl = "https://claude.com/cai/oauth/authorize?code=true&state=abc";
   r = await api("/api/byok/claudecode/finish", { code: "x" }); assert.equal(r.status, 400); assert.equal(r.d.field, "code"); assert.equal(d1.prepare("SELECT COUNT(*) n FROM byok_connections").get().n, 0);
   r = await api("/api/byok/claudecode/finish", { code: "WRONG-CODE-1" }); assert.equal(r.status, 400); assert.equal(r.d.error, "bad code", "the engine's own words are shown"); assert.equal(d1.prepare("SELECT COUNT(*) n FROM byok_connections").get().n, 0);
   r = await api("/api/byok/claudecode/finish", { code: goodCode }); assert.equal(r.status, 200); assert.equal(r.d.id, "claudecode");

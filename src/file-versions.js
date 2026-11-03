@@ -30,7 +30,48 @@ export const fileVersionsMethods = {
     // orig_key/orig_bytes: the bytes of a file the person uploaded, kept for good when an agent first replaces it. Additive columns only.
     for (const c of ["orig_key TEXT", "orig_bytes INTEGER"]) { try { this.sql.exec(`ALTER TABLE files ADD COLUMN ${c}`); } catch {} }
     // file_uses: which Library files the agent read, copied, opened or was given in a task. The evidence that a new file is an edit.
+    // file_shares: the version of a file each turn's reply shared (turn, file, version, the R2 key of those bytes). A later in-place
+    // replacement of the file moves files.turn to the newer turn, so this table is what keeps an earlier reply on the version it shared.
+    // Its keys are never deleted while the file exists. Additive table only.
+    this.sql.exec("CREATE TABLE IF NOT EXISTS file_shares (turn TEXT NOT NULL, file_id TEXT NOT NULL, version INTEGER NOT NULL, r2key TEXT NOT NULL, bytes INTEGER, at INTEGER NOT NULL, PRIMARY KEY (turn, file_id, version))");
+    try { this.sql.exec("CREATE INDEX IF NOT EXISTS file_shares_file ON file_shares (file_id, version)"); } catch {}
     this.sql.exec("CREATE TABLE IF NOT EXISTS file_uses (session TEXT NOT NULL, file_id TEXT NOT NULL, at INTEGER NOT NULL, how TEXT, PRIMARY KEY (session, file_id))");
+  },
+  // The reply of `turn` shared the file's current version: remember that version and its bytes.
+  recordShare(file, turn) {
+    if (!turn || !file) return;
+    const r = this.sql.exec("SELECT id, version, r2key, bytes FROM files WHERE id=?", String(file.id)).toArray()[0]; if (!r) return;
+    try { this.sql.exec("INSERT OR REPLACE INTO file_shares (turn,file_id,version,r2key,bytes,at) VALUES (?,?,?,?,?,?)", String(turn), r.id, Number(r.version || 1), r.r2key, r.bytes, Date.now()); } catch (e) { console.log("file share", e.message); }
+  },
+  // R2 keys of versions some reply still refers to; replacing or restoring a file never deletes these.
+  heldKeys(fileId) { try { return new Set(this.sql.exec("SELECT r2key FROM file_shares WHERE file_id=?", String(fileId)).toArray().map((x) => x.r2key)); } catch { return new Set(); } },
+  // Every version a reply shared (key and size), to delete with the file.
+  shareKeys(fileId) { try { return this.sql.exec("SELECT r2key, bytes FROM file_shares WHERE file_id=?", String(fileId)).toArray().map((x) => ({ key: x.r2key, size: x.bytes ?? null })); } catch { return []; } },
+  // The helper files a turn's reply shared, each at the version that reply shared. Files shared before this table existed (no rows at all)
+  // are found by files.turn as before and show the current version.
+  sharedForTurn(turn) {
+    const out = [], seen = new Set();
+    for (const s of this.sql.exec("SELECT s.version AS sv, s.bytes AS sb, f.* FROM file_shares s JOIN files f ON f.id=s.file_id WHERE s.turn=? AND f.deleted=0 AND f.source='helper' ORDER BY s.at", String(turn)).toArray()) {
+      seen.add(s.id); out.push({ ...this.fileView(s), version: Number(s.sv), bytes: s.sb ?? s.bytes });
+    }
+    for (const f of this.sql.exec("SELECT * FROM files WHERE turn=? AND deleted=0 AND source='helper' ORDER BY at", String(turn)).toArray()) {
+      if (seen.has(f.id)) continue;
+      let any = false; try { any = this.sql.exec("SELECT 1 FROM file_shares WHERE file_id=? LIMIT 1", f.id).toArray().length > 0; } catch {}
+      if (!any) out.push(this.fileView(f));
+    }
+    return out;
+  },
+  // The bytes of one version: { key, bytes } or null. A version no reply recorded is served only when it is the one before the current
+  // (kept as prev_key); any other unknown version gets the current bytes, as before versions were served by number.
+  fvVersionKey(fileId, version) {
+    const f = this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(fileId)).toArray()[0]; if (!f) return null;
+    const v = Number(version);
+    if (Number.isInteger(v) && v >= 1 && v !== Number(f.version || 1)) {
+      let s = null; try { s = this.sql.exec("SELECT r2key, bytes FROM file_shares WHERE file_id=? AND version=? ORDER BY at DESC LIMIT 1", f.id, v).toArray()[0]; } catch {}
+      if (s) return { key: s.r2key, bytes: s.bytes };
+      if (f.prev_key && v === Number(f.version || 1) - 1) return { key: f.prev_key, bytes: f.prev_bytes };
+    }
+    return { key: f.r2key, bytes: f.bytes };
   },
   noteFileUse(session, ids, how) {
     if (!session) return;
@@ -82,7 +123,8 @@ export const fileVersionsMethods = {
     this.sql.exec("UPDATE files SET r2key=?, bytes=?, prev_key=?, prev_bytes=?, version=?, view_key=NULL, at=?, session=COALESCE(?,session), turn=COALESCE(?,turn), synced=?, src_path=COALESCE(?,src_path), orig_key=?, orig_bytes=? WHERE id=?",
       key, bytes, target.r2key, target.bytes, v, Date.now(), session, turn, synced, src_path ?? null, orig, origBytes ?? null, target.id);
     const gone = [];
-    if (target.prev_key && target.prev_key !== orig) gone.push({ key: target.prev_key, size: target.prev_bytes ?? null });
+    const held = this.heldKeys(target.id);
+    if (target.prev_key && target.prev_key !== orig && !held.has(target.prev_key)) gone.push({ key: target.prev_key, size: target.prev_bytes ?? null });
     if (target.view_key) gone.push(target.view_key);
     try { await stDelete(this.env, gone); } catch (e) { console.log("file old version", e.message); }
     this.noteFileUse(session, target.id, "updated");   // a file this task already updated is evidence for its next edit

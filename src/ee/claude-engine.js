@@ -13,6 +13,7 @@
 //
 // Survives a Worker deploy: a login and a run each run as a detached process in the container with their input and output in files, so a reset of this
 // object does not stop them. attach(session, fromByte) streams a run's output again from a byte offset.
+import { pickSignInUrl } from "./claude-signin-url.js";
 import { DurableObject } from "cloudflare:workers";
 import { tolerantEnv } from "../do-stub.js";
 import { sealSecret, openSecret } from "../sentinel.js";
@@ -318,8 +319,8 @@ echo started`;
     this.put("login_active", "1"); this.put("login_started", Date.now());
     for (let i = 0; i < 100; i++) {
       const r = await this.bash('cat "$1/out" 2>/dev/null; [ -f "$1/code" ] && echo "[[EXIT $(cat "$1/code")]]"', [LOGIN_DIR], { timeoutMs: 8e3 }).catch(() => null);
-      const m = String(r?.out || "").match(/https:\/\/\S+/);
-      if (m) { this.touch(); return { url: m[0] }; }
+      const url = pickSignInUrl(r?.out);
+      if (url) { this.touch(); return { url }; }
       if (r?.out.includes("[[EXIT")) break;
       await sleep(200);
     }
