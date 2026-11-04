@@ -21,17 +21,23 @@ const list=new El('chlist');const row=slug=>{const r=new El('chr',{href:'#/'+slu
 const ra=row('tcinfra'),rb=row('llms'),rc=row('quiet');
 const root=new El('root');root.appendChild(rail);root.appendChild(list);
 const pips=e=>e.querySelectorAll('.pip').length,udots=e=>e.children.filter(x=>x.has('udot')).length;
-let state={tcinfra:'New result',llms:null,quiet:null};
+let state={tcinfra:'New reply',llms:null,quiet:null};
 paintChannelDots(root,s=>state[s]??null);
 assert.equal(pips(a.children[0]),1,'a channel that got an unread task gets its dot without a full redraw');assert.equal(pips(b.children[0]),0);assert.equal(udots(ra),1);assert.equal(ra.children[0].has('udot'),true);assert.equal(udots(rb),0);
 paintChannelDots(root,s=>state[s]??null);assert.equal(pips(a.children[0]),1,'repainting twice never doubles a dot');assert.equal(udots(ra),1);
-state={tcinfra:'Needs you',llms:'New result',quiet:null};paintChannelDots(root,s=>state[s]??null);
-assert.equal(a.children[0].querySelector('.pip').title,'Needs you','title follows the state');assert.equal(pips(b.children[0]),1);assert.equal(udots(rb),1);
+state={tcinfra:'New reply',llms:'New reply',quiet:null};paintChannelDots(root,s=>state[s]??null);
+assert.equal(a.children[0].querySelector('.pip').title,'New reply','the dot title is New reply');assert.equal(pips(b.children[0]),1);assert.equal(udots(rb),1);
 state={tcinfra:null,llms:null,quiet:null};paintChannelDots(root,s=>state[s]??null);
 for(const x of [a,b,c])assert.equal(pips(x.children[0]),0,'read tasks clear every dot');for(const r of [ra,rb,rc])assert.equal(udots(r),0);
 // The wiring in v3.ts: refresh() and repaint() both call it, with the rule the rows use.
 import fs from 'node:fs';const v3=fs.readFileSync(new URL('../src/v3.ts', import.meta.url),'utf8');
 assert.match(v3,/function repaint\(ch: Channel\) \{\s*paintChannelDots\(document, chDotKind\)/,'every repaint paints the channel dots');
 assert.match(v3,/clearFresh\(ch\);\s*paintChannelDots\(document, chDotKind\)/,'refresh paints the channel dots on every branch');
-assert.match(v3,/const chDotKind = .*rowLit.*needsYou/,'the channel dot reads the same rule as the task row dot');
+assert.match(v3,/const chDotKind = .*rowLit/,'the channel dot reads the same rule as the task row dot');
+assert.match(v3,/const rowLit = \(x: Session\) => !x\.done && !!x\.unread;/,'only an unseen reply lights a dot');
+assert.doesNotMatch(v3,/Needs you"|"Needs you/,'no Needs you dot kind or title');
+// The rule itself: a waiting task with no unseen reply has no dot, an unseen reply has one, a done task has none.
+const rowLit=x=>!x.done&&!!x.unread;
+assert.equal(rowLit({status:'waiting',unread:false}),false,'waiting alone shows no dot');assert.equal(rowLit({status:'waiting',unread:true}),true);
+assert.equal(rowLit({status:'resolved',unread:true}),true,'an unseen reply shows a dot');assert.equal(rowLit({done:true,unread:true}),false);
 console.log('Channel list dots: added, cleared, retitled, never doubled, wired into refresh and repaint passed.');

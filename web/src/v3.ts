@@ -270,15 +270,16 @@ if (LIVE) window.addEventListener("click", e => {
 // breaks: a single newline is a line break, as the person typed it (a sign-off quoted as "> Best,\n> Joseph" stays two lines).
 const md = (s: string) => DOMPurify.sanitize(marked.parse(s, { async: false, breaks: true }) as string);
 const live = (s: Session) => s.status === "open" || s.status === "waiting";
-// The one place the unread / needs-you dot lives: a fixed-width slot at the far right of a task row, after the pin and more buttons.
+// The one place the task dot lives: a fixed-width slot at the far right of a task row, after the pin and more buttons.
 // The slot holds the time (rows that show one) or the dot, never both, and keeps its width, so nothing moves when the dot appears or clears.
-// needsYou is the rule for "this task waits on the person" (Home's "All clear" reads it). rowLit adds a finished reply nobody has opened yet. The row dot,
-// the rail dot, the phone channel list and the phone menu dot all read rowLit, so a dot only shows when the list it leads to has a row with a dot.
-// A done task never counts.
+// The dot means one thing: the latest reply in that task has not been seen by the person. A task that waits on the person (approval, question,
+// check-in, browser, plan) gets no dot for waiting, and a task the person has opened or is in has none either. A done task never counts.
+// rowLit is that rule. The row dot, the rail dot, the phone channel list and the phone menu dot all read it, so a dot only shows when the
+// list it leads to has a row with a dot. needsYou is not a dot rule: Home's "All clear" and the sort order read it.
 const needsYou = (x: Session) => !x.done && x.status === "waiting";
-const rowLit = (x: Session) => needsYou(x) || (!x.done && !!x.unread);
-const rowDot = (x: Session) => rowLit(x) ? `<i class="dot" title="${x.unread ? "New result" : "Needs you"}"></i>` : "";
-const chDotKind = (slug: string) => { const c = channels.find(x => x.slug === slug); return !c || !c.sessions.some(rowLit) ? null : c.sessions.some(needsYou) ? "Needs you" as const : "New result" as const; };
+const rowLit = (x: Session) => !x.done && !!x.unread;
+const rowDot = (x: Session) => rowLit(x) ? `<i class="dot" title="New reply"></i>` : "";
+const chDotKind = (slug: string) => { const c = channels.find(x => x.slug === slug); return !c || !c.sessions.some(rowLit) ? null : "New reply" as const; };
 const rowTail = (x: Session, when = true) => `<span class="tail">${rowDot(x) || (when ? `<span class="when">${ago(x.done ? doneAt(x) : x.updated)}</span>` : "")}</span>`;
 function ago(t: number) {
   const m = Math.round((Date.now() - t) / 60e3);
@@ -341,7 +342,7 @@ setInterval(pcActivityTick, 2500);
 function railHtml(ch: Channel) {
   const nb = navButtons(`Back${scLabel("nav-back") ? `  ${scLabel("nav-back")}` : ""}`, `Forward${scLabel("nav-forward") ? `  ${scLabel("nav-forward")}` : ""}`);
   return `<div class="chs"><div class="navh">${nb[0]}<div class="brand" title="1Helm"><img src="/1helm-icon.png" alt="1Helm"></div>${nb[1]}</div>${sidebarRestoreButton()}${channels.map((c, i) => {
-    const n = c.sessions.filter(rowLit).length, pipTitle = c.sessions.some(needsYou) ? "Needs you" : "New result";
+    const n = c.sessions.filter(rowLit).length, pipTitle = "New reply";
     return `<button class="ch${c === ch ? " on" : ""}" data-ch="${c.slug}" title="${esc(c.name)}${scLabel("jump") ? `  ${scLabelN("jump", i + 1)}` : ""}">
       <span class="tile">${c.slug === "main" ? av(c) : mono(c)}${n ? `<i class="pip" title="${pipTitle}"></i>` : ""}</span><span class="lbl">${esc(c.name)}</span></button>`;
   }).join("")}<button class="ch add" title="New channel" aria-label="New channel" data-newch><span class="tile">${ic.plus}</span></button></div>

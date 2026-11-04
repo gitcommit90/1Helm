@@ -2,7 +2,7 @@
 // A background refresh that only repaints the open page (Home, Notebook, Contacts, Library, Scheduled, or a task with text in the box) used to leave
 // these dots as they were at the last full draw, so a channel could get an unread task, and a chime, and show no dot. The dots are absolutely
 // positioned, so adding or removing one never moves anything.
-export type DotKind = "Needs you" | "New result" | null;
+export type DotKind = "New reply" | null;
 export function paintChannelDots(root: ParentNode, kindOf: (slug: string) => DotKind) {
   for (const b of Array.from(root.querySelectorAll<HTMLElement>("#rail .chs .ch[data-ch]"))) {
     const k = kindOf(b.dataset.ch || ""), tile = b.querySelector<HTMLElement>(".tile"), pip = b.querySelector<HTMLElement>(".pip");

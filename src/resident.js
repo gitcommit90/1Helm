@@ -4701,12 +4701,18 @@ export class Resident extends DurableObject {
   // Every task textTurn started (the app lists them under "Texts"). The current texts_session counts too, so Texts tasks
   // made before this list existed are marked without a migration.
   textsSessions() { let l = []; try { l = JSON.parse(this.getRaw("texts_sessions") || "[]"); } catch {} const cur = this.getRaw("texts_session"); return cur && !l.includes(cur) ? [...l, cur] : l; }
+  // A request nobody decided within APPROVAL_TTL can no longer be acted on (the card page says expired, and a held command gave up after 2 minutes),
+  // so it never holds its task on "waiting". Read-only: the ops views call sessionView and must not write.
+  pendingApprovalCounts(session = null) {
+    const rows = this.sql.exec(`SELECT session, COUNT(*) n FROM approvals WHERE status='pending' AND at>? AND session IS NOT NULL ${session ? "AND session=?" : ""} GROUP BY session`, Date.now() - APPROVAL_TTL, ...(session ? [session] : [])).toArray();
+    return Object.fromEntries(rows.map((x) => [x.session, x.n]));
+  }
   sessionView(row, jobs = null, pend = null, texts = null) {
     if (!row) return null;
     let tc = this.liveTurn(row.id);
     if (tc && dynamicRoutingOn(this.env) && this.leftoverBrowserReview(tc)) tc = null;   // a review left over from a browser pause never overrides the pause
     const nJobs = jobs ? (jobs[row.id] || 0) : this.sql.exec("SELECT COUNT(*) n FROM workflows WHERE session=? AND status='active'", row.id).one().n;
-    const nPend = pend ? (pend[row.id] || 0) : this.sql.exec("SELECT COUNT(*) n FROM approvals WHERE session=? AND status='pending'", row.id).one().n;
+    const nPend = (pend || this.pendingApprovalCounts(row.id))[row.id] || 0;
     const resuming = !tc && this.resumingIn?.(row.id);   // resume.js: a reset cut its turn off and it's carrying on
     const nativeProgress = !tc && this.nativeProgress?.(row.id);
     const checkin = !tc && this.spendWaiting?.(row.id);
@@ -4741,7 +4747,7 @@ export class Resident extends DurableObject {
     // One-time: texting tasks made before the rename still say "Texts".
     if (!this.getRaw("texts_titled") && this.get("tenant")) { const ids = this.textsSessions(); if (ids.length) { const tt = await this.textsTitle(); for (const id of ids) this.sql.exec("UPDATE sessions SET title=? WHERE id=? AND title='Texts' AND title_manual=0", tt, id); } this.put("texts_titled", "1"); }
     const jobs = Object.fromEntries(this.sql.exec("SELECT session, COUNT(*) n FROM workflows WHERE status='active' AND session IS NOT NULL GROUP BY session").toArray().map((x) => [x.session, x.n]));
-    const pend = Object.fromEntries(this.sql.exec("SELECT session, COUNT(*) n FROM approvals WHERE status='pending' AND session IS NOT NULL GROUP BY session").toArray().map((x) => [x.session, x.n]));
+    const pend = this.pendingApprovalCounts();
     const texts = new Set(this.textsSessions());
     return this.sql.exec("SELECT * FROM sessions ORDER BY updated DESC LIMIT 300").toArray().map((x) => this.sessionView(x, jobs, pend, texts));
   }
