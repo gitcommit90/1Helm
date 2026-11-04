@@ -8,7 +8,7 @@ always: false
 {{^apps}}Connected apps aren't switched on here, so Google Slides isn't available. Build the deck from the artifacts skill's presentation reference.{{/apps}}{{#apps}}
 Read this only when the deck goes in Google Slides: the person named Google Slides, or chose it earlier (the message says so). Otherwise a deck is the artifacts skill's HTML deck, even when Google Slides is connected.
 
-1. Google Slides is connected: build the deck here, yourself, in this turn. A background helper can't run app actions, so don't hand a Google Slides deck to one.
+1. Google Slides is connected: build the deck here, yourself, in this turn. Don't hand a Google Slides deck to a background helper; the deck is built in this turn.
 2. Not connected, or the connection expired (a connected Gmail or other Google app doesn't count): `offer_connect` with app googleslides and a one-line why, then end your turn and wait. When they connect, carry on with the deck.
 3. They tapped Not now, said no or asked for something else: build the built-in deck from the artifacts skill's presentation reference. Don't offer the card again in this task.
 

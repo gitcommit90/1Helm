@@ -12,7 +12,8 @@ import { guardModel, guardTools, reportAsk, OUT_OF_TIME_REPLY } from "./spendgua
 import { stallCheck } from "./stall-guard.js";
 import { isByokError, BYOK_CREDITS_REPLY } from "./byok.js";
 import { COMPUTER_BUSY_MSG, isComputerBusy } from "./computer-capacity.js";
-import { ackNudge } from "./ack-stall.js";
+import { ackNudge, workNudge } from "./ack-stall.js";
+import { turnFacts } from "./ee/index.js";
 import { liveNudge, noteRan } from "./live-check.js";
 import { personWords } from "./person-asked.js";
 import { isResetErr } from "./do-stub.js";
@@ -78,7 +79,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
   const said = [...(resume?.said || [])], saidMeta = resume?.saidMeta || said.map(() => null), steerPis = [];
   const limit = () => stepAllowance(tc, maxSteps);
   const journal = (phase) => res.journalStep?.(tc, { step: steps, phase, stats, said, saidMeta, checkpoints });
-  const sql = res.sql;
+  const sql = res.sql, turnStart = Date.now();
   const histPi = fromOpenAI(hist), userPi = piUser(userText);
   const outLimit = opts.workflow_id ? 8000 : 20000;
   const limitPrompts = new Set(); let reportInFlight = false;
@@ -234,6 +235,9 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
       // ack-stall.js: the whole reply is a promise ("reading it now") and nothing ran → do it, once. The line stays as progress (it was streamed).
       const an = !limitAsked && steps < limit() - 1 && last?.role === "assistant" ? ackNudge(tc, stats, said) : null;
       if (an) { if (saidMeta[said.length - 1]) saidMeta[said.length - 1].ack = true; send?.({ t: "work" }); stats.ack_nudge = 1; return [piUser(an)]; }
+      // ack-stall.js workNudge: the reply closes on a promise of its own work ("I'll continue ...") with nothing running → do it now, once (tools earlier in the turn do not exempt it).
+      const wn = !limitAsked && steps < limit() - 1 && last?.role === "assistant" && !res.hasSteers(tc) ? workNudge(tc, stats, textOf(last.content), () => turnFacts(sql, { turn, session: tc.session, since: turnStart })) : null;
+      if (wn) { if (saidMeta[said.length - 1]) saidMeta[said.length - 1].ack = true; send?.({ t: "work" }); stats.work_nudge = 1; return [piUser(wn)]; }
       // live-check.js: the answer states live status with no lookup in this turn → look first, once (the draft stays a progress note).
       const ln = !limitAsked && steps < limit() - 1 && last?.role === "assistant" ? liveNudge(tc, personWords(tc), last.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")) : null;
       if (ln) { said.pop(); saidMeta.pop(); send?.({ t: "work" }); stats.live_nudge = 1; return [piUser(ln)]; }

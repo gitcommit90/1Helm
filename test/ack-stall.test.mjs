@@ -3,7 +3,7 @@
 // the whole reply, no tool ran, the turn closed). The detector is pure; the loop test runs the real Resident on both engines with a scripted model.
 import assert from "node:assert"; import { DatabaseSync } from "node:sqlite"; import { readFileSync } from "node:fs";
 import { Resident } from "../src/resident.js";
-import { isPromiseOnly, ackNudge, ACK_NUDGE } from "../src/ack-stall.js";
+import { isPromiseOnly, ackNudge, ACK_NUDGE, isClosingPromise, workNudge, WORK_NUDGE } from "../src/ack-stall.js";
 
 let passed = 0; const ok = (name) => { passed++; console.log("  ok", name); };
 
@@ -55,6 +55,37 @@ assert.equal(ackNudge({ kind: "chat" }, { tool_calls: 1 }, ["Reading it now."]),
 assert.equal(ackNudge({ kind: "helper" }, { tool_calls: 0 }, ["Reading it now."]), null, "chat turns only");
 ok("isPromiseOnly / ackNudge");
 
+// ---- the closing-promise guard (workNudge): real Live replies of 2026-11-04 ----
+const CLOSE_POS = [
+  "The Comfy Cloud connection responded this time. I'm creating the visual references and working on the commercial now.",
+  "I ran the job and it hit an auth error, so no reference image was generated. The workflows are prepared, but they haven't yet produced the commercial. The next step is to check the Comfy account's access to that image model.",
+  "No. I paused because the image generation job returned a login-required error, and I hadn't resolved it. But I should have investigated the account access instead of stopping at the error... I'll continue checking the Comfy setup and tell you if I need you to sign in or make a decision.",
+  "Got it, I'll continue with the next scene.", "Next, I'll run the export again.", "I'm working on it now.", "The first pass is saved. Now I'll generate the rest of the frames.",
+  "On it. I'm checking the logs now.", "- Fixed the config.\n- Next step is to re-run the build."];
+const CLOSE_NEG = [
+  "Done. The commercial is saved as commercial.mp4 and the three reference images are in the Videos folder.",
+  "The job failed with a login-required error. Do you want me to try again with a different account?", "I can't continue until you sign in to Comfy. Please sign in and tell me when it's done.",
+  "The report is ready. Tell me if you want me to make the intro shorter.", "All three images were generated. Let me know if you want changes.", "I'll check again tomorrow morning and message you.",
+  "I'll continue once the render finishes.", "I'll keep that in mind.", "I'll remember that you prefer short intros.", "If you'd like, I can start on the second scene.", "Next step is up to you: choose one of the two styles.",
+  "The build passed and the tests are green.", "Yes, it's on Friday.", "I'm sorry, I can't do that.", "", "Should I continue with the commercial now?", "Once you approve the script, I'll start creating the frames."];
+for (const t of CLOSE_POS) assert.ok(isClosingPromise(t), `should fire: ${t}`);
+for (const t of CLOSE_NEG) assert.ok(!isClosingPromise(t), `should not fire: ${t}`);
+{
+  const R1 = CLOSE_POS[0], none = () => ({ running: [], setUp: [] });
+  const tc = { kind: "chat" };
+  assert.equal(workNudge(tc, { tool_calls: 4 }, R1, none), WORK_NUDGE, "tools earlier in the turn do not exempt it");
+  assert.equal(workNudge(tc, { tool_calls: 4 }, R1, none), null, "once per turn");
+  assert.equal(workNudge({ kind: "chat", ackNudged: true }, { tool_calls: 0 }, R1, none), null, "already nudged by the ack guard");
+  assert.equal(ackNudge(tc, { tool_calls: 0 }, ["Reading it now."]), null, "the ack guard skips a turn the work guard nudged");
+  assert.equal(workNudge({ kind: "chat" }, { promise_resent: 1 }, R1, none), null, "the promise check already sent it back");
+  assert.equal(workNudge({ kind: "chat" }, {}, R1, () => ({ running: [{ kind: "helper", title: "x", status: "running" }], setUp: [] })), null, "a helper is running");
+  assert.equal(workNudge({ kind: "chat" }, {}, R1, () => ({ running: [], setUp: [{ kind: "workflow", title: "x" }] })), null, "something was set up this turn");
+  assert.equal(workNudge({ kind: "chat", pause: { kind: "approval" } }, {}, R1, none), null, "a pause");
+  assert.equal(workNudge({ kind: "helper" }, {}, R1, none), null, "chat turns only");
+  assert.equal(workNudge({ kind: "chat" }, {}, "Done.", () => { throw new Error("facts must not be read"); }), null, "facts are read only after a match");
+}
+ok("isClosingPromise / workNudge");
+
 for (const engine of ["classic", "pi"]) {
   const partsOf = (r) => { const row = dodb.prepare("SELECT parts, progress FROM turns WHERE id=?").get(r.turn); return { parts: row.parts && JSON.parse(row.parts), progress: row.progress && JSON.parse(row.progress) }; };
   brain = ({ n }) => n === 1 ? "Got it, reading it now." : "The runbook says to restart the worker first. That is the whole setup.";
@@ -84,6 +115,18 @@ for (const engine of ["classic", "pi"]) {
   brain = ({ n }) => n === 1 ? { content: "Reading it now.", calls: [["run_command", { cmd: "cat guide.txt" }]] } : "Here is what it says.";
   r = await chat(engine, "read the guide"); assert.ok(!mainCalls().some(nudged), `${engine}: no nudge when it acts`);
   ok(`${engine}: a promise followed by a tool call is not nudged`);
+
+  // closing promise after tools ran: one nudge, then the next answer is the reply
+  const isWork = (c) => c.messages.some((m) => m.role === "user" && String(typeof m.content === "string" ? m.content : m.content?.[0]?.text || "").startsWith("(You said you'd keep working"));
+  brain = ({ n }) => n === 1 ? { content: "", calls: [["run_command", { cmd: "ls" }]] } : n === 2 ? "A job hit an auth error. The next step is to check the account's access to that model." : { content: "", calls: [["run_command", { cmd: "ls" }]] };
+  r = await chat(engine, "go on"); mc = mainCalls();
+  assert.equal(mc.filter(isWork).length >= 1, true, `${engine}: the closing promise after a tool is nudged`);
+  assert.ok(!isWork(mc[1]), `${engine}: not before the promise`);
+  assert.equal(r.work_nudge, 1, `${engine}: stats flag`);
+  ok(`${engine}: a closing promise after tool steps gets one nudge`);
+  brain = ({ n }) => n === 1 ? "Here you go. Tell me if you want me to change it." : "unused";
+  r = await chat(engine, "make it"); assert.equal(mainCalls().length, 1, `${engine}: an offer is not nudged`);
+  ok(`${engine}: an offer is not nudged`);
 }
 assert.equal(ledger.open.size, 0, "every reservation settled");
 console.log(`ack-stall: ${passed} passed`);

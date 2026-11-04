@@ -60,3 +60,48 @@ export function ackNudge(tc, stats, said) {
   tc.ackNudged = true;
   return ACK_NUDGE;
 }
+
+// ---- A closing promise of work the helper does itself (Live, 2026-11-04, #videos "A Game of Horse", classic engine, BYOK) ----
+// The ack guard above needs NO tool in the turn and a reply that is only a short promise. Real replies that ended a turn with nothing running were
+// "...I'm creating the visual references and working on the commercial now." (after tools ran), "...The next step is to check the Comfy account's access to that
+// image model." (after tools ran) and "...I'll continue checking the Comfy setup and tell you if I need you to sign in or make a decision." (no tool).
+// The promise check in promise-check.js asks a decision model and never runs on a person's own AI key, so this is the deterministic guard beside it.
+//
+// It fires ONCE (it shares tc.ackNudged with the ack guard, and skips a turn the promise check already sent back) when ALL hold: (1) a closing sentence (the
+// last two) commits the helper to do work itself now or next, built from a known shape ("I'll continue ...", "I'm creating ... now", "The next step is to ...",
+// "Next, I'll ..."); (2) the closing sentences hold no question and no ask of the person ("let me know", "if you want", "once you ...", "please", "can you");
+// (3) nothing the promise could refer to is going: no running helper or browser job, nothing set up this turn (schedule, watcher, workflow), no pause, stall or stop.
+// A tool earlier in the turn does NOT exempt it. A promise that waits on a time or a condition ("tomorrow", "once it finishes", "if ...") never fires.
+// A trailing "and tell you if I need you to sign in" is dropped before the ask check, because the work itself is still the helper's.
+
+export const WORK_NUDGE = "(You said you'd keep working, but you ended your turn and nothing is running. Do the step you just promised now, using your tools. If you truly can't, say plainly and exactly what you need from the person, and ask for it. Don't repeat the promise.)";
+
+const ASK = /\b(?:let me know|tell me|if you(?:'d| would)? (?:like|want|prefer|need|wish)|if you(?:'re| are) (?:ok|okay|happy|interested)|would you|could you|can you|do you|should i|shall i|want me to|like me to|please|once you|when you|after you|until you|need you to|you(?:'ll| will)? need to|you can|you could|you may|up to you|your call|your choice)\b/;
+const LATER = /\b(?:tomorrow|tonight|later|today at|this (?:morning|afternoon|evening|week)|next (?:week|month|time|session)|in (?:a|an|\d+|about|a few) (?:minutes?|hours?|days?|moments?)|on (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|once|whenever|as soon as|unless|if|when|after|until|every|daily|weekly|hourly|eventually|at some point)\b/;
+const LEADS = "(?:(?:got it|understood|sure|yes|of course|noted|now|then|next|so|and|but|ok|okay|alright|meanwhile|therefore|also|just|right now|for now) )*";
+const WORK = "(?:continue|keep (?:going|working|checking|trying|looking|investigating)|proceed|go ahead|retry|re ?run|try|investigate|check|create|generate|build|run|fix|resolve|set up|finish|complete|look into|look at|dig into|work on|start|begin|prepare|pull|fetch|figure out)";
+const GERUND = "(?:creating|generating|working|building|running|checking|investigating|fixing|writing|preparing|retrying|trying|continuing|finishing|setting up|looking|digging|starting|beginning|resolving|fetching|pulling)";
+const COMMIT = [
+  new RegExp(`^${LEADS}(?:i'll|i will|i'm going to|i am going to|i'm gonna|let me) (?:now |then |just |also |go ahead and )?${WORK}\\b`),
+  new RegExp(`^${LEADS}(?:i'm|i am) (?:now |currently |still )?${GERUND}\\b`),
+  new RegExp(`^${LEADS}(?:the )?next step is to\\b`),
+];
+const sentences = (text) => normalize(String(text || "").replace(/```[\s\S]*?```/g, " ")).split(/(?<=[.!?])\s+|\s*\n+\s*/).map((s) => s.replace(/^(?:[-*•]|\d+[.)])\s+/, "").trim()).filter(Boolean);
+
+// reply: the final reply text the turn would end with. True when its closing sentences are a forward promise of the helper's own work.
+export function isClosingPromise(reply) {
+  const ss = sentences(reply).slice(-2); if (!ss.length) return false;
+  const kept = ss.map((s) => s.replace(/\s*(?:and |then )?(?:i'll |i will |will )?(?:tell|let) you(?: know)?(?: if| when| what| how| once)\b.*$/, "").replace(/[.!]+$/, "").trim());
+  if (kept.some((s) => /\?/.test(s) || ASK.test(s))) return false;
+  return kept.some((s) => !LATER.test(s) && COMMIT.some((re) => re.test(s)));
+}
+
+// → the nudge text (once per turn), or null. reply: this step's text; facts: () => { running, setUp } (promise-check.js turnFacts), read only after the reply matched.
+export function workNudge(tc, stats, reply, facts) {
+  if (!tc || tc.kind !== "chat" || tc.ackNudged || tc.pause || tc.stall || tc.abort || stats?.promise_resent || stats?.ack_nudge) return null;
+  if (!isClosingPromise(reply)) return null;
+  let f; try { f = facts?.() || {}; } catch { return null; }
+  if ((f.running || []).length || (f.setUp || []).length) return null;
+  tc.ackNudged = true;
+  return WORK_NUDGE;
+}

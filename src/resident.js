@@ -176,7 +176,7 @@ import { fileRecipe, RECIPE_SLUG } from "./file-recipe.js";
 import { slidesLine, slidesGate, namesGoogleSlides, slidesImageNote } from "./deck-route.js";   // the deck route: HTML by default, the tool the person named or chose before
 import { APPS_USED_TOOL, APPS_USED_LINE, appsUsedTool, appsUsedLine, getAppsUsed, usedSlugs } from "./ee/index.js";   // "Apps I use": the person's own list, a heads-up for offers and hints   // a named service that has an integration: one hint line per message, one nudge per app per task
 import { memoryReply, isStatusNotice, looksLikeStatus, STATUS_MARK } from "./status-notes.js";
-import { ackNudge } from "./ack-stall.js";
+import { ackNudge, workNudge } from "./ack-stall.js";
 import { promiseSkip, promiseState, turnFacts, runPromiseCheck, promiseTrace, PROMISE_NOTE } from "./ee/index.js";   // a final reply that promises undone work goes back once
 import { liveNudge, noteRan } from "./live-check.js";   // live status (flights, prices, scores) needs a lookup in this turn   // 1Helm's pause / limit notices are past status, never work to resume   // connected app first; no repeated searches / lists / pages in a turn
 import { plansInit, PROPOSE_PLAN_TOOL, proposePlan, decidePlan, startPlanTask, planCardData, plansOf, originOf, textPlan } from "./plans.js";
@@ -4343,6 +4343,9 @@ export class Resident extends DurableObject {
         // ack-stall.js: the whole reply is a promise ("reading it now") and nothing ran → do it, once. The line stays as progress (it was streamed).
         const an = !res.calls.length && step < stepLimit - 1 ? ackNudge(tc, stats, said) : null;
         if (an) { if (saidMeta[said.length - 1]) saidMeta[said.length - 1].ack = true; send?.({ t: "work" }); const nudge = { role: "user", content: an }; messages.push(nudge); this.save(turn, nudge); stats.ack_nudge = 1; continue; }
+        // ack-stall.js workNudge: the reply closes on "I'll continue ..." / "I'm creating ... now" / "The next step is to ..." with nothing running → do it now, once (tools earlier in the turn do not exempt it).
+        const wn = !res.calls.length && step < stepLimit - 1 && !this.hasSteers(tc) ? workNudge(tc, stats, res.content, () => turnFacts(this.sql, { turn, session: tc.session, since: t0 })) : null;
+        if (wn) { if (saidMeta[said.length - 1]) saidMeta[said.length - 1].ack = true; send?.({ t: "work" }); const nudge = { role: "user", content: wn }; messages.push(nudge); this.save(turn, nudge); stats.work_nudge = 1; continue; }
         // live-check.js: the answer states live status (a flight landed, a price, a score) with no lookup in this turn → look first, once.
         const ln = !res.calls.length && step < stepLimit - 1 ? liveNudge(tc, personWords(tc), res.content) : null;
         if (ln) { said.pop(); saidMeta.length = Math.min(saidMeta.length, said.length); send?.({ t: "work" }); const nudge = { role: "user", content: ln }; messages.push(nudge); this.save(turn, nudge); stats.live_nudge = 1; continue; }

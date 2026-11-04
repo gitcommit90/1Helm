@@ -88,6 +88,7 @@ import { hInit, hWatch, hFit } from "./headfit";   // the tablet/desktop task he
 import { sidebarInit, sidebarSync, sidebarReveal, sidebarCollapseButton, sidebarRestoreButton } from "./channel-sidebar";
 import { stInit, sync as stSync, headStop, rowStop, composerStop, stopTask, stopMany, stopBusy, pausedNote, SQ } from "./stop";   // Stop / Stop all
 import { nfInit, nfHtml, nfSeen, nfPerm, nfAsk, nfElsewhere } from "./notif";   // Settings → Notifications: switches, this device (Web Push), sounds
+import { followDrawn, followKeep, followSent } from "./chat-follow";
 import { maInit, maActs, maOpenCls, maQuote, rqHtml, rqTake, rqPut, rqClear, refOf, copyPlain, excerpt, type Pin, type Role } from "./msgreply";   // Copy + Reply on chat bubbles, the reply pinned above the composer
 import { sideGlideSync } from "./sidebar-glide";
 import { createRankedSearch, rankedRows } from "./task-search";   // sidebar and drawer Search: the server ranks every task after a pause
@@ -436,7 +437,7 @@ function renderStage() {
     ${stageBody(ch, s)}` : `
     <div class="dhome" id="scroll"><div class="hwrap">${homeHead(ch)}${composer(`Give ${esc(who(ch))} a task`)}
       <p class="hhint" id="hhint">${HINT}</p><div id="htasks">${tasksHtml(ch)}</div></div></div>`);
-  const sc = document.getElementById("scroll"); if (sc && s) sc.scrollTop = sc.scrollHeight;
+  followDrawn(s ? `${ch.slug}/${s.id}` : null);
   if (!s) autoFocus($("#box"));
   if (LIVE && s) { tkSync(ch.slug, s.id); pomoSync(ch.slug, s.id); if (hasFeature("ambient")) lnSync(ch.slug, s.id); }
   hWatch();
@@ -1808,7 +1809,7 @@ function renderPhone() {
       <div id="dlist" class="dl">${sessRows(ch, s, "")}</div>
       <div class="dbar"><button class="cb" data-mset aria-label="Settings" aria-haspopup="dialog">${g("gear", 20)}</button><label class="spill">${ic.search}<input id="dq" placeholder="Search" autocomplete="off" enterkeyhint="search"></label><button class="cb" data-ntask aria-label="New task">${ic.newS}</button></div></aside>
     <section class="chat">${chat}<div class="shade" data-mclose></div></section></div>`;
-  const sc = document.getElementById("scroll"); if (sc && s) sc.scrollTop = sc.scrollHeight;
+  followDrawn(s ? `${ch.slug}/${s.id}` : null);
   if (isCt()) clMount();
   if (LIVE && s) { tkSync(ch.slug, s.id); pomoSync(ch.slug, s.id); if (hasFeature("ambient")) lnSync(ch.slug, s.id); }
   clearFresh(ch);
@@ -3290,9 +3291,7 @@ function paintChat(s: Session) {
   const { ch, s: cur } = route(); if (cur !== s) { repaint(ch); return; }
   const box = document.querySelector(".msgs"), sc = document.getElementById("scroll");
   if (!box || !sc) { render(); return; }
-  const near = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 140;
-  morph(box, msgsHtml(s, ch));
-  if (near) sc.scrollTop = sc.scrollHeight;
+  followKeep(() => morph(box, msgsHtml(s, ch)));
   paintHeadDone(s);
   todoSync(ch.slug, s.id); tkSync(ch.slug, s.id); pomoSync(ch.slug, s.id); if (hasFeature("ambient")) lnSync(ch.slug, s.id); stNow();
   repaint(ch); // Include the mobile task drawer when a pause or Stop here changes the task's state.
@@ -3444,6 +3443,7 @@ async function inputRedirect(ch: Channel, source: Session, event: any) {
 // reply = null: a steer. The server decides: {"t":"steered"} = it joined the open card (no reply bubble of its own, the stream
 // ends); {"t":"card_open"} = the card had just closed, so this starts a new turn and its reply bubble appears now.
 async function streamTurn(ch: Channel, s: Session, text: string, reply: Msg | null, files: FileV[] = [], um?: TkMsg) {
+  followSent();   // a message you send brings the view back to the bottom
   const lease = streamLease(s); lease.pending = true;
   try { await streamTurnOwned(ch, s, text, reply, files, um, lease); }
   finally { streamRelease(lease); }

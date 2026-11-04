@@ -1,7 +1,7 @@
 // Which tool builds a deck (Captain, 2026-10-24: "Default the decks to HTML unless a person names a specific tool or chooses one before").
 // For a request to make slides, a deck or a presentation, in this order:
 //   1. The person names a tool in the request (or earlier in this task): Google Slides, PowerPoint, Keynote, Canva, an HTML or PDF deck. It is used.
-//      Google Slides connected -> the helper builds it in Google Slides itself (skill google-slides; a background helper can't run app actions,
+//      Google Slides connected -> the helper builds it in Google Slides itself (skill google-slides; the deck is built in the main turn, not by a background helper,
 //      so start_helper refuses a Google Slides deck job). Not connected -> the Google Slides Connect card, once per task, and the helper waits;
 //      Not now (or connection suggestions off) -> the HTML deck, and the channel's `deck_tool` becomes html (declineSlides), so later
 //      unnamed decks stay HTML with no card until a message names Google Slides again.
@@ -96,7 +96,7 @@ async function planFor(res, session, words) {
 }
 
 const LINES = {
-  slides: "(Slides request. Google Slides is connected, so build the deck in Google Slides yourself in this turn: read_skill google-slides, not the artifacts skill's deck pages, and don't start a helper for it (helpers can't use apps).)",
+  slides: "(Slides request. Google Slides is connected, so build the deck in Google Slides yourself in this turn: read_skill google-slides, not the artifacts skill's deck pages, and don't start a helper for it (the main turn builds it).)",
   card: "(Slides request. The person asked for Google Slides (now or earlier in this channel), and it isn't connected yet (a connected Gmail or other Google app doesn't cover it). Call offer_connect with app googleslides and a one-line why, then end your turn and wait for the person. Don't build an HTML deck and don't start a helper. If they tap Not now or say no, build the built-in deck from the artifacts skill's presentation reference.)",
   wait: "(Slides request. The Connect card for Google Slides is on screen. If they connected it, build the deck in Google Slides yourself (read_skill google-slides). If they declined or asked for something else, build the built-in deck from the artifacts skill's presentation reference.)",
   pptx: "(Slides request. The person chose PowerPoint earlier in this channel, so build the deck from the artifacts skill's presentation reference and add --pptx to make_deck.sh.)",
@@ -107,12 +107,12 @@ export async function slidesLine(res, session, text, turn = "") {
   return p && (p.named && p.route === "pptx" ? "" : LINES[p.route]) || "";
 }
 
-// start_helper: a deck job on the Google Slides route isn't started (a helper can't run app actions), and neither is one that waits for the Connect
+// start_helper: a deck job on the Google Slides route isn't started (the main turn builds it), and neither is one that waits for the Connect
 // card. An HTML or PowerPoint deck may go to a helper. → the refusal text, or null.
 export async function slidesGate(res, tc, job, words) {
   if (!appsOn(res?.env) || !isDeckJob(job)) return null;
   const p = await planFor(res, tc?.session, words);
-  if (p?.route === "slides") return "error: Google Slides is connected, so this deck is built in Google Slides, by you, not a helper (helpers can't use apps). Read the google-slides skill and build it now. If you need research first, start a helper for the research only, without the deck in its job.";
+  if (p?.route === "slides") return "error: Google Slides is connected, so this deck is built in Google Slides, by you, not a helper. Read the google-slides skill and build it now. If you need research first, start a helper for the research only, without the deck in its job.";
   if (p?.route === "card") return "error: Google Slides isn't connected yet. Call offer_connect with app googleslides first and wait for the person. Only if they decline does the built-in deck apply.";
   return null;
 }

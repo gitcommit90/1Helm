@@ -35,7 +35,7 @@ If they can't or won't answer, don't guess: search each plausible value separate
    checkout; report name, seller, price, sale price only if the page shows a real sale, availability and the product page link"),
    {{/browser_task}}`fetch_url` on a store's search-results or product pages, and `web_search` with the product and constraints.
    {{#apps}}If your connected apps line lists a built-in search app with a shopping search, it can add candidates (`app_actions`).
-   {{/apps}}Long, broad comparisons can go to a background helper with `start_helper` (it can search and read pages, never buy).
+   {{/apps}}Long, broad comparisons can go to a background helper with `start_helper` (it can search and read pages, but it can't start a purchase).
 4. **Verify before you show anything.** {{#apps}}A live search listing (`search_web_vertical`) is the store's current price and link:
    you may show it as is, naming the store. {{/apps}}Open a candidate's product page with `fetch_url` (or the browser when it needs
    one) to check what a listing doesn't show (size, fit, compatibility, stock), and always before buying. Web search
@@ -82,7 +82,7 @@ Offer variants (other colours, sizes) only when you know they exist on the page.
 
 ## Buying
 
-Purchases run in the main conversation, never in a background helper (helpers can't use the browser or buy). Read the
+Purchases run in the main conversation, never in a background helper (a helper can't start a purchase or fill in a card). Read the
 purchase reference (`read_skill` with slug shopping and ref purchase) before the first step toward a cart or checkout.
 The short version: confirm the exact product, variant, quantity and seller; the person signs in (or a saved login); you fill in their address and
 contact details (directly on Standard; on Careful or Locked down 1Helm asks first with a permission card); read the exact total at checkout; get their OK on the final review; pay through Link (at most $500 per purchase,

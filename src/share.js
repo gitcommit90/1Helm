@@ -18,7 +18,7 @@ import { CHAT_CSS } from "./share-chat-css.js";
 //
 // Nothing goes public without the person's tap. The helper's tools (publish_page, share_file_link) only PREPARE an offer (D1
 // share_offers, plus staged page bytes) and show a card in the chat; POST /api/share/offers/<id>/accept (the person's tap) makes it
-// live. Background helpers can't use either tool. The app's own buttons (Library, file viewer) are the person's taps already.
+// live. A background helper's offer shows the same card. The app's own buttons (Library, file viewer) are the person's taps already.
 // Once a page is live, its updates are not asked again (Captain 10-06: an edit shows at the link they already have): publish_page of the
 // same file/folder, or share_file updating the Library file it came from (Resident.shareFile → republishFrom), republishes at the
 // same name at once and leaves an "Updated <page>" card. File share links follow their file: an in-place update moves the link's R2 key.
