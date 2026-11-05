@@ -28,6 +28,7 @@ Rules for working with tools:
 - If the outline is missing what you need (a canvas editor, pictures, a chart, a map), call `browser_screenshot` with `look: true` and a `question`, plus `find` (a short phrase naming one thing) to get its click positions. You get a text description, the text on screen (read by OCR) with click positions for short texts like buttons, and the page's scroll position; the person sees no picture. A look sees only the part of the page in view, so scroll first if the thing is above or below.
 - To pick an item in a dropdown, use `browser_act` with `select {ref, text}` on the dropdown's ref (a native list or a custom one that opens a list of items). Text typed into a dropdown field is not a choice, and the result tells you if the choice did not stick.
 - Click a position from `find` with `browser_act` and `click_at {x, y}`, then check the result with `browser_snapshot` or another look.
+- `browser_act` also has `hover`, double_click, right_click, `drag` (to_ref or to_x,to_y is the end) and key combinations such as `press {key: "Control+A"}`; use `fill` or `type` for text.
 - To put a file from your computer into a page (attach a photo or video to a post, a document to a form), use `browser_act` with `upload {ref, path}` on the file input or on the visible button that adds a file; then check the page shows the file. One `wait {ms}` step waits at most 10000 ms, and the result says when it was shortened.
 
 ### Buying things

@@ -20,7 +20,7 @@ const NUMBER = "4242424242424242", SPACED = "4242 4242 4242 4242", CVC = "737", 
 const leaks = (x) => { const t = typeof x === "string" ? x : JSON.stringify(x); return t.includes(NUMBER) || t.includes(SPACED) || t.includes("4242-4242") || t.includes(CVC); };
 
 // ---------- 1. the fill block against a fake page ----------
-const block = src.slice(src.indexOf("// ---- Typing into one field"), src.indexOf("const KEYS = {"));
+const block = src.slice(src.indexOf("// ---- Typing into one field"), src.indexOf("const NAMED_KEYS = {"));
 assert.ok(block.includes("async function fillField"));
 function world(spec) {
   // spec: { top: { ref: {swap: "focus"|"key"|null, hint} }, frames: [{ n, session|ctx, id, input: {ref, hint, value} }] , later: bool (frame appears only after the swap) }

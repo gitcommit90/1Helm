@@ -290,7 +290,7 @@ const DL_WAIT = Number(process.env.HC_DL_WAIT) || 60e3;   // the longest an act 
 const FX_SKIP_TYPES = /^(Image|Font|Media|Stylesheet|Ping|CSPViolationReport|Preflight|Manifest|TextTrack|SignedExchange|Prefetch)$/;
 const FX_JS = `(() => { if (!window.__1hcfx) { const s = window.__1hcfx = { n: 0 }; try { new MutationObserver((ms) => { for (const m of ms) if (!(m.type === 'attributes' && /^data-1hc/.test(m.attributeName || ''))) s.n++; }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); } catch {} } return window.__1hcfx.n; })()`;
 async function startEffects(c) {
-  const fx = { t0: Date.now(), navs: [], reqs: [], windows: [], chooser: 0, quiet: false, open: new Set(), opens0: pageOpens, handled: 0, mut0: null, blockedOpened: [] };
+  const fx = { t0: Date.now(), navs: [], reqs: [], windows: [], chooser: 0, quiet: false, open: new Set(), opens0: pageOpens, handled: 0, mut0: null, blockedOpened: [], errs: [] };
   fx.on = (d) => {
     const p = d.params || {}, key = (d.sessionId || "") + (p.requestId || "");
     if (d.method === "Page.frameNavigated") { const f = p.frame; if (f && /^https?:/.test(f.url || "")) fx.navs.push({ main: !f.parentId, url: hostPath(f.url) }); }
@@ -299,8 +299,12 @@ async function startEffects(c) {
     else if (d.method === "Network.loadingFinished" || d.method === "Network.loadingFailed") fx.open.delete(key);
     else if (d.method === "Page.windowOpen") { if (p.url) fx.windows.push(String(p.url)); }
     else if (d.method === "Page.fileChooserOpened") { if (!fx.quiet) fx.chooser++; }
+    else if (d.method === "Runtime.exceptionThrown") {   // an error the page's own script did not catch (e.g. "nm is not defined"): the step reached the page, and the page failed
+      const x = p.exceptionDetails || {}, msg = String(x.exception?.description || x.exception?.value || x.text || "").split("\n")[0].slice(0, 160);
+      if (msg && !fx.errs.includes(msg)) fx.errs.push(msg);
+    }
   };
-  fx.reset = () => { fx.t0 = Date.now(); fx.navs = []; fx.reqs = []; fx.windows = []; fx.chooser = 0; fx.open.clear(); fx.opens0 = pageOpens; fx.handled = 0; };
+  fx.reset = () => { fx.t0 = Date.now(); fx.navs = []; fx.reqs = []; fx.windows = []; fx.chooser = 0; fx.open.clear(); fx.opens0 = pageOpens; fx.handled = 0; fx.errs = []; };
   fx.stop = () => { c.ev = c.ev.filter((x) => x !== fx.on); c.send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {}); };
   fx.intercept = () => c.send("Page.setInterceptFileChooserDialog", { enabled: true }).catch(() => {});   // a click that opens the native file chooser is reported instead of leaving a dialog on the screen
   c.ev.push(fx.on);
@@ -357,7 +361,12 @@ async function savePdfView(c) {
 
 // Page → readable outline for a text-only model. Interactive elements get refs like [e7] that browser_act uses.
 const SNAPSHOT_JS = String.raw`(() => {
-  const MAX = 200000; let n = 0, out = [], len = 0; const WANT = __WANT__;
+  const MAX = 200000, BUDGET = __BUDGET__; let n = 0, out = [], len = 0; const WANT = __WANT__, REFP = __REFP__;
+  // Refs are numbered per element and kept while the element lives, so a ref the model already holds keeps its meaning after the page changes.
+  const reg = window.__1hcRefs || (window.__1hcRefs = { map: new WeakMap(), n: 0 });
+  const refOf = (el) => { let k = reg.map.get(el); if (!k) { k = ++reg.n; reg.map.set(el, k); } return REFP + 'e' + k; };
+  const hid = { css: 0, zero: 0, aria: 0 }, VH = window.innerHeight || 800, VW = window.innerWidth || 1280;
+  const DLG = 'dialog[open],[role=dialog],[role=alertdialog],[aria-modal=true]';
   // Choices of a dropdown: the first 12, then up to 8 more that match a value the job needs (so a 250-item list still shows "United States").
   const low = (s) => String(s).toLowerCase();
   const wanted = (o) => WANT.some((w) => low(o) === low(w) || (w.length >= 3 && o.length >= 3 && (low(o).includes(low(w)) || low(w).includes(low(o)))));
@@ -371,22 +380,34 @@ const SNAPSHOT_JS = String.raw`(() => {
     return [];
   };
   document.querySelectorAll('[data-1hc]').forEach((e) => e.removeAttribute('data-1hc'));
-  const INTER = 'a[href],button,input:not([type=hidden]),select,textarea,summary,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[role=option],[role=combobox],[role=switch],[role=textbox],[contenteditable=""],[contenteditable=true]';
+  const INTER = 'a[href],button,input:not([type=hidden]),select,textarea,summary,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[role=option],[role=combobox],[role=switch],[role=slider],[role=textbox],[contenteditable=""],[contenteditable=true]';
   const vis = (el) => { const r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; const s = getComputedStyle(el); return s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0'; };
   const tagOf = (el) => el.tagName.toLowerCase(), IN_FRAME = window.top !== window;
   const clean = (s, m = 120) => (s || '').replace(/\s+/g, ' ').trim().slice(0, m);
   const label = (el) => { const id = el.id && document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
     return clean(el.getAttribute('aria-label') || (id && id.innerText) || el.closest('label')?.innerText || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('alt') || el.innerText || (tagOf(el) === 'input' && /^(button|submit|reset)$/.test(el.type) ? el.value : '') || el.getAttribute('name') || ''); };
-  const push = (s) => { if (len > MAX) return; out.push(s); len += s.length + 1; };
-  const walk = (node, depth) => {
+  // Each line is kept with where it sits: rank 0 an open dialog or the focused control, 1 a control on screen, 2 text on screen, 3 within one screen height of the view, 4 the rest.
+  // The top of the outline holds the best ranks, printed in page order; the other lines follow after a marker, also in page order.
+  const push = (s, el, kind, dlg) => { if (len > MAX) return;
+    const r = el.getBoundingClientRect(), on = r.bottom > 0 && r.top < VH && r.right > 0 && r.left < VW, near = r.bottom > -VH && r.top < 2 * VH && r.right > -VW / 2 && r.left < 1.5 * VW;
+    const rank = dlg || (kind === 'i' && el === document.activeElement) ? 0 : on ? (kind === 'i' ? 1 : 2) : near ? 3 : 4;
+    out.push({ s, rank, where: on || near ? 'near' : r.bottom <= 0 ? 'above' : r.top >= VH ? 'below' : 'side' }); len += s.length + 1; };
+  const countInter = (el) => (el.matches(INTER) ? 1 : 0) + el.querySelectorAll(INTER).length;
+  const walk = (node, dlg) => {
     if (len > MAX) return;
     for (const el of node.children) {
       const tag = el.tagName.toLowerCase();
       if (['script', 'style', 'noscript', 'svg', 'template', 'head'].includes(tag)) continue;
+      if (el.getAttribute('aria-hidden') === 'true') { hid.aria += countInter(el); continue; }
       const lab = (tag === 'input' && ['checkbox', 'radio'].includes(el.type)) ? (el.closest('label') || (el.id && document.querySelector('label[for="' + CSS.escape(el.id) + '"]'))) : null;
-      if (!vis(el) && !(lab && vis(lab)) && !['details'].includes(tag)) { if (el.children.length) walk(el, depth); continue; }
+      if (!vis(el) && !(lab && vis(lab)) && !['details'].includes(tag)) {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none') { hid.css += countInter(el); continue; }
+        if (el.matches(INTER)) hid[cs.visibility === 'hidden' || cs.opacity === '0' ? 'css' : 'zero']++;
+        if (el.children.length) walk(el, dlg); continue; }
+      let d = dlg; if (!dlg && el.matches(DLG)) { d = true; push('[open dialog "' + label(el) + '"]', el, 'h', true); }
       if (el.matches(INTER)) {
-        const ref = 'e' + (++n); el.setAttribute('data-1hc', ref);
+        const ref = refOf(el); n++; el.setAttribute('data-1hc', ref);
         const role = el.getAttribute('role') || (tag === 'a' ? 'link' : tag === 'input' ? (el.type || 'text') + ' input' : tag);
         let extra = '';
         if (tag === 'input' && ['checkbox', 'radio'].includes(el.type)) extra = el.checked ? ' (checked)' : ' (unchecked)';
@@ -397,18 +418,25 @@ const SNAPSHOT_JS = String.raw`(() => {
           if (tag !== 'input' && tag !== 'textarea') { const t = clean(el.innerText, 60); if (t) extra += ' value="' + t + '"'; }
           const co = pickOpts(comboOpts(el)); if (co.length) extra += ' options: ' + co.join(' | '); }
         if (el.disabled) extra += ' (disabled)';
+        { const hp = el.getAttribute('aria-haspopup'); if (hp && hp !== 'false') extra += ' (has popup)'; if (el.getAttribute('aria-expanded') === 'false') extra += ' (collapsed)'; }
+        if (role === 'slider' && tag !== 'input') { const v = el.getAttribute('aria-valuenow'); if (v) extra += ' value="' + clean(v, 20) + '"'; }
         { const acv = (tag === 'input' || tag === 'textarea') && el.getAttribute('autocomplete'); if (acv && /^cc-|postal-code|^name$/.test(acv)) extra += ' autocomplete=' + acv.slice(0, 20); }
-        push('[' + ref + '] ' + role + ' "' + label(el) + '"' + extra + (tag === 'a' ? ' → ' + clean(el.getAttribute('href'), 80) : ''));
+        push('[' + ref + '] ' + role + ' "' + label(el) + '"' + extra + (tag === 'a' ? ' → ' + clean(el.getAttribute('href'), 80) : ''), lab && !vis(el) ? lab : el, 'i', d);
         if (tag === 'select' || tag === 'a' || tag === 'button') continue;
-      } else if (/^h[1-6]$/.test(tag)) { push('#'.repeat(+tag[1]) + ' ' + clean(el.innerText, 160)); continue; }
-      else if (tag === 'iframe') { push('[iframe ' + clean(el.getAttribute('title') || el.src, 80) + ' — its contents are not readable here; use the live view]'); continue; }
+      } else if (/^h[1-6]$/.test(tag)) { push('#'.repeat(+tag[1]) + ' ' + clean(el.innerText, 160), el, 't', d); continue; }
+      else if (tag === 'iframe') { push('[iframe ' + clean(el.getAttribute('title') || el.src, 80) + ' — its contents are not readable here; use the live view]', el, 'i', d); continue; }
       let text = ''; for (const c of el.childNodes) if (c.nodeType === 3) text += c.textContent;
-      text = clean(text, 300); if (text.length > 1) push(text);
-      walk(el, depth + 1);
+      text = clean(text, 300); if (text.length > 1) push(text, el, 't', d);
+      walk(el, d);
     }
   };
-  walk(document.body || document.documentElement, 0);
-  return { url: location.href, title: document.title, refs: n, truncated: len > MAX, text: out.join('\n') };
+  walk(document.body || document.documentElement, false);
+  // Pick what goes first: best rank first until the budget is used, then print the pick and the rest, each in page order.
+  let pick = out.map(() => true), left = { near: 0, above: 0, below: 0, side: 0 };
+  if (len > BUDGET) { pick = out.map(() => false); let used = 0; for (let r = 0; r <= 4; r++) for (let i = 0; i < out.length; i++) if (out[i].rank === r && !pick[i] && used + out[i].s.length + 1 <= BUDGET) { pick[i] = true; used += out[i].s.length + 1; } }
+  const first = [], rest = []; out.forEach((o, i) => { if (pick[i]) first.push(o.s); else { rest.push(o.s); left[o.where]++; } });
+  let sig = 5381; for (const o of out) for (let i = 0; i < o.s.length; i++) sig = ((sig * 33) ^ o.s.charCodeAt(i)) >>> 0;
+  return { url: location.href, title: document.title, refs: n, truncated: len > MAX, text: first.join('\n'), rest: rest.join('\n'), total: out.length, shown: first.length, left, hidden: hid, sig: sig + ':' + out.length };
 })()`;
 // Cross-origin iframes (Stripe Checkout, card forms, embedded widgets) are separate targets. Attach to them so their
 // fields get refs like f2e5. Frame numbers stay stable per frame id for the life of the browser.
@@ -442,23 +470,77 @@ async function frames(c) {
   for (const f of out) { if (!frameNo.has(f.id)) frameNo.set(f.id, nextFrame++); f.n = frameNo.get(f.id); }
   return out;
 }
-const snapJS = (c) => SNAPSHOT_JS.replace("__WANT__", () => JSON.stringify(c.want || []));
-const FRAME_JS = (n, c) => snapJS(c).replace("const ref = 'e' + (++n)", `const ref = 'f${n}e' + (++n)`);
-const OUTLINE_CHARS = 22000;
+const OUTLINE_CHARS = 22000, FIRST_CHARS = 18000;   // the first part of the outline (best-ranked lines) is kept under the size of one window
+const snapJS = (c, prefix = "") => SNAPSHOT_JS.replace("__WANT__", () => JSON.stringify(c.want || [])).replace("__REFP__", () => JSON.stringify(prefix)).replace("__BUDGET__", String(FIRST_CHARS));
+const FRAME_JS = (n, c) => snapJS(c, `f${n}`);
 // The outline is cut into windows of lines, never in the middle of a line. The refs stay valid on the whole page, so a ref listed further
 // down can be used by browser_act without reading its window first; from_line reads a later window. The hash is of the whole outline.
+// <outline-build>
+// The outline text is: one header line when something is left out (counts by reason and how to read more), the lines picked to come first
+// (open dialog and focused control, then controls and text on screen, then lines near the view, filled up to the budget; page order), then
+// frames, then a marker and the remaining lines (page order). Pure functions, loaded by test/browser-outline.test.mjs between the markers.
+const OUTLINE_MARK = "[the lines below are further down the page or off screen, in page order; their refs already work in browser_act]";
+const hiddenWords = (h) => [["hidden by style", h.css], ["aria-hidden", h.aria], ["zero size", h.zero]].filter(([, n]) => n > 0).map(([w, n]) => `${w} ${n}`).join(", ");
+function outlineHeader(meta, fromLine) {
+  const rest = meta.total - meta.shown, h = meta.hidden || {}, hn = (h.css || 0) + (h.aria || 0) + (h.zero || 0);
+  if (!rest && !hn) return "";
+  const bits = [];
+  if (rest) {
+    const l = meta.left || {}, why = [["near the screen", l.near], ["below the screen", l.below], ["above the screen", l.above], ["to the side", l.side]].filter(([, n]) => n > 0).map(([w, n]) => `${n} ${w}`).join(", ");
+    bits.push(`${meta.shown} of ${meta.total} lines come first (open dialog and focused control, then what is on screen, then what is near; page order within that). ${rest} more line${rest === 1 ? "" : "s"} follow after a marker: ${why}. To read them call browser_snapshot with from_line: ${fromLine}`);
+  } else bits.push(`all ${meta.total} lines are listed`);
+  if (hn) bits.push(`not listed: ${hn} hidden control${hn === 1 ? "" : "s"} (${hiddenWords(h)})`);
+  return `[outline: ${bits.join("; ")}]`;
+}
+// Put the pieces together. main = the page's own pick ({ text, rest, total, shown, left, hidden }), extra = frame text already formatted. Returns { text, header }.
+function assembleOutline(main, extra) {
+  const first = main.text + (extra || ""), pre = first.split("\n").length;
+  const header = outlineHeader(main, (outlineHeader(main, 0) ? 1 : 0) + pre);
+  const body = first + (main.rest ? `\n${OUTLINE_MARK}\n${main.rest}` : "");
+  return { text: header ? `${header}\n${body}` : body, header };
+}
+// What changed between two outlines of the same tab. A line with a ref is matched by its ref (so a changed value or label is "changed"); other lines are matched by their text.
+const outlineLines = (full) => String(full || "").split("\n").filter((l) => l && !/^\[outline: /.test(l) && l !== OUTLINE_MARK);
+function diffOutline(prev, cur) {
+  const refOf = (l) => l.match(/^\[((?:f\d+)?e\d+)\] /)?.[1];
+  const pm = new Map(), cm = new Map(), pt = new Map(), ct = new Map();
+  for (const l of prev) { const r = refOf(l); if (r) pm.set(r, l); else pt.set(l, (pt.get(l) || 0) + 1); }
+  for (const l of cur) { const r = refOf(l); if (r) cm.set(r, l); else ct.set(l, (ct.get(l) || 0) + 1); }
+  const added = [], changed = [], removed = [], pt2 = new Map(pt), ct2 = new Map(ct);
+  for (const l of cur) { const r = refOf(l); if (r) { if (!pm.has(r)) added.push(l); else if (pm.get(r) !== l) changed.push(l); } else if ((pt.get(l) || 0) < (ct.get(l) || 0)) { added.push(l); ct.set(l, ct.get(l) - 1); } }
+  for (const l of prev) { const r = refOf(l); if (r) { if (!cm.has(r)) removed.push(l); } else if ((ct2.get(l) || 0) < (pt2.get(l) || 0)) { removed.push(l); pt2.set(l, pt2.get(l) - 1); } }
+  return { added, changed, removed };
+}
+const CHANGE_CAP = 60;
+function formatChanges(d, total) {
+  const sec = (name, ls) => ls.length ? `${name}:\n${ls.slice(0, CHANGE_CAP).join("\n")}${ls.length > CHANGE_CAP ? `\n(and ${ls.length - CHANGE_CAP} more)` : ""}\n` : "";
+  const body = sec("Added", d.added) + sec("Changed (as they are now)", d.changed) + sec("Removed (no longer on the page)", d.removed);
+  return `[outline changes since your last look at this tab; the whole outline has ${total} lines and browser_snapshot lists it. Refs you already have still work unless listed as removed]\n` + (body || "No outline line changed.\n");
+}
+// The text of the change list, or null when the whole outline should be returned (no earlier outline, another page, or a list longer than the outline).
+function changesFor(prev, cur) {
+  if (!prev || !cur || prev.url !== cur.url || !prev.lines?.length) return null;
+  const text = formatChanges(diffOutline(prev.lines, cur.lines), cur.lines.length);
+  return text.length >= cur.size ? null : text;
+}
+// </outline-build>
+const seenOutline = new Map();   // target id -> { url, lines, size }: the last outline given out for that tab
+const strip = (u) => String(u || "").replace(/[?#]$/, "");
+const outlineRec = (o) => ({ url: strip(o.url), lines: outlineLines(o.full), size: o.snapshot.length });
+const remember = (c, o) => { if (!c?.targetId || !o?.full) return; seenOutline.set(c.targetId, outlineRec(o)); if (seenOutline.size > 100) seenOutline.delete(seenOutline.keys().next().value); };
 async function snapshot(c, from = 0) {
   const s = await evalJS(c, snapJS(c));
-  let text = s.text, extra = "";
+  let extra = "", sigs = s.sig || "";
   for (const f of await frames(c).catch(() => [])) {
     try {
       const r = await evalJS(c, FRAME_JS(f.n, c), f);
-      if (!r || (!r.refs && !String(r.text || "").trim())) continue;   // invisible frames with nothing to read (analytics, captcha shells) are left out; a frame with only text is listed
-      extra += `\n--- inside frame f${f.n} (${(() => { try { return new URL(f.url).host; } catch { return ""; } })()}) ---\n${r.text}`;
+      if (!r || (!r.refs && !String(r.text || "").trim() && !String(r.rest || "").trim())) continue;   // invisible frames with nothing to read (analytics, captcha shells) are left out; a frame with only text is listed
+      extra += `\n--- inside frame f${f.n} (${(() => { try { return new URL(f.url).host; } catch { return ""; } })()}) ---\n${r.text}${r.rest ? `\n${OUTLINE_MARK}\n${r.rest}` : ""}`; sigs += "|" + (r.sig || "");
     } catch {}
   }
-  if (extra) text = text.replace(/\[iframe ([^\]]*?) — its contents are not readable here; use the live view\]/g, "[iframe $1 — its text and fields are listed below, if it has any]") + extra;
-  if (s.truncated) text += "\n[the page has more elements than the outline holds; the rest of the page is not listed]";
+  const fix = (t) => t.replace(/\[iframe ([^\]]*?) — its contents are not readable here; use the live view\]/g, "[iframe $1 — its text and fields are listed below, if it has any]");
+  if (extra) { s.text = fix(s.text); if (s.rest) s.rest = fix(s.rest); }
+  const text = assembleOutline(s, extra).text + (s.truncated ? "\n[the page has more elements than the outline holds; the rest of the page is not listed]" : "");
   const lines = text.split("\n"), start = Math.max(0, Math.min(lines.length, Math.floor(Number(from)) || 0)), out = []; let size = 0;
   for (let i = start; i < lines.length; i++) { if (out.length && size + lines[i].length + 1 > OUTLINE_CHARS) break; out.push(lines[i]); size += lines[i].length + 1; }
   const next = start + out.length;
@@ -466,7 +548,8 @@ async function snapshot(c, from = 0) {
   if (start > 0) shown = `[outline lines ${start + 1} to ${next} of ${lines.length}]\n` + shown;
   if (next < lines.length) shown += `\n[outline continues: ${lines.length - next} more line(s) not shown here. Their refs already work in browser_act. To read them, call browser_snapshot with from_line: ${next}]`;
   const o = { url: s.url, title: s.title, snapshot: shown };
-  Object.defineProperty(o, "full", { value: text }); Object.defineProperty(o, "hash", { value: crypto.createHash("sha1").update(text).digest("hex") });   // not sent to the Worker
+  // The hash is of a fingerprint of the page's lines in page order: the order the lines are printed in changes when the page scrolls, and the page has not changed then.
+  Object.defineProperty(o, "full", { value: text }); Object.defineProperty(o, "hash", { value: crypto.createHash("sha1").update(sigs).digest("hex") });   // not sent to the Worker
   return o;
 }
 const BOX_JS = (ref) => `(() => { let e = document.querySelector('[data-1hc="${String(ref).replace(/[^a-z0-9]/gi, "")}"]'); if (!e) return null; const r0 = e.getBoundingClientRect(); if ((r0.width < 2 || r0.height < 2 || getComputedStyle(e).opacity === '0') && e.type && /checkbox|radio/.test(e.type)) e = e.closest('label') || document.querySelector('label[for="' + CSS.escape(e.id) + '"]') || e; e.scrollIntoView({ block: 'center', inline: 'center' }); const b = e.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2, tag: e.tagName.toLowerCase() }; })()`;
@@ -717,11 +800,112 @@ async function fillField(c, a, kind, secret) {
   }
   throw handoff();
 }
-const KEYS = { Enter: [13, "\r"], Tab: [9, "\t"], Escape: [27], Backspace: [8], ArrowDown: [40], ArrowUp: [38], ArrowLeft: [37], ArrowRight: [39], PageDown: [34], PageUp: [33], Home: [36], End: [35], Space: [32, " "] };
-async function press(c, key) {
-  const k = KEYS[key]; if (!k) throw new Error(`unsupported key ${key}; use one of ${Object.keys(KEYS).join(", ")}`);
-  await c.send("Input.dispatchKeyEvent", { type: k[1] ? "keyDown" : "rawKeyDown", key, code: key, windowsVirtualKeyCode: k[0], ...(k[1] ? { text: k[1] } : {}) });
-  await c.send("Input.dispatchKeyEvent", { type: "keyUp", key, code: key, windowsVirtualKeyCode: k[0] });
+// <key-combos> (test/browser-actions.test.mjs loads the text between the key-combos markers; keep it free of outside names)
+// A key or a combination: "Enter", "Shift+Tab", "Control+A", "Control+Shift+K", "F5". Modifiers are Control (Ctrl), Shift and Alt (Option).
+// This is Linux Chrome, where shortcuts use Control, so Cmd, Command, Meta, Super, Win and CmdOrCtrl in a combination all become Control.
+// A letter, digit or symbol is only accepted together with Control or Alt, as a shortcut: plain text goes in with type or fill, so the
+// checks on what the person's details look like (cards, passwords, ID numbers) always see it.
+const NAMED_KEYS = { Enter: [13, "\r"], Tab: [9, "\t"], Escape: [27], Backspace: [8], Delete: [46], Insert: [45], ArrowDown: [40], ArrowUp: [38], ArrowLeft: [37], ArrowRight: [39], PageDown: [34], PageUp: [33], Home: [36], End: [35], Space: [32, " "] };
+for (let i = 1; i <= 12; i++) NAMED_KEYS["F" + i] = [111 + i];
+const KEY_ALIASES = { esc: "Escape", return: "Enter", del: "Delete", ins: "Insert", back: "Backspace", spacebar: "Space", pgdn: "PageDown", pgup: "PageUp", up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight" };
+const MOD_ALIASES = { control: "Control", ctrl: "Control", cmd: "Control", command: "Control", meta: "Control", super: "Control", win: "Control", cmdorctrl: "Control", commandorcontrol: "Control", mod: "Control", shift: "Shift", alt: "Alt", option: "Alt", opt: "Alt" };
+const MOD_BITS = { Alt: 1, Control: 2, Shift: 8 }, MOD_ORDER = ["Control", "Alt", "Shift"];
+const SYMBOLS = { "+": ["Equal", 187], "-": ["Minus", 189], "=": ["Equal", 187], "[": ["BracketLeft", 219], "]": ["BracketRight", 221], ";": ["Semicolon", 186], "'": ["Quote", 222], ",": ["Comma", 188], ".": ["Period", 190], "/": ["Slash", 191], "\\": ["Backslash", 220], "`": ["Backquote", 192] };
+const SHORTCUT_COMMANDS = { a: "selectAll", c: "copy", v: "paste", x: "cut", z: "undo", y: "redo" };
+function parseKeyCombo(input) {
+  const raw = String(input ?? "").trim();
+  if (!raw) throw new Error("press needs a key, such as Enter, Tab, Control+A or Shift+Tab");
+  let key, mods;
+  if (raw === "+") { key = "+"; mods = []; }
+  else if (raw.endsWith("++")) { key = "+"; mods = raw.slice(0, -2).split("+"); }
+  else { const parts = raw.split("+"); key = parts.pop().trim(); mods = parts; }
+  const held = new Set();
+  for (const m of mods) {
+    const name = MOD_ALIASES[m.trim().toLowerCase()];
+    if (!name) throw new Error(`unknown modifier "${m}" in "${raw}"; use Control, Shift or Alt`);
+    held.add(name);
+  }
+  const modList = MOD_ORDER.filter((m) => held.has(m));
+  if (!key) throw new Error(`no key in "${raw}"`);
+  const name = Object.keys(NAMED_KEYS).find((n) => n.toLowerCase() === key.toLowerCase()) || KEY_ALIASES[key.toLowerCase()] || null;
+  let def;
+  const shortcut = held.has("Control") || held.has("Alt");
+  if (name) def = { key: name === "Space" ? " " : name, code: name, vk: NAMED_KEYS[name][0], text: shortcut ? "" : NAMED_KEYS[name][1] || "" };
+  else if ([...key].length === 1) {
+    if (!shortcut) throw new Error(`press does not type text ("${raw}"). Use type or fill to enter text. press is for keys such as Enter or Tab and shortcuts such as Control+A`);
+    const lower = key.toLowerCase();
+    if (/^[a-z]$/.test(lower)) def = { key: held.has("Shift") ? lower.toUpperCase() : lower, code: "Key" + lower.toUpperCase(), vk: lower.toUpperCase().charCodeAt(0), text: "", lower };
+    else if (/^[0-9]$/.test(key)) def = { key, code: "Digit" + key, vk: 48 + Number(key), text: "" };
+    else if (SYMBOLS[key]) def = { key, code: SYMBOLS[key][0], vk: SYMBOLS[key][1], text: "" };
+    else throw new Error(`unsupported key "${key}" in "${raw}"`);
+  } else throw new Error(`unsupported key "${key}"; use a name such as Enter, Tab, Escape, ArrowDown, PageDown, Backspace, Delete, Home, End, F1 to F12, or a letter with Control or Alt (Control+A)`);
+  let command = def.lower && SHORTCUT_COMMANDS[def.lower];
+  if (!(command && held.has("Control") && !held.has("Alt"))) command = null;
+  if (command && held.has("Shift")) command = def.lower === "z" ? "redo" : null;
+  const bits = modList.reduce((n, m) => n | MOD_BITS[m], 0);
+  return { mods: modList, bits, key: def.key, code: def.code, vk: def.vk, text: def.text, commands: command ? [command] : [], label: [...modList, name || key].join("+") };
+}
+// </key-combos>
+async function press(c, spec) {
+  const p = parseKeyCombo(spec), mk = { Control: ["Control", "ControlLeft", 17], Alt: ["Alt", "AltLeft", 18], Shift: ["Shift", "ShiftLeft", 16] };
+  let bits = 0;
+  for (const m of p.mods) { bits |= MOD_BITS[m]; const [key, code, vk] = mk[m]; await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code, windowsVirtualKeyCode: vk, modifiers: bits }); }
+  const base = { key: p.key, code: p.code, windowsVirtualKeyCode: p.vk, modifiers: p.bits };
+  await c.send("Input.dispatchKeyEvent", { ...base, type: p.text ? "keyDown" : "rawKeyDown", ...(p.text ? { text: p.text } : {}), ...(p.commands.length ? { commands: p.commands } : {}) });
+  await c.send("Input.dispatchKeyEvent", { ...base, type: "keyUp" });
+  for (const m of [...p.mods].reverse()) { const [key, code, vk] = mk[m]; bits &= ~MOD_BITS[m]; await c.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk, modifiers: bits }); }
+}
+// Mouse steps beyond a plain click: a pointer position from a ref (scrolled into view first) or from x and y (the same 1280x800 page space as click_at).
+async function pointOf(c, a, rk, rx, ry, what) {
+  if (a[rk] !== undefined && a[rk] !== null && a[rk] !== "") {
+    const p = await box(c, a[rk]);
+    if (p.x < 0 || p.y < 0 || p.x > W || p.y > H) throw new Error(`${what}: ${a[rk]} is outside the visible screen even after scrolling to it; take a new snapshot`);
+    return { x: p.x, y: p.y };
+  }
+  const x = Number(a[rx]), y = Number(a[ry]);
+  if (a[rx] === undefined || a[ry] === undefined || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > W || y > H) throw new Error(`${what} needs ${rk} (a ref from the outline), or ${rx} and ${ry} with x between 0 and ${W} and y between 0 and ${H}`);
+  return { x, y };
+}
+const mouse = (c, type, x, y, extra = {}) => c.send("Input.dispatchMouseEvent", { type, x, y, ...extra });
+async function hoverAt(c, x, y) {
+  await mouse(c, "mouseMoved", Math.max(0, x - 6), Math.max(0, y - 4)); await mouse(c, "mouseMoved", x, y);
+}
+async function clickTimes(c, x, y, button, count) {
+  await hoverAt(c, x, y);
+  for (let n = 1; n <= count; n++) {
+    await mouse(c, "mousePressed", x, y, { button, buttons: button === "right" ? 2 : 1, clickCount: n });
+    await mouse(c, "mouseReleased", x, y, { button, buttons: 0, clickCount: n });
+  }
+}
+// Press at the start, move in small steps (so sliders, sortable lists and resize handles see a real drag), release at the end. A page that uses HTML5
+// drag and drop takes over the drag at the first move: the browser hands the dragged data over (Input.setInterceptDrags), and the drag enter,
+// over and drop events are then sent to the end point. Returns true when the page used drag and drop.
+async function dragBetween(c, from, to) {
+  const dist = Math.hypot(to.x - from.x, to.y - from.y), steps = Math.max(8, Math.min(30, Math.round(dist / 15)));
+  let data = null; const onEv = (d) => { if (d.method === "Input.dragIntercepted") data = d.params.data; };
+  c.ev.push(onEv);
+  try {
+    await c.send("Input.setInterceptDrags", { enabled: true }).catch(() => {});
+    await hoverAt(c, from.x, from.y);
+    await mouse(c, "mousePressed", from.x, from.y, { button: "left", buttons: 1, clickCount: 1 });
+    await sleep(60);
+    for (let i = 1; i <= steps; i++) {
+      await mouse(c, "mouseMoved", from.x + (to.x - from.x) * i / steps, from.y + (to.y - from.y) * i / steps, { button: "left", buttons: 1 });
+      if (i === 1) await sleep(30);
+      if (data) break;
+    }
+    if (!data) await sleep(80);
+    if (data) {
+      const ev = (type) => c.send("Input.dispatchDragEvent", { type, x: to.x, y: to.y, data });
+      await ev("dragEnter"); await sleep(40); await ev("dragOver"); await sleep(40); await ev("dragOver"); await ev("drop");
+      return true;
+    }
+    await mouse(c, "mouseReleased", to.x, to.y, { button: "left", buttons: 0, clickCount: 1 });
+    return false;
+  } finally {
+    c.ev = c.ev.filter((x) => x !== onEv);
+    await c.send("Input.setInterceptDrags", { enabled: false }).catch(() => {});
+  }
 }
 
 // ---- OCR: one warm Python process (RapidOCR + onnxruntime, PP-OCRv6 small models; /opt/1hc-browser/ocr.py), started on the first {ocr: true}
@@ -843,6 +1027,13 @@ async function recStop(b = {}) {
   try { fs.rmSync(st.part, { force: true }); } catch {}
   return { ...out, duration_s: Math.round(dur * 10) / 10, bytes: fs.statSync(st.final).size, frames, fps: REC_FPS, width: W, height: H, codec: "h264 yuv420p" };
 }
+// What the page shows that the text outline cannot name: big canvases, and big clickable pictures that are not inside a link or button.
+// Added to the reply of navigate, snapshot, act and back as "hints" (no extra call), so the app can decide when to look at the screen (src/browser-vision.js).
+const VISION_HINTS_JS = "(() => { const vw = innerWidth, vh = innerHeight; const seen = (e) => { const r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return 0; const w = Math.min(r.right, vw) - Math.max(r.left, 0), h = Math.min(r.bottom, vh) - Math.max(r.top, 0); if (w <= 0 || h <= 0) return 0; const cs = getComputedStyle(e); if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) === 0) return 0; return w * h; }; let canvas = 0, clickable_images = 0; for (const e of document.querySelectorAll('canvas')) if (seen(e) >= 20000) canvas++; for (const e of document.querySelectorAll('img,svg,[role=img]')) { if (seen(e) < 40000 || e.closest('a,button,[role=button],[role=link]')) continue; if (getComputedStyle(e).cursor === 'pointer' || e.closest('[onclick]')) clickable_images++; } return { canvas, clickable_images }; })()";
+// What is at a screen point, read in plain code (no model): the visible text, aria-label, value, title and alt of the element there and of its
+// nearest clickable ancestor. Follows into same-origin frames and open shadow roots. A cross-origin frame, an empty point or any failure
+// gives { error }, which the app treats as "do not click". Used by the screenshot op with probe_at: [x, y] (src/browser-vision.js).
+const POINT_INFO_JS = "((x, y) => { try { let doc = document, depth = 0, el = null; for (;;) { let e = doc.elementFromPoint(x, y); if (!e) return { error: 'nothing is at that point' }; for (let k = 0; e.shadowRoot && k < 5; k++) { const i = e.shadowRoot.elementFromPoint(x, y); if (!i || i === e) break; e = i; } if (e.tagName === 'IFRAME' || e.tagName === 'FRAME') { let d = null; try { d = e.contentDocument; } catch (_) {} if (!d) return { error: 'the point is inside a cross-origin frame' }; if (++depth > 5) return { error: 'frames nested too deep' }; const r = e.getBoundingClientRect(); x -= r.left + e.clientLeft; y -= r.top + e.clientTop; doc = d; continue; } el = e; break; } const CL = 'a,button,input,select,textarea,summary,label,[role=button],[role=link],[role=menuitem],[role=tab],[role=option],[onclick]'; const txt = (n) => [n.innerText || n.textContent || '', n.getAttribute('aria-label') || '', n.value || '', n.getAttribute('title') || '', n.getAttribute('alt') || ''].join(' ').replace(/\\s+/g, ' ').trim().slice(0, 200); let anc = null; for (let n = el, k = 0; n && k < 12; k++, n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) { if (n.matches && n.matches(CL)) { anc = n; break; } } return { tag: String(el.tagName).toLowerCase(), text: [txt(el), anc && anc !== el ? txt(anc) : ''].join(' ').trim().slice(0, 400) }; } catch (e) { return { error: String(e && e.message || e).slice(0, 100) }; } })";
 const OPS = {
   // With a "_tab" key it answers for that task's tabs only ("tab" is its current page, or null when it has none). Without one, every tab, as before.
   async status(b = {}) {
@@ -857,22 +1048,23 @@ const OPS = {
     let u; try { u = new URL(String(b.url)); } catch { throw new Error("url must be a full http(s) URL"); }
     if (!/^https?:$/.test(u.protocol) || u.username || u.password) throw new Error("only http(s) URLs without embedded credentials");
     const r = await c.send("Page.navigate", { url: u.href }); if (r.errorText) throw new Error(`navigation failed: ${r.errorText}`);
-    await settle(c, 15e3); const pdf = await savePdfView(c); return { ...(await snapshot(c)), ...(pdf ? { saved_pdf: pdf.name } : {}) };
+    await settle(c, 15e3); const pdf = await savePdfView(c); const o = await snapshot(c); remember(c, o); return { ...o, ...(pdf ? { saved_pdf: pdf.name } : {}) };
   },
-  async snapshot(b, c) { if (FAST) await quiet(c, 1.5e3); return await snapshot(c, b.from_line); },
+  async snapshot(b, c) { if (FAST) await quiet(c, 1.5e3); const o = await snapshot(c, b.from_line); remember(c, o); return o; },
   async back(b, c, ctx) {
     // A tab a page opened has no history to go back to: close it and return to the task's other tab.
     const rec = tabs.get(ctx.key);
     if (rec && rec.targets.size > 1 && (await evalJS(c, "history.length").catch(() => 2)) <= 1) {
       const id = c.targetId; await fetch(`http://127.0.0.1:${CDP_PORT}/json/close/${id}`).catch(() => {}); dropTarget(id);
       const t = (await targets()).find((x) => x.id === rec.current);
-      if (t) { const c2 = await connectTarget(t); if (!c2.persistent) ctx.opened.push(c2); await activateTab(rec); await settle(c2); return { ...(await snapshot(c2)), closed_tab: true }; }
+      if (t) { const c2 = await connectTarget(t); if (!c2.persistent) ctx.opened.push(c2); await activateTab(rec); await settle(c2); const o = await snapshot(c2); remember(c2, o); return { ...o, closed_tab: true }; }
     }
-    await evalJS(c, "history.back()"); await settle(c); return await snapshot(c);
+    await evalJS(c, "history.back()"); await settle(c); const o = await snapshot(c); remember(c, o); return o;
   },
   async screenshot(b, c) {
     const loc = await evalJS(c, "({url: location.href, title: document.title, view: {w: innerWidth, h: innerHeight, scroll_x: Math.round(scrollX), scroll_y: Math.round(scrollY), page_h: Math.round(Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0))}})").catch(() => ({}));
     // max_width (optional): the picture of the viewport is scaled down to about that many pixels across (the model looks at it; coordinates in the outline do not change).
+    if (Array.isArray(b.probe_at)) { const px = Number(b.probe_at[0]), py = Number(b.probe_at[1]); return { url: loc.url, title: loc.title, probe: Number.isFinite(px) && Number.isFinite(py) ? await evalJS(c, `${POINT_INFO_JS}(${px}, ${py})`).catch((e) => ({ error: String(e.message || e).slice(0, 100) })) : { error: "no point" } }; }   // no picture: only what is at the point
     const mw = Number(b.max_width), vw = loc.view?.w || W, vh = loc.view?.h || H;
     const clip = Number.isFinite(mw) && mw >= 200 && mw < vw ? { x: loc.view?.scroll_x || 0, y: loc.view?.scroll_y || 0, width: vw, height: vh, scale: mw / vw } : null;
     const r = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 78, ...(clip ? { clip } : {}) });
@@ -888,6 +1080,7 @@ const OPS = {
   async actRun(b, c, ctx, fx) {
     const c0 = c, acts = Array.isArray(b.actions) ? b.actions : []; if (!acts.length || acts.length > 20) throw new Error("actions: 1–20 steps");
     let done = 0, uploaded = false, switched = false; const notes = []; const before = await snapshot(c).catch(() => null);
+    const prevSeen = seenOutline.get(c.targetId) || (before ? outlineRec(before) : null);   // what this tab's outline was when it was last given out
     fx.reset(); fx.mut0 = await fxMut(c).catch(() => null);   // from here on, everything the page does is the steps' effect
     // A click can open a new tab or window. The opener relationship (onBrowserEvent) put it in this task's tab set and made it current;
     // from then on the rest of this call, and the answer, are about that tab.
@@ -910,6 +1103,7 @@ const OPS = {
         await click(c, x, y);
         await settle(c, 8e3);
       }
+      else if ((kind === "fill" || kind === "type") && (a.ref === undefined || a.ref === null || a.ref === "")) throw new Error(`${kind} needs the ref of the field (from the outline). A field that a click or double click just opened is in the result's outline lines, or take a browser_snapshot to get its ref`);
       else if (kind === "fill" || kind === "type") { await fillField(c, a, kind, !!b.secret); if (a.submit) { await press(c, "Enter"); await settle(c, 8e3); }
       } else if (kind === "select") {
         const fs_ = await frameOf(c, a.ref);
@@ -917,6 +1111,15 @@ const OPS = {
         if (ok === null) { notes.push(await chooseCustom(c, a, fs_)); await settle(c, 3e3); }   // not a native select: a combobox, listbox or script-made list
         else if (!ok) throw new Error(`could not select "${a.text}" in ${a.ref}`);
             } else if (kind === "press") { await press(c, String(a.key || "Enter")); await settle(c, 8e3); }
+      else if (kind === "hover") { const p = await pointOf(c, a, "ref", "x", "y", "hover"); await hoverAt(c, p.x, p.y); await sleep(400); await settle(c, 3e3); }
+      else if (kind === "double_click") { const p = await pointOf(c, a, "ref", "x", "y", "double_click"); await clickTimes(c, p.x, p.y, "left", 2); await settle(c, 8e3); }
+      else if (kind === "right_click") { const p = await pointOf(c, a, "ref", "x", "y", "right_click"); await clickTimes(c, p.x, p.y, "right", 1); await sleep(250); await settle(c, 3e3); }
+      else if (kind === "drag") {
+        const from = await pointOf(c, a, "ref", "x", "y", "drag (start)"), to = await pointOf(c, a, "to_ref", "to_x", "to_y", "drag (end)");
+        if (Math.hypot(to.x - from.x, to.y - from.y) < 2) throw new Error("drag starts and ends at the same place; give a different end point");
+        if (await dragBetween(c, from, to)) notes.push("the page uses drag and drop; the drop was sent to the end point");
+        await settle(c, 5e3);
+      }
       else if (kind === "scroll") { await c.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: W / 2, y: H / 2, deltaX: 0, deltaY: a.direction === "up" ? -600 : 600 }); await sleep(400); }
       else if (kind === "wait") { const want = Number(a.ms) || 1000, ms = Math.min(WAIT_MAX, Math.max(0, want)); if (want > WAIT_MAX) notes.push(`wait shortened from ${want} to ${WAIT_MAX} ms (the most one wait step waits; use several wait steps, or check the page between waits)`); await sleep(ms); }
       else if (kind === "upload") { fx.quiet = true; try { notes.push(await upload(c, a)); } finally { fx.quiet = false; await fx.intercept(); } uploaded = true; await settle(c, 8e3); }
@@ -926,7 +1129,7 @@ const OPS = {
         if (isSel) { const t = JSON.stringify(String(a.text ?? "")); const ok = await evalJS(c, `(() => { const e = ${sel}; const want = ${t}; const o = [...e.options].find((o) => o.value === want || o.text.trim() === want || o.value === String(Number(want)) || o.value.endsWith(want.slice(-2)) && o.value.length <= 4); if (!o) return false; e.value = o.value; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`, fs_); if (!ok) throw new Error(`could not choose that option in ${a.ref}`); }
         else { a.kind = "fill"; acts.splice(acts.indexOf(a) + 1, 0, a); done--; }
       }
-      else throw new Error(`unknown action kind "${kind}" (click, click_at, fill, type, select, press, scroll, wait, upload)`);
+      else throw new Error(`unknown action kind "${kind}" (click, click_at, hover, drag, double_click, right_click, fill, type, select, press, scroll, wait, upload)`);
       done++;
       if (await follow()) { const rest = acts.length - acts.indexOf(a) - 1; notes.push(`this step opened a new tab, and it is now this task's current tab${rest > 0 ? `; the other ${rest} step(s) were not run because their refs belong to the earlier page (use the refs below)` : ""}`); break; }
     }
@@ -952,7 +1155,7 @@ const OPS = {
         ...(d.length ? { downloads: d.map((r) => ({ name: r.name, bytes: r.bytes || r.total || 0, state: r.state === "inProgress" ? "in_progress" : r.state })) } : {}),
         ...(fx.navs.length ? { navigations: fx.navs.slice(0, 6) } : {}), ...(fx.popups?.length ? { popups_blocked: fx.popups.slice(0, 3), popup_opened_for_you: fx.blockedOpened.length > 0 } : {}),
         ...(dialogs.length ? { dialogs: dialogs.map(({ type, message, handled }) => ({ type, message, handled })) } : {}), ...(fx.chooser ? { file_chooser: true } : {}),
-        ...(fx.reqs.length ? { requests: { count: fx.reqs.length, items: fx.reqs.slice(0, 4) } } : {}), ...(mut ? { mutations: mut } : {}) };
+        ...(fx.errs.length ? { page_errors: fx.errs.slice(0, 3) } : {}), ...(fx.reqs.length ? { requests: { count: fx.reqs.length, items: fx.reqs.slice(0, 4) } } : {}), ...(mut ? { mutations: mut } : {}) };
       e.visible = !!(e.outline_changed || e.address_changed || e.uploaded || e.new_tab || e.downloads || e.navigations || e.popups_blocked || e.dialogs || e.file_chooser);
       return e;
     };
@@ -969,7 +1172,11 @@ const OPS = {
     // Pages passed through during the steps (e.g. /checkout/success before an automatic redirect home).
     const hist = switched ? [] : (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries;
     const visited = hist.slice(Math.max(0, h0 - 1)).map((e) => e.url).filter((u, i, a) => u !== a[i - 1]);
-    return { completed: done, page_changed: eff.visible, effects: eff, ...(switched ? { new_tab: true } : {}), ...(notes.length ? { notes } : {}), ...(visited.length > 1 ? { visited } : {}), ...after };
+    // Only what changed in the outline, unless this is a new page or tab, or the change list is not shorter than the whole outline. The full outline stays in `snapshot`.
+    const cur = outlineRec(after); let outline_changes = null;
+    if (!switched && !eff.address_changed && !eff.navigations?.some((x) => x.main && !x.same)) outline_changes = changesFor(prevSeen, cur);
+    seenOutline.set(c.targetId, cur);
+    return { completed: done, page_changed: eff.visible, effects: eff, ...(outline_changes ? { outline_changes } : {}), ...(switched ? { new_tab: true } : {}), ...(notes.length ? { notes } : {}), ...(visited.length > 1 ? { visited } : {}), ...after };
   },
 };
 
@@ -1000,6 +1207,7 @@ const server = http.createServer(async (req, res) => {
           const { rec, c, note } = await openTab(k, ctx);
           c.want = Array.isArray(b.want) ? b.want.slice(0, 20).map((x) => String(x).slice(0, 80)) : [];   // values the job needs: the outline lists matching dropdown choices
           const out = await OPS[m[1]](b, c, ctx);
+          if (/^(navigate|snapshot|act|back)$/.test(m[1]) && out && /^https?:/.test(out.url || "")) { const h = await Promise.race([evalJS(c, VISION_HINTS_JS), new Promise((z) => setTimeout(() => z(null), 1500))]).catch(() => null); if (h) out.hints = h; }
           if (out?.url && /^https?:/.test(out.url)) { try { fs.writeFileSync(LAST_URL, out.url); } catch {} if (out.url !== rec.url) { rec.url = out.url; saveTabs(); } }
           return { ...out, ...(note ? { tab_note: note } : {}) };
         } finally { for (const c of ctx.opened) c.close(); }

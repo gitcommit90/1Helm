@@ -41,7 +41,7 @@ const ops = []; let notes = ["attached 1 file through the file chooser that e1 o
   assert.match(src, /kind === "upload"/); assert.match(src, /DOM\.setFileInputFiles", \{ files, objectId/); assert.match(src, /Page\.setInterceptFileChooserDialog/); assert.match(src, /Page\.fileChooserOpened/);
   assert.match(src, /no file at \$\{x\} on the computer/); assert.match(src, /is not an upload control/);
   assert.match(src, /wait shortened from \$\{want\} to \$\{WAIT_MAX\} ms/); assert.match(src, /WAIT_MAX = 10e3/);
-  assert.match(src, /\(click, click_at, fill, type, select, press, scroll, wait, upload\)/);
+  assert.match(src, /\(click, click_at, hover, drag, double_click, right_click, fill, type, select, press, scroll, wait, upload\)/);
   assert.match(src, /uploaded = true;/); assert.match(src, /\.\.\.\(uploaded \? \{ uploaded: true \}/);
   ok("the browser server has the upload paths, the errors and the shortened-wait note");
 }

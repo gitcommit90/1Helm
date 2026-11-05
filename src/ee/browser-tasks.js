@@ -58,7 +58,12 @@ export function browserPurchaseGuard(actions, page = {}) {
     if (action.kind === "scroll") continue;
     if (paymentPage) return "The background browser job stopped on a checkout or payment page. Use Link or take control to finish.";
     if (action.kind === "press" || action.submit) return "The background browser job stopped before submitting a form. Review the action yourself.";
-    if (!["click", "fill", "select"].includes(action.kind)) return "The background browser job stopped before an unknown action. Review the page yourself.";
+    if (action.kind === "click_at" && String(action.label || "").trim()) {   // a screen position the worker found by looking (browser-vision.js)
+      if (typeof action.pageText !== "string") return "The background browser job stopped because what is at that screen position could not be checked.";   // what the browser read at the point, in plain code
+      if (PAYMENT_CONTROL.test(`${action.label} ${action.pageText}`)) return "The background browser job stopped before a payment or final-order control. Use Link or take control to finish.";
+      continue;
+    }
+    if (!["click", "hover", "fill", "select"].includes(action.kind)) return "The background browser job stopped before an unknown action. Review the page yourself.";
     const line = outline.split("\n").find((x) => x.startsWith(`[${action.ref}] `));
     if (!line) return "The background browser job stopped because the target control could not be checked.";
     if (PAYMENT_CONTROL.test(line)) return "The background browser job stopped before a payment or final-order control. Use Link or take control to finish.";
@@ -75,6 +80,7 @@ export function buyControlTargeted(actions, page = {}) {
     if (!x || typeof x !== "object" || x.kind === "scroll" || x.kind === "wait") return false;
     if (paymentPage && ["click", "press", "fill", "select"].includes(x.kind)) return true;
     if (x.kind === "press" || x.submit) return paymentPage;
+    if (x.kind === "click_at" && String(x.label || "").trim()) return PAYMENT_CONTROL.test(`${x.label} ${x.pageText || ""}`);
     const line = outline.split("\n").find((l) => l.startsWith(`[${x.ref}] `));
     return !!line && PAYMENT_CONTROL.test(line);
   });

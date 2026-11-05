@@ -132,6 +132,8 @@ export const DEFAULT_RUNTIME_LIMITS = runtimeLimits(null);
 // nothing enforced it, so they start with no timeout.
 export const JOB_TIMEOUT_DEFAULTS = Object.freeze({
   label: 30000, chat_title: 30000, ambient_extract: 90000, ambient_review: 90000, decider: 4000, browser_decider: 20000, promise_check: 8000, stt: 30000, stt_cloudflare: 30000, live_dictation: 6000, speaker_labels: 180000, web_search: 12000,
+  // The browser look: Workers AI can hold a Moondream request for about two minutes, and the turn waiting on it sends nothing meanwhile (2026-11-04).
+  look: 40000,
   // Memory extraction waits up to 120 seconds, the timeout the removed memory server used for retain.
   // A memory search waits for its rerank call, so that call gets 5 seconds, and a search that gets no answer in time keeps its own order (mem0.js).
   mem_rerank: 5000,

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { SEED } from "./helpers/seed-settings.mjs";
 import { Resident } from "../src/resident.js";
-import { describeEffects } from "../src/browser-effects.js";
+import { describeEffects, actOutcome } from "../src/browser-effects.js";
 
 const ok = (n) => console.log("  ok", n);
 const base = { outline_changed: false, address_changed: false, visible: false };
@@ -54,6 +54,16 @@ const tc = () => ({ kind: "chat", session: "s1", turn: "t1", emit: () => {}, inT
   ok("the Resident's act result lists the effects, and no longer says the action probably had no effect");
 }
 {
+  // Outcome label and the change list (test/browser-outline.test.mjs tests both in detail)
+  reply = { page_changed: true, effects: { ...base, outline_changed: true, visible: true }, outline_changes: "[outline changes since your last look at this tab; the whole outline has 40 lines and browser_snapshot lists it.]\nAdded:\n[e30] button \"Next\"\n", snapshot: "WHOLE OUTLINE" };
+  const r = await R.browserToolInner("browser_act", { actions: [{ kind: "click", ref: "e19" }] }, tc());
+  assert.match(r.out, /Outcome: worked\. Suggested next step: .+\. Page: Docs/); assert.match(r.out, /Added:\n\[e30\] button "Next"/); assert.doesNotMatch(r.out, /WHOLE OUTLINE/);
+  reply = { page_changed: true, effects: { ...base, outline_changed: true, visible: true }, snapshot: "WHOLE OUTLINE" };
+  const w = await R.browserToolInner("browser_act", { actions: [{ kind: "click", ref: "e19" }] }, tc()); assert.match(w.out, /WHOLE OUTLINE/);
+  const sn = await R.browserToolInner("browser_snapshot", {}, tc()); assert.doesNotMatch(sn.out, /Outcome:/);
+  ok("the act result shows the outcome label and the change list when there is one, the whole outline otherwise");
+}
+{
   reply = {}; ops = [];
   await R.browserToolInner("browser_snapshot", { from_line: 120 }, tc()); assert.deepEqual(ops.at(-1), ["snapshot", { from_line: 120 }]);
   await R.browserToolInner("browser_snapshot", {}, tc()); assert.deepEqual(ops.at(-1), ["snapshot", {}]);
@@ -71,5 +81,17 @@ const tc = () => ({ kind: "chat", session: "s1", turn: "t1", emit: () => {}, inT
   R.collectDownloads = async () => { throw new Error("computer asleep"); };
   assert.match((await R.browserTool("browser_act", { actions: [{ kind: "click", ref: "e19" }] }, tc())).out, /Checking the browser's downloads folder failed \(computer asleep\)/);
   ok("a finished download that is missing from the folder, and a failed folder check, are said in the result");
+}
+{
+  // A page script that throws while the steps run (a rename box whose save refers to a removed element): the result says so, and the outcome is not "worked" or a bare "nothing happened".
+  const err = "ReferenceError: nm is not defined";
+  assert.match(say({ page_errors: [err] }), new RegExp(`the page reported a JavaScript error: ${err}`));
+  assert.doesNotMatch(say({ page_errors: [err] }), /^No change was seen/);
+  const nothing = actOutcome({ completed: 2, effects: { ...base, page_errors: [err] } }, 2);
+  assert.equal(nothing.label, "blocked"); assert.match(nothing.next, /JavaScript error/); assert.match(nothing.next, /tell the person what the page reported/);
+  assert.equal(actOutcome({ completed: 2, effects: { ...base, outline_changed: true, visible: true, page_errors: [err] } }, 2).label, "partly worked");
+  assert.equal(actOutcome({ completed: 2, effects: { ...base, outline_changed: true, visible: true } }, 2).label, "worked");
+  assert.equal(actOutcome({ completed: 1, effects: base }, 1).label, "nothing happened");
+  ok("an error thrown by the page is in the result and changes the outcome");
 }
 console.log("browser-effects: all ok");

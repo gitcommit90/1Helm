@@ -8,6 +8,7 @@ export const BROWSER_RESULT_SCHEMA = S.object({ summary: S.string });
 import { DECIDER_IN_NANO } from "./decider.js";
 import { askDecider } from "./text-decision.js";   // the decider: the saved setting of the job "decider"
 import { browserPurchaseGuard } from "./browser-tasks.js";
+import { visionReasons, lastStepStalled, addVisionItems, observeScreen, checkClickAt, VISION_LOOKS_MAX } from "../browser-vision.js";   // looking at the screen when the outline is not enough
 // Browser slot (switch: env BROWSER_AGENT=jev — on by default on dev via wrangler.dev.jsonc, off on prod — or per channel via TEST_MODE /api/res/<ch>/browser-agent {"mode":"jev"|"off"|""}).
 // Captain decision 2026-09-30: the decider (typesafe/jev until 2026-10-08, now Perplexity's decider via decider.js on OpenRouter /systemone)
 // picks every browser action from a bounded menu built from the page outline
@@ -33,6 +34,8 @@ export const browserDeciderState = ({ task, url, hist, outline }) => ({ task, ur
 export const browserNextQuestion = (menu) => ({ next: { type: "choice", instructions: "Pick the single next action that best moves the task forward from the page as it is now. Don't repeat an action that already worked. If the page is still loading, look again. Choose FINISH only when the task is done or the needed information is visible on the page.", criteria: menu } });
 // Does a dropdown choice match a value the job needs? Exact or case-insensitive, or one contains the other (3+ letters).
 const sameText = (o, v) => { const a = String(o).toLowerCase().trim(), b = String(v).toLowerCase().trim(); return !!a && (a === b || (a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a)))); };
+// Controls that open a menu when the mouse is over them: the outline marks a button that has a popup or is collapsed, and a few plain menu buttons.
+export const hoverOpensMenu = (role, label, rest) => /\((collapsed|has popup)\)/.test(rest || "") || (/^(button|menuitem)$/.test(role) && /\b(menu|more options|more actions)\b/i.test(label || ""));
 export function buildMenu(outline, values, dead) {
   const menu = {}, act = {}, seen = new Set(); let i = 0;
   const add = (label, a) => { if (seen.has(label) || dead.has(label)) return; seen.add(label); const id = `a${++i}`; menu[id] = label; act[id] = a; };
@@ -41,6 +44,7 @@ export function buildMenu(outline, values, dead) {
   const ctx = {}; let lastName = "";
   for (const l of lines) { const m = l.match(/^\[((?:f\d+)?e\d+)\] .+? "([^"]*)"/); if (!m) { if (l.length > 3 && l.length < 80 && !/^\$|^#|^\[|^---/.test(l)) lastName = l; continue; }
     const d = m[2].match(/(?:View details for|for) (.+)$/); if (d) lastName = d[1]; ctx[m[1]] = lastName; }
+  const hovers = [];   // controls that open a menu: offered at the end as "Hover over"
   let combo = "";   // the last dropdown field seen: its list items and arrow button carry its name, so the same item under two fields is two actions
   for (const m of outline.matchAll(/^\[((?:f\d+)?e\d+)\] (.+?) "([^"]*)"(.*)$/gm)) {
     const [, ref, role, label, rest] = m; let L = (counts[label] > 1 && ctx[ref] ? `${label} — for ${ctx[ref]}` : label).slice(0, 110);
@@ -59,9 +63,11 @@ export function buildMenu(outline, values, dead) {
       // A custom dropdown whose list cannot be read before it opens: offer the job's own values as choices.
       if (role !== "select" && !all.length) for (const v of values.slice(0, 8)) add(`Choose "${v}" in dropdown "${L}"`, [{ kind: "select", ref, text: v }]);
     }
+    if (hoverOpensMenu(role, label, rest)) hovers.push(`Hover over ${role} "${L}"`, ref);
     if (role !== "select") add(`Click ${role} "${L}"${/checkbox|radio/.test(role) ? " " + (rest.match(/\((un)?checked\)/)?.[0] || "") : ""}`, [{ kind: "click", ref }]);
     if (i > 120) break;
   }
+  for (let h = 0; h < hovers.length && h < 12; h += 2) add(hovers[h], [{ kind: "hover", ref: hovers[h + 1] }]);   // a menu that opens on hover (at most 6)
   add("Press Enter", [{ kind: "press", key: "Enter" }]); add("Scroll down", [{ kind: "scroll", direction: "down" }]);
   const SP = { REOBSERVE: "Look again: re-read the page (use when the page is loading or the last action's effect isn't visible yet)",
     ABSTAIN: "Abstain: none of these actions fits; hand the task back to the main helper",
@@ -110,6 +116,19 @@ export async function runBrowserTask(res, C, a, tc, { guard, ownerToken = null, 
   // A job that was interrupted by a restart continues with the history, dead actions, steps and charge it had saved.
   const hist = resume ? [...(resume.hist || [])] : [], dead = new Set(resume ? resume.dead || [] : []), trail = []; let wantList = [];
   let page = null, values = null;
+  // Looking at the screen (browser-vision.js): only when the page gives a reason. One look is kept for as long as the outline stays the same.
+  let obs = null, reobserved = false, looks = 0;
+  const screenFor = async (outline) => {
+    if (typeof C.browser !== "function") return null;
+    const hints = page?.hints || null;   // the browser adds them to every page reply
+    const why = visionReasons({ hints, outline, stalled: reobserved || lastStepStalled(hist) || page?.page_changed === false });
+    if (!why.length) return null;
+    if (obs?.outline === outline && !reobserved) return obs;   // the same page: its positions still hold; tried ones are dead
+    if (looks >= VISION_LOOKS_MAX) return obs?.outline === outline ? obs : null;
+    looks++; reobserved = false;
+    try { const o = await observeScreen(res, C, { ownerToken, tab: tabKeyOf(tc), meta, outline }); if (!o) return null; st.charge += o.nano; st.trace.push(`look at the screen (${why.join(", ")})`.slice(0, 120)); obs = { ...o, outline, why }; return obs; }
+    catch { return null; }
+  };
   // Saved before each step, so a restart can continue the loop. inflight = the action about to be sent, whose outcome a restart leaves unknown.
   const save = (inflight = null) => saveState?.({ hist: hist.slice(-40).map((h) => String(h).slice(0, 300)), dead: [...dead].slice(-60), steps: st.steps, values, charge: st.charge, inflight });
   // This loop is one parent tool call, but can contain 25 browser actions. Give
@@ -166,13 +185,15 @@ export async function runBrowserTask(res, C, a, tc, { guard, ownerToken = null, 
     for (; st.steps < MAX_STEPS; st.steps++) {
       if ((yielded = handBack())) return yielded;
       save();
-      const outline = page.snapshot || ""; const { menu, act, ids } = buildMenu(outline, values, dead);
-      const ans = await jev(browserNextQuestion(menu), outline);
+      const outline = page.snapshot || ""; const built = buildMenu(outline, values, dead), { menu, act, ids } = built;
+      const seen = await screenFor(outline);
+      if (seen) addVisionItems(built, seen.items, dead);
+      const ans = await jev(browserNextQuestion(menu), seen?.caption ? `${outline}\n[The screen, described by a vision model: ${seen.caption.slice(0, 600)}]` : outline);
       if ((yielded = handBack())) return yielded;
       const pick = ans.next?.choice; st.trace.push(`${menu[pick] ?? "out-of-list"}`.slice(0, 120));
       if (!pick || !menu[pick]) { hist.push("(invalid choice ignored)"); continue; }
       if (pick === ids.ABSTAIN) { abstained = true; break; }
-      if (pick === ids.REOBSERVE) { page = await browse("snapshot", { wait: true }); hist.push("Looked again"); continue; }
+      if (pick === ids.REOBSERVE) { page = await browse("snapshot", { wait: true }); hist.push("Looked again"); reobserved = true; continue; }
       if (pick === ids.FINISH) {
         const again = await browse("snapshot", { wait: true });
         page = again;
@@ -183,6 +204,13 @@ export async function runBrowserTask(res, C, a, tc, { guard, ownerToken = null, 
         finRej++; hist.push("FINISH rejected: page not settled or task not complete yet"); continue;
       }
       const before = outline;
+      // A position found by looking: the browser reads what is really there first (plain code), so the payment checks below see its text, not only the label.
+      if (act[pick].some((x) => x.kind === "click_at")) {
+        const chk = await checkClickAt(C, act[pick], { ownerToken, tab: tabKeyOf(tc) });
+        if ((yielded = handBack())) return yielded;
+        if (chk.error) { hist.push(`${menu[pick]} → not clicked (${chk.error})`); dead.add(menu[pick]); continue; }
+        act[pick] = chk.acts;
+      }
       const purchaseBlock = ownerToken != null && purchaseGuard ? browserPurchaseGuard(act[pick], page) : null;
       if (purchaseBlock) return { code: 1, charge: st.charge, out: `browser_task stopped after ${st.steps} step(s), before a browser action: ${purchaseBlock}\nPage: ${page.title || ""} — ${page.url}\n`, page };
       res.noteBrowserActs?.(act[pick], page);   // a buy or checkout click opens the short window in which a page's payment request is asked about

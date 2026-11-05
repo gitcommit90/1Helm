@@ -395,7 +395,7 @@ export function parseCard(text) {
 }
 
 // ---- pictures: a vision model ----
-// One Moondream call. stream:false; the answer is unwrapped from .result when nested; an empty answer is retried up to 2 more times.
+// One Moondream call. Each attempt is limited by the look job's saved timeout (Models page; starts at 40 s, limits.js). stream:false; the answer is unwrapped from .result when nested; an empty answer is retried up to 2 more times.
 // → { out, nano }; throws with .nano (the cost so far) on failure.
 export async function moondreamRun(env, meta, body) {
   let nano = 0; const price = await lookNano(env);

@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { Resident } from "../src/resident.js";
+import { runBrowserTask } from "../src/ee/browser-agent.js";
 import { SEED } from "./helpers/seed-settings.mjs";
 import { pendingBrowserHandoffs, browserJobRow, browserJobHandoff } from "../src/ee/browser-tasks.js";
 import { jobNeedsHands, actErrorNeedsHands, keepLatestPictures, imageParts, handsOnMessage, HANDS_ON_KEEP, HANDS_ON_HIDDEN } from "../src/browser-handson.js";
@@ -130,10 +131,62 @@ try {
   ok("hands-on results show the page");
 
   // ---- a task that never failed: snapshot and act make no screenshot call, same as before ----
-  { const tc = chat(seesImages), mc = mk("ok"); R.computer = () => mc.c;
+  { const tc = chat(seesImages), mc = mk("ok"); R.computer = () => mc.c; const was = mc.c.browser;
+    mc.c.browser = async (op, body, tok) => { const r = await was(op, body, tok); return op === "act" ? { ...r, snapshot: '[e1] textbox "Name"\n[e3] button "Done"' } : r; };   // the click changed the page
     await R.execComputerTool("browser_snapshot", {}, tc); await R.execComputerTool("browser_act", { actions: [{ kind: "click", ref: "e2" }] }, tc);
     assert.deepEqual([...new Set(mc.calls.map((x) => x.op))].sort(), ["act", "snapshot"]); assert.equal(tc.viewPics, undefined); }
   ok("no failure, no change");
+  // ---- a page that gives a reason (browser-vision.js) shows the screen even outside hands-on mode ----
+  { const tc = chat(seesImages), mc = mk("ok"); R.computer = () => mc.c; const was = mc.c.browser;
+    mc.c.browser = async (op, body, tok) => { const r = await was(op, body, tok); return op === "snapshot" ? { ...r, hints: { canvas: 1 } } : r; };
+    const r = await R.execComputerTool("browser_snapshot", {}, tc);
+    assert.equal(R.isHandsOn(tc), false); assert.equal(tc.viewPics.length, 1, "a canvas puts a picture in the next input"); assert.match(r.out, /a canvas/); assert.match(r.out, /The picture is .*pixels/); assert.equal(tc.viewPics[0].hands, true, "kept with the latest-two rule"); }
+  { const tc = chat(seesImages), mc = mk("ok"); R.computer = () => mc.c; await R.execComputerTool("browser_snapshot", {}, tc);
+    await R.execComputerTool("browser_act", { actions: [{ kind: "click", ref: "e2" }] }, tc);   // the page is the same afterwards
+    assert.equal(tc.viewPics?.length, 1, "an action that changed nothing shows the screen"); }
+  { const tc = chat(textOnly), mc = mk("ok"); R.computer = () => mc.c; const was = mc.c.browser, lookWas = R.lookAtScreen;
+    mc.c.browser = async (op, body, tok) => { const r = await was(op, body, tok); return op === "snapshot" ? { ...r, snapshot: '[e1] button ""' } : r; }; R.lookAtScreen = async () => ({ code: 0, out: "Description: icons" });
+    const r = await R.execComputerTool("browser_snapshot", {}, tc); R.lookAtScreen = lookWas;
+    assert.match(r.out, /1 control with no name/); assert.match(r.out, /Description: icons/); assert.equal(tc.viewPics, undefined, "a model without images gets text"); }
+  // ---- click_at in the picture's pixels, or as 0 to 1 fractions, reaches the browser as page pixels ----
+  { const tc = chat(seesImages), mc = mk("ok"); R.computer = () => mc.c; const was = mc.c.browser;
+    const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 17, 8, 2, 113, 3, 232, 3, 0, 0, 0, 0, 0, 0, 0]).toString("base64");   // a 1000x625 picture
+    mc.c.browser = async (op, body, tok) => { const r = await was(op, body, tok); return op === "snapshot" ? { ...r, hints: { canvas: 1 } } : op === "screenshot" ? { ...r, jpeg_base64: jpg, view: { w: 1280, h: 800 } } : r; };
+    const r = await R.execComputerTool("browser_snapshot", {}, tc); assert.match(r.out, /The picture is 1000x625 pixels \(the page is 1280x800\)/);
+    await R.execComputerTool("browser_act", { actions: [{ kind: "click_at", x: 500, y: 250 }] }, tc);
+    assert.deepEqual(mc.calls.filter((x) => x.op === "act").at(-1).body.actions, [{ kind: "click_at", x: 640, y: 320 }], "picture pixels become page pixels");
+    const a = await R.execComputerTool("browser_act", { actions: [{ kind: "click_at", x: 0.5, y: 0.5 }] }, tc);
+    assert.deepEqual(mc.calls.filter((x) => x.op === "act").at(-1).body.actions, [{ kind: "click_at", x: 640, y: 400 }], "fractions become page pixels"); assert.match(a.out, /read as fractions/);
+    const own = chat(seesImages); await R.execComputerTool("browser_act", { actions: [{ kind: "click_at", x: 500, y: 250 }] }, own);
+    assert.equal(mc.calls.filter((x) => x.op === "act").at(-1).body.actions[0].x, 640, "the picture belongs to the tab, which both tasks here share"); }
+  ok("click_at conversion");
+  // ---- the browser worker on a page with a canvas: one look, and the menu offers "Click at" positions ----
+  let probeMode = "plain";
+  { pick = "Click at"; const mc = mk("ok"); R.computer = () => mc.c; const was = mc.c.browser;
+    mc.c.browser = async (op, body, tok) => { const r = await was(op, body, tok);
+      if (op === "screenshot" && body?.probe_at) return { ok: true, probe: probeMode === "none" ? undefined : probeMode === "order" ? { tag: "button", text: "Place order" } : { tag: "div", text: "" } };
+      if (op === "screenshot") return { ...r, jpeg_base64: Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 17, 8, 3, 32, 5, 0, 3, 0, 0, 0, 0, 0, 0, 0]).toString("base64"), view: { w: 1280, h: 800 }, ocr: { lines: [{ text: "Play", x: 600, y: 380, w: 80, h: 40 }] } };
+      return op === "act" ? { ...r, snapshot: '[e1] textbox "Name"\n[e9] button "Next"' } : { ...r, hints: { canvas: 1 } }; };
+    await R.browserTaskJob({ url: page.url, task: "Press play", values: [] }, chat(seesImages)); await settle();
+    const acts = mc.calls.filter((x) => x.op === "act");
+    assert.equal(mc.calls.filter((x) => x.op === "screenshot" && !x.body?.probe_at).length, 1, "one look while the page is the same"); assert.equal(mc.calls.find((x) => x.op === "screenshot" && !x.body?.probe_at).body.ocr, true); assert.ok(mc.calls.some((x) => x.body?.probe_at), "the point was read before the click");
+    assert.deepEqual(acts[0]?.body.actions, [{ kind: "click_at", x: 640, y: 400, label: "Play", pageText: "" }], "the OCR text became a click position in page pixels"); }
+  // the position's own text is read in plain code before the click: a vague label over a buy button is stopped, an unreadable point is not clicked
+  for (const mode of ["order", "none"]) { probeMode = mode; pick = "Click at"; const mc = mk("ok"); R.computer = () => mc.c; const was = mc.c.browser;
+    mc.c.browser = async (op, body, tok) => { const r = await was(op, body, tok);
+      if (op === "screenshot" && body?.probe_at) return probeMode === "none" ? { ok: true } : { ok: true, probe: { tag: "button", text: "Place order" } };
+      if (op === "screenshot") return { ...r, jpeg_base64: Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 17, 8, 3, 32, 5, 0, 3, 0, 0, 0, 0, 0, 0, 0]).toString("base64"), view: { w: 1280, h: 800 }, ocr: { lines: [{ text: "Play", x: 600, y: 380, w: 80, h: 40 }] } };
+      return op === "act" ? r : { ...r, hints: { canvas: 1 } }; };
+    if (mode === "order") { const out = await runBrowserTask(R, mc.c, { url: page.url, task: "Press play", values: [] }, chat(seesImages), { ownerToken: "tok" });   // a background job: the purchase guard is on
+      assert.match(out.out, /payment or final-order control/); }
+    else { await R.browserTaskJob({ url: page.url, task: "Press play", values: [] }, chat(seesImages)); await settle(); }
+    assert.equal(mc.calls.some((x) => x.op === "act"), false, `no click was made (${mode})`); }
+  probeMode = "plain";
+  { pick = "FINISH"; const mc = mk("ok"); R.computer = () => mc.c;
+    await R.browserTaskJob({ url: page.url, task: "Press play", values: [] }, chat(seesImages)); await settle();
+    assert.equal(mc.calls.some((x) => x.op === "screenshot"), false, "a page with no reason is never looked at"); }
+  ok("worker looks on a canvas");
+  ok("vision on triggers");
 
   // ---- browser_task is not offered, and is refused if called, in hands-on mode ----
   { const tc = chat(seesImages), mc = mk("ok"); R.computer = () => mc.c;
