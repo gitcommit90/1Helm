@@ -1,7 +1,7 @@
 // Company and site logos (logo.dev, through 1HC's public GET /logo/<domain>?size=64|128). One rule everywhere: the logo is
 // drawn OVER the fallback that was already there (the letter tile or icon). Once it loads it covers the fallback; if it
 // fails (no logo, a bad domain, off, offline, the design sandbox where /logo/ doesn't exist) it removes itself and the old
-// tile shows. A miss is remembered in this browser for a week so we don't ask logo.dev again. width/height are set (no
+// tile shows. A miss is remembered for this page session only. width/height are set (no
 // layout shift), loading is lazy, and the logo sits on its own white chip in light and dark mode alike, so one image
 // works for both themes (logo.dev logos are made for light backgrounds).
 
@@ -38,24 +38,33 @@ export function serviceDomain(kind: string, host = ""): string {
   return p.slice(-(two ? 3 : 2)).join(".");
 }
 
-const MISS = "lgmiss:", WEEK = 7 * 864e5;
-function missed(d: string) { try { const t = +(localStorage.getItem(MISS + d) || 0); return t > 0 && Date.now() - t < WEEK; } catch { return false; } }
+// A miss is remembered only for this page session (in memory), never in localStorage: one failed request (a network blip, a deploy) must
+// not hide a brand logo for days. Older versions saved "lgmiss:<domain>" for a week; those entries are removed at startup so a device that has them recovers.
+const MISSED = new Set<string>(), SEEN = new Set<string>();
+try { for (const k of Object.keys(localStorage)) if (k.startsWith("lgmiss:")) localStorage.removeItem(k); } catch { /* storage blocked: nothing to clean */ }
+const missed = (d: string) => MISSED.has(d);
 /** /logo/<domain>?size=… (64 for anything shown up to ~32px, 128 above), or "" when there's nothing to ask for. */
 export function logoUrl(site: string, size: 64 | 128 = 64): string {
   const d = logoDomain(site); return d && !missed(d) ? `/logo/${d}${size === 64 ? "" : `?size=${size}`}` : "";
 }
-// onerror: drop the logo (the fallback under it shows) and remember the miss. Only [a-z0-9.-] ever reaches this string.
-const fail = (d: string, drop: string) => `${drop}.remove();try{localStorage.setItem('${MISS}${d}',Date.now())}catch(e){}`;
+// The logo stays invisible (opacity 0) until it has loaded, so the fallback icon or tile under it is what shows while it loads, stalls or fails;
+// onload fades it in. A logo this page has already shown is drawn at once on every repaint (no blink). onerror removes it (the fallback stays).
+// Only [a-z0-9.-] ever reaches these strings. The document listeners below record the load or the miss.
+const domOf = (t: EventTarget | null) => t instanceof HTMLImageElement ? /^\/logo\/([a-z0-9.-]+)/.exec(t.getAttribute("src") || "")?.[1] || "" : "";
+document.addEventListener("load", e => { const d = domOf(e.target); if (d) SEEN.add((e.target as HTMLImageElement).getAttribute("src") || ""); }, true);
+document.addEventListener("error", e => { const d = domOf(e.target); if (d) MISSED.add(d); }, true);
+const seenCls = (src: string) => SEEN.has(src) ? " in" : "";
+const ON = `this.classList.add('in');this.parentNode.classList.add('in')`;
 
-/** A logo laid over an existing tile (the tile needs class "lgo-host" or position:relative + overflow:hidden). */
+/** A logo laid over an existing tile (the tile needs class "lgo-host" or position:relative + overflow:hidden). The tile shows until the logo has loaded. */
 export function logoOver(site: string, px: number): string {
   const d = logoDomain(site), src = logoUrl(d, px > 40 ? 128 : 64); if (!src) return "";
-  return `<img class="lgo" src="${src}" alt="" width="${px}" height="${px}" loading="lazy" decoding="async" onerror="${fail(d, "this")}">`;
+  return `<img class="lgo${seenCls(src)}" src="${src}" alt="" width="${px}" height="${px}" loading="lazy" decoding="async" onload="this.classList.add('in')" onerror="this.remove()">`;
 }
-/** A small inline logo chip next to text (a host name, an email). Gone entirely on error. */
+/** A small inline logo chip next to text (a host name, an email). Its space is held (transparent) until the logo loads; gone entirely on error. */
 export function logoChip(site: string, px = 16): string {
   const d = logoDomain(site), src = logoUrl(d, 64); if (!src) return "";
-  return `<span class="lgc" style="width:${px}px;height:${px}px"><img src="${src}" alt="" width="${px}" height="${px}" loading="lazy" decoding="async" onerror="${fail(d, "this.parentNode")}"></span>`;
+  return `<span class="lgc${seenCls(src)}" style="width:${px}px;height:${px}px"><img src="${src}" alt="" width="${px}" height="${px}" loading="lazy" decoding="async" onload="${ON}" onerror="this.parentNode.remove()"></span>`;
 }
 
 // App logos (Composio apps: Settings → Connected Apps, the in-chat connect card, the Apps list, app detail). One rule everywhere:

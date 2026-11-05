@@ -120,6 +120,9 @@ const bykUsageNote = () => byok().bykUsageNote();
 const bykSwitched = () => byok().bykSwitched();
 const bykSbOn = () => hasFeature("billing") && billingByok.bykSbOn();   // design sandbox only: a pretend switch now
 const bykSbCredits = () => billingByok.bykSbCredits();
+const bykPlanLine = (on: boolean) => hasFeature("billing") ? billingByok.bykPlanLine(on) : "";   // the ChatGPT plan line under the composer (licensed page)
+const bykIsCgLimit = (t: any) => hasFeature("billing") && billingByok.bykIsCgLimit(t);
+const bykLimitCard = () => billingByok.bykLimitCard();
 const storCard = () => hasFeature("billing") ? billingStorage.storCard() : coreStorage.storCard();
 const storPlans = () => hasFeature("billing") ? billingStorage.storPlans() : "";
 const storPlansOpen = () => hasFeature("billing") && billingStorage.storPlansOpen();
@@ -1522,7 +1525,7 @@ function startTask(ch: Channel, text: string, files: FileV[] = []) {
     const next = steps.shift(); x.updated = Date.now();
     if (next) { x.line = next; refresh(); setTimeout(tick, 2200 + Math.random() * 1200); return; }
     x.state = "complete"; x.status = "resolved"; x.unread = true; x.line = `Finished · take a look, and check it off when you're happy`;
-    x.messages[1].body = `Done. I took care of “${text}”.\n\n<small>Scripted reply · design sandbox</small>`; x.messages[1].steps = ["check notes", "look it up"]; x.messages[1].at = x.updated;
+    x.messages[1].body = new URLSearchParams(location.search).has("byokcglimit") ? "Your AI service (ChatGPT): Usage limit reached. Review your plan or this app's limit in ChatGPT settings. [Manage usage](https://chatgpt.com/settings/usage)" : `Done. I took care of “${text}”.\n\n<small>Scripted reply · design sandbox</small>`;   // ?byokcglimit: the ChatGPT plan limit message (byok.ts) x.messages[1].steps = ["check notes", "look it up"]; x.messages[1].at = x.updated;
     const kinds: Art["kind"][] = ["doc", "sheet", "pdf"]; lib(ch).unshift({ name: x.title, kind: kinds[x.id % 3], sid: x.id, at: x.updated, size: "New", fresh: true });
     refresh();
   };
@@ -1532,7 +1535,7 @@ function startTask(ch: Channel, text: string, files: FileV[] = []) {
 const composer = (ph: string) => `<div class="ups" id="ups-box">${upsHtml("box")}</div>${rqHtml(rqKey())}<form class="composer" id="send">${cb("attach", "Attach", ic.plus)}
   <textarea id="box" rows="1" placeholder="${ph}"></textarea>
   ${LIVE ? slBtn("box") + dictBtn("box", ic.mic) : cb("mic", "Talk", ic.mic, " mic")}
-  <button id="go" disabled aria-label="Send">${ic.up}</button>${LIVE ? composerStop() : ""}</form>`;
+  <button id="go" disabled aria-label="Send">${ic.up}</button>${LIVE ? composerStop() : ""}</form>${bykPlanLine(LIVE ? BOOT?.account?.chatgpt_plan === true : false)}`;
 // A reply part: cards when it's OpenUI Lang (genui-render.ts), else today's markdown bubble (after the code safety net). Prose
 // followed by code lines becomes a bubble plus cards. Partial code stays hidden
 // while the independent Primary activity row indicates the turn is still working.
@@ -1557,6 +1560,7 @@ const MA_PARTS = new WeakMap<Msg, Map<string, string>>();
 function partHtml(text: string, ch: Channel, s: Session | undefined, owner: object, live: boolean, reply: string | undefined, pre = false, message?: Msg, part = "body") {
   const t = text.trim(); if (!t) return "";
   if (LIVE && t === "Stopped.") return `<div class="stopped-note" role="status">${SQ}<span>Stopped by you</span></div>`;   // a task the person stopped (1HC stop.js)
+  if (bykIsCgLimit(t)) return bykLimitCard();   // the ChatGPT plan's usage limit (byok.ts): OpenAI's compact message, with Manage usage and Buy app credits
   const bubble = (x: string, j: number) => { const y = scrubCode(x).trim(), key = `${part}-${j}`; if (!y) return "";
     if (message) MA_PARTS.get(message)!.set(key, y);
     const card = (message as TkMsg | undefined)?.card;

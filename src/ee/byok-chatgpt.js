@@ -22,7 +22,7 @@
 import { sealSecret, openSecret } from "../sentinel.js";
 import { cacheKey } from "../model.js";
 import { ByokError, fail, redact, readCapped, errorDetail, guardStream, firstEventOk } from "../byok.js";
-import { parseCodexUsage, noteLimit, limitText, usageView, epochMs } from "./byok-usage.js";
+import { noteLimit, limitText } from "./byok-usage.js";
 
 export const CG_SOURCE = "chatgpt";
 export const CG_BASE = "https://api.openai.com/v1";
@@ -54,6 +54,12 @@ export const CG_DDL = [
   "CREATE TABLE IF NOT EXISTS byok_chatgpt_host (tenant_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, created_at INTEGER NOT NULL)",
   "CREATE TABLE IF NOT EXISTS byok_chatgpt_pkce (state TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, verifier TEXT NOT NULL, nonce TEXT NOT NULL, client_id TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)",
   "CREATE TABLE IF NOT EXISTS byok_chatgpt (tenant_id TEXT PRIMARY KEY, client_id TEXT NOT NULL, subject TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '', record_sealed TEXT NOT NULL DEFAULT '', expires_at INTEGER NOT NULL DEFAULT 0, ver INTEGER NOT NULL DEFAULT 0, lock_id TEXT NOT NULL DEFAULT '', lock_until INTEGER NOT NULL DEFAULT 0, broken INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)",
+  // Tokens used through the ChatGPT plan, one row per account per UTC day (also migrations_096_byok_chatgpt_use.sql). The Responses API reports usage on every completed call.
+  "CREATE TABLE IF NOT EXISTS byok_chatgpt_use (tenant_id TEXT NOT NULL, day TEXT NOT NULL, tokens INTEGER NOT NULL DEFAULT 0, calls INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant_id, day))",
+  // The "You're using your ChatGPT plan" message: a row appears with the first successful sign-in and shown_at is set when the person presses Got it. The row outlives a disconnect, so it never shows twice.
+  "CREATE TABLE IF NOT EXISTS byok_chatgpt_welcome (tenant_id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, shown_at INTEGER NOT NULL DEFAULT 0)",
+  // The "Use your ChatGPT plan in this app" banner (OpenAI's invite for people who signed in another way): a row means this account dismissed it (also migrations_097_byok_chatgpt_invite.sql).
+  "CREATE TABLE IF NOT EXISTS byok_chatgpt_invite (tenant_id TEXT PRIMARY KEY, dismissed_at INTEGER NOT NULL)",
 ];
 let ddlDone = null;
 export async function cgDdl(env) {
@@ -273,6 +279,7 @@ export async function cgForget(env, tid, { fetchImpl = globalThis.fetch, revoke 
   }
   await env.DB.prepare("DELETE FROM byok_chatgpt WHERE tenant_id=?").bind(tid).run();
   await env.DB.prepare("DELETE FROM byok_chatgpt_pkce WHERE tenant_id=?").bind(tid).run();
+  await env.DB.prepare("DELETE FROM byok_chatgpt_use WHERE tenant_id=?").bind(tid).run();   // the usage counts go with the sign-in; the welcome row stays so the message is never shown twice
 }
 // What the page shows: the signed-in account (email) while a usable record exists, and whether the person has to sign in again.
 export async function cgView(env, tid, row) {
@@ -281,8 +288,8 @@ export async function cgView(env, tid, row) {
   return { connected: !!r?.has && !r.broken, email: r?.email || "", signin_again: !!r?.broken, pending: !!r?.has && !r.broken && !saved ? { email: r.email || "", at: Number(r.updated_at) || null } : null, manage: CG_USAGE_PAGE };
 }
 
-// ---- plan usage (byok-usage.js) ----
-// The ChatGPT account id from the sign-in's own tokens (never returned or logged), "" when none is there.
+// ---- plan usage ----
+// The ChatGPT account id from the sign-in's own tokens (never returned or logged), "" when none is there. It is sent as the chatgpt-account-id header on a Responses call, as Codex does.
 export async function chatgptAccountId(env, tid) {
   const row = await env.DB.prepare("SELECT record_sealed FROM byok_chatgpt WHERE tenant_id=?").bind(tid).first();
   if (!row?.record_sealed) return "";
@@ -294,32 +301,63 @@ export async function chatgptAccountId(env, tid) {
   }
   return "";
 }
-// GET https://chatgpt.com/backend-api/wham/usage with the connection's own access token. → { windows, plan } or throws an Error with .why ("http_401", "network", ...).
-export const CG_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
-export async function chatgptUsage(env, tid, { fetchImpl = globalThis.fetch } = {}) {
-  let token; try { token = await chatgptToken(env, tid, { fetchImpl, maxWaitMs: 5e3 }); } catch (e) { throw Object.assign(new Error("no token"), { why: e?.cg === "signin" ? "signin" : "network" }); }
-  const accountId = await chatgptAccountId(env, tid).catch(() => "");
-  let r;
-  try { r = await fetchImpl(CG_USAGE_URL, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(10e3), headers: { authorization: `Bearer ${token}`, accept: "application/json", "user-agent": "1Helm", ...(accountId ? { "chatgpt-account-id": accountId } : {}) } }); }
-  catch (e) { throw Object.assign(new Error("network"), { why: e?.name === "TimeoutError" ? "timeout" : "network" }); }
-  if (!r.ok) { r.body?.cancel?.().catch?.(() => {}); throw Object.assign(new Error(`http ${r.status}`), { why: `http_${r.status}`, permanent: r.status < 500 && r.status !== 429 }); }
-  let text; try { text = (await r.text()).slice(0, 256 << 10); } catch { throw Object.assign(new Error("network"), { why: "network" }); }
-  let j; try { j = JSON.parse(text); } catch { throw Object.assign(new Error("not json"), { why: "none" }); }
-  return { ...parseCodexUsage(j), source: "wham" };
+// OpenAI's guidelines say not to read ChatGPT's own backend-api for this flow, so the usage summary on the page is counted here from the token usage the Responses API
+// returns on every completed call (response.completed, usage.total_tokens), per account and UTC day.
+export const CG_USE_DAYS = 30;
+const dayOf = (ms) => new Date(ms).toISOString().slice(0, 10);
+export async function recordChatgptUse(env, tid, tokens, at = now()) {
+  const n = Math.floor(Number(tokens));
+  if (!env?.DB || !tid || !Number.isFinite(n) || n <= 0) return;
+  try {
+    await cgDdl(env);
+    await env.DB.prepare("INSERT INTO byok_chatgpt_use (tenant_id, day, tokens, calls) VALUES (?,?,?,1) ON CONFLICT(tenant_id, day) DO UPDATE SET tokens=tokens+excluded.tokens, calls=calls+1").bind(String(tid), dayOf(at), n).run();
+  } catch (e) { console.log("byok chatgpt: use record", String(e?.message || e).slice(0, 80)); }
 }
-// A call that ran into the ChatGPT usage limit: the words for the reply, and a note so the page shows it. j: the parsed error body (any reset time in it is used).
-async function limitReply(cfg, j) {
-  const h = cfg.chatgptHandle, e = j?.error || {};
-  const secs = Number(e.resets_in_seconds ?? e.reset_after_seconds ?? e.retry_after_seconds), at = epochMs(e.resets_at ?? e.reset_at) || (secs > 0 ? now() + secs * 1000 : null);
-  let window = "", resets_at = at;
-  if (h) {
-    try {
-      const w = (await usageView(h.env, h.tid, "chatgpt")).windows.filter((x) => x.used >= 99.5).sort((x, y) => (y.resets_at || 0) - (x.resets_at || 0))[0];
-      if (w) { window = w.id; resets_at = resets_at || w.resets_at; }
-    } catch {}
-    await noteLimit(h.env, h.tid, "chatgpt", { window, resets_at });
+// rows: [{ day: "YYYY-MM-DD", tokens }] → { total, peak, days, window } for the last 30 UTC days including today. Total is the sum, Peak / day the largest single day, Active days the days with any use.
+export function summarizeChatgptUse(rows, at = now()) {
+  const first = dayOf(at - (CG_USE_DAYS - 1) * 86400e3), last = dayOf(at);
+  let total = 0, peak = 0, days = 0;
+  for (const r of rows || []) {
+    const d = String(r?.day || ""), t = Math.max(0, Math.floor(Number(r?.tokens) || 0));
+    if (d < first || d > last || !t) continue;
+    total += t; days++; if (t > peak) peak = t;
   }
-  return limitText("chatgpt", { window, resets_at, host: "ChatGPT" });
+  return { total, peak, days, window: CG_USE_DAYS };
+}
+export async function chatgptUseSummary(env, tid, at = now()) {
+  try {
+    await cgDdl(env);
+    const r = await env.DB.prepare("SELECT day, tokens FROM byok_chatgpt_use WHERE tenant_id=? AND day>=?").bind(String(tid), dayOf(at - (CG_USE_DAYS - 1) * 86400e3)).all();
+    return summarizeChatgptUse(r?.results || [], at);
+  } catch (e) { console.log("byok chatgpt: use read", String(e?.message || e).slice(0, 80)); return summarizeChatgptUse([], at); }
+}
+// The first-sign-in message. Created once when a sign-in first succeeds; "pending" until the person presses Got it. Reconnecting later never makes a new one.
+export async function chatgptWelcomeCreate(env, tid, at = now()) {
+  await cgDdl(env);
+  await env.DB.prepare("INSERT OR IGNORE INTO byok_chatgpt_welcome (tenant_id, created_at, shown_at) VALUES (?,?,0)").bind(String(tid), at).run();
+}
+export async function chatgptWelcomePending(env, tid) {
+  try { await cgDdl(env); const r = await env.DB.prepare("SELECT shown_at FROM byok_chatgpt_welcome WHERE tenant_id=?").bind(String(tid)).first(); return !!r && !Number(r.shown_at); } catch { return false; }
+}
+// The invite banner shows to an account with no ChatGPT connection that has not dismissed it.
+export async function chatgptInviteShown(env, tid, connected) {
+  if (connected) return false;
+  try { await cgDdl(env); return !(await env.DB.prepare("SELECT 1 AS x FROM byok_chatgpt_invite WHERE tenant_id=?").bind(String(tid)).first()); } catch { return false; }
+}
+export async function chatgptInviteDismiss(env, tid, at = now()) {
+  await cgDdl(env);
+  await env.DB.prepare("INSERT OR IGNORE INTO byok_chatgpt_invite (tenant_id, dismissed_at) VALUES (?,?)").bind(String(tid), at).run();
+}
+export async function chatgptWelcomeDone(env, tid, at = now()) {
+  await cgDdl(env);
+  await env.DB.prepare("UPDATE byok_chatgpt_welcome SET shown_at=? WHERE tenant_id=? AND shown_at=0").bind(at, String(tid)).run();
+}
+// A call that ran into the ChatGPT usage limit: the words for the reply, and a note so the page shows it. OpenAI's errors page says not to infer a reset time from
+// subscription_sharing_usage_limit_exceeded alone (an app-specific limit can also apply), so no window and no reset time are guessed or kept.
+async function limitReply(cfg) {
+  const h = cfg.chatgptHandle;
+  if (h) await noteLimit(h.env, h.tid, "chatgpt", {});
+  return limitText("chatgpt", { host: "ChatGPT" });
 }
 
 // ---- models ----
@@ -358,7 +396,7 @@ async function tokenOf(cfg, { fetchImpl, force = false }) {
 // The plain words for an error from OpenAI (status, structured code, short detail). No token or ids go into it.
 export function chatgptDetail(status, code, detail = "", param = "") {
   const c = String(code || "");
-  if (c === "subscription_sharing_usage_limit_exceeded") return `you've reached your ChatGPT usage limit. [Manage usage](${CG_USAGE_PAGE})`;
+  if (c === "subscription_sharing_usage_limit_exceeded") return `Usage limit reached. Review your plan or this app's limit in ChatGPT settings. [Manage usage](${CG_USAGE_PAGE})`;
   if (c === "subscription_sharing_usage_unavailable") return "ChatGPT couldn't check your usage just now. Try again in a little while";
   if (c === "subscription_sharing_user_not_eligible") return "your ChatGPT plan can't be used this way";
   if (c === "subscription_sharing_unsupported_capability") return `ChatGPT didn't accept part of the request${param ? ` (${redact(param, "", 60)})` : ""}`;
@@ -430,6 +468,7 @@ export const sseLines = (stream) => {   // a stream of bytes → Responses event
 // opts (used by byok-opencode.js, defaults keep ChatGPT exactly as before): detail(status, code, message, param) words an error; usage(rawUsage) → extra fields merged into the final usage (ChatGPT: cost 0).
 export function translateStream(cfg, body, model, opts = {}) {
   const detailOf = opts.detail || ((st, code, msg, param) => chatgptDetail(st, code, msg, param)), extraUsage = opts.usage || (() => ({ cost: 0 }));
+  const own = !opts.detail, h = own ? cfg?.chatgptHandle : null;   // ChatGPT plan calls only (OpenCode passes its own detail words)
   const ev = sseLines(body), enc = new TextEncoder(), calls = new Map(); let nTools = 0, sentAny = false, done = false;
   const chunk = (delta, finish = null, extra = {}) => enc.encode(`data: ${JSON.stringify({ object: "chat.completion.chunk", model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}\n\n`);
   const callOf = (e) => calls.get(e.item_id) || calls.get(`o${e.output_index}`);
@@ -456,12 +495,14 @@ export function translateStream(cfg, body, model, opts = {}) {
             const r = e.response || {}, u = r.usage || {}, inc = e.type === "response.incomplete";
             const finish = inc ? (r.incomplete_details?.reason === "content_filter" ? "content_filter" : "length") : nTools ? "tool_calls" : "stop";
             done = true;
+            if (h) await recordChatgptUse(h.env, h.tid, u.total_tokens || (u.input_tokens || 0) + (u.output_tokens || 0));
             c.enqueue(chunk({}, finish, { usage: { prompt_tokens: u.input_tokens || 0, completion_tokens: u.output_tokens || 0, total_tokens: u.total_tokens || (u.input_tokens || 0) + (u.output_tokens || 0),
               prompt_tokens_details: { cached_tokens: u.input_tokens_details?.cached_tokens || 0 }, completion_tokens_details: { reasoning_tokens: u.output_tokens_details?.reasoning_tokens || 0 }, ...extraUsage(u) } }));
             c.enqueue(enc.encode("data: [DONE]\n\n")); return;
           }
           case "response.failed": case "error": {
             const er = e.type === "error" ? e : e.response?.error || {};
+            if (own && er.code === "subscription_sharing_usage_limit_exceeded") throw Object.assign(new ByokError(await limitReply(cfg), Number(er.status) || 429, chatgptDetail(429, er.code)), { limit: true });
             throw fail(cfg, detailOf(Number(er.status) || 0, er.code, redact(er.message || "", "", 120), er.param), Number(er.status) || 0);
           }
           default: break;
@@ -518,7 +559,7 @@ export async function chatgptChat(cfg, body, { signal = null, fetchImpl = global
   if (!r.ok) {
     const { raw, detail } = await errorDetail(cfg, r);
     let code = "", param = ""; try { const j = JSON.parse(raw); code = j?.error?.code || ""; param = j?.error?.param || ""; } catch {}
-    if (code === "subscription_sharing_usage_limit_exceeded") { let j = null; try { j = JSON.parse(raw); } catch {} throw Object.assign(new ByokError(await limitReply(cfg, j), r.status, chatgptDetail(r.status, code)), { limit: true }); }
+    if (code === "subscription_sharing_usage_limit_exceeded") { throw Object.assign(new ByokError(await limitReply(cfg), r.status, chatgptDetail(r.status, code)), { limit: true }); }
     throw fail(cfg, chatgptDetail(r.status, code, detail, param), r.status);
   }
   if (!r.body) throw fail(cfg, "an empty answer");

@@ -14,7 +14,7 @@
 // (https://opencode.ai/console/account, where personal API keys are made) opens in a new tab and the person pastes the key (?add=opencode opens this step, from the onboarding card; ?settings=byok and ?settings=ai open the panel).
 // v3.ts hooks in: bykPage() as the "ai" section (the nav entry AI services), bykUsageNote() in the usage card, bykAfter() after every Settings paint, bykSwitched() on the stream's byok_switch, bykInit() once.
 // Sandbox (no 1HC): the same screens on pretend services (?byoksaved one service, ?byokthree three, ?byokplan the $10 plan, ?byokfb a backup in use, ?byokswitch a switch pending, ?byokstorage refused).
-import { ask, choose } from "../dialog";
+import { ask, choose, tell } from "../dialog";
 import { cmodelsOwnPanel, cmodelsRefresh, cmodelsPrefetch } from "./custom-models";   // the Models section
 import { logoOver, logoChip, serviceDomain } from "../logo";   // logo.dev through /logo/<domain>: every service shows its own logo, drawn over the icon that was there
 
@@ -34,7 +34,9 @@ type Conn = { id: string; kind: Kind; plan?: "go" | "payg"; label: string; host:
 type Mode = "" | "fallback" | "switch";
 type UsageWin = { id: string; label: string; used: number; resets_at: number | null };
 type Usage = { windows: UsageWin[]; at: number; tried: boolean; manage: string; limit: { window: string; resets_at: number | null } | null };
-type St = { usage: Record<string, Usage>; on_plan: boolean; full: boolean; plan_name: string; price: number; connections: Conn[]; mode: Mode; switch_at?: number | null; fallback?: { active: boolean; since: number | null }; openrouter: { manage: string }; custom: { model: string | null } };
+type CgSum = { total: number; peak: number; days: number; window: number };
+type CgInfo = { manage: string; summary: CgSum | null; welcome: boolean; invite: boolean };
+type St = { usage: Record<string, Usage>; chatgpt: CgInfo; on_plan: boolean; full: boolean; plan_name: string; price: number; connections: Conn[]; mode: Mode; switch_at?: number | null; fallback?: { active: boolean; since: number | null }; openrouter: { manage: string }; custom: { model: string | null } };
 type Deps = {
   api: ((path: string, body?: any) => Promise<any>) | null;   // null: design sandbox
   repaint: () => void;                                        // Settings, when this panel or General is showing
@@ -65,9 +67,11 @@ export const OR_WHY: Record<string, string> = {
 };
 const OR_KEYS = "https://openrouter.ai/settings/keys";
 const CG_USAGE = "https://chatgpt.com/settings/usage";
-// The ChatGPT button: its logo from logo.dev on a white chip. OpenAI's own mark stays underneath and shows only if the logo can't load.
-const CG_MARK = `<svg width="21" height="21" viewBox="0 0 21 21" fill="none" aria-hidden="true" focusable="false"><path d="M11.8102 19.1625C11.2327 19.1625 10.6841 19.0528 10.1643 18.8334C9.64459 18.6139 9.18259 18.3078 8.77834 17.9151C8.33944 18.0653 7.88322 18.1404 7.40967 18.1404C6.63582 18.1404 5.91972 17.9498 5.26137 17.5686C4.60302 17.1875 4.07172 16.6677 3.66747 16.0094C3.27477 15.351 3.07842 14.6176 3.07842 13.8091C3.07842 13.4742 3.12462 13.1103 3.21702 12.7176C2.75502 12.2903 2.39697 11.7994 2.14287 11.245C1.88877 10.679 1.76172 10.09 1.76172 9.47785C1.76172 8.85415 1.89454 8.25355 2.16019 7.67605C2.42584 7.09855 2.79544 6.6019 3.26899 6.1861C3.75409 5.75875 4.31427 5.46422 4.94952 5.30252C5.07657 4.64417 5.34222 4.05512 5.74647 3.53537C6.16227 3.00407 6.67047 2.58827 7.27107 2.28797C7.87167 1.98767 8.51269 1.83752 9.19414 1.83752C9.77164 1.83752 10.3203 1.94725 10.84 2.1667C11.3598 2.38615 11.8218 2.69222 12.226 3.08492C12.6649 2.93477 13.1211 2.8597 13.5947 2.8597C14.3685 2.8597 15.0846 3.05027 15.743 3.43142C16.4013 3.81257 16.9269 4.33232 17.3196 4.99067C17.7238 5.64902 17.9259 6.38245 17.9259 7.19095C17.9259 7.5259 17.8797 7.88973 17.7873 8.28242C18.2493 8.70977 18.6074 9.20643 18.8615 9.77238C19.1156 10.3268 19.2426 10.91 19.2426 11.5222C19.2426 12.1459 19.1098 12.7465 18.8442 13.324C18.5785 13.9015 18.2031 14.4039 17.718 14.8313C17.2445 15.2471 16.6901 15.5358 16.0548 15.6975C15.9278 16.3559 15.6564 16.9449 15.2406 17.4647C14.8363 17.996 14.3339 18.4118 13.7333 18.7121C13.1327 19.0124 12.4917 19.1625 11.8102 19.1625ZM7.53094 16.9969C8.10844 16.9969 8.61087 16.8756 9.03822 16.6331L12.2953 14.762C12.4108 14.6811 12.4686 14.5714 12.4686 14.4328V12.9429L8.27592 15.351C8.02182 15.5012 7.76772 15.5012 7.51362 15.351L4.23919 13.4626C4.23919 13.4973 4.23342 13.5377 4.22187 13.5839C4.22187 13.6301 4.22187 13.6994 4.22187 13.7918C4.22187 14.3808 4.36047 14.9237 4.63767 15.4203C4.92642 15.9054 5.32489 16.2866 5.83309 16.5638C6.34129 16.8525 6.90724 16.9969 7.53094 16.9969ZM7.70419 14.1729C7.77349 14.2076 7.83702 14.2249 7.89477 14.2249C7.95252 14.2249 8.01027 14.2076 8.06802 14.1729L9.36739 13.4279L5.19207 11.0024C4.93797 10.8523 4.81092 10.6271 4.81092 10.3268V6.56725C4.23342 6.82135 3.77142 7.21405 3.42492 7.74535C3.07842 8.2651 2.90517 8.8426 2.90517 9.47785C2.90517 10.0438 3.04954 10.5866 3.33829 11.1064C3.62704 11.6261 4.00242 12.0189 4.46442 12.2845L7.70419 14.1729ZM11.8102 18.0191C12.4224 18.0191 12.9768 17.8805 13.4734 17.6033C13.9701 17.3261 14.3628 16.9449 14.6515 16.4598C14.9403 15.9747 15.0846 15.4319 15.0846 14.8313V11.0891C15.0846 10.9505 15.0269 10.8465 14.9114 10.7772L13.5947 10.0149V14.8486C13.5947 15.1489 13.4676 15.3741 13.2135 15.5243L9.93912 17.4127C10.5051 17.817 11.1288 18.0191 11.8102 18.0191ZM12.4686 11.6781V9.32192L10.5108 8.21312L8.53579 9.32192V11.6781L10.5108 12.7869L12.4686 11.6781ZM7.40967 6.15145C7.40967 5.85115 7.53672 5.62592 7.79082 5.47577L11.0652 3.58735C10.4993 3.1831 9.87559 2.98097 9.19414 2.98097C8.58199 2.98097 8.02759 3.11957 7.53094 3.39677C7.03429 3.67397 6.64159 4.05512 6.35284 4.54022C6.07564 5.02532 5.93704 5.56817 5.93704 6.16878V9.89365C5.93704 10.0323 5.99479 10.142 6.11029 10.2228L7.40967 10.9851V6.15145ZM16.2108 14.4328C16.7883 14.1787 17.2445 13.786 17.5794 13.2547C17.9259 12.7234 18.0992 12.1459 18.0992 11.5222C18.0992 10.9562 17.9548 10.4134 17.6661 9.89365C17.3773 9.3739 17.0019 8.9812 16.5399 8.71555L13.3002 6.84445C13.2309 6.79825 13.1673 6.78092 13.1096 6.79248C13.0518 6.79248 12.9941 6.8098 12.9363 6.84445L11.637 7.5721L15.8296 10.0149C15.9567 10.0842 16.0491 10.1766 16.1068 10.2921C16.1761 10.3961 16.2108 10.5231 16.2108 10.6733V14.4328ZM12.7284 5.6317C12.9825 5.47 13.2366 5.47 13.4907 5.6317L16.7825 7.55477C16.7825 7.47393 16.7825 7.36997 16.7825 7.24292C16.7825 6.68852 16.6439 6.163 16.3667 5.66635C16.101 5.15815 15.7141 4.7539 15.2059 4.4536C14.7093 4.1533 14.1318 4.00315 13.4734 4.00315C12.8959 4.00315 12.3935 4.12442 11.9661 4.36697L8.70904 6.23808C8.59354 6.31892 8.53579 6.42865 8.53579 6.56725V8.0572L12.7284 5.6317Z" fill="currentColor"/></svg>`;
-const CG_LOGO = `<span class="bykcglogo lgo-host" aria-hidden="true">${CG_MARK}${logoOver("chatgpt.com", 22)}</span>`;
+// The ChatGPT sign-in button is OpenAI's approved "Continue with ChatGPT" format (https://developers.openai.com/siwc/website), with OpenAI's own logo files saved in /fonts/siwc/ (not logo.dev:
+// the Captain's order of 2026-11-05, for this one button only). Light theme: the white format (black logo, black label). Dark theme: the dark format (white logo, white label). Both logo
+// files are in the button and the theme shows one. data-oai-siwc-button lets OpenAI verify the integration.
+const cgLogo = () => `<img class="siwcl lt" src="/fonts/siwc/chatgpt-logo-black.svg" alt="" width="21" height="21" decoding="async"><img class="siwcl dk" src="/fonts/siwc/chatgpt-logo-white.svg" alt="" width="21" height="21" decoding="async">`;
+const cgButton = (off = "") => `<button type="button" class="siwcbtn" data-oai-siwc-button data-bykcg${off}>${cgLogo()}<span>Continue with ChatGPT</span></button>`;
 export const CG_WHY: Record<string, string> = {
   cancelled: "ChatGPT sign-in was cancelled. Nothing was saved.",
   expired: "That ChatGPT sign-in took too long or was already used. Try again.",
@@ -96,29 +100,34 @@ const MOCK_CONNS: Record<string, Conn> = {
   claudecode: { id: "claudecode", kind: "claudecode", label: "Claude Code", host: "", last4: "", email: "sam@example.com", plan_name: "Max", added_at: Date.now() - day, tested_at: Date.now() - day, test: { ok: true, at: Date.now() - day, checks: { reach: { ok: true, ms: 300 } } } },
   openrouter: { id: "openrouter", kind: "openrouter", label: "OpenRouter", host: "", last4: "4c1d", added_at: Date.now() - 5 * day, tested_at: null, test: null },
 };
-let mockSt: St = { usage: {}, on_plan: QP.has("byokplan"), full: !QP.has("byokplan"), plan_name: QP.has("byokplan") ? "Bring your own key" : "Personal", price: 10, connections: [], mode: QP.has("byokfb") ? "fallback" : QP.has("byokswitch") ? "switch" : "",
+const CG_SAMPLE: CgSum = QP.has("byokcgzero") ? { total: 0, peak: 0, days: 0, window: 30 } : { total: 1_240_000, peak: 486_000, days: 11, window: 30 };
+let mockSt: St = { usage: {}, chatgpt: { manage: "https://chatgpt.com/settings/usage", summary: QP.has("byokcgnosum") ? null : CG_SAMPLE, welcome: QP.has("byokcgwelcome"), invite: !QP.has("byokcginvoff") }, on_plan: QP.has("byokplan"), full: !QP.has("byokplan"), plan_name: QP.has("byokplan") ? "Bring your own key" : "Personal", price: 10, connections: [], mode: QP.has("byokfb") ? "fallback" : QP.has("byokswitch") ? "switch" : "",
   ...(QP.has("byokswitch") ? { switch_at: MOCK_RENEW } : {}), ...(QP.has("byokfb") ? { fallback: { active: true, since: Date.now() - 2 * 3600e3 } } : {}), openrouter: { manage: "https://openrouter.ai/keys/3f2a9c" }, custom: { model: QP.has("byoknomodel") ? null : "p_work1:gpt-6.1-sol" } };
 if (QP.has("byoksaved") || QP.has("byokfb") || QP.has("byokswitch")) mockSt.connections = [MOCK_CONNS.p_work1];
 if (QP.has("byokthree")) mockSt.connections = [MOCK_CONNS.chatgpt, MOCK_CONNS.opencode, MOCK_CONNS.p_work1];
 if (QP.has("byokcc")) mockSt.connections = [MOCK_CONNS.claudecode, MOCK_CONNS.opencode];
 if (QP.has("byokcgagain")) mockSt.connections = [{ ...MOCK_CONNS.chatgpt, signin_again: true }];
-// Sandbox only: ChatGPT and Claude show two bars (?byokusagelink: the link instead, ?byokusagelimit: a limit reached), OpenCode is always the link.
+// Sandbox only: Claude shows two bars (?byokusagelink: the link instead, ?byokusagelimit: a limit reached), OpenCode is always the link. ChatGPT shows the usage summary (?byokcgzero: no use yet, ?byokcgnosum: not loaded, ?byokcgwelcome: the first-sign-in message).
 const mockUsage = (kinds: string[]): Record<string, Usage> => Object.fromEntries(kinds.map(k => {
-  const manage = usagePages()[k], none = k === "opencode" || QP.has("byokusagelink"), hit = QP.has("byokusagelimit") && k === "chatgpt";
+  const manage = usagePages()[k], none = k === "opencode" || k === "chatgpt" || QP.has("byokusagelink"), hit = QP.has("byokusagelimit") && k === "chatgpt";
+  if (k === "chatgpt") return [k, { windows: [], at: 0, tried: false, manage, limit: hit ? { window: "", resets_at: null } : null }];   // ChatGPT has no windows: its summary is counted from our own calls, and a limit has no reset time
   return [k, { windows: none ? [] : [{ id: "session", label: "5 hours", used: hit ? 100 : k === "chatgpt" ? 38 : 64, resets_at: Date.now() + (hit ? 85 : 130) * 60e3 }, { id: "weekly", label: "This week", used: k === "chatgpt" ? 12 : 41, resets_at: Date.now() + 3 * day }], at: Date.now(), tried: true, manage,
     limit: hit ? { window: "session", resets_at: Date.now() + 85 * 60e3 } : null }];
 }));
 if (QP.has("byokusagecached")) mockSt.usage = mockUsage(mockSt.connections.map(c => c.kind));   // sandbox: the numbers were saved from an earlier visit
+let mockWelcomed = false;
 const STORAGE_MSG = "You're using 128 GB, and Bring your own key includes 100 GB. Delete files you don't need, or add 1 block of extra storage first.";
 async function mock(path: string, body?: any): Promise<any> {
   await new Promise(z => setTimeout(z, path.endsWith("/test") || path.endsWith("/opencode") || path.endsWith("/connections") ? 700 : 250));
   const add = (c: Conn) => { mockSt = { ...mockSt, connections: [...mockSt.connections.filter(x => x.id !== c.id), c] }; };
   if (path === "/byok") return mockSt;
-  if (path === "/byok/usage") { const kinds = mockSt.connections.map(c => c.kind).filter(k => k === "chatgpt" || k === "claudecode" || k === "opencode"); await new Promise(z => setTimeout(z, QP.has("byokusageslow") ? 4000 : 0)); mockSt = { ...mockSt, usage: mockUsage(kinds) }; return { usage: mockSt.usage }; }
+  if (path === "/byok/chatgpt/invite-dismiss") { mockSt = { ...mockSt, chatgpt: { ...mockSt.chatgpt, invite: false } }; return { ok: true, ...mockSt }; }
+  if (path === "/byok/chatgpt/welcomed") { mockSt = { ...mockSt, chatgpt: { ...mockSt.chatgpt, welcome: false } }; return { ok: true, ...mockSt }; }
+  if (path === "/byok/usage") { const kinds = mockSt.connections.map(c => c.kind).filter(k => k === "chatgpt" || k === "claudecode" || k === "opencode"); await new Promise(z => setTimeout(z, QP.has("byokusageslow") ? 4000 : 0)); mockSt = { ...mockSt, usage: mockUsage(kinds) }; return { usage: mockSt.usage, ...(kinds.includes("chatgpt") ? { chatgpt: { manage: mockSt.chatgpt.manage, summary: mockSt.chatgpt.summary } } : {}) }; }
   if (path === "/byok/test") { const c = mockSt.connections.find(x => x.id === body?.id); if (!c) return { error: "That service isn't connected." };
     const t: Test = { ok: true, at: Date.now(), checks: { reach: { ok: true, ms: 540 } } }; add({ ...c, test: t, tested_at: t.at! }); return { ok: true, test: t, ...mockSt }; }
   if (path === "/byok/remove") { mockSt = { ...mockSt, connections: mockSt.connections.filter(x => x.id !== body?.id), ...(!mockSt.connections.some(x => x.id !== body?.id) ? (body?.cancel_switch ? { mode: "" as Mode, switch_at: null } : mockSt.mode === "fallback" ? { mode: "" as Mode } : {}) : {}) }; return { ok: true, removed_models: 2, ...mockSt }; }
-  if (path === "/byok/chatgpt/finish") { if (!/code=/.test(String(body?.url || ""))) return { error: CG_WHY.paste, why: "paste" }; add(MOCK_CONNS.chatgpt); return { ok: true, ...mockSt }; }
+  if (path === "/byok/chatgpt/finish") { if (!/code=/.test(String(body?.url || ""))) return { error: CG_WHY.paste, why: "paste" }; add(MOCK_CONNS.chatgpt); mockSt = { ...mockSt, chatgpt: { ...mockSt.chatgpt, welcome: !mockWelcomed, invite: false } }; mockWelcomed = true; return { ok: true, ...mockSt }; }
   if (path === "/byok/claudecode/start") { await new Promise(z => setTimeout(z, QP.has("byokccslow") ? 6000 : 1200)); if (QP.has("byokccerr")) { const c = QP.get("byokccerr") || ""; return c === "day_limit" ? { error: "skipped: daily safety limit reached", code: "day_limit" } : { error: c }; } return QP.has("byokccfail") ? { error: "Claude isn't reachable right now. Try again in a minute." } : { ok: true, url: "https://claude.ai/oauth/authorize?code=true&client_id=sandbox" }; }
   if (path === "/byok/claudecode/finish") { if (String(body?.code || "").trim().length < 4 || /bad|wrong/.test(String(body?.code))) return { error: "That code didn't work. Copy the whole code Claude shows, paste it here and try again.", field: "code" }; add(MOCK_CONNS.claudecode); return { ok: true, ...mockSt }; }
   if (path === "/byok/opencode-plan") { const c = mockSt.connections.find(x => x.id === "opencode"); if (!c) return { error: "OpenCode isn't connected." }; add({ ...c, plan: body?.plan === "payg" ? "payg" : "go" }); return { ok: true, ...mockSt }; }
@@ -170,11 +179,17 @@ export function say(m: any, fb: string, code?: string): string {
 
 
 // The page's state from any /byok answer (GET, add, remove, mode all return it).
+// The ChatGPT part of the state: the summary counted on the server from the token usage of each completed ChatGPT plan call, and whether the first-sign-in message is still to be shown.
+const cgNum = (v: any) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.floor(Number(v)) : 0);
+function cgOf(d: any, prev?: CgInfo | null): CgInfo {
+  const x = d && typeof d === "object" ? d : {}, m = x.summary && typeof x.summary === "object" ? x.summary : null;
+  return { manage: CG_USAGE, summary: m ? { total: cgNum(m.total), peak: cgNum(m.peak), days: cgNum(m.days), window: cgNum(m.window) || 30 } : prev?.summary ?? null, welcome: "welcome" in x ? x.welcome === true : prev?.welcome === true, invite: "invite" in x ? x.invite === true : prev?.invite === true };
+}
 function stOf(d: any): St {
   const m: Mode = d.mode === "fallback" || d.mode === "switch" ? d.mode : "";
   return { on_plan: !!d.on_plan, full: d.full ?? !d.on_plan, plan_name: String(d.plan_name || ""), price: Number(d.price) || 10, mode: m, switch_at: d.switch_at ?? null,
     connections: Array.isArray(d.connections) ? d.connections : [], ...(d.fallback ? { fallback: { active: !!d.fallback.active, since: d.fallback.since ?? null } } : {}),
-    openrouter: { manage: /^https:\/\/openrouter\.ai\//.test(String(d.openrouter?.manage || "")) ? d.openrouter.manage : OR_KEYS }, custom: { model: typeof d.custom?.model === "string" ? d.custom.model : null }, usage: usageOf(d.usage) };
+    openrouter: { manage: /^https:\/\/openrouter\.ai\//.test(String(d.openrouter?.manage || "")) ? d.openrouter.manage : OR_KEYS }, custom: { model: typeof d.custom?.model === "string" ? d.custom.model : null }, usage: usageOf(d.usage), chatgpt: cgOf(d.chatgpt) };
 }
 const planName = () => B.st?.plan_name || "your plan";
 const fbOn = () => !!B.st && B.st.mode === "fallback" && !!B.st.fallback?.active;
@@ -195,10 +210,27 @@ export function bykLoad(force = false) {
       const j = JSON.stringify(d);
       if (j !== B.last || !B.st) { B.st = stOf(d); B.last = j; changed = true; try { const k = ckey(); if (k) localStorage.setItem(k, j); } catch {} }
       if (B.err && !B.step) { B.err = ""; changed = true; }
+      if (d.chatgpt?.welcome === true) cgWelcome();   // from the server's answer only, never from the saved copy
     } else if (!B.st) { B.err = say(d?.error, "Couldn't load your AI key settings. Try again in a minute.", d?.code); changed = true; }
   })
     .catch(() => { if (!B.st) { B.err = "Couldn't load your AI key settings. Check your connection and try again."; changed = true; } })
     .finally(() => { B.loading = false; if (changed && D?.shown()) D.repaint(); });
+}
+
+// ---- OpenAI's UI guidelines for ChatGPT plan use, outside Settings ----
+// "Using ChatGPT plan" with a Manage usage link under the composer, whenever the model that answers runs on the ChatGPT plan. boot: the server says so (the Bring your own key plan with General's
+// model on ChatGPT). A full plan on its backup key is known once this page's state has loaded. One line of OpenAI's own words, drawn with the composer so nothing moves when it shows.
+const SANDBOX_CGPLAN = new URLSearchParams(location.search).has("byokcgplan");
+export function bykPlanLine(boot: boolean): string {
+  const on = boot || SANDBOX_CGPLAN || (fbOn() && String(B.st?.custom.model || "").startsWith("chatgpt:"));
+  return on ? `<p class="siwcplan" role="status">Using ChatGPT plan <a href="${esc(CG_USAGE)}" target="_blank" rel="noopener noreferrer">Manage usage</a></p>` : "";
+}
+// The reply the server writes when the ChatGPT plan's usage limit is reached (src/byok-usage.js limitText). The chat shows it as the compact message of OpenAI's guideline: ChatGPT's identity,
+// "Usage limit reached", the review line, Manage usage as the primary action and Buy app credits (the existing Add credits) as the secondary one.
+export const bykIsCgLimit = (t: string) => /^Your AI service \(ChatGPT\): Usage limit reached\./.test(String(t || "").trim());
+export function bykLimitCard(): string {
+  return `<div class="siwclim" role="status"><div class="siwcid">${cgLogo()}<b>ChatGPT</b></div><b class="siwct">Usage limit reached</b><p>Review your plan or this app's limit in ChatGPT settings.</p>
+    <div class="siwcacts"><a class="siwcpri" href="${esc(CG_USAGE)}" target="_blank" rel="noopener noreferrer">Manage usage</a><button type="button" class="siwcsec" data-bykcredits>Buy app credits</button></div></div>`;
 }
 
 // ---- Usage: which AI is in use, and a pending switch (Captain 10-06: "Using your own AI key (1Helm credits used up)") ----
@@ -247,9 +279,22 @@ function resetText(ms: number | null): string {
   if (m < 1440) return `Resets in ${Math.floor(m / 60)}h ${m % 60}m`;
   return `Resets ${new Date(ms).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`;
 }
+// Tokens as a short number: 950, 12.4K, 1.2M. A day count stays whole.
+const tokText = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, "")}M` : n >= 1e3 ? `${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, "")}K` : String(n);
+// ChatGPT plan usage (OpenAI's "Link to ChatGPT usage" guideline): a title, "Last 30 days across your threads and agents.", Total, Peak / day and Active days, and Manage usage beside the summary.
+// The numbers are counted from the token usage of each completed ChatGPT plan call; until they are known the three values show a dash and the block keeps its size.
+function cgUsageBlock(): string {
+  const i = B.st?.chatgpt, m = i?.summary, u = B.st?.usage?.chatgpt, hit = !!u?.limit;
+  const v = (t: string) => m ? t : "—";
+  return `<div class="bykusage siwcuse" data-bykusage="chatgpt"><div class="siwcuh"><b>ChatGPT plan usage</b><span>Last 30 days across your threads and agents.</span></div>
+    <dl class="siwcst"><div><dt>Total</dt><dd>${v(`${tokText(m?.total || 0)} tokens`)}</dd></div><div><dt>Peak / day</dt><dd>${v(`${tokText(m?.peak || 0)} tokens`)}</dd></div><div><dt>Active days</dt><dd>${v(String(m?.days || 0))}</dd></div></dl>
+    ${hit ? `<p class="bukhit" role="status">Usage limit reached. Review your plan or this app's limit in ChatGPT settings.</p>` : ""}
+    <div class="siwcmg"><span>View and manage your ChatGPT usage</span><a class="bukmanage" href="${esc(CG_USAGE)}" target="_blank" rel="noopener noreferrer">Manage usage</a></div></div>`;
+}
 function usageBlock(c: Conn): string {
   if (c.kind !== "chatgpt" && c.kind !== "claudecode" && c.kind !== "opencode") return "";
   if (c.signin_again) return "";
+  if (c.kind === "chatgpt") return cgUsageBlock();
   const u = B.st?.usage?.[c.kind], manage = u?.manage || usagePages()[c.kind];
   const link = (t: string) => `<a class="bukmanage" href="${esc(manage)}" target="_blank" rel="noopener noreferrer">${t}</a>`;
   const wins = (u?.windows || []).map(w => (w.resets_at && w.resets_at <= Date.now() ? { ...w, used: 0, resets_at: null } : w));
@@ -269,26 +314,40 @@ export function bykUsageLoad() {
   usageAt = Date.now();
   call("/byok/usage").then(d => {
     if (!d || d.error || !B.st) return;
-    const next = usageOf(d.usage); if (JSON.stringify(next) === JSON.stringify(B.st.usage)) return;
-    B.st = { ...B.st, usage: { ...B.st.usage, ...next } };
-    try { const k = ckey(), raw = k ? localStorage.getItem(k) : null; if (k && raw) { const j = JSON.parse(raw); j.usage = { ...(j.usage || {}), ...d.usage }; B.last = JSON.stringify(j); localStorage.setItem(k, B.last); } } catch {}
+    const next = usageOf(d.usage), cg = d.chatgpt ? cgOf(d.chatgpt, B.st.chatgpt) : B.st.chatgpt;
+    if (JSON.stringify(next) === JSON.stringify(B.st.usage) && JSON.stringify(cg) === JSON.stringify(B.st.chatgpt)) return;
+    B.st = { ...B.st, usage: { ...B.st.usage, ...next }, chatgpt: { ...cg, welcome: B.st.chatgpt.welcome, invite: B.st.chatgpt.invite } };
+    try { const k = ckey(), raw = k ? localStorage.getItem(k) : null; if (k && raw) { const j = JSON.parse(raw); j.usage = { ...(j.usage || {}), ...d.usage }; if (d.chatgpt) j.chatgpt = { ...(j.chatgpt || {}), summary: d.chatgpt.summary }; B.last = JSON.stringify(j); localStorage.setItem(k, B.last); } } catch {}
     if (D?.shown() && !B.step && !B.busy) D.repaint();
   }).catch(() => {});
 }
 
 function connRow(c: Conn): string {
   const busy = B.busy === "test" && B.busyId === c.id, del = B.busy === "del" && B.busyId === c.id, off = B.busy ? " disabled" : "";
-  const again = c.kind === "chatgpt" && c.signin_again ? `<button class="bykcgbtn" data-bykcg${off}>${CG_LOGO}<span>Continue with ChatGPT</span></button>` : "";
+  const again = c.kind === "chatgpt" && c.signin_again ? cgButton(off) : "";
   const ccAgain = c.kind === "claudecode" && c.signin_again ? `<button class="bykaddb" data-bykcc${off}>${logoChip(serviceDomain("claudecode"), 20)}Continue with Claude</button>` : "";
   return `<div class="sc bykconn" data-bykconn="${esc(c.id)}">${D!.srow(svcIcon(c.kind, c.host, D!.icon(c.kind === "chatgpt" || c.kind === "openrouter" ? "key" : "spark")), esc(c.label), subOf(c), c.test ? `<span class="${c.test.ok ? "sok" : "sval bykneed"}">${c.test.ok ? D!.icon("check", 14) + "Works" : "Failed"}</span>` : "")}
     ${testHtml(c.test && !c.test.ok ? c.test : null)}${usageBlock(c)}
     <div class="sfoot bykacts">${again}${ccAgain}${c.kind === "opencode" ? `<button class="sa" data-bykplan="${c.plan === "payg" ? "go" : "payg"}"${off}>${B.busy === "plan" ? "Switching…" : c.plan === "payg" ? "Use my Go plan" : "Use pay as you go"}</button>` : ""}<button class="sa blue" data-byktest="${esc(c.id)}"${off}>${busy ? "Testing…" : "Test"}</button><button class="sa mute" data-bykrm="${esc(c.id)}"${off}>${del ? "Removing…" : "Remove"}</button></div></div>`;
 }
+// OpenAI's "Invite existing users to sign in with ChatGPT": a small New banner at the top of AI services for an account with no ChatGPT connection that has not dismissed it (the server keeps the dismissal).
+// Continue with ChatGPT is the action and starts the same connect flow as the offer card below.
+function inviteBanner(): string {
+  if (!B.st?.chatgpt.invite || has("chatgpt")) return "";
+  const off = B.busy ? " disabled" : "";
+  return `<div class="sc siwcinv" role="region" aria-label="Use your ChatGPT plan"><div class="siwcit"><span class="siwcnew">New</span><b>Use your ChatGPT plan in this app.</b></div>${cgButton(off)}<button type="button" class="siwcx" data-bykinvx aria-label="Dismiss"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>`;
+}
+function inviteDismiss() {
+  if (!B.st) return;
+  B.st = { ...B.st, chatgpt: { ...B.st.chatgpt, invite: false } }; D?.repaint();
+  call("/byok/chatgpt/invite-dismiss", {}).then(d => { if (d?.ok) applyState(d); }).catch(() => {});
+}
 // The buttons that add a service. A service that can only be connected once leaves the list of buttons when it is connected.
 function addButtons(): string {
   const off = B.busy ? " disabled" : "";
-  return `<div class="sc bykadd"><div class="bykaddrow">${!has("openrouter") ? `<button type="button" class="sprim bykorbtn" data-bykor${off}>${logoChip(serviceDomain("openrouter"), 20)}Sign in with OpenRouter</button>` : ""}
-    ${!has("chatgpt") ? `<button type="button" class="bykcgbtn" data-bykcg${off}>${CG_LOGO}<span>Continue with ChatGPT</span></button>` : ""}
+  // ChatGPT plan use is offered in a card of its own (OpenAI's guidelines: say what it is and keep it distinct from the app's own plan), the other services are the row below.
+  const offer = !has("chatgpt") ? `<div class="sc siwcoffer"><div class="siwctxt"><b>Use your ChatGPT plan</b><span>Complete eligible AI requests in this app with usage included in your ChatGPT plan or credits balance.</span><em>ChatGPT plan usage is separate from your 1Helm plan.</em></div>${cgButton(off)}</div>` : "";
+  return `${offer}<div class="sc bykadd"><div class="bykaddrow">${!has("openrouter") ? `<button type="button" class="sprim bykorbtn" data-bykor${off}>${logoChip(serviceDomain("openrouter"), 20)}Sign in with OpenRouter</button>` : ""}
     ${!has("claudecode") ? `<button type="button" class="bykaddb" data-bykcc${off}>${logoChip(serviceDomain("claudecode"), 20)}Continue with Claude</button>` : ""}
     ${!has("opencode") ? `<button type="button" class="bykaddb" data-bykoc${off}>${logoChip(serviceDomain("opencode"), 20)}Use OpenCode</button>` : ""}
     <button type="button" class="bykaddb" data-bykplain${off}>Add an OpenAI-compatible service</button></div></div>`;
@@ -332,10 +391,10 @@ function stepForm(): string {
     ${CC.s === "ready" ? `<label class="sf${B.err ? " bykbad" : ""}"><span>Paste the code from Claude</span><input id="byk-cccode" data-bykf="cccode" value="${esc(B.f.cccode)}" placeholder="Code from Claude" autocomplete="off" autocapitalize="none" spellcheck="false">${B.err ? `<em class="bykerr" role="alert">${esc(B.err)}</em>` : ""}</label>
     <div class="sbtns"><button class="sprim" type="submit"${B.busy ? " disabled" : ""}>${B.busy === "cc" ? "Checking…" : "Continue"}</button><button type="button" class="sa" data-bykcancel${B.busy ? " disabled" : ""}>Cancel</button></div>` : `<div class="sbtns"><button type="button" class="sa" data-bykcancel>Cancel</button></div>`}</form>`;
   }
-  if (B.step === "chatgpt") return `<form class="sc sform" id="bykcgf" novalidate><div class="sfh">${svcHead("chatgpt", D!.icon("spark"))}<b>Continue with ChatGPT</b></div>
+  if (B.step === "chatgpt") return `<form class="sc sform" id="bykcgf" novalidate><div class="sfh"><span class="bykhl siwcmark">${cgLogo()}</span><b>Continue with ChatGPT</b></div>
     <p class="sfine bykcgsteps">ChatGPT opened in a new tab. Allow 1Helm there. The page you land on won't load, and that's expected: copy its address from the address bar and paste it here.</p>
     <label class="sf${B.err ? " bykbad" : ""}"><span>Paste the address of the page you land on</span><input id="byk-cgurl" data-bykf="cgurl" value="${esc(B.f.cgurl)}" placeholder="http://127.0.0.1:1479/auth/callback?code=…" autocomplete="off" autocapitalize="none" spellcheck="false" inputmode="url">${B.err ? `<em class="bykerr" role="alert">${esc(B.err)}</em>` : ""}</label>
-    <div class="sbtns"><button class="sprim" type="submit"${B.busy ? " disabled" : ""}>${B.busy === "cg" ? "Checking…" : "Continue"}</button><button type="button" class="sa blue" data-bykcg${B.busy ? " disabled" : ""}>Open ChatGPT again</button><button type="button" class="sa" data-bykcancel${B.busy ? " disabled" : ""}>Cancel</button></div></form>`;
+    <div class="sbtns"><button class="sprim" type="submit"${B.busy ? " disabled" : ""}>${B.busy === "cg" ? "Checking…" : "Continue"}</button><button type="button" class="sa blue" data-oai-siwc-button data-bykcg${B.busy ? " disabled" : ""}>Open ChatGPT again</button><button type="button" class="sa" data-bykcancel${B.busy ? " disabled" : ""}>Cancel</button></div></form>`;
   return "";
 }
 export function bykPage(): string {
@@ -353,7 +412,7 @@ export function bykPage(): string {
     : cs.length ? "" : `<div class="bykplan">${D.icon("spark", 16)}<span><b>Two ways to use it on ${plan}</b>Connect a service below, then choose: keep ${plan} and use your services only when your 1Helm credits run out, or switch now to the $${s.price} plan with them.</span></div>`;
   const list = cs.map(connRow).join(""), step = stepForm();
   const status = B.err && !B.step && !B.field ? `<p class="bykerr" role="alert">${esc(B.err)}</p>` : B.orErr ? `<p class="bykerr bykorerr" role="alert">${esc(B.orErr)}</p>` : "";
-  return `${head}${top}${list}${step || addButtons()}${status}${cmodelsOwnPanel(cs.length > 0)}${s.full && cs.length && !step ? choiceHtml() : ""}
+  return `${head}${step ? "" : inviteBanner()}${top}${list}${step || addButtons()}${status}${cmodelsOwnPanel(cs.length > 0)}${s.full && cs.length && !step ? choiceHtml() : ""}
     <p class="sfine">${esc(BYK_WARN)} If a service stops working, ${who} says so in the task and points you here; ${s.full ? "while your services are in use, " : ""}1Helm never switches to its own AI instead. Keys are stored encrypted and can't be shown again, only their last 4 characters.</p>`;
 }
 // A full plan with a switch to the $10 plan pending (made here or in Change plan).
@@ -491,6 +550,15 @@ function orSignIn() {
   }, 700);
 }
 // ---- Continue with ChatGPT ----
+// OpenAI's "Confirm ChatGPT plan use after the first sign-in": shown once per account. The server keeps the flag (it is set when the first sign-in succeeds and cleared by Got it), so another browser or a later sign-in never shows it again.
+let welcomeOn = false;
+function cgWelcome() {
+  if (welcomeOn) return; welcomeOn = true;
+  void tell({ title: "You're using your ChatGPT plan", body: "Eligible usage in this app uses your ChatGPT plan. Manage usage in your ChatGPT settings.", ok: "Got it" }).then(() => {
+    if (B.st) B.st = { ...B.st, chatgpt: { ...B.st.chatgpt, welcome: false } };
+    call("/byok/chatgpt/welcomed", {}).catch(() => {});
+  }).finally(() => { welcomeOn = false; });
+}
 function cgOpen() { if (D?.cgStart) window.open(D.cgStart, "_blank", "noopener"); else window.open("about:blank", "_blank", "noopener"); }   // OpenAI's page in a new tab; this tab stays here for the paste
 function cgSignIn() { if (B.busy) return; const first = B.step !== "chatgpt"; cgOpen(); if (first) openStep("chatgpt"); }
 function cgFinish() {
@@ -499,7 +567,7 @@ function cgFinish() {
   if (!url) { B.err = CG_WHY.paste; D?.repaint(); return; }
   B.busy = "cg"; B.err = ""; D?.repaint();
   call("/byok/chatgpt/finish", { url }).then(d => {
-    if (d?.ok) { applyState(d); closeStep(); afterAdd("ChatGPT"); } else B.err = say(d?.error, CG_WHY[d?.why] || CG_WHY.exchange, d?.code) || CG_WHY.exchange;
+    if (d?.ok) { applyState(d); closeStep(); afterAdd("ChatGPT"); if (d.chatgpt?.welcome === true) cgWelcome(); } else B.err = say(d?.error, CG_WHY[d?.why] || CG_WHY.exchange, d?.code) || CG_WHY.exchange;
   }).catch(() => { B.err = "Couldn't reach 1Helm. Check your internet and try again."; }).finally(() => { B.busy = ""; D?.repaint(); });
 }
 // ---- Continue with Claude: Anthropic's page opens in a new tab, the code it shows is pasted here ----
@@ -561,6 +629,7 @@ export function bykInit(d: Deps) {
     const pb = t.closest<HTMLElement>("[data-bykplan]"); if (pb) { e.preventDefault(); ocPlan(pb.dataset.bykplan!); return; }
     const rb = t.closest<HTMLElement>("[data-bykrm]"); if (rb) { e.preventDefault(); remove(rb.dataset.bykrm!); return; }
     if (t.closest("[data-bykcancel]")) { e.preventDefault(); closeStep(); D?.repaint(); return; }
+    if (t.closest("[data-bykinvx]")) { e.preventDefault(); inviteDismiss(); return; }
     if (t.closest("[data-bykcg]")) { e.preventDefault(); cgSignIn(); return; }
     if (t.closest("[data-bykccopen]")) { e.preventDefault(); ccOpen(); return; }
     if (t.closest("[data-bykcc]")) { e.preventDefault(); ccSignIn(); return; }

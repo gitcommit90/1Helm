@@ -103,7 +103,7 @@ export { CC_SOURCE, isCcModel, claudeChat, ccModelsJson, ccStart, ccFinish, ccWa
 export { usageCache, refreshUsage, dropUsage } from "./byok-usage.js";
 export { listRows, viewRows, connCfgs, splitModel, connDdl, plainFromForm, addPlain, addSealed, addChatgpt, addClaudeCode, adoptPending, removeConnection, saveTest, testConnection, setOcPlan, CONN_KEY_RE } from "./byok-connections.js";
 export { OC_SOURCE, ocBase, ocPlan, opencodeChat, opencodeModelsJson } from "./byok-opencode.js";
-export { CG_SOURCE, CG_USAGE_PAGE, CG_WHY_TEXT, cgStart, cgDdl, cgFinish, chatgptChat, chatgptModelsJson, chatgptUsage } from "./byok-chatgpt.js";
+export { CG_SOURCE, CG_USAGE_PAGE, CG_WHY_TEXT, cgStart, cgDdl, cgFinish, chatgptChat, chatgptModelsJson, chatgptUseSummary, chatgptWelcomeCreate, chatgptWelcomePending, chatgptWelcomeDone, chatgptInviteShown, chatgptInviteDismiss } from "./byok-chatgpt.js";
 export { beeLibraryRoute } from "./bee-library.js";
 export { modelSettingsEnv, readModelSettings, jobModel, jobModels, jobCost, modelFacts } from "./model-settings.js";
 export { MOONDREAM } from "./model-seed.js";

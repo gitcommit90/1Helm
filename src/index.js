@@ -92,7 +92,7 @@ import { betterDesignView, betterDesignChoice } from "./better-design.js";   // 
 
 const NANO = 1e9;                         // balances in nano-dollars (integers)
 import { PLANS } from "./plans-def.js";
-import { byokApi, BYOK_PLAN, ledgerByok, switchNow } from "./byok.js";
+import { byokApi, BYOK_PLAN, ledgerByok, switchNow, chatgptPlanInUse } from "./byok.js";
 import { cgStart, adoptPending } from "./ee/index.js";   // licensed AI services layer: Continue with ChatGPT and the OpenRouter key becoming a connection (both only with ONEHELM_EE)
 import { orStart, orFinish, orCookie, orCookieOf } from "./byok-openrouter.js";   // Sign in with OpenRouter (the BYOK panel's optional button)   // own AI key: the byok plan's settings + routing (+ a backup key on a full plan)
 import { People, aliasesFor } from "./people.js";
@@ -187,7 +187,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "355";
+const APP_V = "356";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -1131,7 +1131,7 @@ export default {
             used_text: storage.used_text, limit_text: storage.limit_text, counted_at: storage.counted_at, notice: storage.notice };
           if (access.reason === "payment_failed" && !look) await pastdueSeen(env, t.id, tzIn);   // its reminder emails use their time zone
           const account = eeEnabled(env)
-            ? { plan: PLANS[planKey(t.plan)].name, plan_key: planKey(t.plan), price: PLANS[planKey(t.plan)].price, ...(t.plan === BYOK_PLAN ? { byok: true } : {}), ...(storage ? { storage } : {}), balance: usd(ls.balance_nano), usagePercent: month ? month.pct : Math.min(100, Math.round(used / granted * 100)), ...(month ? { month } : {}), ...(notice ? { notice } : {}), spend_pauses: gi?.spend_pauses === true, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t), custom_models: statusOfRow(t, await ownKindForStatus(env, t)), better_design: betterDesignView(t, await betterDesignChoice(env, t.id)) }
+            ? { plan: PLANS[planKey(t.plan)].name, plan_key: planKey(t.plan), price: PLANS[planKey(t.plan)].price, ...(t.plan === BYOK_PLAN ? { byok: true } : {}), ...((await chatgptPlanInUse(env, t)) ? { chatgpt_plan: true } : {}), ...(storage ? { storage } : {}), balance: usd(ls.balance_nano), usagePercent: month ? month.pct : Math.min(100, Math.round(used / granted * 100)), ...(month ? { month } : {}), ...(notice ? { notice } : {}), spend_pauses: gi?.spend_pauses === true, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t), custom_models: statusOfRow(t, await ownKindForStatus(env, t)), better_design: betterDesignView(t, await betterDesignChoice(env, t.id)) }
             : { plan: "Self-hosted", plan_key: "byok", price: 0, byok: true, ...(publicStorage ? { storage: publicStorage } : {}), today: ls.today, spend_pauses: gi?.spend_pauses !== false, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t), better_design: betterDesignView(t, await betterDesignChoice(env, t.id)) };
           return json({ tenant: t.slug, features: eeFeatures(env), access, flags: { notebook_pages: hsOn(env) }, contacts, contactDups, person: { name: t.first_name || "", email: user.email }, helper: { name: helperName(t), avatar: Number(t.helper_avatar || 8) }, account, ...(light ? {} : { interview: interviewBoot(iv) }), ...(look ? { look: true } : {}), channels: out, pomodoro_global: await A.pomoGlobalView().catch(() => null) });   // look: a dev "view as" (the app never asks it for location or the mic)
         }

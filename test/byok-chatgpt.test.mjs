@@ -190,6 +190,7 @@ let firstAT;
   ex.length = 0;
   const s = await startRes(), c = consent(s), x = await finish(c.address);
   assert.equal(x.status, 200); assert.deepEqual(x.d.connections.map((c) => [c.id, c.kind, c.email, c.signin_again]), [["chatgpt", "chatgpt", "sam@chat.example", false]]);
+  assert.equal(x.d.chatgpt.welcome, true, "the first sign-in leaves the You're using your ChatGPT plan message pending");
   assert.equal(ex.length, 1); assert.equal(ex[0].client_id, ISSUED); assert.equal(ex[0].redirect_uri, CG_REDIRECT); assert.equal(ex[0].resource, "https://api.openai.com/v1"); assert.equal(ex[0].grant_type, "authorization_code");
   const row = d1.prepare("SELECT * FROM byok_chatgpt WHERE tenant_id='t1'").get();
   assert.equal(row.client_id, ISSUED); assert.equal(row.subject, "user-1"); assert.equal(row.broken, 0);
@@ -263,7 +264,7 @@ let firstAT;
   const last = t.out.at(-1); assert.equal(last.choices[0].finish_reason, "tool_calls"); assert.equal(last.usage.prompt_tokens, 9); assert.equal(last.usage.completion_tokens, 4); assert.equal(last.usage.cost, 0); assert.ok(t.txt.trimEnd().endsWith("data: [DONE]"));
   const inc = await read([{ type: "response.output_text.delta", delta: "x" }, { type: "response.incomplete", response: { incomplete_details: { reason: "max_output_tokens" } } }]); assert.equal(inc.out.at(-1).choices[0].finish_reason, "length");
   await assert.rejects(read([{ type: "response.output_text.delta", delta: "x" }]), (e) => e instanceof ByokError && /stopped sending/.test(e.message));   // no response.completed: not a success
-  await assert.rejects(read([{ type: "response.failed", response: { error: { code: "subscription_sharing_usage_limit_exceeded" } } }]), (e) => e instanceof ByokError && /usage limit/.test(e.message) && /^Your AI service \(ChatGPT\)/.test(e.message));
+  await assert.rejects(read([{ type: "response.failed", response: { error: { code: "subscription_sharing_usage_limit_exceeded" } } }]), (e) => e instanceof ByokError && e.limit === true && /^Your AI service \(ChatGPT\): Usage limit reached\./.test(e.message));
   await assert.rejects(read([{ type: "response.failed", response: { error: { code: "subscription_sharing_usage_unavailable" } } }]), (e) => /couldn't check your usage/.test(e.message));
   ok("translation: Responses request (no unsupported field, instructions, tool calls, images) and event stream (text, reasoning, tool calls, usage, incomplete, failed, cut off)");
 }
@@ -291,7 +292,7 @@ let firstAT;
   await byokChat(cfg, { messages: [{ role: "user", content: "x" }] }, { fast: true }); assert.equal(responses.at(-1).body.model, "gpt-5-mini");
   responses.length = 0; refreshes.length = 0; mode.fail401 = 1;
   await (await byokChat(cfg, { messages: [{ role: "user", content: "x" }], stream: true })).text(); assert.equal(responses.length, 2); assert.equal(refreshes.length, 1); assert.equal(responses[1].auth, `Bearer ${curAT}`);
-  mode.resp = "limit"; await assert.rejects(byokChat(cfg, { messages: [{ role: "user", content: "x" }], stream: true }), (e) => e instanceof ByokError && e.limit === true && /^Your AI service \(ChatGPT\) has reached the usage limit of your ChatGPT plan/.test(e.message) && /\[Manage usage\]\(https:\/\/chatgpt\.com\/settings\/usage\)/.test(e.message));
+  mode.resp = "limit"; await assert.rejects(byokChat(cfg, { messages: [{ role: "user", content: "x" }], stream: true }), (e) => e instanceof ByokError && e.limit === true && /^Your AI service \(ChatGPT\): Usage limit reached\. Review your plan or this app's limit in ChatGPT settings\./.test(e.message) && /\[Manage usage\]\(https:\/\/chatgpt\.com\/settings\/usage\)/.test(e.message));
   mode.resp = "failed"; await assert.rejects(byokChat(cfg, { messages: [{ role: "user", content: "x" }], stream: true }), (e) => e instanceof ByokError && /couldn't check your usage/.test(e.message));
   mode.resp = "cut"; await assert.rejects((async () => { const r = await byokChat(cfg, { messages: [{ role: "user", content: "x" }], stream: true }); await r.text(); })(), (e) => e instanceof ByokError);
   mode.resp = "ok";
@@ -308,11 +309,13 @@ let firstAT;
   d1.prepare("UPDATE byok_chatgpt SET broken=1, record_sealed=''").run();
   await assert.rejects(byokChat(cfg, { messages: [{ role: "user", content: "x" }] }), (e) => e instanceof ByokError && /sign in with ChatGPT again/.test(e.message));
   assert.equal((await api("/api/byok")).d.connections[0].signin_again, true, "the list says to sign in again");
-  const s3 = await startRes(); await finish(consent(s3).address);
+  { const w = await api("/api/byok/chatgpt/welcomed", {}); assert.equal(w.status, 200); assert.equal(w.d.chatgpt.welcome, false, "Got it ends the message"); }
+  const s3 = await startRes(), again = await finish(consent(s3).address); assert.equal(again.d.chatgpt.welcome, false, "signing in again never shows it again");
   // Remove revokes and clears, takes its models out of the setting; the host id stays
   const host = d1.prepare("SELECT host_id FROM byok_chatgpt_host WHERE tenant_id='t1'").get().host_id; revokes.length = 0;
   const del = await api("/api/byok/remove", { id: "chatgpt" }); assert.equal(del.status, 200); assert.deepEqual(del.d.connections, []); assert.equal(del.d.removed_models, 2);
   assert.equal(revokes.length, 1); assert.equal(revokes[0].token, curRT); assert.equal(revokes[0].client_id, ISSUED); assert.equal(revokes[0].token_type_hint, "refresh_token");
+  assert.equal(d1.prepare("SELECT COUNT(*) n FROM byok_chatgpt_welcome WHERE tenant_id='t1' AND shown_at>0").get().n, 1, "the shown flag outlives a disconnect");
   assert.equal(d1.prepare("SELECT COUNT(*) n FROM byok_chatgpt").get().n, 0); assert.equal(d1.prepare("SELECT host_id FROM byok_chatgpt_host WHERE tenant_id='t1'").get().host_id, host);
   ok("whole path: sign-in is the connection, Test with no model call, models chosen in Custom Model Selection, streamed and tool chat, fast model, 401 refresh, plain failures, Remove revokes and clears");
 }

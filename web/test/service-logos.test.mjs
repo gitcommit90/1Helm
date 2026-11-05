@@ -1,4 +1,4 @@
-// node test/service-logos.test.mjs: every AI service in Settings, AI services shows its logo.dev logo through 1HC's /logo/<domain> route (never img.logo.dev, never a key):
+// node test/service-logos.test.mjs: every AI service in Settings, AI services shows its logo.dev logo through 1HC's /logo/<domain> route (never img.logo.dev, never a key), except the Continue with ChatGPT button, which uses OpenAI's official assets and data-oai-siwc-button:
 // ChatGPT chatgpt.com, OpenCode opencode.ai, OpenRouter openrouter.ai, an OpenAI-compatible service the registrable domain of its address. The model picker's service labels do the same.
 import assert from "node:assert"; import { build } from "esbuild"; import { mkdtempSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -19,14 +19,19 @@ async function page(search) {
   return m.bykPage();
 }
 const urls = (html) => [...html.matchAll(/src="(\/logo\/[^"]+)"/g)].map((x) => x[1]);
+const cgBtn = (html) => html.match(/<button[^>]*data-oai-siwc-button[^>]*data-bykcg[^>]*>.*?<\/button>/s)?.[0] || "";
+const officialCg = (html) => { const b = cgBtn(html); assert.ok(b, "the Continue with ChatGPT button carries data-oai-siwc-button");
+  assert.ok(b.includes("/fonts/siwc/chatgpt-logo-white.svg") && b.includes("/fonts/siwc/chatgpt-logo-black.svg"), "the ChatGPT button uses OpenAI's official logo files");
+  assert.ok(!b.includes("/logo/chatgpt.com"), "the ChatGPT button does not use logo.dev"); };
 
 let html = await page("?byokplan");
-assert.deepStrictEqual(urls(html).sort(), ["/logo/chatgpt.com", "/logo/claude.ai", "/logo/opencode.ai", "/logo/openrouter.ai"].sort(), "the add buttons ask for ChatGPT, Claude Code, OpenCode and OpenRouter");
+assert.deepStrictEqual(urls(html).sort(), ["/logo/claude.ai", "/logo/opencode.ai", "/logo/openrouter.ai"].sort(), "the Claude, OpenCode and OpenRouter add buttons ask for their logo.dev logos");
+officialCg(html);
 assert.ok(!/img\.logo\.dev|token=pk_/.test(html), "the app never asks logo.dev itself and never holds a key");
-ok("add buttons: /logo/chatgpt.com, /logo/claude.ai, /logo/opencode.ai, /logo/openrouter.ai");
+ok("add buttons: ChatGPT uses the official OpenAI asset, OpenCode and OpenRouter use /logo/<domain>");
 
 html = await page("?byokthree");
-assert.deepStrictEqual(urls(html).sort(), ["/logo/chatgpt.com", "/logo/claude.ai", "/logo/openai.com", "/logo/opencode.ai", "/logo/openrouter.ai"].sort(), "connected rows: ChatGPT, OpenCode, and api.openai.com as openai.com; the add buttons left are Claude Code and OpenRouter");
+assert.deepStrictEqual(urls(html).sort(), ["/logo/chatgpt.com", "/logo/claude.ai", "/logo/openai.com", "/logo/opencode.ai", "/logo/openrouter.ai"].sort(), "connected rows: ChatGPT, OpenCode, and api.openai.com as openai.com; the add buttons left are Claude and OpenRouter");
 ok("connected rows ask for each service's own domain (an address shows its registrable domain)");
 
 const { serviceDomain } = await import(pathToFileURL(lout).href);

@@ -3,13 +3,14 @@
 // can be read, a "Manage usage" link to the service's own usage page. Nothing here changes how a model call is sent.
 //
 // Sources, tried in this order per service (each is read only; no model call, and no token is logged or returned):
-//   ChatGPT      GET https://chatgpt.com/backend-api/wham/usage with the connection's own access token and the account id from its sign-in (byok-chatgpt.js chatgptUsage).
+//   ChatGPT      no source here. OpenAI's Sign in with ChatGPT guidelines say not to use ChatGPT backend-api endpoints for this flow, so the page shows a summary counted from the
+//                token usage of each completed Responses call (byok-chatgpt.js recordChatgptUse and chatgptUseSummary) and a "Manage usage" link.
 //   Claude Code  the rate limit headers Anthropic sends on every model call, kept by the engine (claude-engine.js), else GET https://api.anthropic.com/api/oauth/usage run INSIDE the
 //                engine's container with the CLI's own token (src/ee/claude-engine/relay/usage.mjs), else the link.
 //   OpenCode     no usage endpoint is documented for a personal API key (opencode.ai/v2/docs/console/api), so it is the link.
 // A failed source is remembered (a permanent refusal 6 hours, a network or server error 2 minutes), so a page view never retries it, and the link shows meanwhile.
 //
-// The parsers for the ChatGPT and Claude usage answers are ported from rerouted (https://github.com/gitcommit90/rerouted, src/lib/quota.js, MIT), the Captain's own app.
+// The parser for the Claude usage answer is ported from rerouted (https://github.com/gitcommit90/rerouted, src/lib/quota.js, MIT), the Captain's own app.
 // No imports: this file is used by the Worker, by the engine object and by tests.
 
 export const USAGE_MANAGE = {
@@ -41,14 +42,6 @@ function windowOf(id, used, resetsAt, seconds) {
   const u = clampPercent(used); if (u == null) return null;
   const fiveHours = id === "session" && (!seconds || (Number(seconds) >= 17000 && Number(seconds) <= 19000));
   return { id, label: id === "weekly" ? "This week" : fiveHours ? "5 hours" : "Session", used: Math.round(u * 10) / 10, resets_at: epochMs(resetsAt) };
-}
-// ChatGPT: { plan_type, rate_limit: { primary_window, secondary_window: { used_percent, reset_at, limit_window_seconds } } }
-export function parseCodexUsage(data) {
-  const rate = data?.rate_limit || {}, windows = [];
-  const a = windowOf("session", rate.primary_window?.used_percent, rate.primary_window?.reset_at, rate.primary_window?.limit_window_seconds);
-  const b = windowOf("weekly", rate.secondary_window?.used_percent, rate.secondary_window?.reset_at, rate.secondary_window?.limit_window_seconds);
-  if (a) windows.push(a); if (b) windows.push(b);
-  return { plan: typeof data?.plan_type === "string" ? data.plan_type.slice(0, 40) : "", windows };
 }
 // Claude: { five_hour: { utilization, resets_at }, seven_day: { ... } } (utilization is a percent)
 export function parseClaudeUsage(data) {
@@ -153,7 +146,9 @@ export function limitFromWindows(windows) {
 
 // ---- the words for a limit ----
 export function limitText(service, { window = "", resets_at = null, host = "", now = Date.now() } = {}) {
-  const name = USAGE_NAME[service] || "AI service", plan = service === "chatgpt" ? "ChatGPT plan" : service === "claudecode" ? "Claude plan" : "OpenCode Go plan";
+  // ChatGPT: OpenAI's wording. The limit code alone says nothing about a reset time (an app-specific limit can apply), so none is given for it.
+  if (service === "chatgpt") return `Your AI service (${host || "ChatGPT"}): Usage limit reached. Review your plan or this app's limit in ChatGPT settings. [Manage usage](${USAGE_MANAGE.chatgpt})`;
+  const name = USAGE_NAME[service] || "AI service", plan = service === "claudecode" ? "Claude plan" : "OpenCode Go plan";
   const which = window === "weekly" ? "weekly" : window === "session" ? "5-hour" : "";
   const when = resetIn(resets_at, now);
   return `Your AI service (${host || name}) has reached the ${which ? which + " " : ""}usage limit of your ${plan}${when ? `, and it resets ${when}` : ""}, so I couldn't finish this. [Manage usage](${USAGE_MANAGE[service]}), ${service === "opencode" ? "switch this connection to pay as you go, or choose another model" : "or choose another model"} in Settings → AI services.`;

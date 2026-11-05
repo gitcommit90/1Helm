@@ -6,7 +6,7 @@ import assert from "node:assert/strict"; import { DatabaseSync } from "node:sqli
 import { test } from "node:test";
 import { byokApi, withChatgpt, withClaudeCode, ByokError } from "../src/byok.js";
 import { connDdl } from "../src/ee/byok-connections.js";
-import { chatgptChat, chatgptUsage, CG_USAGE_URL } from "../src/ee/byok-chatgpt.js";
+import { chatgptChat } from "../src/ee/byok-chatgpt.js";
 import { claudeChat, claudeUsage } from "../src/ee/byok-claudecode.js";
 import { ocFail } from "../src/ee/byok-opencode.js";
 import { orDdl } from "../src/byok-openrouter.js";
@@ -37,20 +37,15 @@ const seedChatgpt = async () => {
 };
 const seedClaude = () => d1.prepare("INSERT OR REPLACE INTO byok_connections (tenant_id,id,kind,label,base_url,key_sealed,key_last4,created_at,updated_at,test_json) VALUES ('t1','claudecode','claudecode','Claude Code','','','',1,1,?)").run(JSON.stringify({ ok: true, account: { email: "s@x.example", plan: "max" }, at: 1 }));
 const seedOpencode = async (plan = "go") => d1.prepare("INSERT OR REPLACE INTO byok_connections (tenant_id,id,kind,label,base_url,key_sealed,key_last4,created_at,updated_at,oc_plan) VALUES ('t1','opencode','opencode','OpenCode','https://opencode.ai/inference',?,?,1,1,?)").run(await sealSecret(env, "oc-key-9f3b"), "9f3b", plan);
-const wipe = async () => { await orDdl(env); await connDdl(env); d1.exec("DELETE FROM byok; DELETE FROM byok_connections; DELETE FROM byok_chatgpt; DELETE FROM byok_usage;"); U._resetUsageDdl(); engineCalls.length = 0; engineUsage = { none: true, why: "asleep" }; engineThrows = false; engineComplete = null; logs.length = 0; whamCalls.length = 0; wham.mode = "ok"; };
-const whamCalls = [], wham = { mode: "ok" };
-const WHAM = { plan_type: "plus", rate_limit: { primary_window: { used_percent: 37.5, reset_at: Math.floor((Date.now() + 7200e3) / 1000), limit_window_seconds: 18000 }, secondary_window: { used_percent: 12, reset_at: Math.floor((Date.now() + 5 * 86400e3) / 1000), limit_window_seconds: 604800 } } };
+const wipe = async () => { await orDdl(env); await connDdl(env); d1.exec("DELETE FROM byok; DELETE FROM byok_connections; DELETE FROM byok_chatgpt; DELETE FROM byok_usage;"); U._resetUsageDdl(); engineCalls.length = 0; whamCalls.length = 0; engineUsage = { none: true, why: "asleep" }; engineThrows = false; engineComplete = null; logs.length = 0; };
+const whamCalls = [];   // every fetch to a ChatGPT backend-api address (there must be none: OpenAI's guidelines say not to use it for this flow)
 const fetchStub = async (u, init = {}) => {
-  if (String(u) === CG_USAGE_URL) { whamCalls.push({ headers: init.headers, redirect: init.redirect }); if (wham.mode === "ok") return jres(WHAM); if (wham.mode === "html") return new Response("<html>", { status: 200 }); return jres({ error: "x" }, Number(wham.mode)); }
+  if (/chatgpt\.com\/backend-api/.test(String(u))) { whamCalls.push(String(u)); return jres({}, 403); }
   throw new Error(`unexpected fetch ${u}`);
 };
 globalThis.fetch = fetchStub;
 
-test("parsers: ChatGPT windows, Claude windows, and the unified headers (a fraction and epoch seconds)", () => {
-  const c = U.parseCodexUsage({ plan_type: "pro", rate_limit: { primary_window: { used_percent: 250, reset_at: 1_900_000_000, limit_window_seconds: 18000 }, secondary_window: { used_percent: "12.5", reset_at: 1_900_500_000, limit_window_seconds: 604800 } } });
-  assert.deepEqual(c.windows, [{ id: "session", label: "5 hours", used: 100, resets_at: 1_900_000_000_000 }, { id: "weekly", label: "This week", used: 12.5, resets_at: 1_900_500_000_000 }]); assert.equal(c.plan, "pro");
-  assert.equal(U.parseCodexUsage({ rate_limit: { primary_window: { used_percent: 5, limit_window_seconds: 3600 } } }).windows[0].label, "Session", "another window length is just a session");
-  assert.deepEqual(U.parseCodexUsage({}).windows, []); assert.deepEqual(U.parseCodexUsage(null).windows, []); assert.deepEqual(U.parseCodexUsage({ rate_limit: { primary_window: { used_percent: "abc" } } }).windows, []);
+test("parsers: Claude windows, and the unified headers (a fraction and epoch seconds)", () => {
   const k = U.parseClaudeUsage({ five_hour: { utilization: 41, resets_at: "2030-01-01T05:00:00Z" }, seven_day: { utilization: 9, resets_at: "2030-01-05T00:00:00Z" }, seven_day_sonnet: { utilization: 99, resets_at: null } });
   assert.deepEqual(k.windows.map((w) => [w.id, w.label, w.used, w.resets_at]), [["session", "5 hours", 41, Date.parse("2030-01-01T05:00:00Z")], ["weekly", "This week", 9, Date.parse("2030-01-05T00:00:00Z")]]);
   const h = U.parseClaudeHeaders({ "anthropic-ratelimit-unified-5h-utilization": "0.42", "anthropic-ratelimit-unified-5h-reset": "1900000000", "anthropic-ratelimit-unified-7d-utilization": "1", "anthropic-ratelimit-unified-7d-reset": "1900500000", "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "1900000000" });
@@ -88,27 +83,15 @@ test("a limit note forces the next read and shows until the reset time", async (
   assert.equal(U.viewOf("claudecode", d1.prepare("SELECT * FROM byok_usage").get(), NOW + 7 * 3600e3).limit, null);
 });
 
-test("ChatGPT: the connection's token and account id go to wham/usage, two bars come back, and the state shows them from the cache without a call", async () => {
+test("ChatGPT: no usage source is read (no backend-api call), the state and the usage route carry the summary and the Manage usage link", async () => {
   await wipe(); await seedChatgpt();
-  let st = (await api("/api/byok")).d; assert.equal(whamCalls.length, 0, "opening the state reads no usage"); assert.deepEqual(st.usage.chatgpt, { windows: [], at: 0, tried: false, manage: "https://chatgpt.com/settings/usage", limit: null });
-  const r = await api("/api/byok/usage"); assert.equal(r.status, 200); assert.equal(whamCalls.length, 1);
-  assert.equal(whamCalls[0].headers.authorization, `Bearer ${AT}`); assert.equal(whamCalls[0].headers["chatgpt-account-id"], "acct-1234"); assert.equal(whamCalls[0].redirect, "manual");
-  assert.deepEqual(r.d.usage.chatgpt.windows.map((w) => [w.id, w.label, w.used]), [["session", "5 hours", 37.5], ["weekly", "This week", 12]]);
-  await api("/api/byok/usage"); assert.equal(whamCalls.length, 1, "from the cache");
-  st = (await api("/api/byok")).d; assert.equal(st.usage.chatgpt.windows.length, 2);
-  assert.ok(!logs.join("\n").includes(AT) && !JSON.stringify(r.d).includes(AT), "no token in a log or an answer"); assert.ok(logs.some((l) => /byok usage: chatgpt ok/.test(l)));
-});
-
-test("ChatGPT: a refused or unreadable answer leaves the Manage usage link, and the page view does not try again", async () => {
-  for (const mode of ["401", "403", "404", "500", "html"]) {
-    await wipe(); await seedChatgpt(); wham.mode = mode;
-    const r = await api("/api/byok/usage"); assert.deepEqual(r.d.usage.chatgpt.windows, [], mode); assert.equal(r.d.usage.chatgpt.manage, "https://chatgpt.com/settings/usage"); assert.equal(r.d.usage.chatgpt.tried, true);
-    await api("/api/byok/usage"); await api("/api/byok"); assert.equal(whamCalls.length, 1, `${mode}: one try`);
-    assert.ok(logs.some((l) => /byok usage: chatgpt failed/.test(l)) && !logs.join("\n").includes(AT));
-  }
-  await wipe(); await seedChatgpt(); d1.prepare("UPDATE byok_chatgpt SET broken=1, record_sealed=''").run();
-  assert.deepEqual((await api("/api/byok/usage")).d.usage.chatgpt.windows, [], "signed out: the link, no call"); assert.equal(whamCalls.length, 0);
-  await assert.rejects(chatgptUsage(env, "t1", { fetchImpl: fetchStub }), (e) => e.why === "signin");
+  let st = (await api("/api/byok")).d; assert.equal(whamCalls.length, 0, "opening the state reads no usage");
+  assert.deepEqual(st.usage.chatgpt, { windows: [], at: 0, tried: false, manage: "https://chatgpt.com/settings/usage", limit: null });
+  assert.deepEqual(st.chatgpt.summary, { total: 0, peak: 0, days: 0, window: 30 }); assert.equal(st.chatgpt.manage, "https://chatgpt.com/settings/usage");
+  const r = await api("/api/byok/usage"); assert.equal(r.status, 200); assert.equal(whamCalls.length, 0, "the route calls no ChatGPT address");
+  assert.deepEqual(r.d.usage.chatgpt.windows, []); assert.deepEqual(r.d.chatgpt.summary, { total: 0, peak: 0, days: 0, window: 30 });
+  assert.equal(d1.prepare("SELECT COUNT(*) n FROM byok_usage").get().n, 0, "nothing is cached for ChatGPT");
+  assert.ok(!logs.join("\n").includes(AT) && !JSON.stringify(r.d).includes(AT), "no token in a log or an answer");
 });
 
 test("Claude Code: the engine's numbers become two bars; with none the link shows, and the engine is not asked again for five minutes of failure", async () => {
@@ -129,24 +112,25 @@ test("OpenCode: no usage endpoint is documented for a personal key, so the link 
 
 test("the usage route covers only connected services, and removing a service forgets its numbers", async () => {
   await wipe(); assert.deepEqual((await api("/api/byok/usage")).d, { usage: {} }); await seedChatgpt(); await seedClaude(); engineUsage = { source: "headers", windows: [{ id: "session", label: "5 hours", used: 5, resets_at: NOW }] };
-  assert.deepEqual(Object.keys((await api("/api/byok/usage")).d.usage).sort(), ["chatgpt", "claudecode"]); assert.equal(d1.prepare("SELECT COUNT(*) n FROM byok_usage").get().n, 2);
+  assert.deepEqual(Object.keys((await api("/api/byok/usage")).d.usage).sort(), ["chatgpt", "claudecode"]); assert.equal(d1.prepare("SELECT COUNT(*) n FROM byok_usage").get().n, 1, "ChatGPT has no cached numbers");
   await api("/api/byok/remove", { id: "chatgpt" }); assert.deepEqual(d1.prepare("SELECT service FROM byok_usage").all().map((x) => x.service), ["claudecode"]);
 });
 
-test("limit hit, ChatGPT: the reply names the service and the limit, says when it resets, links Manage usage, and the page is told", async () => {
+test("limit hit, ChatGPT: OpenAI's wording, no reset time guessed from the code, a Manage usage link, and the page is told", async () => {
   await wipe(); await seedChatgpt();
   const cfg = withChatgpt({ base: "https://api.openai.com/v1", settings: "https://app.example.test/w/ck1/app#/settings" }, env, "t1");
   const limit = (body) => async (u, init) => (String(u).endsWith("/responses") ? new Response(JSON.stringify(body), { status: 429, headers: { "content-type": "application/json" } }) : fetchStub(u, init));
-  await U.refreshUsage(env, "t1", "chatgpt", () => chatgptUsage(env, "t1", { fetchImpl: fetchStub }));   // the numbers are read first
+  const WORDS = "Your AI service (ChatGPT): Usage limit reached. Review your plan or this app's limit in ChatGPT settings. [Manage usage](https://chatgpt.com/settings/usage)";
   await assert.rejects(chatgptChat(cfg, { messages: [{ role: "user", content: "x" }] }, { model: "gpt-5", fetchImpl: limit({ error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit" } }) }),
-    (e) => e instanceof ByokError && e.limit === true && /^Your AI service \(ChatGPT\) has reached the usage limit of your ChatGPT plan, so I couldn't finish this\. \[Manage usage\]\(https:\/\/chatgpt\.com\/settings\/usage\), or choose another model in Settings/.test(e.message));
+    (e) => e instanceof ByokError && e.limit === true && e.message === WORDS);
+  // a reset time or a retry hint in the body is never turned into "it resets in ..."
   const at = Date.now() + 3 * 3600e3;
-  await assert.rejects(chatgptChat(cfg, { messages: [{ role: "user", content: "x" }] }, { model: "gpt-5", fetchImpl: limit({ error: { code: "subscription_sharing_usage_limit_exceeded", resets_at: Math.floor(at / 1000) } }) }),
-    (e) => /reached the usage limit of your ChatGPT plan, and it resets in (2 hours 5\d minutes|3 hours)/.test(e.message));
-  const v = await U.usageView(env, "t1", "chatgpt"); assert.ok(v.limit && Math.abs(v.limit.resets_at - Math.floor(at / 1000) * 1000) < 1000, "the limit note carries the reset time");
-  // with the weekly window full in the numbers, the message says weekly
-  d1.exec("DELETE FROM byok_usage"); await U.refreshUsage(env, "t1", "chatgpt", async () => ({ windows: [{ id: "session", label: "5 hours", used: 30, resets_at: Date.now() + 3600e3 }, { id: "weekly", label: "This week", used: 100, resets_at: Date.now() + 2 * 86400e3 }] }));
-  await assert.rejects(chatgptChat(cfg, { messages: [{ role: "user", content: "x" }] }, { model: "gpt-5", fetchImpl: limit({ error: { code: "subscription_sharing_usage_limit_exceeded" } }) }), (e) => /reached the weekly usage limit of your ChatGPT plan, and it resets in 2 days/.test(e.message));
+  await assert.rejects(chatgptChat(cfg, { messages: [{ role: "user", content: "x" }] }, { model: "gpt-5", fetchImpl: limit({ error: { code: "subscription_sharing_usage_limit_exceeded", resets_at: Math.floor(at / 1000), resets_in_seconds: 7200, retry_after_seconds: 60 } }) }),
+    (e) => e.message === WORDS && !/resets|hour|minute|day|weekly|5-hour/i.test(e.message));
+  const v = await U.usageView(env, "t1", "chatgpt"); assert.ok(v.limit && v.limit.resets_at === null && v.limit.window === "", "the page is told of a limit with no reset time or window");
+  // even with a full window cached from before, nothing is inferred
+  d1.exec("DELETE FROM byok_usage"); await U.refreshUsage(env, "t1", "chatgpt", async () => ({ windows: [{ id: "weekly", label: "This week", used: 100, resets_at: Date.now() + 2 * 86400e3 }] }));
+  await assert.rejects(chatgptChat(cfg, { messages: [{ role: "user", content: "x" }] }, { model: "gpt-5", fetchImpl: limit({ error: { code: "subscription_sharing_usage_limit_exceeded" } }) }), (e) => e.message === WORDS);
   // other errors keep their old words
   await assert.rejects(chatgptChat(cfg, { messages: [{ role: "user", content: "x" }] }, { model: "gpt-5", fetchImpl: limit({ error: { code: "subscription_sharing_usage_unavailable" } }) }), (e) => !e.limit && /couldn't check your usage/.test(e.message));
 });
@@ -172,6 +156,6 @@ test("limit hit, OpenCode Go: a Go plan limit gets the Manage usage reply; pay a
 });
 
 test("limitText: names the service, the window and the reset, always with the link", () => {
-  assert.equal(U.limitText("chatgpt", { window: "weekly", resets_at: NOW + 2 * 86400e3, host: "ChatGPT", now: NOW }), "Your AI service (ChatGPT) has reached the weekly usage limit of your ChatGPT plan, and it resets in 2 days, so I couldn't finish this. [Manage usage](https://chatgpt.com/settings/usage), or choose another model in Settings → AI services.");
+  assert.equal(U.limitText("chatgpt", { window: "weekly", resets_at: NOW + 2 * 86400e3, host: "ChatGPT", now: NOW }), "Your AI service (ChatGPT): Usage limit reached. Review your plan or this app's limit in ChatGPT settings. [Manage usage](https://chatgpt.com/settings/usage)");
   assert.match(U.limitText("claudecode", {}), /\[Manage usage\]\(https:\/\/claude\.ai\/settings\/usage\)/);
 });

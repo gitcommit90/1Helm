@@ -40,7 +40,7 @@ import { enabled as eeEnabled, effortBody, ownChorePlan, parseOwn, listedRecords
   usageCache, refreshUsage, dropUsage,
   listRows, viewRows, connCfgs, splitModel, connDdl, plainFromForm, addPlain, addSealed, addChatgpt, addClaudeCode, adoptPending, removeConnection, saveTest, testConnection, setOcPlan, CONN_KEY_RE,
   OC_SOURCE, ocBase, ocPlan, opencodeChat, opencodeModelsJson,
-  CG_SOURCE, CG_USAGE_PAGE, CG_WHY_TEXT, cgDdl, cgFinish, chatgptChat, chatgptModelsJson, chatgptUsage } from "./ee/index.js";   // the licensed services layer: several AI services at once (every call into it is behind eeEnabled or a provider only it can save)
+  CG_SOURCE, CG_USAGE_PAGE, CG_WHY_TEXT, cgDdl, cgFinish, chatgptChat, chatgptModelsJson, chatgptUseSummary, chatgptWelcomeCreate, chatgptWelcomePending, chatgptWelcomeDone, chatgptInviteShown, chatgptInviteDismiss } from "./ee/index.js";   // the licensed services layer: several AI services at once (every call into it is behind eeEnabled or a provider only it can save)
 import { replayFor } from "./model.js";
 import { singleKeyConfig, singleKeyApi } from "./byok-single.js";   // one saved key: the core path without ONEHELM_EE
 import { OR_SOURCE, OR_BASE, orDdl, orForget, orView } from "./byok-openrouter.js";
@@ -538,12 +538,21 @@ async function ownMain(env, tid) {
     return { on: true, model: c?.categories?.find((x) => x.id === "general")?.chain?.[0]?.model || null, fast: c?.background?.chain?.[0]?.model || null };
   } catch { return { on: true, model: null, fast: null }; }
 }
+// "Using ChatGPT plan" under the composer (OpenAI's UI guidelines): the Bring your own key plan answers with General's first model, so it shows when that model is on the ChatGPT connection.
+// A full plan on its backup key is told to the app by the same line when its Settings page has loaded (byok.ts); boot only answers for the plan that always runs on the key.
+export async function chatgptPlanInUse(env, t) {
+  try {
+    if (t?.plan !== BYOK_PLAN) return false;
+    const m = (await ownMain(env, t.id)).model;
+    return typeof m === "string" && m.startsWith(`${CG_SOURCE}:`) && (await listRows(env, t.id)).some((r) => r.kind === "chatgpt");
+  } catch { return false; }
+}
 // True once General has a model chosen in Custom Model Selection (own-key).
 async function ownModelChosen(env, tid) { return !!(await ownMain(env, tid)).model; }
 async function stateOf(env, t, d, next) {
   const onPlan = t.plan === BYOK_PLAN, full = !onPlan, rows = await listRows(env, t.id), row = { mode: await modeOf(env, t.id) };
   const o = { on_plan: onPlan, full, plan: t.plan || "", plan_name: d?.PLANS?.[t.plan]?.name || "", price: 10, warning: ZDR_WARNING, mode: "", connections: await viewRows(env, t.id, rows), custom: await ownMain(env, t.id),
-    openrouter: { manage: (await orView(env, t.id, rows.find((r) => r.kind === "openrouter") ? { source: OR_SOURCE, key_sealed: rows.find((r) => r.kind === "openrouter").key_sealed } : null).catch(() => ({}))).manage || "" }, chatgpt: { manage: CG_USAGE_PAGE }, usage: await usageCache(env, t.id, rows.map((r) => r.kind)) };
+    openrouter: { manage: (await orView(env, t.id, rows.find((r) => r.kind === "openrouter") ? { source: OR_SOURCE, key_sealed: rows.find((r) => r.kind === "openrouter").key_sealed } : null).catch(() => ({}))).manage || "" }, chatgpt: { manage: CG_USAGE_PAGE, summary: await chatgptUseSummary(env, t.id), welcome: await chatgptWelcomePending(env, t.id), invite: await chatgptInviteShown(env, t.id, rows.some((r) => r.kind === "chatgpt")) }, usage: await usageCache(env, t.id, rows.map((r) => r.kind)) };
   if (onPlan) return o;
   if (next === undefined && d?.stripe && t.stripe_subscription) next = await nextPlan(env, t, d).catch((e) => { console.log("byok: subscription", String(e?.message || e).slice(0, 120)); return undefined; });
   const stored = row.mode || "", has = rows.length > 0;
@@ -583,7 +592,7 @@ async function chooseMode(env, t, d, mode, has) {
 // mode, switch-now, switch-preview, chatgpt/finish (the pasted address), chatgpt/forget and openrouter/forget (nothing is waiting any more; they answer the same state).
 export async function byokApi(req, env, t, sub, { json, fetchImpl = globalThis.fetch, waitUntil = null, ...d } = {}) {
   if (!eeEnabled(env)) return singleKeyApi(req, env, t, sub, { json, fetchImpl });   // core: one saved key
-  if (!/^\/api\/byok(\/(connections|opencode|opencode-plan|test|remove|mode|switch-now|switch-preview|openrouter\/forget|chatgpt\/(finish|forget)|claudecode\/(start|finish|warm)|usage))?$/.test(sub)) return null;
+  if (!/^\/api\/byok(\/(connections|opencode|opencode-plan|test|remove|mode|switch-now|switch-preview|openrouter\/forget|chatgpt\/(finish|forget|welcomed|invite-dismiss)|claudecode\/(start|finish|warm)|usage))?$/.test(sub)) return null;
   const onPlan = t.plan === BYOK_PLAN;
   await orDdl(env); await cgDdl(env); await connDdl(env);
   await adoptPending(env, t.id);   // a key Sign in with OpenRouter just made becomes the OpenRouter connection
@@ -591,9 +600,9 @@ export async function byokApi(req, env, t, sub, { json, fetchImpl = globalThis.f
   // Plan usage bars: read again when the cache is stale (byok-usage.js: a failed source is remembered, so this never retries on every view). Always answers; no numbers means the page shows Manage usage.
   if (sub === "/api/byok/usage" && req.method === "GET") {
     const kinds = [...new Set((await listRows(env, t.id)).map((r) => r.kind))].filter((k) => k === "chatgpt" || k === "claudecode" || k === "opencode");
-    const getters = { chatgpt: () => chatgptUsage(env, t.id, { fetchImpl }), claudecode: () => claudeUsage(env, t.id), opencode: null };
+    const getters = { chatgpt: null, claudecode: () => claudeUsage(env, t.id), opencode: null };   // ChatGPT has no source: its summary is counted from our own calls
     const views = await Promise.all(kinds.map(async (k) => [k, await refreshUsage(env, t.id, k, getters[k])]));
-    return json({ usage: Object.fromEntries(views) });
+    return json({ usage: Object.fromEntries(views), ...(kinds.includes("chatgpt") ? { chatgpt: { manage: CG_USAGE_PAGE, summary: await chatgptUseSummary(env, t.id) } } : {}) });
   }
   if (sub === "/api/byok/switch-preview" && req.method === "GET") { const r = await switchPreview(env, t, d); return json(r, r.error ? r.status || 400 : 200); }
   if (req.method !== "POST") return json({ error: "method" }, 405);
@@ -605,6 +614,8 @@ export async function byokApi(req, env, t, sub, { json, fetchImpl = globalThis.f
     if (r.error) return json({ error: r.error, ...(r.storage ? { storage: r.storage } : {}) }, r.status || 400);
     return json({ ok: true, ...(await stateOf(env, t, d, r.next)) });
   }
+  if (sub === "/api/byok/chatgpt/invite-dismiss") { await chatgptInviteDismiss(env, t.id); return json({ ok: true, ...(await stateOf(env, t, d)) }); }
+  if (sub === "/api/byok/chatgpt/welcomed") { await chatgptWelcomeDone(env, t.id); return json({ ok: true, ...(await stateOf(env, t, d)) }); }
   if (sub === "/api/byok/openrouter/forget" || sub === "/api/byok/chatgpt/forget") return json({ ok: true, ...(await stateOf(env, t, d)) });
   // Continue with ChatGPT: the person pastes the address their browser ended on (OpenAI's 127.0.0.1 page), and the code in it is exchanged here. The sign-in becomes the ChatGPT connection.
   if (sub === "/api/byok/chatgpt/finish") {
@@ -612,6 +623,7 @@ export async function byokApi(req, env, t, sub, { json, fetchImpl = globalThis.f
     const r = await cgFinish(env, { tenantId: t.id, pasted: b.url, fetchImpl });
     if (r.error) return json({ error: CG_WHY_TEXT[r.error] || CG_WHY_TEXT.exchange, why: r.error }, 400);
     await addChatgpt(env, t.id);
+    await chatgptWelcomeCreate(env, t.id);   // the first sign-in only (INSERT OR IGNORE): the app shows "You're using your ChatGPT plan" once
     return json({ ok: true, ...(await stateOf(env, t, d)) });
   }
   // Continue with Claude: start gives Anthropic's own address (the app opens it in a new tab), finish takes the code Anthropic shows there. The sign-in stays in the account's engine.
