@@ -54,3 +54,53 @@ p = await page("?byokcgagain&byokusagecached", 400);
 assert.doesNotMatch(p.html, /data-bykusage/, "a ChatGPT sign-in that ended shows no numbers");
 ok("a sign-in that ended shows no usage");
 console.log("byok usage bars: all passed");
+// ---- the waiting state, a new connection, a failed read and the late /byok answer (a fake api records the calls) ----
+async function apiPage(search, handler) {
+  globalThis.location = { search, pathname: "/v3/", hash: "", href: `http://x/v3/${search}`, origin: "http://x" };
+  const calls = [];
+  const api = async (path, body) => { calls.push(path); return handler(path, body, calls); };
+  const m = await import(`${pathToFileURL(out).href}?api${Math.random()}`);
+  m.bykInit({ api, repaint() { repaints++; }, open() {}, note() {}, who: () => "Skipper", srow: (i, t, s, r) => `<div class="sr">${t}|${s}|${r}</div>`, icon: () => "", shown: () => true, credits() {} });
+  return { m, calls };
+}
+const wait = (ms) => new Promise((z) => setTimeout(z, ms));
+const claude = { id: "claudecode", kind: "claudecode", label: "Claude Code", host: "", last4: "", email: "sam@example.com", plan_name: "Max", added_at: 1, tested_at: null, test: null };
+const stateOf = (conns, usage = {}) => ({ on_plan: false, full: true, plan_name: "Personal", price: 10, mode: "", connections: conns, usage, openrouter: { manage: "https://openrouter.ai/keys/x" }, custom: { model: null }, chatgpt: { manage: "https://chatgpt.com/settings/usage", summary: null, welcome: false, invite: false } });
+const tried = (at) => ({ claudecode: { windows: [{ id: "session", label: "5 hours", used: 64, resets_at: Date.now() + 36e5 }, { id: "weekly", label: "This week", used: 41, resets_at: Date.now() + 864e5 }], at, tried: true, manage: "https://claude.ai/settings/usage", limit: null } });
+
+// 1. waiting: same rows as the bars (labels, dashes, empty bars) and the link, never an empty box
+let live = stateOf([claude]), hold = true;
+let a = await apiPage("?x1", async (path) => { if (path === "/byok") return live; if (path === "/byok/usage") { while (hold) await wait(20); return { usage: tried(Date.now()) }; } return {}; });
+a.m.bykLoad(); await wait(100); const waiting = block(a.m.bykPage(), "claudecode");
+assert.match(waiting, /bykusage bukwait/); assert.match(waiting, /<b>5 hours<\/b><span>—<\/span>/); assert.match(waiting, /<b>This week<\/b><span>—<\/span>/);
+assert.equal((waiting.match(/class="bukbar"/g) || []).length, 2); assert.match(waiting, /Manage usage/); assert.doesNotMatch(waiting, /Loading|spinner/i);
+hold = false; await wait(150); assert.match(block(a.m.bykPage(), "claudecode"), /<span>64% used<\/span>/);
+ok("waiting state draws the bar layout with dashes and the link; numbers replace it");
+
+// 2. a connection added within 60 s of the last read is asked for at once
+live = stateOf([]); let n = 0;
+a = await apiPage("?x2", async (path) => { if (path === "/byok") return live; if (path === "/byok/usage") { n++; return { usage: n ? tried(Date.now()) : {} }; } return {}; });
+a.m.bykLoad(); await wait(100); a.m.bykUsageLoad(); assert.equal(a.calls.filter((c) => c === "/byok/usage").length, 0, "no plan service yet, nothing to read");
+live = stateOf([claude]); a.m.bykLoad(true); await wait(200);
+assert.equal(a.calls.filter((c) => c === "/byok/usage").length, 1, "the new Claude Code connection is read at once");
+assert.match(block(a.m.bykPage(), "claudecode"), /64% used/);
+a.m.bykUsageLoad(); await wait(50); assert.equal(a.calls.filter((c) => c === "/byok/usage").length, 1, "known numbers are still throttled for 60 s");
+ok("a new connection triggers a usage read inside the 60 s throttle");
+
+// 3. a failed read shows the Manage usage line; a later open tries again
+let fail = true; live = stateOf([claude]);
+a = await apiPage("?x3", async (path) => { if (path === "/byok") return live; if (path === "/byok/usage") return fail ? { error: "nope" } : { usage: tried(Date.now()) }; return {}; });
+a.m.bykLoad(); await wait(250); let f = block(a.m.bykPage(), "claudecode");
+assert.match(f, /bykusage bukno/); assert.match(f, /Usage isn't shown here\. <a class="bukmanage"/); assert.doesNotMatch(f, /bukwait/);
+fail = false; a.m.bykUsageLoad(); await wait(150); assert.match(block(a.m.bykPage(), "claudecode"), /64% used/);
+ok("a failed usage read shows the Manage usage line, and a later open reads again");
+
+// 4. a late /byok answer (older, usage not tried) does not erase newer usage
+let releaseByok; live = stateOf([claude]);
+a = await apiPage("?x4", async (path) => { if (path === "/byok") { await new Promise((z) => { releaseByok = z; }); return stateOf([claude], { claudecode: { ...tried(1).claudecode, windows: [], tried: false } }); } if (path === "/byok/usage") return { usage: tried(Date.now()) }; return {}; });
+a.m.bykPage(); a.m.bykLoad(); await wait(50); a.m.bykUsageLoad(); await wait(50);
+assert.ok(releaseByok, "the /byok request is waiting"); releaseByok(); await wait(100);
+assert.match(block(a.m.bykPage(), "claudecode"), /64% used/, "the older answer kept the newer numbers");
+ok("a late /byok answer keeps the newer usage");
+console.log("byok usage wait: all passed");
+

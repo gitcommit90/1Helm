@@ -58,10 +58,11 @@ await scenario("merge: replaces, keeps ids by id or text, caps items + character
   assert.equal(long.items.length, 2); assert.equal(long.items[0].text.length, TODO_MAX_CHARS); assert.equal(long.items[0].status, "doing"); assert.equal(long.items[1].text, "plain string step");
   const prev = { items: [{ id: "1", text: "Find flights", status: "doing", by: "helper", at: 1 }, { id: "2", text: "Book hotel", status: "todo", by: "helper", at: 1 }], seen: 5, next: 3 };
   const again = mergeTodos({ items: [{ text: "book HOTEL", status: "doing" }, { id: "1", text: "Find flights (direct)", status: "done" }, { id: "99", text: "Pack", status: "todo" }] }, prev);
-  // Only the person ticks done: the helper's "done" keeps item 1 as it was ("doing"), marked ready to tick, and it doesn't
-  // count against "one doing at a time".
-  assert.deepEqual(again.items.map((x) => [x.id, x.status, !!x.ready]), [["2", "doing", false], ["1", "doing", true], ["3", "todo", false]]); assert.equal(again.next, 4);
-  assert.ok(again.notes.some((n) => /Only the person ticks items done, so "Find flights \(direct\)" was left as it was/.test(n)), again.notes.join(" | "));
+  // The helper's "done" on item 1 while moving on to item 2: item 1 was the active one, so the app marks it done.
+  assert.deepEqual(again.items.map((x) => [x.id, x.status, !!x.ready]), [["2", "doing", false], ["1", "done", false], ["3", "todo", false]]); assert.equal(again.next, 4);
+  assert.ok(again.notes.some((n) => /marked done automatically/.test(n)), again.notes.join(" | "));
+  const held = mergeTodos({ items: [{ id: "1", text: "Find flights", status: "done" }] }, prev);
+  assert.ok(held.notes.some((n) => /Only the person ticks items done/.test(n)) && held.items[0].ready, "done with no move-on stays ready to tick");
   const asked = mergeTodos({ items: [{ id: "1", text: "Find flights", status: "done" }] }, prev, 6, { allowDone: true });
   assert.deepEqual(asked.items.map((x) => [x.status, !!x.ready]), [["done", false]], "an explicit (verified) ask lets it through");
   assert.match(mergeTodos({ items: "nope" }).error, /must be a list/);
@@ -81,12 +82,12 @@ for (const engine of ["classic", "pi"]) {
     const td = evs.filter((e) => e.t === "todos");
     assert.equal(td.length, 2, "one stream event per update");
     assert.deepEqual(td[0].items.map((x) => x.status), ["doing", "todo", "todo", "todo", "todo"]); assert.deepEqual(Object.keys(td[0].items[0]).sort(), ["id", "status", "text"]);
-    assert.deepEqual(td[1].items.map((x) => `${x.id}:${x.status}${x.ready ? ":ready" : ""}`), ["1:doing:ready", "2:doing", "3:todo", "5:todo"], "the whole list replaces the old one (item 4 removed); the helper's 'done' stays doing, ready to tick");
+    assert.deepEqual(td[1].items.map((x) => `${x.id}:${x.status}${x.ready ? ":ready" : ""}`), ["1:done", "2:doing", "3:todo", "5:todo"], "the whole list replaces the old one (item 4 removed); item 1 was active and the helper moved on, so it is done");
     assert.ok(!evs.some((e) => e.t === "status" && /to-do/.test(e.line)), "no status line for the list");
     // The model saw the stored truth as the tool result.
     const res1 = toolOut(R.calls[1]); assert.match(res1, /^Saved\. To-do list \(0 of 5 done\)/); assert.match(res1, /\(id 1\) \[doing\] Find flights/);
-    assert.match(toolOut(R.calls[2]), /0 of 4 done, 1 ready for the person to tick/); assert.match(toolOut(R.calls[2]), /\(id 1\) \[doing, ready for the person to tick\] Find flights/);
-    assert.match(toolOut(R.calls[2]), /Only the person ticks items done/);
+    assert.match(toolOut(R.calls[2]), /1 of 4 done/); assert.match(toolOut(R.calls[2]), /\(id 1\) \[done\] Find flights/);
+    assert.match(toolOut(R.calls[2]), /marked done automatically/);
     const d = await R.sessionDetail(session);
     assert.deepEqual(d.todos.map((x) => x.text), ["Find flights", "Compare prices", "Book the cheapest", "Send you the summary"]);
     assert.ok(d.turns.every((t) => !t.steps.some((s) => s.tool === "update_todos")), "update_todos is not a step in the chat");
@@ -95,7 +96,7 @@ for (const engine of ["classic", "pi"]) {
     await turn(R, "how's it going?", session);
     const msgs = R.calls.at(-1), u = lastUser(msgs).content;
     assert.equal(msgs[0].content, "SYSTEM");
-    assert.match(u, /^how's it going\?/); assert.match(u, /your to-do list for this task, which the person sees in the app; only they tick items done \(0 of 4 done\)/); assert.match(u, /\(id 2\) \[doing\] Compare prices/);
+    assert.match(u, /^how's it going\?/); assert.match(u, /your to-do list for this task, which the person sees in the app; only they tick items done \(1 of 4 done\)/); assert.match(u, /\(id 2\) \[doing\] Compare prices/);
     // Earlier turns in the history stay exactly as they were (stable prefix): no list in them.
     assert.ok(msgs.slice(1, -1).every((m) => !/to-do list for this task/.test(String(m.content))), "history carries no list");
   });
@@ -164,3 +165,56 @@ await scenario("texting tasks: the list is kept on the 'Text with ...' task and 
   assert.match(u, /^and\?/); assert.match(u, /\(id 1\) \[done\] Check the weather/); assert.match(u, /came by text/);
 });
 console.log("todos: all ok");
+
+// Moving on: a new "doing" item checks off the previously active one.
+{
+  const st = (items) => items.map((x) => x.status).join(",");
+  let m = mergeTodos({ items: [{ text: "a", status: "doing" }, { text: "b", status: "todo" }, { text: "c", status: "todo" }] });
+  let prev = { items: m.items, seen: 1, next: m.next, rev: 1 };
+  m = mergeTodos({ items: m.items.map((x, i) => ({ id: x.id, text: x.text, status: i === 1 ? "doing" : "todo" })) }, prev, 2);
+  assert.strictEqual(st(m.items), "done,doing,todo"); assert.ok(m.notes.some((n) => /marked done automatically/.test(n)));
+  // Items never active stay as they are when the active one jumps ahead.
+  prev = { items: m.items, seen: 2, next: m.next, rev: 2 };
+  m = mergeTodos({ items: m.items.map((x, i) => ({ id: x.id, text: x.text, status: i === 2 ? "doing" : x.status === "done" ? "done" : "todo" })) }, prev, 3);
+  assert.strictEqual(st(m.items), "done,done,doing");
+  // Same item stays active: nothing changes. Done items are not reopened.
+  prev = { items: m.items, seen: 3, next: m.next, rev: 3 };
+  m = mergeTodos({ items: m.items.map((x) => ({ id: x.id, text: x.text, status: x.status })) }, prev, 4);
+  assert.strictEqual(st(m.items), "done,done,doing");
+  // The person's unticked item (unseen by the helper) keeps their choice even if it was the active one.
+  const base = mergeTodos({ items: [{ text: "a", status: "doing" }, { text: "b", status: "todo" }] });
+  const pa = { items: base.items.map((x, i) => i === 0 ? { ...x, status: "todo", by: "person", at: 5 } : x), seen: 1, next: base.next, rev: 5 };
+  m = mergeTodos({ items: [{ id: base.items[0].id, text: "a", status: "doing" }, { id: base.items[1].id, text: "b", status: "doing" }] }, pa, 6);
+  assert.strictEqual(st(m.items).split(",")[0], "todo");
+  // Helper starts B but leaves A as doing (real dev run): A is done, B is doing.
+  const c1 = mergeTodos({ items: [{ text: "A", status: "doing" }, { text: "B", status: "todo" }, { text: "C", status: "todo" }] });
+  const p1 = { items: c1.items, seen: 1, next: c1.next, rev: 1 };
+  const c2 = mergeTodos({ items: c1.items.map((x, i) => ({ id: x.id, text: x.text, status: i < 2 ? "doing" : "todo" })) }, p1, 2);
+  assert.strictEqual(st(c2.items), "done,doing,todo"); assert.strictEqual(c2.items[0].by, "helper");
+  assert.ok(c2.notes.some((n) => /"A" was the active item and you moved on to "B", so it was marked done automatically/.test(n)), c2.notes.join(" | "));
+  assert.ok(!c2.notes.some((n) => /Only one item/.test(n)));
+  // Several newly doing items: only the first stays doing, the rest go back to todo.
+  const c3 = mergeTodos({ items: c1.items.map((x) => ({ id: x.id, text: x.text, status: "doing" })) }, p1, 2);
+  assert.strictEqual(st(c3.items), "done,doing,todo"); assert.ok(c3.notes.some((n) => /Only one item/.test(n)));
+  console.log("todos autocheck merge ok");
+}
+
+// Done stays done: replay of the dev run where the model re-sent a stale list on every call (session 60b18260 r2).
+{
+  const st = (items) => items.map((x) => x.status).join(",");
+  const send = (prev, sts, now) => mergeTodos({ items: prev.items.map((x, i) => ({ id: x.id, text: x.text, status: sts[i] })) }, prev, now);
+  const c1 = mergeTodos({ items: [{ text: "A", status: "doing" }, { text: "B", status: "todo" }, { text: "C", status: "todo" }] });
+  assert.strictEqual(st(c1.items), "doing,todo,todo");
+  const c2 = send({ items: c1.items, seen: 1, next: c1.next, rev: 1 }, ["doing", "doing", "todo"], 2);
+  assert.strictEqual(st(c2.items), "done,doing,todo"); assert.ok(c2.notes.some((n) => /"A" was the active item/.test(n)));
+  const c3 = send({ items: c2.items, seen: 2, next: c2.next, rev: 2 }, ["doing", "doing", "doing"], 3);
+  assert.strictEqual(st(c3.items), "done,done,doing");
+  assert.deepEqual(c3.notes.filter((n) => /kept it done/.test(n)), ['"A" is already done; kept it done.']);
+  assert.ok(c3.notes.some((n) => /"B" was the active item and you moved on to "C"/.test(n)), c3.notes.join(" | "));
+  assert.ok(!c3.notes.some((n) => /Only one item/.test(n)));
+  const c4 = send({ items: c3.items, seen: 3, next: c3.next, rev: 3 }, ["doing", "todo", "todo"], 4);
+  assert.strictEqual(st(c4.items), "done,done,todo", "C goes to todo as sent: nothing new became doing, so nothing is auto-done");
+  assert.deepEqual(c4.notes, ['"A" is already done; kept it done.', '"B" is already done; kept it done.']);
+  // A person's untick (seen by the helper) can still be changed by the helper; the person's own done is not covered by this rule.
+  console.log("todos keep-done replay ok");
+}

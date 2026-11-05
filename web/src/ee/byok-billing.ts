@@ -123,7 +123,7 @@ async function mock(path: string, body?: any): Promise<any> {
   if (path === "/byok") return mockSt;
   if (path === "/byok/chatgpt/invite-dismiss") { mockSt = { ...mockSt, chatgpt: { ...mockSt.chatgpt, invite: false } }; return { ok: true, ...mockSt }; }
   if (path === "/byok/chatgpt/welcomed") { mockSt = { ...mockSt, chatgpt: { ...mockSt.chatgpt, welcome: false } }; return { ok: true, ...mockSt }; }
-  if (path === "/byok/usage") { const kinds = mockSt.connections.map(c => c.kind).filter(k => k === "chatgpt" || k === "claudecode" || k === "opencode"); await new Promise(z => setTimeout(z, QP.has("byokusageslow") ? 4000 : 0)); mockSt = { ...mockSt, usage: mockUsage(kinds) }; return { usage: mockSt.usage, ...(kinds.includes("chatgpt") ? { chatgpt: { manage: mockSt.chatgpt.manage, summary: mockSt.chatgpt.summary } } : {}) }; }
+  if (path === "/byok/usage") { if (QP.has("byokusagefail")) { await new Promise(z => setTimeout(z, 1500)); return { error: "Try again in a minute." }; } const kinds = mockSt.connections.map(c => c.kind).filter(k => k === "chatgpt" || k === "claudecode" || k === "opencode"); await new Promise(z => setTimeout(z, QP.has("byokusageslow") ? 4000 : 0)); mockSt = { ...mockSt, usage: mockUsage(kinds) }; return { usage: mockSt.usage, ...(kinds.includes("chatgpt") ? { chatgpt: { manage: mockSt.chatgpt.manage, summary: mockSt.chatgpt.summary } } : {}) }; }
   if (path === "/byok/test") { const c = mockSt.connections.find(x => x.id === body?.id); if (!c) return { error: "That service isn't connected." };
     const t: Test = { ok: true, at: Date.now(), checks: { reach: { ok: true, ms: 540 } } }; add({ ...c, test: t, tested_at: t.at! }); return { ok: true, test: t, ...mockSt }; }
   if (path === "/byok/remove") { mockSt = { ...mockSt, connections: mockSt.connections.filter(x => x.id !== body?.id), ...(!mockSt.connections.some(x => x.id !== body?.id) ? (body?.cancel_switch ? { mode: "" as Mode, switch_at: null } : mockSt.mode === "fallback" ? { mode: "" as Mode } : {}) : {}) }; return { ok: true, removed_models: 2, ...mockSt }; }
@@ -208,8 +208,9 @@ export function bykLoad(force = false) {
   call("/byok").then(d => {
     if (d && !d.error) {
       const j = JSON.stringify(d);
-      if (j !== B.last || !B.st) { B.st = stOf(d); B.last = j; changed = true; try { const k = ckey(); if (k) localStorage.setItem(k, j); } catch {} }
+      if (j !== B.last || !B.st) { const n = stOf(d); B.st = B.st ? { ...n, usage: newerUsage(B.st.usage, n.usage), chatgpt: { ...n.chatgpt, summary: n.chatgpt.summary ?? B.st.chatgpt.summary } } : n; B.last = j; changed = true; try { const k = ckey(); if (k) localStorage.setItem(k, j); } catch {} }
       if (B.err && !B.step) { B.err = ""; changed = true; }
+      if (B.st && !usageBusy && usageUnknown(B.st)) setTimeout(bykUsageLoad, 0);   // a connection that has no numbers yet (added elsewhere, or the first read was skipped)
       if (d.chatgpt?.welcome === true) cgWelcome();   // from the server's answer only, never from the saved copy
     } else if (!B.st) { B.err = say(d?.error, "Couldn't load your AI key settings. Try again in a minute.", d?.code); changed = true; }
   })
@@ -304,22 +305,38 @@ function usageBlock(c: Conn): string {
       return `<div class="bukw${full ? " full" : ""}"><div class="bukt"><b>${esc(w.label)}</b><span>${pct}% used</span><em>${esc(w.resets_at ? resetText(w.resets_at) : "Not in use")}</em></div><div class="bukbar" role="progressbar" aria-label="${esc(w.label)} usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${Math.max(w.used > 0 ? 2 : 0, w.used)}%"></i></div></div>`; }).join("")}
       ${lim ? `<p class="bukhit" role="status">${esc(lim.window === "weekly" ? "Weekly limit reached" : lim.window === "session" ? "5 hour limit reached" : "Usage limit reached")}${lim.resets_at ? `. ${esc(resetText(lim.resets_at))}` : ""}. ${link("Manage usage")}</p>` : `<p class="bukmore">${link("Manage usage")}</p>`}</div>`;
   }
-  if (c.kind === "opencode" || u?.tried) return `<div class="bykusage bukno" data-bykusage="${c.kind}"><p>${u?.limit ? "Usage limit reached. " : "Usage isn't shown here. "}${link("Manage usage")}</p></div>`;
-  return `<div class="bykusage bukwait" data-bykusage="${c.kind}" aria-hidden="true"></div>`;   // the numbers are on their way: the space is kept so nothing moves
+  if (c.kind === "opencode" || u?.tried || usageFailed.has(c.kind)) return `<div class="bykusage bukno" data-bykusage="${c.kind}"><p>${u?.limit ? "Usage limit reached. " : "Usage isn't shown here. "}${link("Manage usage")}</p></div>`;
+  // The numbers are on their way: the same two rows the bars use (labels, a dash, empty bars) and the same link, so the block keeps its size and nothing moves when they arrive.
+  const row = (label: string) => `<div class="bukw" aria-hidden="true"><div class="bukt"><b>${label}</b><span>—</span><em></em></div><div class="bukbar"><i style="width:0%"></i></div></div>`;
+  return `<div class="bykusage bukwait" data-bykusage="${c.kind}">${row("5 hours")}${row("This week")}<p class="bukmore">${link("Manage usage")}</p></div>`;
 }
-let usageAt = 0;
-// Read the numbers again when AI services opens (the saved ones are drawn first). The server throttles the services themselves, so asking often is cheap.
+let usageAt = 0, usageBusy = false, usageAgain = false;
+const usageFailed = new Set<string>();   // plan services whose numbers could not be read: they show the Manage usage line until a later try works
+const PLAN_KINDS = ["chatgpt", "claudecode", "opencode"];
+// A connected plan service whose numbers have not been read yet (ChatGPT's come as a summary, the others as a usage view that was tried).
+const usageUnknown = (st: St) => st.connections.some(c => PLAN_KINDS.includes(c.kind) && !c.signin_again && (c.kind === "chatgpt" ? !st.chatgpt.summary : !st.usage?.[c.kind]?.tried));
+// Keep the newer usage view: the one that was tried, or the one read later, wins over an older copy.
+function newerUsage(prev: Record<string, Usage> | undefined, next: Record<string, Usage>): Record<string, Usage> {
+  const out = { ...next };
+  for (const k of Object.keys(prev || {})) { const a = prev![k], b = out[k]; if (!b || (a.tried && !b.tried) || (a.tried === b.tried && a.at > b.at)) out[k] = a; }
+  return out;
+}
+// Read the numbers again when AI services opens (the saved ones are drawn first), and at once when a connection has no numbers yet. The server throttles the services themselves, so asking often is cheap.
 export function bykUsageLoad() {
-  if (!B.st || Date.now() - usageAt < 60e3 || !B.st.connections.some(c => c.kind === "chatgpt" || c.kind === "claudecode" || c.kind === "opencode")) return;
-  usageAt = Date.now();
+  if (!B.st || !B.st.connections.some(c => PLAN_KINDS.includes(c.kind))) return;
+  if (usageBusy) { usageAgain = true; return; }
+  if (Date.now() - usageAt < 60e3 && !usageUnknown(B.st)) return;
+  usageAt = Date.now(); usageBusy = true;
+  const fail = () => { if (!B.st) return; const before = usageFailed.size; for (const c of B.st.connections) if (PLAN_KINDS.includes(c.kind) && c.kind !== "chatgpt" && !B.st.usage?.[c.kind]?.tried) usageFailed.add(c.kind); if (usageFailed.size !== before && D?.shown() && !B.step && !B.busy) D.repaint(); };
   call("/byok/usage").then(d => {
-    if (!d || d.error || !B.st) return;
-    const next = usageOf(d.usage), cg = d.chatgpt ? cgOf(d.chatgpt, B.st.chatgpt) : B.st.chatgpt;
+    if (!d || d.error || !B.st) return fail();
+    usageFailed.clear();
+    const next = newerUsage(B.st.usage, usageOf(d.usage)), cg = d.chatgpt ? cgOf(d.chatgpt, B.st.chatgpt) : B.st.chatgpt;
     if (JSON.stringify(next) === JSON.stringify(B.st.usage) && JSON.stringify(cg) === JSON.stringify(B.st.chatgpt)) return;
     B.st = { ...B.st, usage: { ...B.st.usage, ...next }, chatgpt: { ...cg, welcome: B.st.chatgpt.welcome, invite: B.st.chatgpt.invite } };
     try { const k = ckey(), raw = k ? localStorage.getItem(k) : null; if (k && raw) { const j = JSON.parse(raw); j.usage = { ...(j.usage || {}), ...d.usage }; if (d.chatgpt) j.chatgpt = { ...(j.chatgpt || {}), summary: d.chatgpt.summary }; B.last = JSON.stringify(j); localStorage.setItem(k, B.last); } } catch {}
     if (D?.shown() && !B.step && !B.busy) D.repaint();
-  }).catch(() => {});
+  }).catch(fail).finally(() => { usageBusy = false; if (usageAgain) { usageAgain = false; bykUsageLoad(); } });
 }
 
 function connRow(c: Conn): string {
@@ -444,7 +461,7 @@ function closeStep() { CC.s = ""; CC.url = ""; CC.n++; B.step = ""; B.err = B.fi
 function openStep(s: Step) { closeStep(); B.step = s; B.orErr = ""; D?.repaint(); setTimeout(() => (document.getElementById(s === "plain" ? "byok-base" : s === "opencode" ? "byok-ock" : s === "claudecode" ? "byok-cccode" : "byok-cgurl") as HTMLInputElement | null)?.focus(), 60); }
 
 // ---- the requests ----
-function applyState(d: any) { B.st = "on_plan" in d ? stOf(d) : B.st; }
+function applyState(d: any) { if ("on_plan" in d) { B.st = stOf(d); bykUsageLoad(); } }
 function test(id: string) {
   if (B.busy) return;
   B.busy = "test"; B.busyId = id; B.err = B.field = ""; D?.repaint();

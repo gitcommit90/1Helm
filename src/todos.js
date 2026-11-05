@@ -5,6 +5,9 @@
 // its status and gets ready: true ("ready for you to tick" in the app); ready items don't count against "one doing at a time".
 // The one exception is an explicit request: person_asked, a quote verified against the person's messages in this turn
 // (person-asked.js), lets the helper's "done" through for that call.
+// Done items stay done: a later helper list that sends an item the helper side finished (auto-checked or person_asked) as todo or
+// doing doesn't reopen it, and the result says so. A person's own tick or untick is handled as described below.
+// Moving on: when a different item becomes "doing" (even if the helper leaves the old one "doing" too), the item that was "doing" is marked done by the app (mergeTodos).
 //   rev: bumped on every change   seen: the rev the helper last saw (its tool result, or the list in its message)
 // The helper always sends the whole list (it replaces the old one). A person's tick made after the helper last saw the list wins
 // over the helper's stale copy, and the tool result says so; once the helper has seen it, the helper may change it again.
@@ -12,7 +15,7 @@ export const TODO_MAX_ITEMS = 30, TODO_MAX_CHARS = 200;
 const STATUS = { todo: "todo", doing: "doing", done: "done", pending: "todo", open: "todo", not_started: "todo", in_progress: "doing", "in-progress": "doing", active: "doing", working: "doing", completed: "done", complete: "done", finished: "done" };
 
 export const TODO_TOOL = { type: "function", function: { name: "update_todos",
-  description: "Keep a to-do list for this task. The person sees it live in the app (a checklist button in the task's header) and ticks items off themselves; many people rely on it to stay oriented, so keep it true. Use it for multi-step work (about 3 or more distinct steps, or when the person gives you several things to do): write the steps when you start, then call it again as you go, marking exactly one item \"doing\" while you work on it. Only the person ticks items done: never mark items done yourself. When an item is finished, leave it as \"doing\" (or as it was), and move on to the next; an item you send as \"done\" keeps its status and shows as ready to tick. Only when the person explicitly asks you in this conversation to tick specific items (e.g. \"check off the flights\") send those as \"done\" with their own words in person_asked. Send the WHOLE list every time; it replaces the old one: keep each item's id, keep the order, and add or remove items as the plan changes. Items are short, plain steps the person understands, not technical detail (at most 30 items, 200 characters each). Don't use it for quick one-step requests, simple questions or chat. When a later message starts new multi-step work, replace a finished list with a new one; an empty list clears it. Returns the current list, including items the person ticked or unticked themselves (their change is kept if you hadn't seen it yet).",
+  description: "Keep a to-do list for this task. The person sees it live in the app (a checklist button in the task's header) and ticks items off themselves; many people rely on it to stay oriented, so keep it true. Use it for multi-step work (about 3 or more distinct steps, or when the person gives you several things to do): write the steps when you start, then call it again as you go, marking exactly one item \"doing\" while you work on it. Only the person ticks items done: never mark items done yourself. When an item is finished, leave it as \"doing\" (or as it was), and move on to the next; when you make a different item \"doing\" (even if you leave the old one as \"doing\" too), the app marks the item that was \"doing\" before as done automatically, and an item that is already done stays done if a later list sends it as \"todo\" or \"doing\" (only the person can untick it). An item you send as \"done\" keeps its status and shows as ready to tick. Only when the person explicitly asks you in this conversation to tick specific items (e.g. \"check off the flights\") send those as \"done\" with their own words in person_asked. Send the WHOLE list every time; it replaces the old one: keep each item's id, keep the order, and add or remove items as the plan changes. Items are short, plain steps the person understands, not technical detail (at most 30 items, 200 characters each). Don't use it for quick one-step requests, simple questions or chat. When a later message starts new multi-step work, replace a finished list with a new one; an empty list clears it. Returns the current list, including items the person ticked or unticked themselves (their change is kept if you hadn't seen it yet).",
   parameters: { type: "object", properties: { person_asked: { type: "string", description: "Only when the person explicitly asked you to tick items done: a short exact quote of their words, e.g. 'tick off the hotel'. Leave out otherwise." }, items: { type: "array", maxItems: TODO_MAX_ITEMS, description: "The whole list, in order", items: { type: "object", properties: {
     id: { type: "string", description: "The item's id from the current list; leave out for a new item" },
     text: { type: "string", description: "A short, plain step, e.g. 'Compare prices on 3 sites'" },
@@ -35,7 +38,7 @@ export function mergeTodos(input, prev = { items: [], seen: 0, next: 1 }, now = 
   let list = input?.items;
   if (typeof list === "string") { try { list = JSON.parse(list); } catch {} }
   if (!Array.isArray(list)) return { error: "error: items must be a list of { id?, text, status } (send [] to clear the list)" };
-  const notes = [], old = prev.items || [], used = new Set(), out = [], held = [];
+  const notes = [], old = prev.items || [], used = new Set(), out = [], held = [], kept = new Set();
   let next = Math.max(1, Number(prev.next) || 1), cut = 0, dropped = 0;
   for (const raw of list) {
     const x = typeof raw === "string" ? { text: raw } : raw; if (!x || typeof x !== "object") continue;
@@ -50,7 +53,13 @@ export function mergeTodos(input, prev = { items: [], seen: 0, next: 1 }, now = 
     // The person ticked/unticked this after the helper last saw the list: their change stands.
     if (p && p.by === "person" && p.at > (prev.seen || 0) && p.status !== status) {
       notes.push(`The person marked "${p.text}" ${p.status === "done" ? "done" : "not done"} themselves; kept their change.`);
-      out.push({ id, text, status: p.status, by: "person", at: p.at }); continue;
+      kept.add(id); out.push({ id, text, status: p.status, by: "person", at: p.at }); continue;
+    }
+    // An item the helper side already has done (checked off by the app, or through a verified person_asked) stays done when a
+    // later helper list sends it as todo or doing. Only the person can untick it (that path is the person's tick, not this merge).
+    if (p && p.status === "done" && p.by !== "person" && status !== "done") {
+      notes.push(`"${p.text}" is already done; kept it done.`);
+      out.push({ id, text, status: "done", by: p.by || "helper", at: p.at }); continue;
     }
     // Only the person ticks done: the helper's "done" leaves the item as it was, marked ready for them to tick.
     let ready = !!(p && p.ready && p.status === status);   // still ready while the helper leaves it as it was
@@ -58,6 +67,21 @@ export function mergeTodos(input, prev = { items: [], seen: 0, next: 1 }, now = 
     const item = { id, text, status, by: p && p.status === status ? p.by : "helper", at: p && p.status === status ? p.at : now };
     if (ready) item.ready = true;
     out.push(item);
+  }
+  // Moving on: when a different item becomes the active ("doing") one, the item that was active before is marked done. That
+  // includes the common case where the helper starts the next item but leaves the previous one as "doing" too. If several
+  // items are newly "doing", the first one is the active one and the one-doing rule below resets the rest.
+  // Items that were never active stay as they are, an item the person ticked or unticked in this merge keeps their choice,
+  // and done items are never reopened.
+  const wasActive = (id) => old.some((o) => o.id === id && o.status === "doing");
+  const nowDoing = out.find((x) => x.status === "doing" && !x.ready && !wasActive(x.id));
+  if (nowDoing) {
+    const wasDoing = old.find((o) => o.status === "doing" && o.id !== nowDoing.id && out.some((x) => x.id === o.id)), was = wasDoing && out.find((x) => x.id === wasDoing.id);
+    if (was && was.status !== "done" && !kept.has(was.id)) {
+      was.status = "done"; was.by = "helper"; was.at = now; delete was.ready;
+      const hi = held.indexOf(was.text); if (hi >= 0) held.splice(hi, 1);
+      notes.push(`"${was.text}" was the active item and you moved on to "${nowDoing.text}", so it was marked done automatically.`);
+    }
   }
   if (opts.quoteError) notes.push(`person_asked wasn't accepted: ${opts.quoteError.replace(/^error: /, "")}`);
   if (held.length) notes.push(`Only the person ticks items done, so ${held.map((t) => `"${t}"`).join(", ")} ${held.length > 1 ? "were" : "was"} left as ${held.length > 1 ? "they were" : "it was"} and show${held.length > 1 ? "" : "s"} as ready for them to tick. Don't mark items done yourself: leave a finished item as "doing".`);

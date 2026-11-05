@@ -709,6 +709,7 @@ function lupPaint(u: Up) {
 const MAXUP = 50 * 1024 * 1024;
 const upsHtml = (key: string) => (UP[key] || []).map(u => `<span class="uchip${u.err ? " bad" : u.f ? "" : " busy"}" title="${esc(u.err || u.name)}">${u.thumb ? `<img src="${u.thumb}" alt="">` : `<span class="aico k-${fkind(u.name)}">${I(KIND[fkind(u.name)][1], 15)}</span>`}
   <span class="ucn"><b>${esc(u.name)}</b><span>${u.err ? esc(u.err) : u.f ? KB(u.bytes) : `Uploading ${u.pct}%`}</span></span><button type="button" class="ucx" data-uprm="${key}|${u.k}" aria-label="Remove ${esc(u.name)}">${I('<path d="M18 6 6 18M6 6l12 12"/>', 13)}</button>${u.f || u.err ? "" : `<i style="width:${u.pct}%"></i>`}</span>`).join("");
+const upHas = (key: string) => (UP[key] || []).some(u => u.f);   // a finished attachment is enough to send, with no text
 function upPaint(key: string) {
   const el = document.getElementById(`ups-${key}`); if (el) el.innerHTML = upsHtml(key);
   const has = (UP[key] || []).some(u => u.f) || !!(document.getElementById(key) as HTMLTextAreaElement | null)?.value.trim();
@@ -1279,7 +1280,7 @@ function openNew() {
     <div class="nrow">${cb("attach", "Attach", ic.plus)}
       <div class="npick"><button type="button" class="nwho" data-npick title="Who should do it"></button><div class="nlist"></div></div>
       <span class="grow"></span><span class="nkbd"><kbd>Esc</kbd> to close</span>${LIVE ? slBtn("nbox") + dictBtn("nbox", ic.mic) : cb("mic", "Talk", ic.mic, " mic")}
-      <button id="ngo" class="ngo" disabled><span class="ngo-l">Start task</span></button></div></form>`;
+      <button id="ngo" class="ngo"${upHas("nbox") ? "" : " disabled"}><span class="ngo-l">Start task</span></button></div></form>`;
   if (phone()) dragToClose(w.querySelector<HTMLElement>(".nmodal")!, () => {
     const draft = (document.getElementById("nbox") as HTMLTextAreaElement | null)?.value.trim();
     if (!draft && !UP.nbox.length) { closeNew(); return; }
@@ -1532,10 +1533,10 @@ function startTask(ch: Channel, text: string, files: FileV[] = []) {
   setTimeout(tick, 1800);
   return x;
 }
-const composer = (ph: string) => `<div class="ups" id="ups-box">${upsHtml("box")}</div>${rqHtml(rqKey())}<form class="composer" id="send">${cb("attach", "Attach", ic.plus)}
+const composer = (ph: string) => `<div class="ups" id="ups-box">${upsHtml("box")}</div>${rqHtml(rqKey())}<form class="composer${upHas("box") ? " has" : ""}" id="send">${cb("attach", "Attach", ic.plus)}
   <textarea id="box" rows="1" placeholder="${ph}"></textarea>
   ${LIVE ? slBtn("box") + dictBtn("box", ic.mic) : cb("mic", "Talk", ic.mic, " mic")}
-  <button id="go" disabled aria-label="Send">${ic.up}</button>${LIVE ? composerStop() : ""}</form>${bykPlanLine(LIVE ? BOOT?.account?.chatgpt_plan === true : false)}`;
+  <button id="go"${upHas("box") ? "" : " disabled"} aria-label="Send">${ic.up}</button>${LIVE ? composerStop() : ""}</form>${bykPlanLine(LIVE ? BOOT?.account?.chatgpt_plan === true : false)}`;
 // A reply part: cards when it's OpenUI Lang (genui-render.ts), else today's markdown bubble (after the code safety net). Prose
 // followed by code lines becomes a bubble plus cards. Partial code stays hidden
 // while the independent Primary activity row indicates the turn is still working.
@@ -1676,8 +1677,8 @@ document.addEventListener("input", e => {
   if (t.id === "lq") { L.q = (t as HTMLInputElement).value; $("#lfiles").innerHTML = libFilesHtml(); }
   if (t.id === "chq") $("#chlist").innerHTML = chRows((t as HTMLInputElement).value);
   if (t.id === "dq") { const { ch, s } = route(); $("#dlist").innerHTML = sessRows(ch, s, (t as HTMLInputElement).value); rankSearch(ch.slug, (t as HTMLInputElement).value); }
-  if (t.id === "nbox") { const b = t as HTMLTextAreaElement; nboxSave(b.value); b.style.height = "auto"; b.style.height = Math.min(b.scrollHeight, 260) + "px"; ($("#ngo") as HTMLButtonElement).disabled = !b.value.trim() && !(LIVE && UP.nbox.some(u => u.f)); }
-  if (t.id === "box") { const b = t as HTMLTextAreaElement; draftSet(boxKey(), b.value); b.style.height = "auto"; b.style.height = Math.min(b.scrollHeight, 220) + "px"; const has = !!b.value.trim() || !!(LIVE && UP.box.some(u => u.f)); ($("#go") as HTMLButtonElement).disabled = !has; $("#send").classList.toggle("has", has); }
+  if (t.id === "nbox") { const b = t as HTMLTextAreaElement; nboxSave(b.value); b.style.height = "auto"; b.style.height = Math.min(b.scrollHeight, 260) + "px"; ($("#ngo") as HTMLButtonElement).disabled = !b.value.trim() && !upHas("nbox"); }
+  if (t.id === "box") { const b = t as HTMLTextAreaElement; draftSet(boxKey(), b.value); b.style.height = "auto"; b.style.height = Math.min(b.scrollHeight, 220) + "px"; const has = !!b.value.trim() || upHas("box"); ($("#go") as HTMLButtonElement).disabled = !has; $("#send").classList.toggle("has", has); }
 });
 document.addEventListener("keydown", e => {
   const t = e.target as HTMLElement;
