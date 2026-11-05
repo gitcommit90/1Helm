@@ -106,3 +106,13 @@ a.gu-thumb{transition:transform .12s}a.gu-thumb:hover{transform:scale(1.02)}
 .gu-skip.open .gu-skipb{transition:grid-template-rows .3s ease,opacity .2s ease}
 .gu-dust{position:absolute;left:0;top:0;width:100%;height:0;pointer-events:none;z-index:2}.gu-dust i{position:absolute;border-radius:50%;background:var(--mute);opacity:0}
 @media(prefers-reduced-motion:reduce){.gu-skiph,.gu-skipb,.gu-skip:not(.open) .gu-skipb,.gu-skip.open .gu-skipb{transition-duration:.12s;transition-delay:0s}}
+/* Folded permission cards (approval-card.ts): a settled card older than 15 minutes is one line that opens to the full card. */
+.gu-apfold{max-width:100%;min-width:0}
+.gu-apfold-b{display:flex;align-items:center;gap:10px;width:100%;min-width:0;min-height:40px;padding:8px 14px;border:1px solid var(--line,var(--hover));border-radius:14px;background:transparent;color:var(--mute);font:inherit;font-size:14px;text-align:left;cursor:pointer}
+.gu-apfold-b:hover{background:var(--hover)}.gu-apfold-b:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.gu-apfold-t{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink2)}
+.gu-apfold-o{flex:none;color:var(--mute);white-space:nowrap}
+.gu-apfold-c{flex:none;transition:transform .15s}.gu-apfold.open .gu-apfold-c{transform:rotate(180deg)}
+.gu-apfold-full{margin-top:8px}.gu-apfold-full[hidden]{display:none}
+@media(max-width:480px){.gu-apfold-b{flex-wrap:wrap;gap:2px 8px}.gu-apfold-t{flex:1 1 100%;white-space:normal;overflow-wrap:anywhere}.gu-apfold-o{flex:1 1 auto}.gu-apfold-c{margin-left:auto}}
+@media(prefers-reduced-motion:reduce){.gu-apfold-c{transition:none}}

@@ -27,6 +27,7 @@ export type ApView = {
   busy?: Decision | "";     // a decision is being sent
   error?: string;           // the last send failed (plain words)
   fresh?: boolean;          // just arrived: play the arrival animation
+  settledAt?: number;       // when it was decided (ms); the card's creation time is used when this is missing
 };
 export type ApOpts = {
   helper: string; channel: string;
@@ -34,6 +35,8 @@ export type ApOpts = {
   attr: (k: Decision | "confirm" | "cancel") => string;
   id?: string;              // element id (the app uses ap<id>)
   attrs?: string;           // more attributes on the card element
+  /** Set by the chat when it draws its history: a settled card older than AP_FOLD_MS becomes one line (see apFoldInfo). Left out = always full. */
+  fold?: { now: number; superseded?: boolean };
 };
 
 const esc = (s: any = "") => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
@@ -114,7 +117,7 @@ function confirmHtml(a: Approval, v: ApView, o: ApOpts) {
     ${lines ? `<dl class="gu-cf">${lines}</dl>` : ""}${x.body ? `<div class="gu-cfbody" tabindex="0" aria-label="Message">${esc(x.body)}</div>` : ""}${x.note ? `<p class="gu-cfnote">${WARN}<span>${esc(x.note)}</span></p>` : ""}${err}${foot}</div>`;
 }
 
-export function approvalHtml(a: Approval, v: ApView, o: ApOpts) {
+function approvalFull(a: Approval, v: ApView, o: ApOpts) {
   if (a.perm === "ssh" || a.perm === "ssh_hostkey") return sshHtml(a, v, o);
   if (a.perm === "confirm") return confirmHtml(a, v, o);
   if (a.perm) return permHtml(a, v, o);
@@ -208,4 +211,58 @@ function sshHtml(a: Approval, v: ApView, o: ApOpts) {
     ${!done && (rememberAllowed || rememberRequested) ? `<p class="gu-sl gu-ssh-trustnote">${rememberRequested ? "You chose to trust this server after its identity is verified." : "Trust this server to allow future connections without another prompt."} Saved access is only for this channel computer, server and pinned address, port, username, route and verified host key. New or changed destinations still need approval. Revoke access and close its sessions in Computer connections.</p>` : ""}
     <p class="gu-cfnote">${WARN}<span>${esc(x.note || (hostKey ? "Confirm only after checking the fingerprint through a trusted source. A changed key may indicate a different server." : rememberAllowed || rememberRequested ? "SSH access permits remote commands and SFTP using the remote account's permissions and network access. It is not command-by-command approval." : "This approves remote commands and SFTP for one SSH session. Commands have the remote account's permissions and network access. It is not approval of only one command."))}</span></p>
     ${v.error && !done ? `<p class="gu-perr" role="alert">${esc(v.error)}</p>` : ""}${foot}</div>`;
+}
+
+// Settled permission cards older than 15 minutes show as one line that opens to the full card. It is decided each time the chat is drawn,
+// never by a timer, so a card on screen never shrinks while it is being read.
+export const AP_FOLD_MS = 15 * 60 * 1000;
+const apOpen = new Set<string>();   // cards the person opened again; kept across redraws
+let apFoldWired = false;
+function wireApFold() {
+  if (apFoldWired || typeof document === "undefined") return;
+  apFoldWired = true;
+  document.addEventListener("click", event => {
+    const b = (event.target as Element)?.closest<HTMLButtonElement>("[data-apfoldbtn]"); if (!b) return;
+    event.preventDefault(); event.stopPropagation();
+    const box = b.closest<HTMLElement>("[data-apfold]")!, open = b.getAttribute("aria-expanded") !== "true", key = box.dataset.apfold || "";
+    b.setAttribute("aria-expanded", String(open)); box.classList.toggle("open", open); box.querySelector<HTMLElement>(".gu-apfold-full")!.hidden = !open;
+    if (open) apOpen.add(key); else apOpen.delete(key);
+  });
+}
+/** The one line a folded card shows: the helper, the target and the outcome. null = this card is never folded. */
+export function apFoldInfo(a: Approval, v: ApView, o: ApOpts): { target: string; outcome: string } | null {
+  const f = o.fold; if (!f) return null;
+  const st = v.status, ssh = a.perm === "ssh" || a.perm === "ssh_hostkey", x = a.action || {};
+  if (v.busy || v.confirm || v.error) return null;
+  const when = Number(v.settledAt || a.at || 0); if (!when || f.now - when <= AP_FOLD_MS) return null;
+  let target = "", outcome = "";
+  if (ssh) {
+    if (a.perm === "ssh_hostkey" && x.lines?.some(l => l && l[0] === "Previous fingerprint" && !!l[1])) return null;   // the changed-key warning always stays
+    const prog = ["consumed", "once", "allowed", "trust"].includes(st) ? a.native_progress : undefined;
+    if (prog === "connecting" || prog === "resuming" || prog === "running" || prog === "failed") return null;
+    target = x.lines?.find(l => l && l[0] === "Server")?.[1] || a.host || "SSH server";
+    const rememberRequested = a.ssh?.remember_requested === true, trustSaved = a.ssh?.trust_saved === true;
+    if (st === "once" || st === "allowed" || st === "trust") outcome = trustSaved ? "✓ Server trusted" : a.perm === "ssh_hostkey" ? "✓ Fingerprint confirmed" : rememberRequested || st === "trust" ? "✓ Session approved" : "✓ One session approved";
+    else if (st === "deny") outcome = "Not approved";
+    else if (st === "cancelled") outcome = "Request cancelled";
+    else if (st === "expired") outcome = "Request expired";
+    else if (st === "host_key_required" && f.superseded) outcome = "Replaced by a newer request";
+    else return null;   // pending, consumed, failed, an unreplaced host key check: the person may still need to act
+  } else {
+    if (st === "pending" || st === "consumed" || st === "failed" || st === "host_key_required") return null;
+    target = a.perm === "confirm" ? (x.title || a.ask || "Confirm") : a.perm ? (a.name || a.perm) : (a.label || a.host);
+    if (st === "expired") outcome = "Expired";
+    else if (st === "cancelled") outcome = "Cancelled";
+    else if (a.perm === "confirm") outcome = st === "deny" ? "Cancelled" : "✓ Confirmed";
+    else if (st === "deny") outcome = a.perm ? "Not allowed" : "Not sent";
+    else { const d = apDone(st, o.helper, o.channel); if (!d) return null; outcome = (d.ok ? "✓ " : "") + d.label; }
+  }
+  return { target, outcome };
+}
+export function approvalHtml(a: Approval, v: ApView, o: ApOpts) {
+  const full = approvalFull(a, v, o), info = apFoldInfo(a, v, o);
+  if (!info) return full;
+  wireApFold();
+  const key = String(o.id || a.id), open = apOpen.has(key);
+  return `<div class="gu-apfold${open ? " open" : ""}" data-apfold="${esc(key)}" data-apst="${esc(v.status)}"><button type="button" class="gu-apfold-b" data-apfoldbtn aria-expanded="${open}" aria-label="${esc(`${o.helper}, ${info.target}, ${info.outcome}. Show details`)}"><span class="gu-apfold-t">${esc(o.helper)} · ${esc(info.target)}</span><span class="gu-apfold-o">${esc(info.outcome)}</span><svg class="gu-apfold-c" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button><div class="gu-apfold-full"${open ? "" : " hidden"}>${full}</div></div>`;
 }

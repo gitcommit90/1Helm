@@ -3337,7 +3337,7 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
   else if (ev.t === "status") { s.rawLine = ev.line; const raw = (reply as any).raw ??= []; raw.push(ev.line); reply.steps = toSteps(raw); }
   else if (ev.t === "approval") { addApproval(reply, ev.approval, true); s.status = "waiting"; s.state = "idle"; s.rawLine = "waiting for your OK"; }
   // Decided (here, in another tab or inside Messages): the card stays, locked, showing the result (it used to vanish).
-  else if (ev.t === "approval_done") { apCards(ch.slug, String(ev.id)).forEach(k => { if (k.st === "pending" && !k.busy) { k.st = ev.status === "denied" ? "deny" : ev.status === "approved" ? "allowed" : "expired"; k.confirm = false; } }); s.status = "resolved"; s.state = "working"; s.rawLine = "working"; }
+  else if (ev.t === "approval_done") { apCards(ch.slug, String(ev.id)).forEach(k => { if (k.st === "pending" && !k.busy) { k.st = ev.status === "denied" ? "deny" : ev.status === "approved" ? "allowed" : "expired"; k.confirm = false; k.decidedAt = Date.now(); } }); s.status = "resolved"; s.state = "working"; s.rawLine = "working"; }
   else if (ev.t === "browser" || ev.t === "browser_handoff") { reply.cards = (reply.cards || []).filter(c => c.t !== "browser"); reply.cards.push({ t: "browser", url: ev.url, text: ev.instructions, fresh: true });  if (ev.t === "browser_handoff") s.srv = { ...s.srv, waiting: "browser" };   // the server holds the task on the browser too, so the card stays until they hand back
   if (ev.t === "browser_handoff" && route().s === s) openPC(ch.slug, ev.url, ev.instructions); }
   else if (ev.t === "note") { const nb = nbOf(ch), n = ev.note; if (n?.id && !nb.notes.some((x: any) => x.id === n.id)) nb.notes.unshift({ id: n.id, sec: NB_SECS.some(x => x[0] === n.sec) ? n.sec : "how", text: n.text, at: n.at || Date.now(), you: false, fresh: true } as any); }
@@ -3649,6 +3649,14 @@ const offerCards = () => channels.flatMap(c => c.sessions).flatMap(x => x.messag
 const apCards = (slug: string, id: string) => approvalCards(channels, slug, id);
 let akN = 0; const AK_SEEN = new Set<number>();
 document.addEventListener("animationstart", e => { const k = (e.target as HTMLElement).dataset?.ak; if (k) AK_SEEN.add(+k); }, true);
+// A host-key check card is replaced when a later permission card for the same server sits after it in the same message.
+function apSuperseded(ch: Channel, c: any) {
+  if (c.st !== "host_key_required" || !["ssh", "ssh_hostkey"].includes(c.a?.perm)) return false;
+  const server = (k: any) => k.a?.action?.lines?.find((l: any) => l && l[0] === "Server")?.[1] || "";
+  for (const x of ch.sessions) for (const m of x.messages) { const cs = m.cards || [], i = cs.indexOf(c); if (i < 0) continue;
+    return cs.slice(i + 1).some((k: any) => k.t === "approval" && ["ssh", "ssh_hostkey"].includes(k.a?.perm) && server(k) === server(c)); }
+  return false;
+}
 const apRepaint = () => { const { ch, s } = route(); if (s) paintChat(s); else repaint(ch); };
 function cardHtml(c: any, ch: Channel) {
   if (c.t === "contact") return ctSuggest(c);
@@ -3660,7 +3668,7 @@ function cardHtml(c: any, ch: Channel) {
   const ak = c.fresh ? (c.ak ??= ++akN) : 0, fr = ak && !AK_SEEN.has(ak) ? " gu-in" : "", akA = ak ? ` data-ak="${ak}"` : "";
   if (c.t === "share") return shCardHtml(c, akA);   // share links + published pages (share.ts)
   if (c.t === "approval") { const a = c.a, at = (k: string) => k === "cancel" ? `data-apcancel="${esc(ch.slug)}|${esc(String(a.id))}"` : `data-apv="${esc(ch.slug)}|${esc(String(a.id))}|${k === "confirm" ? "channel" : k}"${k === "confirm" ? " data-apconfirm" : ""}`;
-    return approvalHtml(a, { status: c.st || "pending", confirm: c.confirm, busy: c.busy, error: c.err, fresh: !!fr }, { helper: who(ch), channel: ch.name, attr: at, id: `ap-${ch.slug}-${a.id}`, attrs: akA }); }
+    return approvalHtml(a, { status: c.st || "pending", confirm: c.confirm, busy: c.busy, error: c.err, fresh: !!fr, settledAt: c.decidedAt || a.decided_at }, { helper: who(ch), channel: ch.name, attr: at, id: `ap-${ch.slug}-${a.id}`, attrs: akA, fold: { now: Date.now(), superseded: apSuperseded(ch, c) } }); }
   if (c.t === "interview") return ivCard(c, ch, !!fr);
   if (c.t === "lnrefine" && hasFeature("ambient")) return lnRefineCard(c.slug, c.sid, c.r, { fresh: !!fr, attrs: akA });
   if (c.t === "offer" && hasFeature("connected_apps")) return offerCardHtml(c, { helper: who(ch), fresh: !!fr, attrs: akA });

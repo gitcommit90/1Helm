@@ -5377,7 +5377,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
     if (a.perm) return { status, approval: { id: a.id, host: "", ...permView(a) } };
     return { status, approval: { id: a.id, host: a.host, label: approvalLabel(a), method: a.method, path: a.path, ...(a.bytes ? { bytes: a.bytes } : {}), ...(keys.length ? { keys } : {}), ...(a.via ? { via: a.via } : {}) } };
   }
-  approvalView(a) { return { id: a.id, at: a.at, host: a.host, label: approvalLabel(a), method: a.method, path: a.path, ...(a.via ? { via: a.via } : {}), bytes: a.bytes, keys: JSON.parse(a.keys || "[]"), status: a.status, decision: a.decision, workflow_id: a.workflow_id, session: a.session || null, ...(SSH_PERMS.has(a.perm) ? sshApprovalView(a) : a.perm === CONFIRM ? confirmView(a) : a.perm ? permView(a) : {}) }; }
+  approvalView(a) { return { id: a.id, at: a.at, host: a.host, label: approvalLabel(a), method: a.method, path: a.path, ...(a.via ? { via: a.via } : {}), bytes: a.bytes, keys: JSON.parse(a.keys || "[]"), status: a.status, decision: a.decision, decided_at: a.decided_at == null ? null : Number(a.decided_at), workflow_id: a.workflow_id, session: a.session || null, ...(SSH_PERMS.has(a.perm) ? sshApprovalView(a) : a.perm === CONFIRM ? confirmView(a) : a.perm ? permView(a) : {}) }; }
   approvals(all = false, session = null) {
     nativeExpire(this);
     // A plain send request nobody answered within an hour is not waiting any more (the card page already says expired). Read-only: nothing is written here.
