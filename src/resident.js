@@ -445,6 +445,8 @@ export function recentChannelLines(messages) {
   return (messages || []).filter((m) => !m.system_message || m.system_message === "0" || m.system_message === 0).slice(-12)
     .map((m) => `[${new Date(Number(m.created)).toISOString().slice(0, 16)}] ${m.bot_id && m.bot_id !== "None" ? "helper" : "person"}: ${String(m.body || "").slice(0, 600)}`).join("\n");
 }
+// Said once after the saved keys list. The helper only has to use the variables the normal way.
+const KEYS_USE_NOTE = "Use each $NAME like the real value: in a header, a URL, curl -u, a request body, or an OAuth or AWS signing library. 1Helm swaps in the real value when the request leaves the computer, only for that key's sites, so sign and encode as you normally would and never try to read or decode the value. Several keys can be in one request. For OAuth 1.0a or AWS signing, sign the request normally with the $NAME values; 1Helm finds the right saved secret and signs the request again with the real one.";
 export function chatChannelOptions({ ee, profile, tz, channel, ch, mmode, mem, recent, memoryProfile, keysLine, loginsLine, skillsLine, appsLine, textingLine, permLine, channelsLine }) {
   return { ee: !!ee, helperName: profile?.helper_name, firstName: profile?.first_name, tone: profile?.helper_tone, tz,
     channel: ch?.name || channel, purpose: ch?.purpose || ch?.topic, general: channel === SKIPPER_SLUG, recall: mmode === "on",
@@ -932,7 +934,7 @@ export class Resident extends DurableObject {
   async systemPrompt(stable = false, cards = this.genuiOn(), layered = false, append = false) {
     await this.betterDesignOn().catch(() => {});
     try { const ks = (await this.env.DB.prepare("SELECT name, hosts FROM vault WHERE tenant_id=? ORDER BY name").bind(this.get("tenant")).all()).results || [];
-      this._keysLine = ks.length ? `Saved keys on this computer: ${ks.map((k) => `$${k.name} (works only with ${JSON.parse(k.hosts).join(", ")})`).join("; ")}.` : ""; } catch { this._keysLine = ""; }
+      this._keysLine = ks.length ? `Saved keys on this computer: ${ks.map((k) => `$${k.name} (works only with ${JSON.parse(k.hosts).join(", ")})`).join("; ")}. ${KEYS_USE_NOTE}` : ""; } catch { this._keysLine = ""; }
     { const ls = await loginSites(this.env, this.get("tenant")); this._loginsLine = ls.length ? `Saved logins (browser_fill_login types them; you never see the passwords): ${ls.join(", ")}.${ls.some((x) => x.endsWith(" accounts)")) ? " For a site with several accounts, pass username (call it without one to get the list)." : ""}` : ""; }
     let profile = null;
     try { profile = await this.env.DB.prepare("SELECT first_name, helper_name, helper_tone FROM tenants WHERE id=?").bind(this.get("tenant")).first(); } catch {}

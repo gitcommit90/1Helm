@@ -10,11 +10,11 @@
 //   ask: egress-policy.js.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { linkFetch } from "./channel-computer.js";
+import { rewriteRequest, readCapped, bodyKind, BODY_SCAN_MAX, STANDIN_RE } from "./sentinel-swap.js";
 import { egressRule, lfsOperation, blockedText, LFS_BATCH, SAFE_METHODS as SAFE } from "./egress-policy.js";
 import { boundedText, BodyTooLargeError } from "./bounded-body.js";
 
-export const STANDIN_RE = /1hs_[A-Za-z0-9]{32}/g;
-const hostMatch = (host, pats) => pats.some((p) => p === host || (p.startsWith("*.") && (host === p.slice(2) || host.endsWith(p.slice(1)))));
+export { STANDIN_RE };
 const encoder = new TextEncoder();
 
 // A key's own API can echo it in Location, another header, or a streaming body. Do not hand that
@@ -91,26 +91,27 @@ export class Sentinel extends WorkerEntrypoint {
     if (this.env.R2_ENDPOINT && host === new URL(this.env.R2_ENDPOINT).host && SAFE.has(method)) return fetch(new Request(req, { redirect: "manual" }));
     const R = this.env.RESIDENT.get(this.env.RESIDENT.idFromName(`res:${who.tenant}:${who.channel}`));
 
-    // 1. Stand-in → real key, only for the key's own hosts.
-    const headers = new Headers(req.headers); let url = u.toString(); const swapped = [], refused = [], secrets = [];
-    const found = new Set([...(url.match(STANDIN_RE) || [])]);
-    for (const [, v] of headers) for (const m of v.match(STANDIN_RE) || []) found.add(m);
-    if (found.size) {
-      const rows = (await this.env.DB.prepare(`SELECT name, standin, hosts, sealed FROM vault WHERE tenant_id=? AND standin IN (${[...found].map(() => "?").join(",")})`).bind(who.tenant, ...found).all()).results || [];
-      for (const r of rows) {
-        if (!hostMatch(host, JSON.parse(r.hosts))) { refused.push(r.name); continue; }
-        const real = await openSecret(this.env, r.sealed);
-        for (const [k, v] of [...headers]) if (v.includes(r.standin)) headers.set(k, v.split(r.standin).join(real));
-        url = url.split(r.standin).join(encodeURIComponent(real)); swapped.push(r.name); secrets.push({ real, standin: r.standin });
-      }
+    // 1. Stand-in → real key, only for the key's own hosts (URL, headers, Basic credentials, request bodies up to BODY_SCAN_MAX, re-signing of
+    //    OAuth 1.0a and AWS SigV4 requests): all in sentinel-swap.js.
+    const secrets = [], tid = who.tenant, qm = (n) => Array(n).fill("?").join(",");
+    let body = SAFE.has(method) ? undefined : req.body, bodyBytes = null;
+    const declared = req.headers.get("content-length"), kind = bodyKind(req.headers), aws = /^AWS4-HMAC-SHA256\s/.test(req.headers.get("authorization") || "");
+    if (body && (kind || aws) && !(declared != null && Number(declared) > BODY_SCAN_MAX)) {
+      const r = await readCapped(body); if (r.bytes) { bodyBytes = r.bytes; body = r.bytes; } else body = r.stream;
     }
+    const rw = await rewriteRequest({ host, method, url: u.toString(), headers: req.headers, bodyBytes,
+      lookup: async (ids) => (await this.env.DB.prepare(`SELECT name, standin, hosts, sealed FROM vault WHERE tenant_id=? AND standin IN (${qm(ids.length)})`).bind(tid, ...ids).all()).results || [],
+      lookupHostKeys: async () => (await this.env.DB.prepare("SELECT name, standin, hosts, sealed FROM vault WHERE tenant_id=?").bind(tid).all()).results || [],
+      open: async (r) => { const real = await openSecret(this.env, r.sealed); secrets.push({ real, standin: r.standin }); return real; } });
+    const headers = rw.headers, url = rw.url, swapped = rw.swapped, refused = rw.refused;
+    if (rw.bodyBytes) body = rw.bodyBytes;
 
     // 2. Anything that sends data needs approval (or an Always Approve / grant that covers it), unless an automatic rule decides
     //    (egress-policy.js). A request carrying a saved key never goes out on an automatic rule.
-    let body = SAFE.has(method) ? undefined : req.body, lfsOp = null;
-    const bytes = Number(req.headers.get("content-length") || 0), path = u.pathname.slice(0, 200);
+    let lfsOp = null;
+    const bytes = rw.bodyBytes ? rw.bodyBytes.length : Number(req.headers.get("content-length") || 0), path = u.pathname.slice(0, 200);
     if (!SAFE.has(method) && LFS_BATCH.test(u.pathname) && bytes > 0 && bytes <= 65536) {
-      try { const t = await boundedText(req, 65536); body = t; lfsOp = lfsOperation(t); }
+      try { const t = rw.bodyBytes ? new TextDecoder().decode(rw.bodyBytes) : await boundedText(req, 65536); if (!rw.bodyBytes) body = t; lfsOp = lfsOperation(t); }
       catch (e) {
         const large = e instanceof BodyTooLargeError;
         const status = large ? 413 : 400;
