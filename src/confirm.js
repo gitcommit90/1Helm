@@ -120,7 +120,7 @@ export async function decideConfirm(res, a, decision) {
   if (NO.has(decision)) {
     sql.exec("UPDATE approvals SET status='denied', decision='deny', decided_at=? WHERE id=? AND status='pending'", now, a.id);
     // A routed worker paused on this card is told; a held call or an ended Primary turn already read the denial.
-    if (!res._confirmHeld?.has(a.id) && a.session && res.cardHandoff) { const v = viewOf(a); try { res.cardHandoff(a.session, a.turn, { text: cancelled(v.title || a.what || ""), from: { type: "confirm", id: a.id, title: "Cancelled" } }, { helperOnly: true }); } catch (e) { console.log("confirm cancel", e.message); } }
+    if (!res._doneSweep && !res._confirmHeld?.has(a.id) && a.session && res.cardHandoff) { const v = viewOf(a); try { res.cardHandoff(a.session, a.turn, { text: cancelled(v.title || a.what || ""), from: { type: "confirm", id: a.id, title: "Cancelled" } }); } catch (e) { console.log("confirm cancel", e.message); } }
     return { ok: true, approval: res.approvalView(sql.exec("SELECT * FROM approvals WHERE id=?", a.id).one()) };
   }
   const held = !!res._confirmHeld?.has(a.id), token = held ? null : newToken();

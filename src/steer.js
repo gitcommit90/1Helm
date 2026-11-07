@@ -28,6 +28,11 @@ export function clock(at, tz) {
   return d.toISOString().slice(11, 19);
 }
 
+// A steer that asks the helper to do something, as opposed to the person's own message: a system handoff note (an approval, confirm, permission,
+// SSH or connect decision, a helper's report, a due follow-up) or a plan's brief. A step with no tools cannot act on it, so it is never answered there
+// (resident.js takeSteers deferWork); it gets its own turn with tools. The person's own messages (type "msg") are not work steers.
+export const workSteer = (x) => !!x && (x.type === "handoff" || x.via === "plan");
+
 // One handed-back result (a helper's report or a due follow-up) as the context note the helper reads.
 export function handoffNote(item) {
   const t = String(item.text ?? "");

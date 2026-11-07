@@ -10,54 +10,13 @@
 //   ask: egress-policy.js.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { linkFetch } from "./channel-computer.js";
-import { rewriteRequest, readCapped, bodyKind, BODY_SCAN_MAX, STANDIN_RE } from "./sentinel-swap.js";
-import { egressRule, lfsOperation, blockedText, LFS_BATCH, SAFE_METHODS as SAFE } from "./egress-policy.js";
+import { rewriteRequest, trimKey, readCapped, bodyKind, BODY_SCAN_MAX, STANDIN_RE } from "./sentinel-swap.js";
+import { hideEchoedKeys, basicEchoPairs, encodedResponse } from "./sentinel-scrub.js";
 import { boundedText, BodyTooLargeError } from "./bounded-body.js";
+import { egressRule, lfsOperation, blockedText, LFS_BATCH, SAFE_METHODS as SAFE } from "./egress-policy.js";
 
 export { STANDIN_RE };
 const encoder = new TextEncoder();
-
-// A key's own API can echo it in Location, another header, or a streaming body. Do not hand that
-// echo back to the computer. This covers literal and URL-encoded echoes; a service that transforms
-// a key in some other way still needs to be trusted by the person who bound the key to that host.
-function hideEchoedKeys(res, keys) {
-  const replacements = [];
-  for (const { real, standin } of keys) {
-    const encoded = encodeURIComponent(real);
-    for (const value of new Set([real, encoded, encoded.replace(/%[0-9A-F]{2}/g, (s) => s.toLowerCase())])) {
-      if (value) replacements.push({ needle: encoder.encode(value), value, standin, standinBytes: encoder.encode(standin) });
-    }
-  }
-  replacements.sort((a, b) => b.needle.length - a.needle.length);
-  const scrub = (value) => replacements.reduce((clean, p) => clean.split(p.value).join(p.standin), value);
-  const headers = new Headers();
-  for (const [name, value] of res.headers) headers.append(scrub(name), scrub(value));
-  // The body may change length. Validators, digests, and an upstream byte count would then be false.
-  for (const name of ["content-length", "content-range", "accept-ranges", "etag", "content-md5", "digest"]) headers.delete(name);
-  if (!res.body) return new Response(null, { status: res.status, statusText: scrub(res.statusText), headers });
-  const keep = Math.max(0, ...replacements.map((p) => p.needle.length - 1));
-  let pending = new Uint8Array(0);
-  const write = (data, end, controller) => {
-    const out = [];
-    let i = 0;
-    while (i < (end ? data.length : Math.max(0, data.length - keep))) {
-      const hit = replacements.find(({ needle }) => needle[0] === data[i] && needle.length <= data.length - i && needle.every((b, j) => b === data[i + j]));
-      if (hit) { out.push(...hit.standinBytes); i += hit.needle.length; }
-      else out.push(data[i++]);
-    }
-    if (out.length) controller.enqueue(Uint8Array.from(out));
-    pending = data.slice(i);
-  };
-  const body = res.body.pipeThrough(new TransformStream({
-    transform(chunk, controller) {
-      const data = new Uint8Array(pending.length + chunk.length);
-      data.set(pending); data.set(chunk, pending.length);
-      write(data, false, controller);
-    },
-    flush(controller) { write(pending, true, controller); },
-  }));
-  return new Response(body, { status: res.status, statusText: scrub(res.statusText), headers });
-}
 
 // AES-GCM with the platform VAULT_KEY (32 bytes, base64). Values are stored encrypted; only this layer decrypts.
 async function vaultKey(env) { return crypto.subtle.importKey("raw", Uint8Array.from(atob(env.VAULT_KEY), (c) => c.charCodeAt(0)), "AES-GCM", false, ["encrypt", "decrypt"]); }
@@ -93,18 +52,21 @@ export class Sentinel extends WorkerEntrypoint {
 
     // 1. Stand-in → real key, only for the key's own hosts (URL, headers, Basic credentials, request bodies up to BODY_SCAN_MAX, re-signing of
     //    OAuth 1.0a and AWS SigV4 requests): all in sentinel-swap.js.
-    const secrets = [], tid = who.tenant, qm = (n) => Array(n).fill("?").join(",");
+    const tid = who.tenant, qm = (n) => Array(n).fill("?").join(",");
     let body = SAFE.has(method) ? undefined : req.body, bodyBytes = null;
     const declared = req.headers.get("content-length"), kind = bodyKind(req.headers), aws = /^AWS4-HMAC-SHA256\s/.test(req.headers.get("authorization") || "");
     if (body && (kind || aws) && !(declared != null && Number(declared) > BODY_SCAN_MAX)) {
       const r = await readCapped(body); if (r.bytes) { bodyBytes = r.bytes; body = r.bytes; } else body = r.stream;
     }
+    // Every real value opened for this request, including secrets used only to sign: an echo service can return those too.
+    const secrets = [];
     const rw = await rewriteRequest({ host, method, url: u.toString(), headers: req.headers, bodyBytes,
       lookup: async (ids) => (await this.env.DB.prepare(`SELECT name, standin, hosts, sealed FROM vault WHERE tenant_id=? AND standin IN (${qm(ids.length)})`).bind(tid, ...ids).all()).results || [],
       lookupHostKeys: async () => (await this.env.DB.prepare("SELECT name, standin, hosts, sealed FROM vault WHERE tenant_id=?").bind(tid).all()).results || [],
-      open: async (r) => { const real = await openSecret(this.env, r.sealed); secrets.push({ real, standin: r.standin }); return real; } });
+      open: async (r) => { const real = await openSecret(this.env, r.sealed); secrets.push({ real, standin: r.standin }); const t = trimKey(real); if (t && t !== real) secrets.push({ real: t, standin: r.standin }); return real; } });
     const headers = rw.headers, url = rw.url, swapped = rw.swapped, refused = rw.refused;
     if (rw.bodyBytes) body = rw.bodyBytes;
+    if (secrets.length) secrets.push(...basicEchoPairs(req.headers, headers));
 
     // 2. Anything that sends data needs approval (or an Always Approve / grant that covers it), unless an automatic rule decides
     //    (egress-policy.js). A request carrying a saved key never goes out on an automatic rule.
@@ -113,8 +75,7 @@ export class Sentinel extends WorkerEntrypoint {
     if (!SAFE.has(method) && LFS_BATCH.test(u.pathname) && bytes > 0 && bytes <= 65536) {
       try { const t = rw.bodyBytes ? new TextDecoder().decode(rw.bodyBytes) : await boundedText(req, 65536); if (!rw.bodyBytes) body = t; lfsOp = lfsOperation(t); }
       catch (e) {
-        const large = e instanceof BodyTooLargeError;
-        const status = large ? 413 : 400;
+        const large = e instanceof BodyTooLargeError, status = large ? 413 : 400;
         await C.noteEgress({ at: t0, host, method, status, verdict: "deny", why: large ? "Git LFS batch body too large" : "invalid Git LFS batch body", keys: swapped, refused, ms: Date.now() - t0 }).catch(() => {});
         return new Response(large ? "Git LFS batch body too large" : "Invalid Git LFS batch body", { status });
       }
@@ -126,17 +87,15 @@ export class Sentinel extends WorkerEntrypoint {
       await log(403);
       return new Response(blockedText({ method, host, path, ...decision }), { status: 403, headers: { "x-1helm-sentinel": decision.quiet ? "skipped" : "blocked", "content-type": "text/plain" } });
     }
-    // An encoded response cannot be byte-scanned safely. Ask the upstream for identity bytes.
+    // An encoded response cannot be byte-scanned safely, so ask the upstream for identity bytes when keys were swapped.
     if (secrets.length) headers.set("accept-encoding", "identity");
     let res;
     try { res = await fetch(new Request(url, { method, headers, body, redirect: "manual" })); }
-    catch { await log(502); return new Response("upstream request failed", { status: 502 }); }
-    if (secrets.length && res.headers.get("content-encoding") && res.headers.get("content-encoding") !== "identity") {
-      await log(502);
-      return new Response("upstream response encoding not supported for saved keys", { status: 502 });
-    }
+    catch (e) { await log(502, { error: String(e.message || e).slice(0, 200) }); return new Response(`upstream error: ${e.message}`, { status: 502 }); }
+    if (secrets.length && encodedResponse(res)) { await log(502); return new Response("upstream response encoding not supported for saved keys", { status: 502 }); }
     await log(res.status);
-    return secrets.length ? hideEchoedKeys(res, secrets) : res;
+    // A real key can come back in an echo (headers, Location, body). The computer gets the stand-in instead. A 101 upgrade has no body to scan.
+    return secrets.length && res.status !== 101 ? hideEchoedKeys(res, secrets) : res;
   }
 }
 export { openSecret };

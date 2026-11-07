@@ -3,7 +3,7 @@
 // the whole reply, no tool ran, the turn closed). The detector is pure; the loop test runs the real Resident on both engines with a scripted model.
 import assert from "node:assert"; import { DatabaseSync } from "node:sqlite"; import { readFileSync } from "node:fs";
 import { Resident } from "../src/resident.js";
-import { isPromiseOnly, ackNudge, ACK_NUDGE, isClosingPromise, workNudge, WORK_NUDGE } from "../src/ack-stall.js";
+import { isPromiseOnly, ackNudge, ACK_NUDGE, isClosingPromise, workNudge, WORK_NUDGE, openTodoNudge, openTodoNudgeText, openWorkFacts } from "../src/ack-stall.js";
 
 let passed = 0; const ok = (name) => { passed++; console.log("  ok", name); };
 
@@ -86,6 +86,41 @@ for (const t of CLOSE_NEG) assert.ok(!isClosingPromise(t), `should not fire: ${t
 }
 ok("isClosingPromise / workNudge");
 
+// ---- the open to-do guard (openTodoNudge): the 2026-11-06 shape, app facts only ----
+{
+  const EXPLAIN = "You're right. I found saved X API credentials and tried a search, but X returned an unauthorized response.";
+  const OPEN = [{ id: "2", text: "Trace dates and available engagement over time", status: "todo" }, { id: "3", text: "Compare launch trajectories and report sources", status: "doing" }];
+  const facts = (o = {}) => () => ({ open: OPEN, running: [], setUp: [], waiting: [], ...o });
+  const run = (over = {}, stats = { tool_calls: 3 }, reply = EXPLAIN, tcO = {}) => { const tc = { kind: "chat", ...tcO }; return { tc, out: openTodoNudge(tc, stats, reply, over.facts || facts(over)) }; };
+  let r = run(); assert.equal(r.out, openTodoNudgeText(OPEN), "fires in the 21:13 shape"); assert.equal(r.tc.ackNudged, true);
+  assert.match(r.out, /Trace dates and available engagement over time/); assert.match(r.out, /\[doing\] Compare launch trajectories/); assert.match(r.out, /still wants the original result/); assert.match(r.out, /next real path/); assert.match(r.out, /update_todos/); assert.match(r.out, /exactly what you need/);
+  assert.equal(openTodoNudge(r.tc, { tool_calls: 3 }, EXPLAIN, facts()), null, "not twice in one turn");
+  assert.equal(openTodoNudge({ kind: "chat", ackNudged: true }, { tool_calls: 3 }, EXPLAIN, facts()), null, "shares tc.ackNudged with the other nudges");
+  assert.equal(run({ open: [] }).out, null, "list all done (or no list)");
+  assert.equal(run({}, { tool_calls: 3 }, EXPLAIN + " Do you want me to try the browser instead?").out, null, "a question at the end");
+  assert.equal(run({}, { tool_calls: 3 }, EXPLAIN + " If you want, I can try the browser.").out, null, "an offer at the end");
+  assert.equal(run({ running: [{ kind: "helper" }] }).out, null, "a helper is running");
+  assert.equal(run({ running: [{ kind: "browser job" }] }).out, null, "a browser job is running");
+  assert.equal(run({ setUp: [{}] }).out, null, "a watcher or workflow was set up");
+  assert.equal(run({ waiting: ["approval"] }).out, null, "an approval is waiting");
+  assert.equal(run({}, { tool_calls: 3 }, EXPLAIN, { pause: { why: "x" } }).out, null, "a pause");
+  assert.equal(run({}, { tool_calls: 3 }, EXPLAIN, { stall: true }).out, null, "a stall");
+  assert.equal(run({}, { tool_calls: 0 }).out, null, "no tool call in the turn");
+  assert.equal(run({}, { tool_calls: 3, ack_nudge: 1 }).out, null, "another nudge already sent");
+  assert.equal(openTodoNudge({ kind: "helper" }, { tool_calls: 3 }, EXPLAIN, facts()), null, "chat turns only");
+  assert.equal(openTodoNudge({ kind: "chat" }, { tool_calls: 3 }, EXPLAIN, () => { throw new Error("x"); }), null, "a failed lookup never nudges");
+  // the facts, read from real tables
+  const db = new DatabaseSync(":memory:"), q = { exec: (x, ...a) => { const st = db.prepare(x); const rows = /^\s*SELECT/i.test(x) ? st.all(...a) : (st.run(...a), []); return { toArray: () => rows }; } };
+  db.exec("CREATE TABLE todos (session TEXT PRIMARY KEY, items TEXT, rev INTEGER, seen INTEGER, next INTEGER, updated INTEGER); CREATE TABLE helpers (id INTEGER, session TEXT, status TEXT); CREATE TABLE browser_jobs (id INTEGER, session TEXT, status TEXT); CREATE TABLE workflows (id INTEGER, session TEXT, created INTEGER, status TEXT); CREATE TABLE approvals (id INTEGER, session TEXT, status TEXT); CREATE TABLE connect_offers (id INTEGER, session TEXT, status TEXT); CREATE TABLE user_questions (id TEXT, session TEXT, status TEXT); CREATE TABLE chat_interviews (id TEXT, session TEXT, status TEXT); CREATE TABLE plans (id INTEGER, session TEXT, status TEXT); CREATE TABLE card_events (card TEXT, type TEXT, tool TEXT)");
+  db.prepare("INSERT INTO todos VALUES ('s1', ?, 1, 1, 4, 1)").run(JSON.stringify([{ id: "1", text: "a", status: "done" }, ...OPEN]));
+  let f = openWorkFacts(q, { session: "s1", turn: "c1", since: 0 }); assert.equal(f.open.length, 2); assert.equal(f.running.length + f.setUp.length + f.waiting.length, 0);
+  db.exec("INSERT INTO helpers VALUES (1,'s1','running'); INSERT INTO browser_jobs VALUES (1,'s1','queued'); INSERT INTO approvals VALUES (1,'s1','pending'); INSERT INTO connect_offers VALUES (1,'s1','pending'); INSERT INTO user_questions VALUES ('q','s1','pending'); INSERT INTO chat_interviews VALUES ('i','s1','open'); INSERT INTO plans VALUES (1,'s1','pending'); INSERT INTO card_events VALUES ('c1','step','ask_user'); INSERT INTO workflows VALUES (1,'s1',5,'active')");
+  f = openWorkFacts(q, { session: "s1", turn: "c1", since: 0 }); assert.equal(f.running.length, 2); assert.equal(f.setUp.length, 1); assert.deepEqual(f.waiting, ["approval", "connect offer", "question", "interview", "plan", "ask_user"]);
+  assert.equal(openWorkFacts(q, { session: "other", turn: "c9" }).open.length, 0, "another task's list is not read");
+  assert.equal(openWorkFacts({ exec: () => { throw new Error("no table"); } }, { session: "s1" }).open.length, 0, "missing tables read as nothing");
+  ok("openTodoNudge / openWorkFacts");
+}
+
 for (const engine of ["classic", "pi"]) {
   const partsOf = (r) => { const row = dodb.prepare("SELECT parts, progress FROM turns WHERE id=?").get(r.turn); return { parts: row.parts && JSON.parse(row.parts), progress: row.progress && JSON.parse(row.progress) }; };
   brain = ({ n }) => n === 1 ? "Got it, reading it now." : "The runbook says to restart the worker first. That is the whole setup.";
@@ -128,5 +163,26 @@ for (const engine of ["classic", "pi"]) {
   r = await chat(engine, "make it"); assert.equal(mainCalls().length, 1, `${engine}: an offer is not nudged`);
   ok(`${engine}: an offer is not nudged`);
 }
+// ---- the open to-do guard in the real loop, both engines ----
+for (const engine of ["classic", "pi"]) {
+  const isTodo = (c) => c.messages.some((m) => m.role === "user" && String(typeof m.content === "string" ? m.content : m.content?.[0]?.text || "").startsWith("(Context note, not from the person: your to-do list still has unfinished items"));
+  const go = async (text, setup) => { R.put("engine", engine); calls.length = 0; const s = R.newSession("Research"); setup?.(s); const r = await R.runTurn("t1", "main", "1", text, () => {}, { session: s }); await settle(); return { r, s }; };
+  const items = [{ id: "1", text: "Find the launch posts", status: "done", by: "helper", at: 1 }, { id: "2", text: "Trace dates", status: "todo", by: "helper", at: 1 }, { id: "3", text: "Compare launches", status: "doing", by: "helper", at: 1 }];
+  const withList = (s) => R.todoSave(s, items, 1, 1, 4);
+  brain = ({ n }) => n === 1 ? { content: "", calls: [["run_command", { command: "curl -s x" }]] } : n === 2 ? "X returned an unauthorized response, so I could not search there." : n === 3 ? { content: "", calls: [["run_command", { command: "ls" }]] } : "Another explanation with no tool call.";
+  let { r } = await go("use the x api yourself", withList); let mc = mainCalls();
+  assert.equal(mc.filter(isTodo).length >= 1, true, `${engine}: the explanation with open items is nudged`);
+  assert.ok(!isTodo(mc[1]), `${engine}: not before the explanation`); assert.equal(r.todo_nudge, 1, `${engine}: stats flag`);
+  assert.equal(mc.length, 4, `${engine}: the second explanation ends the turn (one nudge per turn): ${mc.length}`);
+  assert.match(JSON.stringify(mc[2].messages.at(-1)), /Trace dates/, `${engine}: the nudge lists the open items`);
+  ok(`${engine}: open to-do items after an explanation get one nudge`);
+  brain = ({ n }) => n === 1 ? { content: "", calls: [["run_command", { command: "ls" }]] } : "X returned an unauthorized response.";
+  ({ r } = await go("use the x api", (s) => R.todoSave(s, items.map((x) => ({ ...x, status: "done" })), 1, 1, 4))); assert.ok(!r.todo_nudge && !mainCalls().some(isTodo), `${engine}: all done, no nudge`);
+  ({ r } = await go("use the x api", withList)); brain = () => "Here is the answer."; ({ r } = await go("what is 2+2", withList)); assert.ok(!r.todo_nudge, `${engine}: no tool call, no nudge`);
+  brain = ({ n }) => n === 1 ? { content: "", calls: [["run_command", { command: "ls" }]] } : "X returned an unauthorized response. Do you want me to try the browser?";
+  ({ r } = await go("use the x api", withList)); assert.ok(!r.todo_nudge, `${engine}: a question at the end, no nudge`);
+  ok(`${engine}: all done, no tool call and a question do not nudge`);
+}
+
 assert.equal(ledger.open.size, 0, "every reservation settled");
 console.log(`ack-stall: ${passed} passed`);

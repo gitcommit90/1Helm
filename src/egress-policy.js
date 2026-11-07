@@ -133,5 +133,5 @@ export function blockedText({ method, host, path, why, verdict, quiet }) {
   if (quiet) return `1Helm Sentinel did not send ${what}: ${why}.\n`;
   if (/^requests to 1Helm itself/.test(why)) return `1Helm Sentinel blocked ${what}: ${why}.\n`;
   if (/the person denied it/.test(why)) return `1Helm Sentinel blocked ${what}: the person said no to sending this. Nothing was sent. Do not retry it or send it another way; tell them it wasn't sent.\n`;
-  return `1Helm Sentinel held ${what}: it sends data and needs the person's OK (${why}). Nothing was sent. Do not retry it in a loop. Tell the person what you were trying to send and why; they can allow it in the app.\n`;
+  return `1Helm Sentinel held ${what}: it sends data and needs the person's OK (${why}). Nothing was sent. The request waits in the app, and you are told when the person decides. Do not retry it in a loop; carry on with the rest of the task.\n`;
 }

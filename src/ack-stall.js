@@ -61,6 +61,53 @@ export function ackNudge(tc, stats, said) {
   return ACK_NUDGE;
 }
 
+// ---- Open to-do items when a chat turn ends on an explanation (Live, 2026-11-06, #publicbytes, channel josephs1, ChatGPT plan) ----
+// The person asked for research and said twice to use the X API from the computer. Both turns ended on a reply that explained a failed call
+// ("X returned an unauthorized response ...") while the task's to-do list still had a todo and a doing item. The reply answered the person's
+// criticism and the research stopped. Prompt text did not change it, so this guard uses only app facts: the to-do list, the turn's tool calls,
+// what is running or waiting on the person, and whether the reply asks the person something. It shares tc.ackNudged, so a turn gets at most
+// one nudge of any kind.
+
+export function openTodoNudgeText(items) {
+  const list = items.slice(0, 10).map((x) => `- [${x.status}] ${String(x.text || "").slice(0, 160)}`).join("\n");
+  return `(Context note, not from the person: your to-do list still has unfinished items, and you ended your turn on a reply with no tool call.\n${list}\nThe person still wants the original result of this task. Continue the work now with your tools, and if a path failed, take the next real path. Mark each item done with update_todos as you finish it. If you are truly blocked, say exactly what you need from the person.)`;
+}
+
+const WAITING_TOOLS = new Set(["ask_user", "request_input", "interview", "send_poll", "propose_plan", "offer_connect", "request_saved_login", "request_purchase"]);
+
+// App facts for one chat turn: { open: [unfinished to-do items], running: [...], setUp: [...], waiting: [what the person must answer] }.
+export function openWorkFacts(sql, { session, turn, since = 0 } = {}) {
+  const all = (q, ...a) => { try { return sql.exec(q, ...a).toArray(); } catch { return []; } };
+  const sid = String(session ?? "");
+  let items = []; try { items = JSON.parse(all("SELECT items FROM todos WHERE session=?", sid)[0]?.items || "[]"); } catch {}
+  const open = items.filter((x) => x && x.status !== "done");
+  const running = [
+    ...all("SELECT id FROM browser_jobs WHERE session=? AND status IN ('queued','running','stopping')", sid).map((r) => ({ kind: "browser job", id: r.id })),
+    ...all("SELECT id FROM helpers WHERE session=? AND status IN ('running','waiting_input')", sid).map((r) => ({ kind: "helper", id: r.id })),
+  ];
+  const setUp = all("SELECT id FROM workflows WHERE session=? AND created>=? AND status='active'", sid, since);
+  const waiting = [
+    ...all("SELECT id FROM approvals WHERE session=? AND status='pending'", sid).map(() => "approval"),
+    ...all("SELECT id FROM connect_offers WHERE session=? AND status='pending'", sid).map(() => "connect offer"),
+    ...all("SELECT id FROM user_questions WHERE session=? AND status='pending'", sid).map(() => "question"),
+    ...all("SELECT id FROM chat_interviews WHERE session=? AND status='open'", sid).map(() => "interview"),
+    ...all("SELECT id FROM plans WHERE session=? AND status='pending'", sid).map(() => "plan"),
+    ...all("SELECT tool FROM card_events WHERE card=? AND type='step'", String(turn ?? "")).filter((e) => WAITING_TOOLS.has(e.tool)).map((e) => e.tool),
+  ];
+  return { open, running, setUp, waiting };
+}
+
+// reply: the text this step would end the turn with. facts: () => openWorkFacts(...), read only after the cheap checks pass.
+export function openTodoNudge(tc, stats, reply, facts) {
+  if (!tc || tc.kind !== "chat" || tc.ackNudged || tc.pause || tc.stall || tc.abort) return null;
+  if ((stats?.tool_calls || 0) < 1 || stats?.promise_resent || stats?.ack_nudge || stats?.work_nudge) return null;
+  if (sentences(reply).slice(-2).some((x) => /\?/.test(x) || ASK.test(x))) return null;
+  let f; try { f = facts?.() || {}; } catch { return null; }
+  if (!(f.open || []).length || (f.running || []).length || (f.setUp || []).length || (f.waiting || []).length) return null;
+  tc.ackNudged = true;
+  return openTodoNudgeText(f.open);
+}
+
 // ---- A closing promise of work the helper does itself (Live, 2026-11-04, #videos "A Game of Horse", classic engine, BYOK) ----
 // The ack guard above needs NO tool in the turn and a reply that is only a short promise. Real replies that ended a turn with nothing running were
 // "...I'm creating the visual references and working on the commercial now." (after tools ran), "...The next step is to check the Comfy account's access to that

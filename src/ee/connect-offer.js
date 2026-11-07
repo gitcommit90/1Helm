@@ -188,8 +188,8 @@ export const FIND_APP_TOOL = { type: "function", function: { name: "find_app", d
   "Look up whether an app or service can be connected to 1Helm, and whether this person has connected it. Use it when they ask \"can you access my X?\" or \"do you work with X?\", " +
   "and before offering a connection you aren't sure exists. Fuzzy: a name, nickname or kind of app (\"yt\", \"google sheets\", \"my bank\", \"Venmo\"). Returns up to 5 matches, each with " +
   "its status for this person (connected / expired / not connected) and how it connects (one-click sign-in, needs an API key, not available yet). Instant and free. " +
-  "Then: connected → just use it. Available but not connected (or expired) → offer_connect. No match, or not available yet → tell them plainly it can't be connected yet and " +
-  "offer to do it in the browser instead (browser_task; browser_fill_login if they saved a login for the site, else browser_handoff so they sign in themselves).",
+  "Then: connected → just use it. Available but not connected (or expired) → offer_connect. No match, or not available yet → there is no connection, and the result's next field lists the other ways to do the work " +
+  "(keys the person saved for that service's API, used from the computer with run_command; or the browser: browser_task, with browser_fill_login if they saved a login for the site, else browser_handoff).",
   parameters: { type: "object", properties: { query: { type: "string", description: "the app or service, as the person said it, e.g. \"YouTube\", \"yt\", \"my bank\"" } }, required: ["query"] } } };
 export const OFFER_CONNECT_TOOL = { type: "function", function: { name: "offer_connect", description:
   "Show the person a card in the chat to connect one app: its logo and name, your one-line why, and Connect / Not now. Nothing connects unless they tap Connect. " +
@@ -317,6 +317,28 @@ export function offersView(sql, session) {
 const offeredText = (r) => r.status === "dismissed" ? "they said Not now" : r.status === "connected" ? "they connected it" : "the card is still on screen";
 const cleanWhy = (s) => { let t = String(s || "").replace(/\*\*|__|`|#+\s/g, "").replace(/\s+/g, " ").trim(); if (t.length > 160) t = t.slice(0, 157).replace(/\s+\S*$/, "") + "…"; return t; };
 
+// Keys the person saved in the vault (Settings, Passwords & keys) whose hosts belong to this app's API, e.g. api.x.com for X / Twitter. Names and hosts only, never values.
+function hostTerms(x) {
+  const slug = String(x?.s || "").toLowerCase(), name = compact(String(x?.n || x || ""));
+  const terms = new Set([slug, name, ...Object.entries(ALIASES).filter(([, v]) => v === slug).map(([k]) => compact(k))].filter(Boolean));
+  if (!x?.s) for (const w of normQuery(String(x || "")).split(" ")) if (w) terms.add(compact(w));
+  return terms;
+}
+async function savedKeysFor(env, tenant, x) {
+  let rows = []; try { rows = (await env.DB.prepare("SELECT name, hosts FROM vault WHERE tenant_id=? ORDER BY name").bind(tenant).all()).results || []; } catch { return []; }
+  const terms = hostTerms(x);
+  return rows.map((r) => { let hosts = []; try { hosts = JSON.parse(r.hosts) || []; } catch {} return { name: r.name, hosts: hosts.filter((h) => String(h).toLowerCase().split(".").some((l) => l && [...terms].some((t) => l === t || (t.length >= 4 && l.includes(t))))) }; }).filter((r) => r.hosts.length);
+}
+async function keyOption(res, tenant, x) {
+  const keys = await savedKeysFor(res.env, tenant, x).catch(() => []);
+  return keys.length ? `the person has saved keys for this service's API host (${keys.slice(0, 5).map((k) => `${k.name} for ${k.hosts.join(", ")}`).join("; ")}), and those keys can be used from the computer with run_command; ` : "";
+}
+async function savedLogin(res, tenant, q) {
+  const words = normQuery(q).split(" ").filter((w) => w.length >= 3), sites = await loginSites(res.env, tenant).catch(() => []);
+  const saved = sites.find((s) => words.some((w) => s.toLowerCase().includes(w)));
+  return saved ? saved.replace(/ \(\d+ accounts\)$/, "") : "";
+}
+
 async function findApp(res, a, ctx) {
   const q = String(a.query || "").trim(); if (!q) return "error: say which app (query), e.g. \"YouTube\".";
   const list = await catalog(res.env);
@@ -336,14 +358,10 @@ async function findApp(res, a, ctx) {
   const related = hits.filter((h) => h.match === "related").map(({ a: x }) => `${x.n} (${x.s})`);
   let next;
   const top = out[0];
-  const browser = async () => {
-    const words = normQuery(q).split(" ").filter((w) => w.length >= 3), sites = await loginSites(res.env, tenant).catch(() => []);
-    const saved = sites.find((s) => words.some((w) => s.toLowerCase().includes(w)));
-    return `Tell them plainly it isn't available as a connection yet, and offer to do it in the browser instead (browser_task${saved ? `; they saved a login for ${saved.replace(/ \(\d+ accounts\)$/, "")}, so sign in with browser_fill_login` : "; if the site needs a sign-in and there's no saved login, use browser_handoff so they sign in themselves"}).`;
-  };
+  const browser = async (x) => `Other ways to do the work: ${await keyOption(res, tenant, x || q)}the browser (browser_task${(await savedLogin(res, tenant, q)) ? `; they saved a login for ${await savedLogin(res, tenant, q)}, so sign in with browser_fill_login` : "; if the site needs a sign-in and there's no saved login, use browser_handoff so they sign in themselves"}).`;
   if (own.length) next = `${own[0].name} is the person's own custom MCP server and it is connected: use it (app_actions with app "${own[0].app}"). Don't offer to connect it.${top ? ` ${top.name} (the built-in app, ${top._st === "connected" ? "connected" : top._st === "expired" ? "its connection expired" : "not connected"}) is a different thing: never describe the custom server as expired or not connected because of it; mention the built-in one only if it matters.` : ""}`;
   else if (!top) next = `No app called "${q}" can be connected.${related.length ? ` Related apps (only if one clearly is what they meant): ${related.join(", ")}.` : ""} ${await browser()}`;
-  else if (top._k === "soon") next = `${top.name} isn't available as a connection yet. ${await browser()}`;
+  else if (top._k === "soon") next = `${top.name} isn't available as a connection yet. ${await browser(top._x)}`;
   else if (top._k === "retired") next = `${RETIRED_NOTE} Don't offer it; offer the individual app instead (find_app it).`;
   else if (top._k === "builtin") next = `${top.name} is built in: use it right away (app_actions with app "${top.app}"), nothing to connect.`;
   else if (top._st === "connected") next = `${top.name} is connected: just use it${top.app === "gmail" ? " (gmail_search / gmail_read / gmail_draft)" : top.app === "googlecalendar" ? " (calendar_events / calendar_add)" : ` (app_actions with app "${top.app}")`}. Don't offer to connect it, unless they asked to connect another account of it (a second ${top.name}): then call offer_connect with app "${top.app}" and another: true, and the card shows right in the chat.`;
@@ -384,7 +402,7 @@ async function offerConnect(res, a, ctx) {
   let kind = connectKind(x);
   if (kind === "soon" && statusFor(x.s, await res.conns(true)).status === "connected") kind = connectKind(x, true);   // Soon, but already connected: usable
   if (kind === "retired") return `NOT OFFERED: ${RETIRED_NOTE}`;
-  if (kind === "soon") return `NOT OFFERED: ${x.n} isn't available as a connection yet. Tell them plainly, and offer to do it in the browser instead (browser_task; browser_fill_login if they saved a login for it, else browser_handoff).`;
+  if (kind === "soon") return `NOT OFFERED: ${x.n} isn't available as a connection yet. Other ways to do the work: ${await keyOption(res, res.get("tenant"), x)}the browser (browser_task; browser_fill_login if they saved a login for it, else browser_handoff).`;
   if (kind === "builtin") return `NOT OFFERED: ${x.n} is built in, nothing to connect. Use it right away with app_actions (app "${x.s}").`;
   const conns = await res.conns(true), st = statusFor(x.s, conns);
   { const t = withConnectedTwin(x, conns);   // they have an account in this app's twin: use it, or reconnect it when it expired

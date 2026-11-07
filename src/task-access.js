@@ -125,8 +125,8 @@ async function localTaskOperation(R, name, a, ctx, words) {
     if (R.liveTurn?.(row.id) || R.resumingIn?.(row.id) || [...(R.active?.values() || [])].some(t => t.session === row.id && !t.finished)) return fail("This task is currently working or resuming. Its checklist was not changed. Wait for its work to finish, then read the list again before editing.", { channel, task: row.id });
     const prev = R.todoRow(row.id);
     if (!Number.isInteger(a.expected_revision) || a.expected_revision !== prev.rev) return fail("Checklist revision is missing or changed. Read the task, preserve its current items, and retry with its todo_revision as expected_revision; nothing was changed.", { channel, task: row.id, todo_revision: prev.rev, todos: R.todoItems(row.id) });
-    const q = checkQuote(a.person_asked, words), rev = prev.rev + 1;
-    const m = mergeTodos(a, { ...prev, seen: prev.rev }, rev, { allowDone: q.ok });
+    const rev = prev.rev + 1;
+    const m = mergeTodos(a, { ...prev, seen: prev.rev }, rev, {});
     if (m.error) return fail(m.error, { channel, task: row.id });
     R.todoSave(row.id, m.items, rev, prev.seen, m.next);
     const items = publicItems(m.items); R.todoBroadcast(row.id, items, "helper");

@@ -389,7 +389,7 @@ async function tokenOf(cfg, { fetchImpl, force = false }) {
   try { return await chatgptToken(h.env, h.tid, { fetchImpl, force }); }
   catch (e) {
     if (e?.cg === "signin") throw fail(cfg, "your ChatGPT sign-in ended, so sign in with ChatGPT again", 401);
-    if (e?.cg) throw fail(cfg, e.message);
+    if (e?.cg) throw Object.assign(fail(cfg, e.message), { cgNoRetry: e.cg !== "network" && e.cg !== "busy" });   // a refresh ChatGPT refused is a sign-in problem; only a network failure or a busy refresh is worth a retry
     throw e;
   }
 }
@@ -502,8 +502,8 @@ export function translateStream(cfg, body, model, opts = {}) {
           }
           case "response.failed": case "error": {
             const er = e.type === "error" ? e : e.response?.error || {};
-            if (own && er.code === "subscription_sharing_usage_limit_exceeded") throw Object.assign(new ByokError(await limitReply(cfg), Number(er.status) || 429, chatgptDetail(429, er.code)), { limit: true });
-            throw fail(cfg, detailOf(Number(er.status) || 0, er.code, redact(er.message || "", "", 120), er.param), Number(er.status) || 0);
+            if (own && er.code === "subscription_sharing_usage_limit_exceeded") throw Object.assign(new ByokError(await limitReply(cfg), Number(er.status) || 429, chatgptDetail(429, er.code)), { limit: true, cgCode: er.code });
+            throw Object.assign(fail(cfg, detailOf(Number(er.status) || 0, er.code, redact(er.message || "", "", 120), er.param), Number(er.status) || 0), { cgCode: String(er.code || "") });
           }
           default: break;
         }
@@ -535,7 +535,36 @@ export async function collect(cfg, stream, model, { keepUsage = false } = {}) {
 export const chatgptCacheKey = (cfg, session = null, purpose = "chat") => cacheKey(session ? String(session) : `1helm-${cfg?.chatgptHandle?.tid || cfg?.tenantId || "account"}-${purpose || "chat"}`);
 // The headers Codex sends on a Responses call (codex-api build_session_headers: `session-id` and `thread-id`, plus `x-client-request-id`); its source says "ChatGPT derives cache affinity from the Responses session-id header". Codex also sends the prompt_cache_key equal to the session id, so all four carry the same value.
 export const chatgptSessionHeaders = (key) => ({ "session-id": key, "thread-id": key, "x-client-request-id": key });
-export async function chatgptChat(cfg, body, { signal = null, fetchImpl = globalThis.fetch, model, effort = null, timeouts = {}, session = null, purpose = null } = {}) {
+// Retries (Captain 2026-11-06): ChatGPT sometimes fails a call for a moment (HTTP 200, then a failure event with no status, code or message, which showed "error 0"). A call that fails like that
+// before any output reached the caller is tried again after 5 seconds, twice, and the failure words are shown only when the last try fails too. The retry is here, inside the one ChatGPT call,
+// so byokChatChain and the Background jobs loop (byok.js, byok-custom.js) only see a failure after all three tries, and then move to the next model as before. Nothing else retries a ChatGPT call.
+export const CG_RETRIES = 2, CG_RETRY_WAIT_MS = 5000, CG_RETRY_WINDOW_MS = 4 * 60e3;   // retries, wait before each, and no new retry once the call has already run this long
+// Codes that a retry cannot fix: the sign-in, the usage limit, the plan, and requests ChatGPT refuses.
+const NO_RETRY_CODES = new Set(["subscription_sharing_invalid_user", "subscription_sharing_usage_limit_exceeded", "subscription_sharing_user_not_eligible", "subscription_sharing_unsupported_capability", "subscription_sharing_route_not_supported"]);
+export function chatgptRetryable(err) {
+  if (!err?.byok || err.limit || err.cgNoRetry || !err.detail) return false;   // not a ChatGPT call failure, the usage limit, or an error with no words (e.g. no sign-in set up)
+  if (err.cgCode && NO_RETRY_CODES.has(err.cgCode)) return false;
+  const h = Number(err.http) || 0;
+  return h === 0 || h === 408 || h === 429 || h >= 500;   // no status (stream failure, network, no first byte), request timeout, rate limit, server error; 401, 403, 400 and redirects never
+}
+const abortableSleep = (ms, signal) => new Promise((resolve, reject) => {
+  if (signal?.aborted) return reject(signal.reason ?? new Error("aborted"));
+  const onAbort = () => { clearTimeout(t); reject(signal.reason ?? new Error("aborted")); };
+  const t = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, ms);
+  signal?.addEventListener("abort", onAbort, { once: true });
+});
+export async function chatgptChat(cfg, body, opts = {}) {
+  const { signal = null, sleep = abortableSleep } = opts, t0 = Date.now();
+  for (let retry = 0; ; retry++) {
+    try { return await chatgptOnce(cfg, body, opts); }
+    catch (e) {
+      if (signal?.aborted || retry >= CG_RETRIES || !chatgptRetryable(e) || Date.now() - t0 + CG_RETRY_WAIT_MS > CG_RETRY_WINDOW_MS) throw e;
+      console.log("byok chatgpt: transient failure, retrying", retry + 1, String(e.detail || "").slice(0, 80));
+      await sleep(CG_RETRY_WAIT_MS, signal);   // an abort during the wait rejects at once with the abort reason
+    }
+  }
+}
+async function chatgptOnce(cfg, body, { signal = null, fetchImpl = globalThis.fetch, model, effort = null, timeouts = {}, session = null, purpose = null } = {}) {
   const pck = chatgptCacheKey(cfg, session, purpose);
   const req = responsesBody(body, model, { effort, cacheKey: pck });
   const accountId = await chatgptAccountId(cfg.chatgptHandle?.env, cfg.chatgptHandle?.tid).catch(() => "");   // Codex sends chatgpt-account-id on every call
@@ -560,7 +589,7 @@ export async function chatgptChat(cfg, body, { signal = null, fetchImpl = global
     const { raw, detail } = await errorDetail(cfg, r);
     let code = "", param = ""; try { const j = JSON.parse(raw); code = j?.error?.code || ""; param = j?.error?.param || ""; } catch {}
     if (code === "subscription_sharing_usage_limit_exceeded") { throw Object.assign(new ByokError(await limitReply(cfg), r.status, chatgptDetail(r.status, code)), { limit: true }); }
-    throw fail(cfg, chatgptDetail(r.status, code, detail, param), r.status);
+    throw Object.assign(fail(cfg, chatgptDetail(r.status, code, detail, param), r.status), { cgCode: code });
   }
   if (!r.body) throw fail(cfg, "an empty answer");
   const translated = new Response(translateStream(cfg, guardStream(cfg, r.body, signal), model), { status: 200, headers: { "content-type": "text/event-stream" } });

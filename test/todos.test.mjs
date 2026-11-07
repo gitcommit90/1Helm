@@ -44,9 +44,9 @@ async function scenario(name, fn) { await fn(); console.log("  ok", name); }
 await scenario("tool shape: description carries when to use it; schema is the whole list", async () => {
   const f = TODO_TOOL.function; assert.equal(f.name, "update_todos");
   assert.deepEqual(f.parameters.required, ["items"]); assert.deepEqual(f.parameters.properties.items.items.properties.status.enum, ["todo", "doing", "done"]);
-  for (const w of [/multi-step/, /one item "doing"/, /WHOLE list/, /Don't use it for quick one-step/, /person ticked/, /never mark items done yourself/, /shows as ready to tick/, /person_asked/]) assert.match(f.description, w);
+  for (const w of [/multi-step/, /one item "doing"/, /WHOLE list/, /Don't use it for quick one-step/, /person ticked/, /Mark each item "done" as soon as you finish it/, /before your final reply make sure every finished item is marked "done"/, /person_asked/]) assert.match(f.description, w);
+  assert.ok(!/ready to tick|never mark items done|Only the person ticks/.test(f.description), "no only-the-person-ticks rule is left");
   assert.ok(!/tell them it's ready/.test(f.description) , "the helper is not told to announce ticking");
-  assert.ok(!/"done" as soon as it's finished/.test(f.description), "the helper is no longer told to tick items");
 });
 
 await scenario("merge: replaces, keeps ids by id or text, caps items + characters, one doing", () => {
@@ -60,11 +60,12 @@ await scenario("merge: replaces, keeps ids by id or text, caps items + character
   const again = mergeTodos({ items: [{ text: "book HOTEL", status: "doing" }, { id: "1", text: "Find flights (direct)", status: "done" }, { id: "99", text: "Pack", status: "todo" }] }, prev);
   // The helper's "done" on item 1 while moving on to item 2: item 1 was the active one, so the app marks it done.
   assert.deepEqual(again.items.map((x) => [x.id, x.status, !!x.ready]), [["2", "doing", false], ["1", "done", false], ["3", "todo", false]]); assert.equal(again.next, 4);
-  assert.ok(again.notes.some((n) => /marked done automatically/.test(n)), again.notes.join(" | "));
+  const moved = mergeTodos({ items: [{ id: "1", text: "Find flights", status: "doing" }, { id: "2", text: "Book hotel", status: "doing" }] }, prev);
+  assert.deepEqual(moved.items.map((x) => [x.id, x.status]), [["1", "done"], ["2", "doing"]], "move-on rule still checks off the previous doing item");
+  assert.ok(moved.notes.some((n) => /marked done automatically/.test(n)), moved.notes.join(" | "));
   const held = mergeTodos({ items: [{ id: "1", text: "Find flights", status: "done" }] }, prev);
-  assert.ok(held.notes.some((n) => /Only the person ticks items done/.test(n)) && held.items[0].ready, "done with no move-on stays ready to tick");
-  const asked = mergeTodos({ items: [{ id: "1", text: "Find flights", status: "done" }] }, prev, 6, { allowDone: true });
-  assert.deepEqual(asked.items.map((x) => [x.status, !!x.ready]), [["done", false]], "an explicit (verified) ask lets it through");
+  assert.deepEqual(held.items.map((x) => [x.status, x.by, !!x.ready]), [["done", "helper", false]], "a helper done with no person_asked is stored as done");
+  assert.ok(!held.notes.some((n) => /person ticks|ready/i.test(n)), held.notes.join(" | "));
   assert.match(mergeTodos({ items: "nope" }).error, /must be a list/);
   assert.equal(todoContextNote([]), "");
 });
@@ -87,7 +88,6 @@ for (const engine of ["classic", "pi"]) {
     // The model saw the stored truth as the tool result.
     const res1 = toolOut(R.calls[1]); assert.match(res1, /^Saved\. To-do list \(0 of 5 done\)/); assert.match(res1, /\(id 1\) \[doing\] Find flights/);
     assert.match(toolOut(R.calls[2]), /1 of 4 done/); assert.match(toolOut(R.calls[2]), /\(id 1\) \[done\] Find flights/);
-    assert.match(toolOut(R.calls[2]), /marked done automatically/);
     const d = await R.sessionDetail(session);
     assert.deepEqual(d.todos.map((x) => x.text), ["Find flights", "Compare prices", "Book the cheapest", "Send you the summary"]);
     assert.ok(d.turns.every((t) => !t.steps.some((s) => s.tool === "update_todos")), "update_todos is not a step in the chat");
@@ -96,7 +96,7 @@ for (const engine of ["classic", "pi"]) {
     await turn(R, "how's it going?", session);
     const msgs = R.calls.at(-1), u = lastUser(msgs).content;
     assert.equal(msgs[0].content, "SYSTEM");
-    assert.match(u, /^how's it going\?/); assert.match(u, /your to-do list for this task, which the person sees in the app; only they tick items done \(1 of 4 done\)/); assert.match(u, /\(id 2\) \[doing\] Compare prices/);
+    assert.match(u, /^how's it going\?/); assert.match(u, /your to-do list for this task, which the person sees in the app \(1 of 4 done\)/); assert.match(u, /\(id 2\) \[doing\] Compare prices/);
     // Earlier turns in the history stay exactly as they were (stable prefix): no list in them.
     assert.ok(msgs.slice(1, -1).every((m) => !/to-do list for this task/.test(String(m.content))), "history carries no list");
   });

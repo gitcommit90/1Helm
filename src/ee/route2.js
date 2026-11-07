@@ -186,10 +186,10 @@ export async function chooseTwo(env, { kind = "chat", text, hist, prevTools = 0,
   return { route: d.route, jev: { ...jev, verdict: d.verdict } };
 }
 
-// Open work in this task, read from the Resident: unfinished to-dos (not ones ready for the person to tick), helpers still running.
+// Open work in this task, read from the Resident: unfinished to-dos, helpers still running.
 export function openWorkOf(R, session) {
   const out = [];
-  try { const items = session ? R.todoRow(session).items || [] : [], left = items.filter((x) => x.status !== "done" && !x.ready).length; if (left) out.push(`${left} unfinished to-do item${left > 1 ? "s" : ""}`); } catch {}
+  try { const items = session ? R.todoRow(session).items || [] : [], left = items.filter((x) => x.status !== "done").length; if (left) out.push(`${left} unfinished to-do item${left > 1 ? "s" : ""}`); } catch {}
   try { if (session && R.helperNote?.(session)) out.push("a helper is still working"); } catch {}
   return out;
 }

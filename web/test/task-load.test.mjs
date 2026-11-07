@@ -10,9 +10,13 @@ assert.equal(m.loadDue(s,6000,true),true,'opening it again always tries');
 assert.equal(m.loadDue(s,5000+m.LOAD_COOLDOWN),true,'a repaint after the pause tries');
 s.loaded=true;assert.equal(m.loadDue(s,99999,true),false,'loaded: never due');
 // The failure line shows only for a task with nothing to show, and only once the load stopped.
-assert.equal(m.loadFailed({loaded:false,loading:false,loadFailAt:5,messages:[]},10),true);
-assert.equal(m.loadFailed({loaded:false,loading:true,loadFailAt:5,messages:[]},10),false,'retrying: the quiet loading state');
-assert.equal(m.loadFailed({loaded:false,loading:false,loadFailAt:5,messages:[{}]},10),false,'messages already shown are kept without a line');
+assert.equal(m.loadFailed({loaded:false,loading:false,loadFailAt:5,messages:[]},10),false,'one fresh failure (a resume while the network wakes) stays quiet');
+assert.equal(m.loadFailed({loaded:false,loading:false,loadFailAt:5,messages:[]},10,true),true,'offline: the line shows at once');
+assert.equal(m.loadFailed({loaded:false,loading:false,loadFailAt:5,loadFailSince:5,messages:[]},5+m.LOAD_FAIL_AFTER-1),false,'failing for less than the window: quiet');
+assert.equal(m.loadFailed({loaded:false,loading:false,loadFailAt:m.LOAD_FAIL_AFTER+4,loadFailSince:5,messages:[]},m.LOAD_FAIL_AFTER+5),true,'failing for the whole window: the line shows');
+assert.deepEqual([1,2,3,4,9].map(m.loadRetryIn),[1500,4000,10000,10000,10000],'automatic tries back off and then repeat');
+assert.equal(m.loadFailed({loaded:false,loading:true,loadFailAt:5,messages:[]},10,true),false,'retrying: the quiet loading state');
+assert.equal(m.loadFailed({loaded:false,loading:false,loadFailAt:5,messages:[{}]},10,true),false,'messages already shown are kept without a line');
 // Retries are bounded and back off. A fake page clock drives the timers.
 const mk=()=>{const timers=[];let t=0,hidden=false,pauseCb=[],visCb=[];return {timers,env:{now:()=>t,hidden:()=>hidden,setTimer:(fn,ms)=>{const x={fn,at:t+ms};timers.push(x);return x},clearTimer:x=>{const i=timers.indexOf(x);if(i>=0)timers.splice(i,1)},onPause:fn=>{pauseCb.push(fn);return()=>{pauseCb=pauseCb.filter(f=>f!==fn)}},whenVisible:()=>hidden?new Promise(ok=>visCb.push(ok)):Promise.resolve()},
  advance(ms){t+=ms;for(const x of [...timers])if(x.at<=t){timers.splice(timers.indexOf(x),1);x.fn()}},hide(){hidden=true;pauseCb.forEach(f=>f())},show(){hidden=false;visCb.splice(0).forEach(f=>f())}}};

@@ -5,7 +5,15 @@ export const LOAD_TRIES = 3;                 // tries in one load, with the wait
 export const LOAD_WAITS = [1000, 3000];      // ms to wait before the second and third try
 export const LOAD_COOLDOWN = 10000;          // ms after a failed load before a repaint or refresh starts another one
 
-type LoadState = { loaded?: boolean; loading?: boolean; loadFailAt?: number };
+// A failed load shows its "didn't load" line only after a real failure: the phone reports it is offline, or loads have kept failing for LOAD_FAIL_AFTER ms.
+// A single failed fetch while the app wakes up (the phone's network is often not ready for a second or two) stays quiet, and the load is tried again by itself.
+export const LOAD_FAIL_AFTER = 20000;        // ms of failing loads (from the first failure of a streak) before the line shows while the phone says it is online
+export const LOAD_RETRY_WAITS = [1500, 4000, 10000];   // ms between automatic tries after a failed load; the last wait repeats
+
+type LoadState = { loaded?: boolean; loading?: boolean; loadFailAt?: number; loadFailSince?: number };
+
+// How long to wait before the next automatic try, given how many loads have failed in a row (1 = the first failure).
+export const loadRetryIn = (fails: number) => LOAD_RETRY_WAITS[Math.min(Math.max(fails, 1) - 1, LOAD_RETRY_WAITS.length - 1)];
 
 // True when a task should start loading now. force is for the person's own action (opening the task again, tapping Try again, coming back to the app).
 export function loadDue(s: LoadState, now = Date.now(), force = false): boolean {
@@ -13,7 +21,8 @@ export function loadDue(s: LoadState, now = Date.now(), force = false): boolean 
   return force || !s.loadFailAt || now - s.loadFailAt >= LOAD_COOLDOWN;
 }
 
-export const loadFailed = (s: LoadState & { messages: unknown[] }, now = Date.now()) => !s.loaded && !s.loading && !!s.loadFailAt && !s.messages.length && now >= s.loadFailAt;
+export const loadFailed = (s: LoadState & { messages: unknown[] }, now = Date.now(), offline = false) =>
+  !s.loaded && !s.loading && !!s.loadFailAt && !s.messages.length && now >= s.loadFailAt && (offline || now - (s.loadFailSince || s.loadFailAt) >= LOAD_FAIL_AFTER);
 
 // What a try needs from the page. A phone can freeze or hide the page for a while: the timeout of a try that was running then says nothing
 // about the server, so that try doesn't count and runs again once the page is visible.

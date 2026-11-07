@@ -8,6 +8,8 @@
 export const STANDIN_RE = /1hs_[A-Za-z0-9]{32}/g;
 const HAS = /1hs_[A-Za-z0-9]{32}/;
 export const BODY_SCAN_MAX = 1048576; // 1 MiB: larger bodies go out untouched (stand-ins in them stay stand-ins)
+// Outer whitespace a paste can carry (spaces, tabs, line breaks, no-break space, zero-width space, byte order mark). Inner content is kept (PEM keys have line breaks).
+export const trimKey = (v) => String(v ?? "").replace(/^[\s\u200B\uFEFF\u00A0]+|[\s\u200B\uFEFF\u00A0]+$/g, "");
 export const hostMatch = (host, pats) => pats.some((p) => p === host || (p.startsWith("*.") && (host === p.slice(2) || host.endsWith(p.slice(1)))));
 
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -129,12 +131,15 @@ export async function rewriteRequest({ host, method, url, headers, bodyBytes, lo
   const auth0 = headers.get("authorization") || "";
   if (!found.size) return { url, headers, bodyBytes, swapped, refused, resigned };
 
-  const rows = await lookup([...found]), real = new Map(), used = new Map();
+  const rows = await lookup([...found]), real = new Map(), realBody = new Map(), used = new Map();
   for (const r of rows) {
     if (!hostMatch(host, JSON.parse(r.hosts))) { refused.push(r.name); continue; }
-    real.set(r.standin, await open(r)); used.set(r.standin, r); swapped.push(r.name);
+    // URL, headers and signing secrets get the value without outer whitespace. A body gets the stored value when it has inner line breaks (PEM), else the trimmed one.
+    const stored = await open(r), t = trimKey(stored);
+    real.set(r.standin, t); realBody.set(r.standin, /[\r\n]/.test(t) ? stored : t); used.set(r.standin, r); swapped.push(r.name);
   }
   const sub = (m, f) => real.has(m) ? f(real.get(m)) : m;
+  const subBody = (m, f) => realBody.has(m) ? f(realBody.get(m)) : m;
 
   // The signing parameters have to be read before the swap: they name the stand-ins that the secrets are paired with.
   const oauth = /^OAuth\s/i.test(auth0) ? [...auth0.matchAll(OAUTH_PARAM)].map((m) => [m[1], m[2]]) : null;
@@ -154,8 +159,8 @@ export async function rewriteRequest({ host, method, url, headers, bodyBytes, lo
     }
     // Body.
     if (kind && HAS.test(bodyBin)) {
-      if (kind === "multipart") bodyBin = multipartSwap(bodyBin, headers.get("content-type") || "", (m, f) => sub(m, (x) => utf8bin(f(x))));
-      else { const e = encFor(kind); bodyBin = bodyBin.replace(STANDIN_RE, (m) => sub(m, (x) => utf8bin(e(x)))); }
+      if (kind === "multipart") bodyBin = multipartSwap(bodyBin, headers.get("content-type") || "", (m, f) => subBody(m, (x) => utf8bin(f(x))));
+      else { const e = encFor(kind); bodyBin = bodyBin.replace(STANDIN_RE, (m) => subBody(m, (x) => utf8bin(e(x)))); }
       const next = fromBin(bodyBin);
       if (toBin(bodyBytes) !== bodyBin) { bodyBytes = next; bodyChanged = true; headers.delete("content-length"); headers.delete("transfer-encoding"); }
     }
@@ -168,7 +173,7 @@ export async function rewriteRequest({ host, method, url, headers, bodyBytes, lo
     const all = ((await lookupHostKeys().catch(() => [])) || []).filter((r) => hostMatch(host, JSON.parse(r.hosts))).sort((a, b) => a.name < b.name ? -1 : 1);
     return all.slice(0, SECRET_CANDIDATES_MAX);
   };
-  const useRow = async (r) => { if (!swapped.includes(r.name)) swapped.push(r.name); return open(r); };
+  const useRow = async (r) => { if (!swapped.includes(r.name)) swapped.push(r.name); return trimKey(await open(r)); };
   if (oauth && /^OAuth\s/i.test(auth0)) {
     const get = (n) => oauth.find(([k]) => k === n)?.[1], sigMethod = dq(get("oauth_signature_method") || ""), got = dq(get("oauth_signature") || "");
     if (got && ["HMAC-SHA1", "HMAC-SHA256", "PLAINTEXT"].includes(sigMethod) && (used.has(get("oauth_consumer_key")) || used.has(get("oauth_token")))) {

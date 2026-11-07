@@ -27,7 +27,7 @@ import { channelLayers } from "./prompt/context-layers.js";
 import { savedTo } from "./saved-to.js";   // where a remember really saved (the chat's "Added to …" chip)
 import { recoverCards, openCard, addInput, findByCid, markConsumed, stepBegin, stepEnd, stepSkipped, setStatus, commitCard, labelCard, labelInput, summarizeCard, cardView, eventView, withStepTitles, splitStepTitle, fallbackStepTitle, MAX_INPUTS } from "./tracker.js";
 import { newAutoChat, startChatTitle } from "./chat-titles.js";
-import { steerText, SKIP_TEXT, TOO_MANY, LIMIT_REPORT_ASK } from "./steer.js";
+import { steerText, workSteer, SKIP_TEXT, TOO_MANY, LIMIT_REPORT_ASK } from "./steer.js";
 import { zoneEditFile, zoneInfo, zoneEditsNote } from "./zone-edit.js";
 import { replyRef, replyIn, withReply } from "./reply-to.js";   // Reply on a chat bubble: the quoted message travels with the person's
 import { workingSet, bringBack, sameAsShown, BRING_BACK_TOOL, SOURCE_TOOLS, SOURCE_MAX, SOURCE_BUDGET } from "./workmem.js";
@@ -177,7 +177,7 @@ import { fileRecipe, RECIPE_SLUG } from "./file-recipe.js";
 import { slidesLine, slidesGate, namesGoogleSlides, slidesImageNote } from "./deck-route.js";   // the deck route: HTML by default, the tool the person named or chose before
 import { APPS_USED_TOOL, APPS_USED_LINE, appsUsedTool, appsUsedLine, getAppsUsed, usedSlugs } from "./ee/index.js";   // "Apps I use": the person's own list, a heads-up for offers and hints   // a named service that has an integration: one hint line per message, one nudge per app per task
 import { memoryReply, isStatusNotice, looksLikeStatus, STATUS_MARK } from "./status-notes.js";
-import { ackNudge, workNudge } from "./ack-stall.js";
+import { ackNudge, workNudge, openTodoNudge, openWorkFacts } from "./ack-stall.js";
 import { promiseSkip, promiseState, turnFacts, runPromiseCheck, promiseTrace, PROMISE_NOTE } from "./ee/index.js";   // a final reply that promises undone work goes back once
 import { liveNudge, noteRan } from "./live-check.js";   // live status (flights, prices, scores) needs a lookup in this turn   // 1Helm's pause / limit notices are past status, never work to resume   // connected app first; no repeated searches / lists / pages in a turn
 import { plansInit, PROPOSE_PLAN_TOOL, proposePlan, decidePlan, startPlanTask, planCardData, plansOf, originOf, textPlan } from "./plans.js";
@@ -347,7 +347,7 @@ export function egressLabel(r) {
   const said = (xs) => [...new Set(xs.map((e) => `${e.method} ${e.host}`))].slice(0, 4).join(", ");
   const denied = blocked.filter((e) => /the person denied it/.test(e.why || "")), quiet = blocked.filter((e) => /\(not sent\)$/.test(e.why || "")), held = blocked.filter((e) => !denied.includes(e) && !quiet.includes(e));
   if (denied.length) s += `[The person said no to sending ${said(denied)} (1Helm Sentinel). Nothing was sent. Don't retry it or send it another way; tell them it wasn't sent.]\n`;
-  if (held.length) s += `[1Helm Sentinel held ${held.length} outgoing request(s) that send data (${said(held)}). They need the person's approval in the app. Don't retry in a loop; tell the person what you were sending and why.]\n`;
+  if (held.length) s += `[1Helm Sentinel held ${held.length} outgoing request(s) that send data (${said(held)}). They wait in the app for the person's approval, and you are told when they decide. Don't retry in a loop; carry on with the rest of the task.]\n`;
   return s;
 }
 // The longest start of text that fits in max UTF-16 units and ends between whole characters (emoji sequences stay whole).
@@ -3857,6 +3857,7 @@ export class Resident extends DurableObject {
       if (pay) throw Object.assign(new Error(pay), { payRequired: true, status: 402 });
       r = await this.runInputFixture(tc,text,opts) || await this.runTurnInner(tenant, channel, channelId, text, tc, opts);
       if (tc.objectReset) throw resetError();   // a reset hit this turn (resume.js carries it on): never a "done" from here
+      try { this.openWorkFollowUp(tc); } catch (e) { console.log("work follow-up", e.message); }   // work notes a tools-off step left: one turn with tools
       if (r?.charge > 0) this.ctx.waitUntil?.(this.spendAfterTurn(r.charge).catch(() => null));   // 50% / 80% of the month: one notice each
       await askAfterTurn(this, tc, r).catch((e) => console.log("ask-first", e.message));   // it stopped to ask: "Waiting on you"
       if (pendingInputs(this.sql,session).length) this.sql.exec("UPDATE sessions SET waiting='answer' WHERE id=?",session);
@@ -4265,7 +4266,7 @@ export class Resident extends DurableObject {
         else if (tc.byokProfile && tc.orchestration) { tc.byokProfile.dispatch = { ...tc.orchestration }; this.journalByokProfile(tc); }   // resume.js: a resumed turn carries on with the delegation state it had
         this.journalStep(tc, { step, phase: "model", stats, said, saidMeta, checkpoints });   // resume.js: where a reset would carry on from
         // Steering: everything the person added since the last step is read before this call, as one message.
-        const st = this.takeSteers(tc);
+        const st = this.takeSteers(tc, { deferWork: tc.abort === "soft" });   // a limit report has no tools: work notes wait for their own turn
         if (st.length) { const sm = await this.steerMessage(tc, st, { late }); messages.push(sm.msg); steerMsgs.push(sm.msg); this.save(turn, tc.appendRuntime ? sm.msg : { role: "user", content: sm.text }); }
         late = false;
         if (tc.abort === "soft") {
@@ -4361,6 +4362,9 @@ export class Resident extends DurableObject {
         // ack-stall.js workNudge: the reply closes on "I'll continue ..." / "I'm creating ... now" / "The next step is to ..." with nothing running → do it now, once (tools earlier in the turn do not exempt it).
         const wn = !res.calls.length && step < stepLimit - 1 && !this.hasSteers(tc) ? workNudge(tc, stats, res.content, () => turnFacts(this.sql, { turn, session: tc.session, since: t0 })) : null;
         if (wn) { if (saidMeta[said.length - 1]) saidMeta[said.length - 1].ack = true; send?.({ t: "work" }); const nudge = { role: "user", content: wn }; messages.push(nudge); this.save(turn, nudge); stats.work_nudge = 1; continue; }
+        // ack-stall.js openTodoNudge: tools ran, the to-do list has unfinished items, nothing is running or waiting on the person and the reply asks nothing → continue the work, once.
+        const tn = !res.calls.length && step < stepLimit - 1 && !this.hasSteers(tc) ? openTodoNudge(tc, stats, res.content, () => openWorkFacts(this.sql, { session: tc.session, turn, since: t0 })) : null;
+        if (tn) { if (saidMeta[said.length - 1]) saidMeta[said.length - 1].ack = true; send?.({ t: "work" }); const nudge = { role: "user", content: tn }; messages.push(nudge); this.save(turn, nudge); stats.todo_nudge = 1; continue; }
         // live-check.js: the answer states live status (a flight landed, a price, a score) with no lookup in this turn → look first, once.
         const ln = !res.calls.length && step < stepLimit - 1 ? liveNudge(tc, personWords(tc), res.content) : null;
         if (ln) { said.pop(); saidMeta.length = Math.min(saidMeta.length, said.length); send?.({ t: "work" }); const nudge = { role: "user", content: ln }; messages.push(nudge); this.save(turn, nudge); stats.live_nudge = 1; continue; }
@@ -4491,7 +4495,8 @@ export class Resident extends DurableObject {
     for (let k = 0; !error && !tc.committed && tc.abort !== "hard" && this.hasSteers(tc) && k < 5; k++) {
       try {
         tc.stepNo = stats.steps;
-        const sm = await this.steerMessage(tc, this.takeSteers(tc), { pics: engine !== "pi" });
+        const taken = this.takeSteers(tc, { deferWork: true }); if (!taken.length) continue;   // only work notes were waiting: they get a turn with tools after this one
+        const sm = await this.steerMessage(tc, taken, { pics: engine !== "pi" });
         messages.push(sm.msg); this.save(turn, tc.appendRuntime ? sm.msg : { role: "user", content: sm.text }); 
         let spoke = false;
         const fin = await this.callModel(this.finalView(tc, messages), () => {}, send ? (s) => { if (!spoke && (said.length || reply)) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, true, tc);
@@ -4634,13 +4639,27 @@ export class Resident extends DurableObject {
     return { mode: "open", card: o.card, msg: o.msg, pend: np };
   }
   // The inputs the helper hasn't read yet, marked read at model step tc.stepNo. The latest message becomes what react targets.
-  takeSteers(tc) {
+  // deferWork: this read is for a step that has no tools (the post-loop answer, a limit report). A work steer (a system note that asks the helper
+  // to act: workSteer in steer.js) is not read there. It stays unread on its card (a restart still finds it) and is kept in tc.deferredWork;
+  // runTurn opens one follow-up turn with tools for all of them once this turn commits (openWorkFollowUp).
+  takeSteers(tc, { deferWork = false } = {}) {
     const p = tc?.pend; if (!p || p.next >= p.items.length) return [];
-    const items = p.items.slice(p.next); p.next = p.items.length;
+    let items = p.items.slice(p.next); p.next = p.items.length;
+    if (deferWork) { const w = items.filter(workSteer); if (w.length) { (tc.deferredWork ||= []).push(...w); items = items.filter((x) => !workSteer(x)); if (!items.length) return []; } }
     if (items.some(x => x.files?.length)) tc.preparedSteers = { card: p.id, seqs: items.map(x => x.seq), texts: [] };
     else markConsumed(this.sql, p.id, items.map((x) => x.seq), tc.stepNo ?? 0);
     for (const x of items) if (x.type === "msg") { tc.lastMsg = x.id; tc.photonMsg = x.photonMsg || null; }
     return items;
+  }
+  // The follow-up turn for work notes a tools-off step did not read. Runs after the turn's card has committed, so handoff opens a new card
+  // (several notes join the first one: one turn). The old rows are marked read only after the new card exists, so a reset in between loses nothing.
+  openWorkFollowUp(tc) {
+    const w = tc?.deferredWork; if (!w?.length || !tc.session || !this.session(tc.session)) return null;
+    tc.deferredWork = null;
+    let first = null;
+    for (const x of w) { const r = this.handoff(tc.session, { text: x.text, from: x.from || { type: "system" } }); first ||= r; }
+    if (tc.pend?.id) markConsumed(this.sql, tc.pend.id, w.map((x) => x.seq), tc.stepNo ?? 0);
+    return first;
   }
   hasSteers(tc) { const p = tc?.pend; return !!p && p.next < p.items.length; }
   // The reply closes the card: checked and set in one synchronous block, so any input after this opens a new card.
@@ -4816,7 +4835,7 @@ export class Resident extends DurableObject {
       // The same endings the person's own taps give: Don't allow on each pending approval, and Stop here on each spend check-in.
       // A texting thread can't be marked done, so it keeps its own.
       if(!this.textsSessions().includes(id)){
-        for(const a of this.sql.exec("SELECT id FROM approvals WHERE session=? AND status='pending'",String(id)).toArray())try{await this.decideApproval(a.id,"deny");}catch(e){console.log("done: approval",e.message);}
+        {this._doneSweep=true;try{for(const a of this.sql.exec("SELECT id FROM approvals WHERE session=? AND status='pending'",String(id)).toArray())try{await this.decideApproval(a.id,"deny");}catch(e){console.log("done: approval",e.message);}}finally{this._doneSweep=false;}}
         for(const p of this.sql.exec("SELECT card FROM spend_pauses WHERE session=? AND status='paused' AND reason IN ('silent','fast')",String(id)).toArray())try{await this.spendStopHere(p.card);}catch(e){console.log("done: check-in",e.message);}
       }
     }
@@ -5206,8 +5225,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
   todoBroadcast(session, items, by) { for (const t of this.active.values()) if (t.session === session && !t.finished) t.emit?.({ t: "todos", items, by }); }
   helperTodos(ctx, a) {
     const session = ctx.session; if (!session || !this.session(session)) return "error: a to-do list belongs to a task, and this run has none.";
-    const pa = String(a.person_asked ?? "").trim() ? checkQuote(a.person_asked, personWords(ctx)) : null;   // only the person ticks done, unless they asked
-    const prev = this.todoRow(session), rev = prev.rev + 1, m = mergeTodos(a, prev, rev, { allowDone: !!pa?.ok, quoteError: pa && !pa.ok ? pa.error : "" }); if (m.error) return m.error;
+    const prev = this.todoRow(session), rev = prev.rev + 1, m = mergeTodos(a, prev, rev); if (m.error) return m.error;
     this.todoSave(session, m.items, rev, rev, m.next);   // the helper sees the result, so this version is seen
     const items = publicItems(m.items); this.todoBroadcast(session, items, "helper");
     return todoResult(m.items, m.notes);
@@ -5217,7 +5235,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
     if (!this.session(session)) return { error: "No such task in this channel." };
     if (status !== "done" && status !== "todo") return { error: "status must be done or todo" };
     const r = this.todoRow(session), x = r.items.find((i) => i.id === String(id)); if (!x) return { error: "No such item on this task's list." };
-    if (x.status !== status) { x.status = status; x.by = "person"; delete x.ready; x.at = r.rev + 1; this.todoSave(session, r.items, r.rev + 1, r.seen, r.next); this.todoBroadcast(session, publicItems(r.items), "person"); }
+    if (x.status !== status) { x.status = status; x.by = "person"; x.at = r.rev + 1; this.todoSave(session, r.items, r.rev + 1, r.seen, r.next); this.todoBroadcast(session, publicItems(r.items), "person"); }
     return { todos: publicItems(r.items) };
   }
   // mark_task_done (General only): the person explicitly asked, quoted in person_asked and found in their messages this turn.
@@ -5323,6 +5341,8 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
     // Someone is watching (or the request went to their phone): hold the command until they decide (up to 2 min).
     if (live.length || texted) {
       for (const t of live) t.emit({ t: "approval", approval: this.approvalView(a) });
+      (this._egressHeld ||= new Set()).add(a.id);   // decideApproval skips the resume while this loop is still waiting for the answer
+      try {
       for (let i = 0; i < 240; i++) {
         const cur = this.sql.exec("SELECT status, decision FROM approvals WHERE id=?", a.id).one();
         if (cur.status !== "pending") {
@@ -5332,9 +5352,10 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
         }
         await new Promise((z) => setTimeout(z, 500));
       }
-      return { verdict: "deny", why: `no answer yet; request #${a.id} is waiting ${texted ? "on their phone and " : ""}in the app` };
+      } finally { this._egressHeld.delete(a.id); }
+      return { verdict: "deny", why: `no answer yet; request #${a.id} is waiting ${texted ? "on their phone and " : ""}in the app, and the helper is told when the person decides` };
     }
-    return { verdict: "deny", why: `nobody is watching this run; request #${a.id} is waiting in the app` };
+    return { verdict: "deny", why: `nobody is watching this run; request #${a.id} is waiting in the app, and the helper is told when the person decides` };
   }
   // A purchase is in progress when the helper clicked a buy or checkout control in the last 90 seconds (noteBrowserActs), or this channel
   // has a Link purchase that is waiting, approved and not finished, updated in the last 30 minutes. When that can't be read, say yes (ask).
@@ -5402,6 +5423,16 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
     if (decision === "session" && a.session) this.sql.exec("INSERT INTO grants (at,host,method,scope,session,approval_id) VALUES (?,?,?,?,?,?)", now, a.host, "*", "this conversation", a.session, id);
     if (decision === "session" && !a.session) this.sql.exec("INSERT INTO grants (at,host,method,scope,uses_left,expires,approval_id) VALUES (?,?,?,?,?,?,?)", now, a.host, a.method, "once", 1, now + 3600e3, id);
     if (decision === "channel") this.sql.exec("INSERT INTO grants (at,host,method,scope,approval_id) VALUES (?,?,?,?,?)", now, a.host, "*", "this channel", id);
+    // The command that asked has already been told "held" (nobody was watching, or the hold ran out), so the task is told the outcome and carries on:
+    // cardHandoff steers a turn that is still running in the task, else opens one turn (a routed worker's own card goes to that worker). The row was
+    // marked decided above, so a second decide is refused ("already approved") and can't start a second turn. A request with no task (a scheduled
+    // run) has nobody to tell and keeps the old behavior. Marking a task done denies its pending requests with no handoff (_doneSweep).
+    if (!this._egressHeld?.has(id) && !this._doneSweep && a.session && this.session(a.session)) {
+      const what = `${a.method} ${a.host}${String(a.path || "").slice(0, 120)}`, scope = decision === "channel" ? "this channel" : decision === "session" ? "this conversation" : "once";
+      const text = decision === "deny" ? `(Context note, not from the person: they didn't allow ${what} (request #${id}); continue the task without it.)`
+        : `(Context note, not from the person: they approved ${what} (request #${id}, ${scope}); run it again now and continue the task.)`;
+      try { this.cardHandoff(a.session, a.turn, { text, from: { type: "approval", id, title: decision === "deny" ? "Not allowed" : "Allowed" } }); } catch (e) { console.log("approval handoff", e.message); }
+    }
     return { ok: true, approval: this.approvalView(this.sql.exec("SELECT * FROM approvals WHERE id=?", id).one()) };
   }
   async listGrants() { return this.sql.exec("SELECT id,at,host,method,scope,uses_left,expires FROM grants WHERE (expires IS NULL OR expires>?) AND uses_left<>0 AND host NOT LIKE 'perm:%' AND host NOT LIKE '*.%' ORDER BY id DESC", Date.now()).toArray(); }

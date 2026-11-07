@@ -77,7 +77,7 @@ import { replyBinding, responseId, type InputRequest, type InputReply } from "./
 import { offerCardHtml, offerFold, cxoInit, cxoUpdate, cxoFrom, cxoBoot, cxoDraftHtml, type OfferCard } from "./ee/connect-card";
 import { planInit, planAttach, planEvent, planCardHtml, planBriefs, briefMsgHtml } from "./plan-live";   // plan cards (propose_plan)
 import { bcxInit, bcxUsage } from "./ee/cancel";
-import { loadDue, loadFailed, withRetries } from "./task-load";
+import { loadDue, loadFailed, loadRetryIn, LOAD_FAIL_AFTER, withRetries } from "./task-load";
 import { pdInit, pdSet } from "./ee/pastdue";   // payment failed: read-only banner (Fix payment) + disabled composers
 import * as coreByok from "./byok";
 import * as billingByok from "./ee/byok-billing";
@@ -150,7 +150,7 @@ type Msg = { id: number; role: "user" | "agent"; body: string; at: number; steps
 // Where a remember really saved, from the server (proto src/saved-to.js): the "Added to …" chips under the reply.
 type Saved = { to: "notebook" | "contact" | "memory" | "account"; channel?: string; sec?: string; text?: string; name?: string; fields?: string[] };
 type FileV = { version?: number; id: string; name: string; mime: string; bytes: number; at: number; source?: string; session?: string | null; image?: boolean; tags?: string[]; tx?: string };
-type Session = { id: any; srv?: any; loaded?: boolean; loading?: boolean; loadFailAt?: number; streaming?: boolean; attached?: boolean; tmp?: string; rawLine?: string; title: string; status: string; state: string; updated: number; messages: Msg[]; line?: string; unread?: boolean; fresh?: boolean; pinned?: boolean; done?: boolean };
+type Session = { id: any; srv?: any; loaded?: boolean; loading?: boolean; loadFailAt?: number; loadFailSince?: number; loadFails?: number; loadTimer?: any; streaming?: boolean; attached?: boolean; tmp?: string; rawLine?: string; title: string; status: string; state: string; updated: number; messages: Msg[]; line?: string; unread?: boolean; fresh?: boolean; pinned?: boolean; done?: boolean };
 type Channel = { id: number; slug: string; name: string; purpose: string; memory: string[]; notes?: any[]; jobs: any[]; sessions: Session[]; cs?: CS };
 type Art = { tx?: string; name: string; kind: "doc" | "sheet" | "pdf" | "image" | "link" | "code"; sid: any; at: number; size: string; fresh?: boolean; fid?: string; you?: boolean; mime?: string; bytes?: number; tags?: string[] };
 
@@ -1617,7 +1617,7 @@ function msgsHtml(s: Session, ch: Channel) {
   settleBrowserCards(s);   // the live "using the browser" card goes once nothing is running, however the end was missed
   const next: (string | undefined)[] = []; let u: string | undefined;
   for (let i = s.messages.length - 1; i >= 0; i--) { next[i] = u; if (s.messages[i].role === "user") u = s.messages[i].body; }
-  return daySections(s.messages, s.messages.map((m, i) => msgHtml(m, ch, s.messages[i - 1], !!s.streaming && i === s.messages.length - 1, s, next[i]))) + turnProgress(s, ch) + (LIVE && loadFailed(s) ? `<div class="wkfail tkfail"><p>This task didn't load.</p><button class="sa mute" data-tkload>Tap to try again</button></div>` : "") + (LIVE && s.srv ? slBubbles(ch.slug, s.id) : "") + (LIVE && s.srv && !s.streaming && showCosts() ? usageNote(ch.slug, s.id) : "");
+  return daySections(s.messages, s.messages.map((m, i) => msgHtml(m, ch, s.messages[i - 1], !!s.streaming && i === s.messages.length - 1, s, next[i]))) + turnProgress(s, ch) + (LIVE && loadFailed(s, Date.now(), navigator.onLine === false) ? `<div class="wkfail tkfail"><p>This task didn't load.</p><button class="sa mute" data-tkload>Tap to try again</button></div>` : "") + (LIVE && s.srv ? slBubbles(ch.slug, s.id) : "") + (LIVE && s.srv && !s.streaming && showCosts() ? usageNote(ch.slug, s.id) : "");
 }
 // The helper's reaction on a person's message (its react tool): a tapback badge on the bubble's top corner, like iMessage.
 // m.turn = the server's turn id (the stream's reaction event names it); m.reaction = love | like | dislike | laugh | emphasize | question.
@@ -2992,7 +2992,7 @@ document.addEventListener("submit", e => {
         else if (d.updated || dup) note(ic.check, "Login updated", `${acct} was already saved. Its password is replaced, not added twice.`, "");
         else note(ic.check, was ? "Login updated" : "Login saved", `${acct} · ${who(main)} can sign in now.`, ""); };
     } else {
-      const name = v("kn").trim().toUpperCase().replace(/[\s-]+/g, "_"), value = v("kv"), was = f.dataset.was || "";
+      const name = v("kn").trim().toUpperCase().replace(/[\s-]+/g, "_"), value = v("kv").replace(/^[\s\u200B\uFEFF\u00A0]+|[\s\u200B\uFEFF\u00A0]+$/g, ""), was = f.dataset.was || "";
       const inputs = [...f.querySelectorAll<HTMLInputElement>(".kh")].filter(i => i.value.trim());
       inputs.forEach(i => { i.value = i.value.split(/[\s,]+/).filter(Boolean).map(normHost).join(", "); });
       const hosts = [...new Set(inputs.flatMap(i => i.value.split(", ").filter(Boolean)))];
@@ -3242,6 +3242,18 @@ const INTERRUPTED_MSG = "1Helm restarted while I was working on this, so I stopp
 const HANDOFF_OPENED = new Set<string>();   // a worker handoff opens the viewer once per handoff, not on every reload
 // Drawing the open task: a task that isn't loaded loads now. A repaint right after a failed load waits out the pause in task-load.ts,
 // and opening the task again (the hashchange listener before render) clears the pause so it always tries.
+// After a failed load nothing shows at first (the messages already there stay, or the normal empty look). The load is tried again by itself, and the
+// "didn't load" line is painted once the failures have lasted long enough (task-load.ts). Coming back online or to the app tries at once (below).
+function loadRetryLater(ch: Channel, s: Session) {
+  clearTimeout(s.loadTimer);
+  s.loadTimer = setTimeout(() => {
+    if (s.loaded || s.loading) return;
+    if (route().s !== s) return;
+    if (document.visibilityState === "hidden" || navigator.onLine === false) { paintChat(s); return; }
+    void liveLoad(ch, s);
+  }, loadRetryIn(s.loadFails || 1));
+  if (!s.messages.length) setTimeout(() => { if (!s.loaded && !s.loading && route().s === s) paintChat(s); }, Math.max(0, (s.loadFailSince || Date.now()) + LOAD_FAIL_AFTER - Date.now()) + 50);
+}
 function openLoad(ch: Channel, s: Session) { if (loadDue(s)) void liveLoad(ch, s); }
 async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
   s.loading = true;
@@ -3288,8 +3300,8 @@ async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
     const last = [...s.messages].reverse().find(m => m.role === "agent");
     if (last) for (const a of d.approvals || []) { const m = ["ssh","ssh_hostkey"].includes(a.perm) && a.turn ? (s.messages as TkMsg[]).find(x => x.role === "agent" && x.card === a.turn) || last : last; addApproval(m, a, false); }   // native receipts stay beside their originating request
     for (const o of d.offers || []) { const m = (s.messages as TkMsg[]).find(x => x.role === "agent" && o.turn && x.card === o.turn) || last; if (m) addOffer(m, ch, o, false); }   // connect cards, under the reply that offered them
-    applySrv(s, d.session && { ...d.session, pending_inputs: d.pending_inputs || d.session.pending_inputs || [] }); s.loaded = true; s.loadFailAt = 0;
-  } catch { s.loadFailAt = Date.now(); }   // never "loaded": the messages already shown stay, and the next open, return to the app or refresh tries again (task-load.ts)
+    applySrv(s, d.session && { ...d.session, pending_inputs: d.pending_inputs || d.session.pending_inputs || [] }); s.loaded = true; s.loadFailAt = 0; s.loadFailSince = 0; s.loadFails = 0;
+  } catch { s.loadFailAt = Date.now(); s.loadFailSince ||= s.loadFailAt; s.loadFails = (s.loadFails || 0) + 1; loadRetryLater(ch, s); }   // never "loaded": the messages already shown stay, and the next open, return to the app or refresh tries again (task-load.ts)
   s.loading = false; if (route().s === s) paintChat(s); else repaint(ch);
 }
 // Repaint only the open task's messages (keeps the composer and the scroll position when you've scrolled up).
@@ -3488,7 +3500,7 @@ async function streamTurnOwned(ch: Channel, s: Session, text: string, reply: Msg
     // Nothing reached the helper: the bubble says so, with Retry (same client id, so a send that did land isn't doubled).
     if (um && !joined && (e.refused || (lazy && !r2) || (!got && tkOn(ch.slug, s.id) && /a lot at once/i.test(e.message)))) { drop(); um.state = "failed"; um.err = e.message; paintTask(ch, s); return; }
     lost = String(e?.message || e || "closed");
-    if (r2 && !got && !r2.body) r2.body = "I couldn't confirm this task's reply yet. Check this task before sending the request again.";
+    // No placeholder text yet: the stream is found again below, and the text is only written if that gives up.
   }
   if (!streamCurrent(lease)) return;
   if (redirected) { await inputRedirect(ch, s, redirected); return; }
@@ -3501,7 +3513,7 @@ async function streamTurnOwned(ch: Channel, s: Session, text: string, reply: Msg
     live.delete(r2);
     if (how === "done") return;
     if (!tkOn(ch.slug, s.id) || !live.size) s.streaming = false;
-    if (how === "gave_up" && got && !r2.body.trim()) r2.body = "I lost the connection and couldn't find this task's reply yet. Reopen this task in a minute to see where it is.";
+    if (how === "gave_up" && !r2.body.trim()) r2.body = got ? "I lost the connection and couldn't find this task's reply yet. Reopen this task in a minute to see where it is." : "I couldn't confirm this task's reply yet. Check this task before sending the request again.";
     if (s.srv) setTimeout(() => { s.loaded = false; if (route().s === s) liveLoad(ch, s); }, how === "idle" ? 0 : 1500);
     if (route().s === s) paintChat(s); else repaint(ch);
   } else live.delete(r2);
@@ -3623,6 +3635,8 @@ if (LIVE) {
   document.addEventListener("click", e => { if (!(e.target as HTMLElement).closest("[data-tkload]")) return; e.preventDefault(); const { ch, s } = route(); if (s && loadDue(s, Date.now(), true)) { void liveLoad(ch, s); paintChat(s); } }, true);
   const back = () => { if (document.visibilityState === "hidden") return; const { ch, s } = route(); if (s && s.loadFailAt && loadDue(s, Date.now(), true)) void liveLoad(ch, s); };
   document.addEventListener("visibilitychange", back); window.addEventListener("focus", back);
+  window.addEventListener("online", () => { const { ch, s } = route(); if (s && s.loadFailAt && loadDue(s, Date.now(), true)) void liveLoad(ch, s); });
+  window.addEventListener("offline", () => { const { s } = route(); if (s && s.loadFailAt && !s.loaded) paintChat(s); });
 }
 // "Not sent · Retry": the same message again, with the same client id.
 if (LIVE) document.addEventListener("click", e => {

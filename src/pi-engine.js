@@ -12,7 +12,7 @@ import { guardModel, guardTools, reportAsk, OUT_OF_TIME_REPLY } from "./spendgua
 import { stallCheck } from "./stall-guard.js";
 import { isByokError, BYOK_CREDITS_REPLY } from "./byok.js";
 import { COMPUTER_BUSY_MSG, isComputerBusy } from "./computer-capacity.js";
-import { ackNudge, workNudge } from "./ack-stall.js";
+import { ackNudge, workNudge, openTodoNudge, openWorkFacts } from "./ack-stall.js";
 import { turnFacts } from "./ee/index.js";
 import { liveNudge, noteRan } from "./live-check.js";
 import { personWords } from "./person-asked.js";
@@ -169,7 +169,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
   // Steering: what the person added since the last model call, as one user message (text only on pi).
   const steerPi = async (late) => {
     tc.stepNo = steps;
-    const st = res.takeSteers(tc); if (!st.length) return [];
+    const st = res.takeSteers(tc, { deferWork: limitAsked || tc.abort === "soft" }); if (!st.length) return [];   // no tools left (limit report): work notes wait for their own turn (resident.js openWorkFollowUp)
     if (late) send?.({ t: "work" });   // the draft just written stays as a progress note; the helper answers again
     const sm = await res.steerMessage(tc, st, { late, pics: false });
     const m = piUser(sm.full ?? sm.text); steerPis.push(m); return [m];
@@ -238,11 +238,14 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
       // ack-stall.js workNudge: the reply closes on a promise of its own work ("I'll continue ...") with nothing running → do it now, once (tools earlier in the turn do not exempt it).
       const wn = !limitAsked && steps < limit() - 1 && last?.role === "assistant" && !res.hasSteers(tc) ? workNudge(tc, stats, textOf(last.content), () => turnFacts(sql, { turn, session: tc.session, since: turnStart })) : null;
       if (wn) { if (saidMeta[said.length - 1]) saidMeta[said.length - 1].ack = true; send?.({ t: "work" }); stats.work_nudge = 1; return [piUser(wn)]; }
+      // ack-stall.js openTodoNudge: tools ran, the to-do list has unfinished items, nothing is running or waiting on the person and the reply asks nothing → continue the work, once.
+      const tn = !limitAsked && steps < limit() - 1 && last?.role === "assistant" && !res.hasSteers(tc) ? openTodoNudge(tc, stats, textOf(last.content), () => openWorkFacts(sql, { session: tc.session, turn, since: turnStart })) : null;
+      if (tn) { if (saidMeta[said.length - 1]) saidMeta[said.length - 1].ack = true; send?.({ t: "work" }); stats.todo_nudge = 1; return [piUser(tn)]; }
       // live-check.js: the answer states live status with no lookup in this turn → look first, once (the draft stays a progress note).
       const ln = !limitAsked && steps < limit() - 1 && last?.role === "assistant" ? liveNudge(tc, personWords(tc), last.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")) : null;
       if (ln) { said.pop(); saidMeta.pop(); send?.({ t: "work" }); stats.live_nudge = 1; return [piUser(ln)]; }
       // The reply closes the card (sync: no await between the check and the commit; a steer after this opens a new card).
-      if (res.hasSteers(tc)) return steerPi(true);
+      if (res.hasSteers(tc)) { const m = await steerPi(true); if (m.length) return m; }   // only work notes waiting with no tools: deferred, the reply closes
       res.commitTurn(tc);
       return [];
     },

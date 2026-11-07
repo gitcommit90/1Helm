@@ -132,6 +132,7 @@ const insertApproval = (extra = "") => { const now = Date.now(); dodb.prepare("I
 await scenario("an approval texted from a text turn lists its replies, and \"1\" allows it with no model turn", async () => {
   const a = insertApproval(), w0 = wire.length, turns0 = dodb.prepare("SELECT COUNT(*) n FROM turns").get().n;
   assert.equal(await R.textApproval(a, { viaText: true }), true);
+  (R._egressHeld ||= new Set()).add(a.id);   // the command is still held waiting for this answer (egressDecision), so nothing resumes the task
   const t = texts(w0); assert.ok(t[0].includes("Reply 1 to allow once or 2 to deny.") && t[0].includes("api.example.org"), t[0]);
   assert.equal(tcs().at(-1).state, "open");
   const w1 = wire.length; await hook({ type: "text", text: "1" }); await settle();
@@ -141,10 +142,10 @@ await scenario("an approval texted from a text turn lists its replies, and \"1\"
   assert.equal(tcs().at(-1).state, "answered");
 });
 await scenario("\"2\" denies; a text that is not exactly a reply goes to the helper as a normal message; two open cards leave a bare number alone", async () => {
-  let a = insertApproval(); await R.textApproval(a, { viaText: true });
+  let a = insertApproval(); await R.textApproval(a, { viaText: true }); R._egressHeld.add(a.id);
   let w0 = wire.length; await hook({ type: "text", text: "2" }); await settle();
   assert.equal(dodb.prepare("SELECT status FROM approvals WHERE id=?").get(a.id).status, "denied"); assert.deepEqual(said(w0), ["Not allowed."]);
-  a = insertApproval(); await R.textApproval(a, { viaText: true });
+  a = insertApproval(); await R.textApproval(a, { viaText: true }); R._egressHeld.add(a.id);
   script = ["Sure, tell me more."]; w0 = wire.length; await hook({ type: "text", text: "1 sec, what is this for?" }); await settle();
   assert.equal(dodb.prepare("SELECT status FROM approvals WHERE id=?").get(a.id).status, "pending"); assert.ok(texts(w0).some((x) => x.includes("Sure, tell me more.")));
   const b = insertApproval(); await R.textApproval(b, { viaText: true }); script = ["Which one do you mean?"]; w0 = wire.length;

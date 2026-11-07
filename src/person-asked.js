@@ -1,5 +1,5 @@
-// The Captain's rule: "the user determines done." The helper never checks anything off on its own: a task (session) or a
-// to-do item becomes done only when the person ticks it in the app, or when they explicitly tell the helper to in this turn.
+// The Captain's rule: "the user determines done" for a whole task (session): it becomes done only when the person ticks it in the
+// app, or when they explicitly tell the helper to in this turn. To-do checklist items are different: the helper checks those off itself.
 // "Explicitly" is checked, not trusted: the helper passes person_asked, a short quote of the person's own words, and it must
 // appear (case-insensitive) in a message the person sent in THIS turn: the card's first message or a steer it has read.
 // Scheduled runs, follow-ups, helpers and handed-back results have no such message, so they can never mark anything done.

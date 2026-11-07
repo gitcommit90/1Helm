@@ -5,6 +5,7 @@
 // it only works on the key's own sites, so replacing the sealed value gives no reason to break code that already uses it.
 // A rename moves the same row (same stand-in) and is refused when the new name is already saved.
 import { sealSecret, newStandin } from "./sentinel.js";
+import { trimKey } from "./sentinel-swap.js";
 
 export const KEY_SITES_MAX = 20, KEY_VALUE_MAX = 8000;
 const NAME_RE = /^[A-Z][A-Z0-9_]{1,40}$/, SITE_RE = /^(\*\.)?[a-z0-9.-]+\.[a-z]{2,}$/;
@@ -18,7 +19,7 @@ export async function saveVaultKey(env, tenantId, b) {
   if (hosts.length > KEY_SITES_MAX) return { status: 400, error: `hosts: a key can have up to ${KEY_SITES_MAX} sites` };
   const badHost = hosts.find((h) => h.length > 253 || !SITE_RE.test(h));
   if (badHost) return { status: 400, error: `hosts: "${badHost.slice(0, 60)}" is not a site address, e.g. api.openweathermap.org` };
-  const value = b.value == null ? "" : String(b.value);
+  const value = b.value == null ? "" : trimKey(b.value); // outer whitespace from a paste is dropped; inner line breaks (PEM) stay
   if (value.length > KEY_VALUE_MAX) return { status: 400, error: "value too long" };
   const exists = async (n) => !!(await env.DB.prepare("SELECT 1 AS x FROM vault WHERE tenant_id=? AND name=?").bind(tenantId, n).first());
   if (!was) {

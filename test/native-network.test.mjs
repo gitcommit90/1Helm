@@ -202,7 +202,7 @@ assert.ok(NATIVE_TOOLS.every(t => !JSON.stringify(t).includes('confirm_token')))
     if(outcome==='expired'){const d=JSON.parse(row(r,req.approval_id).ssh_data);r.sql.exec('UPDATE approvals SET ssh_data=? WHERE id=?',JSON.stringify({...d,expires:Date.now()-1}),req.approval_id);await r.nativeStatus();}
     assert.equal(row(r,req.approval_id).status,outcome);
     assert.ok(r.sql.exec('SELECT updated FROM sessions WHERE id=?','task-1').one().updated>before,`${outcome} must refresh the task card through normal polling`);
-    assert.equal(r.calls.filter(x=>x[0]==='handoff').length,0,'status refresh never resumes or reconnects');
+    assert.equal(r.calls.filter(x=>x[0]==='handoff').length,outcome==='denied'?1:0,'status refresh never resumes or reconnects; only the person\'s Deny tells the task (one handoff)');
   }
 }
 {
