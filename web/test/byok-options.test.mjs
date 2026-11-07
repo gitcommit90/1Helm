@@ -22,16 +22,18 @@ async function page(search) {
 const opts = (html) => [...html.matchAll(/data-bykmode="(\w*)"/g)].map((x) => x[1]);
 
 let p = await page("?byoksaved");
-assert.deepStrictEqual(opts(p.html), ["fallback"]); assert.match(p.html, /data-bykswitchnow/);   // the second option is Switch now (Captain 10-28)
+assert.deepStrictEqual(opts(p.html), ["now", "fallback"]); assert.match(p.html, /data-bykswitchnow/);   // the third option is Switch now (Captain 10-28)
+assert.ok(p.html.indexOf('data-bykmode="now"') < p.html.indexOf('data-bykmode="fallback"'), "Use my services now is first");
+assert.match(p.html, /Use my services now/); assert.match(p.html, /1Helm charges nothing for the AI/); assert.match(p.html, /keep using your Personal usage/);
 assert.match(p.html, /Keep my plan, use my key as a backup/); assert.match(p.html, /Switch now to the \$10 plan with my key/);
 assert.match(p.html, /Your services are connected but not in use yet/); assert.match(p.html, /Zero data retention: while your key is in use/);
 assert.strictEqual(p.usage, "", "nothing in Usage until a choice is made");
-ok("Personal plan with a saved key: the two options, nothing picked yet, the ZDR line");
+ok("Personal plan with a saved key: the three options (Use my services now first), nothing picked yet, the ZDR line");
 
 p = await page("?byokplan");
 assert.deepStrictEqual(opts(p.html), [], "no choice on the Bring your own key plan"); assert.strictEqual(p.usage, "");
 p = await page("");
-assert.deepStrictEqual(opts(p.html), [], "no options before a key is saved"); assert.match(p.html, /Two ways to use it on Personal/);
+assert.deepStrictEqual(opts(p.html), [], "no options before a key is saved"); assert.match(p.html, /Ways to use it on Personal/);
 ok("Bring your own key plan: no options; a full plan with no key yet: the two ways explained, no options until it's saved");
 
 p = await page("?byokfb");

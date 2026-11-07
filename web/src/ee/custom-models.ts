@@ -1,4 +1,6 @@
-// Settings → Advanced → Custom Model Selection (for 1Helm's own models; the own-key editor lives in Settings → AI services → Models, cmodelsOwnPanel). Off by default. When it is on, this account's chat answers from its own categories: each has a first
+// Settings → Advanced → Custom Model Selection (for 1Helm's own models; the own-key editor lives in Settings → AI services → Models, cmodelsOwnPanel). Off by default.
+// Both editors share this module's state, told apart by `scope`: the AI services page asks the server for ?scope=services (the own-key editor on every plan, as soon as a service is connected;
+// choosing is optional on a full plan, so no warning shows) and Advanced asks with no scope (1Helm's models, or the own-key editor while an own key answers chat). Opening the other page starts the state over. When it is on, this account's chat answers from its own categories: each has a first
 // model and two fallbacks (each with its reasoning level) and a max price in and out. Max output, sort and timeout stay ours.
 // On an own AI key (the server says own_key) this is the only place its models are chosen (task byok-multi): there is no switch (it is always used), nothing is chosen for the account until it picks
 // General's first model, and the person adds up to two fallbacks. A category has one to three models, and the picker lists the models of every connected service together, each labelled with its
@@ -25,18 +27,22 @@ type Deps = {
   ask: (o: { title: string; body?: string; confirm?: string; cancel?: string | null }) => Promise<boolean>;
   openAdvanced: () => void;
   openAi?: () => void;                                    // Settings, AI services (where an own key's models are chosen)
+  saved?: () => void;                                     // a save of the models went through (Settings, AI services reads its plan option again: choosing General's model can turn Use my services now on)
   version: string;
   noteBoot: (v: { on: boolean; level?: string; own_key?: boolean; needs_choice: boolean; problems: Problem[] }) => void;   // keeps the boot answer current for the rest of the app
 };
 import { efsHtml, efsMount, efsPressed } from "./effort-slider";
 import { logoChip, serviceDomain } from "../logo";   // logo.dev through /logo/<domain>: the service's logo beside its name
 let D: Deps | null = null;
+type Scope = "" | "services";
+let scope: Scope = "";
+const boot0 = { on: false, own: false };   // what the boot answer said about Advanced: kept so the Advanced card doesn't flash the wrong editor while its own answer loads
 const LEVEL_NAME: Record<string, string> = { unrestricted: "Unrestricted", no_training: "No Training", zdr: "Zero Data Retention" };
 const SLOT = ["First choice", "Second choice", "Third choice"];
 type Svc = { id: string; kind: string; label: string; host?: string };
 const M: { fetched: boolean; at: number; loaded: boolean; loading: boolean; busy: boolean; err: string; on: boolean; level: string; own: boolean; endpoint: string; needs: boolean; problems: Problem[]; max: number; cats: Cat[]; bg: Cat | null; models: Record<string, Card>;
-  draft: Record<string, { prompt: string; completion: string }>; core: any; noModel: boolean; svcs: Svc[]; hasOr: boolean } =
-  { fetched: false, at: 0, loaded: false, loading: false, busy: false, err: "", on: false, level: "zdr", own: false, endpoint: "", needs: false, problems: [], max: 12, cats: [], bg: null, models: {}, draft: {}, core: null, noModel: false, svcs: [], hasOr: false };
+  draft: Record<string, { prompt: string; completion: string }>; core: any; noModel: boolean; optional: boolean; svcs: Svc[]; hasOr: boolean } =
+  { fetched: false, at: 0, loaded: false, loading: false, busy: false, err: "", on: false, level: "zdr", own: false, endpoint: "", needs: false, problems: [], max: 12, cats: [], bg: null, models: {}, draft: {}, core: null, noModel: false, optional: false, svcs: [], hasOr: false };
 const BG = "background";
 // The service's label with its logo in front (ChatGPT, OpenCode, OpenRouter, or the address of an OpenAI-compatible service). The logo leaves by itself if it can't load.
 const svcTag = (service: string, conn?: string) => { const c = M.svcs.find(x => x.id === conn); return `<i class="cmsvc">${c ? logoChip(serviceDomain(c.kind, c.host), 14) : ""}${esc(service)}</i>`; };
@@ -75,27 +81,34 @@ const fromConfig = (cfg: any): Cat[] => cfg.routing.categories.filter((c: any) =
 function adopt(v: any, fromCache = false) {
   M.on = !!v.on; M.level = v.level || M.level; M.own = !!v.own_key; M.endpoint = M.own ? v.endpoint || "plain" : ""; M.needs = !!v.needs_choice; M.problems = v.problems || []; M.max = v.max_categories || M.max;
   M.cats = v.categories || []; M.bg = v.background?.chain ? { id: BG, title: "Background jobs", chain: v.background.chain, max_price: null } : null; M.models = v.models || {}; M.draft = {}; M.loaded = true;
-  M.noModel = !!v.no_model; M.svcs = Array.isArray(v.connections) ? v.connections : []; M.hasOr = !!v.has_openrouter; if (M.own) M.on = true;   // an own key has no switch: it is always used
+  M.noModel = !!v.no_model; M.optional = !!v.optional; M.svcs = Array.isArray(v.connections) ? v.connections : []; M.hasOr = !!v.has_openrouter; if (M.own) M.on = true;   // an own key has no switch: it is always used
   if (!fromCache) { lastJson = JSON.stringify(v); cachePut(v); }
-  if (!fromCache) note(v);
+  if (scope === "") { boot0.on = M.on; boot0.own = M.own; if (!fromCache) note(v); }   // the boot answer is about Advanced only
 }
 function note(v: { on?: boolean; level?: string; own_key?: boolean; needs_choice?: boolean; problems?: Problem[] }) {   // what the rest of the app reads (boot answer)
   D?.noteBoot({ on: !!v.on, level: v.level, ...(v.own_key ? { own_key: true } : {}), needs_choice: !!v.needs_choice, problems: v.problems || [] });
 }
 // The last answer is kept in this browser (localStorage, by workspace; models and settings only, no key or token), so Settings, AI services draws the Models section in full on every open.
 // It is read again in the background (at most every 15 seconds, and whenever the page opens), and the page changes in place only when the answer differs.
-const ckey = () => { try { const slug = String((window as any).__1HC?.slug || ""); return D?.api && slug ? `1hc-ai-models:${slug}` : ""; } catch { return ""; } };
+const ckey = () => { try { const slug = String((window as any).__1HC?.slug || ""); return D?.api && slug ? `1hc-ai-models:${slug}${scope === "services" ? "" : ":adv"}` : ""; } catch { return ""; } };
 const cacheGet = (): any => { try { const k = ckey(); const raw = k ? localStorage.getItem(k) : null; const v = raw ? JSON.parse(raw) : null; return v && Array.isArray(v.categories) ? v : null; } catch { return null; } };
 const cachePut = (v: any) => { try { const k = ckey(); if (k) localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage unavailable: the page just draws from the server's answer */ } };
 let lastJson = "", hydrated = false, warmedAt = 0;
+// The page that is open decides which editor this state holds; the other page's answer is dropped and read again when it opens.
+function setScope(want: Scope) {
+  if (scope === want) return;
+  scope = want; hydrated = false; lastJson = ""; warmedAt = 0;
+  Object.assign(M, { fetched: false, at: 0, loaded: false, err: "", cats: [], bg: null, models: {}, draft: {}, svcs: [], noModel: false, optional: false, needs: false, problems: [], endpoint: "", own: want === "services" || boot0.own, on: want === "services" || boot0.on });
+}
 function hydrate() { if (hydrated || M.loaded) return; hydrated = true; const v = cacheGet(); if (v) { try { adopt(v, true); lastJson = JSON.stringify(v); } catch { M.loaded = false; } } }
 async function load(force = false, restore = false) {   // restore: a refused save put the unsaved choice on screen, so the saved answer is drawn again even if it is the one already held
   if (!D || M.loading) return;
   hydrate();
   if (M.fetched && !force && Date.now() - M.at < 15000) return;
-  M.loading = true; M.at = Date.now(); let changed = false;
+  M.loading = true; M.at = Date.now(); let changed = false; const sc = scope;
   try {
     const v = await call("account/custom-models"), j = JSON.stringify(v);
+    if (sc !== scope) return;   // the other page opened while this answer was on its way
     if (restore || j !== lastJson) { if (force || !Object.keys(M.draft).length) { adopt(v); changed = true; } }
     if (M.err) { M.err = ""; changed = true; }
     M.fetched = true;
@@ -103,11 +116,14 @@ async function load(force = false, restore = false) {   // restore: a refused sa
   } catch (e: any) { if (!M.loaded) { M.err = e?.message || "Couldn't load this. Try again in a minute."; changed = true; } }
   finally { M.loading = false; if (changed && D?.shown()) repaint(); }
 }
-const call = (path: string, init?: { method?: string; body?: any }) => (D?.api || demoApi)(path, init);
+// Every request of the editor carries its scope, first in the query so the sandbox and the server read the rest as before.
+const scoped = (path: string) => (scope === "services" ? (path.includes("?") ? path.replace("?", "?scope=services&") : `${path}?scope=services`) : path);
+const call = (path: string, init?: { method?: string; body?: any }) => (D?.api || demoApi)(scoped(path), init);
 function save(body: any, after?: () => void) {
   queue = queue.then(async () => {
     M.busy = true; M.err = "";
-    try { adopt(await call("account/custom-models", { method: "POST", body })); after?.(); }
+    const sc = scope;
+    try { const v = await call("account/custom-models", { method: "POST", body }); if (sc === scope) { adopt(v); after?.(); D?.saved?.(); } }
     catch (e: any) { const why = e?.message || "Couldn't save that. Try again in a minute."; for (let i = 0; M.loading && i < 40; i++) await new Promise(r => setTimeout(r, 100)); await load(true, true).catch(() => {}); M.err = why; }   // the reload puts the saved choice back, and the reason stays on screen
     finally { M.busy = false; repaint(); }
   });
@@ -127,23 +143,23 @@ async function commit(edits: any[]) {
 // An own key's editor (General's models, background jobs, categories), drawn under Settings, AI services, Models. hasConn: the account has a connected service.
 // Until its answer is read it holds the place with a loading row, so the plan options below don't jump.
 export function cmodelsOwnPanel(hasConn: boolean): string {
-  if (!D || !M.own || !hasConn) return "";
-  hydrate(); void load();
+  if (!D || !hasConn) return "";
+  setScope("services"); hydrate(); void load();
   const err = M.err ? `<p role="alert" class="meta cmerr">${esc(M.err)}</p>` : "";
   if (!M.loaded || !M.svcs.length) return `<h3 data-cmown>Models</h3>${err || `<div class="sc cmskel" aria-hidden="true"></div>`}`;   // only the very first open on a new browser gets here: the frame, no loading line
-  const none = M.noModel ? `<p role="alert" class="meta cmerr cmnone">No model is chosen yet. Choose General's first model so chat can answer.</p>` : "";
+  const none = M.noModel && !M.optional ? `<p role="alert" class="meta cmerr cmnone">No model is chosen yet. Choose General's first model so chat can answer.</p>` : "";
   const bad0 = new Set(M.problems.map(p => `${p.category_id}|${p.slot}`));
   const need0 = M.needs ? `<p role="alert" class="meta cmerr">Your privacy setting is ${esc(LEVEL_NAME[M.level] || M.level)}. Replace the models marked below to keep working.</p>` : "";
   return `<h3 data-cmown>Models</h3>${err}${none}${need0}<div class="sc cmx" data-cmx>${M.cats.map(c => catHtml(c, bad0)).join("")}${M.cats.length < M.max && !M.noModel ? `<div class="cmadd"><button type="button" class="sa blue" data-cmadd>Add category</button></div>` : ""}${M.bg ? catHtml(M.bg, bad0) : ""}</div>`;
 }
 // Settings, AI services asks for the page's own answer and the Models answer together, so neither waits for the other.
-export function cmodelsPrefetch() { if (D && M.own) { hydrate(); void load(); } }
+export function cmodelsPrefetch(hasConn = true) { if (D && hasConn) { setScope("services"); hydrate(); void load(); } }
 // A service was connected or removed: read the account's models again (the new service's models are in the picker). Resolves once the answer is in.
-export async function cmodelsRefresh() { for (let i = 0; M.loading && i < 40; i++) await new Promise(r => setTimeout(r, 100)); await load(true).catch(() => {}); }
+export async function cmodelsRefresh() { setScope("services"); for (let i = 0; M.loading && i < 40; i++) await new Promise(r => setTimeout(r, 100)); await load(true).catch(() => {}); }
 export function cmodelsCard(): string {
   if (!D) return "";
-  void load();
-  if (M.own) return "";   // an own key chooses its models in Settings, AI services
+  setScope(""); void load();
+  if (M.own || (!M.loaded && boot0.own)) return "";   // an own key chooses its models in Settings, AI services
   const err = M.err ? `<p role="alert" class="meta cmerr">${esc(M.err)}</p>` : "";
   const toggle = `<button type="button" class="tg${M.on ? " on" : ""}" role="switch" aria-checked="${M.on}" aria-label="Custom Model Selection" data-cmtoggle${M.busy || (!M.loaded && !M.err) ? " disabled" : ""}><i></i></button>`;
   const row = `<div class="sc">${D.srow("", "Custom Model Selection", "Chat uses your own models instead of the defaults.", toggle, " data-cmrow")}</div>`;
@@ -167,7 +183,7 @@ function catHtml(c: Cat, bad: Set<string>) {
       const idx = Math.max(0, withDefault.findIndex(x => x.value === (e.effort ?? "")));
       const level = !empty && levels.length ? `<div class="cmeffw">${efsHtml({ id: `cmeff-${c.id}-${i}`, label: "Reasoning", steps: withDefault, index: idx, thumbAttr: `data-cmlvl="${esc(c.id)}|${i}"` })}</div>` : "";
       const canRm = !empty && (isBg ? true : i > 0), rm = canRm ? `<button type="button" class="cmrm" data-cmrm="${esc(c.id)}|${i}" aria-label="Remove the ${esc(SLOT[i].toLowerCase())} model from ${esc(c.title)}">Remove</button>` : `<span class="cmrmgap"></span>`;
-      const first = empty ? (isBg ? "Same as General's first model" : "Choose a model") : nameOfModel(e.model), svc = !empty && m?.service ? svcTag(m.service, m.conn) : "";
+      const first = empty ? (isBg ? (M.optional ? "1Helm's models" : "Same as General's first model") : "Choose a model") : nameOfModel(e.model), svc = !empty && m?.service ? svcTag(m.service, m.conn) : "";
       const lab = isBg && empty ? "Models" : SLOT[i];
       return `<div class="cmslot cmown${isBad ? " bad" : ""}"><span class="cmlab">${lab}</span><button type="button" class="cmmodel${empty ? " cmempty" : ""}" data-cmpick="${esc(c.id)}|${i}" aria-label="${esc(lab)} model for ${esc(c.title)}: ${esc(first)}${svc ? `, ${esc(m!.service!)}` : ""}"><span class="cmmn"><span class="cmmt">${esc(first)}</span>${svc}</span></button>${level}${rm}${isBad ? `<span class="cmwhy">Not available with ${esc(LEVEL_NAME[M.level] || M.level)}</span>` : ""}</div>`;
     }
@@ -351,13 +367,13 @@ export function cmodelsAfter() {
 }
 export function cmodelsInit(deps: Deps, boot?: { on?: boolean; level?: string; own_key?: boolean; needs_choice?: boolean; problems?: Problem[] } | null) {
   D = deps;
-  if (!deps.api && /[?&]cmown\b/.test(location.search)) { M.own = true; M.on = true; }   // sandbox: the editor of an account with an own AI key
-  if (boot) { M.on = !!boot.on; M.level = boot.level || M.level; M.own = !!boot.own_key; M.needs = !!boot.needs_choice; M.problems = boot.problems || []; if (M.needs) window.setTimeout(() => void promptNeeded(), 1500); }
+  if (!deps.api && /[?&]cmown\b/.test(location.search)) { M.own = true; M.on = true; boot0.own = true; boot0.on = true; }   // sandbox: the editor of an account with an own AI key
+  if (boot) { boot0.on = !!boot.on; boot0.own = !!boot.own_key; M.on = !!boot.on; M.level = boot.level || M.level; M.own = !!boot.own_key; M.needs = !!boot.needs_choice; M.problems = boot.problems || []; if (M.needs) window.setTimeout(() => void promptNeeded(), 1500); }
 }
 // The privacy setting just changed (the server's answer): re-read this account's models, and ask for new choices when some are no longer allowed.
 export function cmodelsPrivacy(v?: { on?: boolean; level?: string; own_key?: boolean; needs_choice?: boolean; problems?: Problem[] } | null) {
   if (!D || !v) return;
-  M.on = !!v.on; M.level = v.level || M.level; M.own = !!v.own_key; M.needs = !!v.needs_choice; M.problems = v.problems || []; note(v);
+  boot0.on = !!v.on; boot0.own = !!v.own_key; if (scope === "") { M.on = !!v.on; M.own = !!v.own_key; } M.level = v.level || M.level; M.needs = !!v.needs_choice; M.problems = v.problems || []; note(v);
   if (M.on) void load(true);
   if (M.needs) void promptNeeded();
 }
@@ -385,7 +401,7 @@ const OWN_MODELS: Card[] = [ownCard("chatgpt", "ChatGPT", "gpt-6.1-sol", "GPT-6.
   ownCard("opencode", "OpenCode", "glm-5.3", "GLM 5.3", ["low", "medium", "high", "max"], "chat-completions"), ownCard("opencode", "OpenCode", "kimi-k3", "Kimi K3", [], "chat-completions"), ownCard("chatgpt", "ChatGPT", "gpt-6.1-sol-long", "GPT-6.1 Sol Extended Thinking Experimental Preview Edition", ["low", "medium", "high", "xhigh", "max"]), ownCard("opencode", "OpenCode", "deepseek-v4", "DeepSeek V4", ["low", "high"], "chat-completions")];
 async function demoApi(path: string, init?: { method?: string; body?: any }) {
   const level = "zdr", body = init?.body;
-  if (M.own) {
+  if (M.own || scope === "services") {
     const svcs = [{ id: "chatgpt", kind: "chatgpt", label: "ChatGPT", host: "" }, { id: "opencode", kind: "opencode", label: "OpenCode", host: "" }];
     const q = decodeURIComponent(path.split("q=")[1] || "").toLowerCase();
     if (path.startsWith("account/custom-models/catalog")) {
@@ -403,7 +419,7 @@ async function demoApi(path: string, init?: { method?: string; body?: any }) {
     const cats = demo.categories || (demo.categories = [{ id: "general", title: "General", chain: none ? [] : shots ? [{ model: "chatgpt:gpt-6.1-sol", effort: "max" }, { model: "chatgpt:gpt-6.1-sol-long", effort: "xhigh" }] : [{ model: "chatgpt:gpt-6.1-sol", effort: "high" }, { model: "opencode:glm-5.3", effort: "medium" }], max_price: null }]);
     const bg = demo.bg || (demo.bg = none ? [] : shots ? [{ model: "chatgpt:gpt-6.1-sol-long", effort: null }] : [{ model: "opencode:kimi-k3", effort: null }]);
     const used = new Set([...cats.flatMap(c => c.chain.map(e => e.model)), ...bg.map(e => e.model)]);
-    return { on: true, level, own_key: true, endpoint: "own", needs_choice: false, no_model: !cats[0].chain.length, problems: [], max_categories: 12, categories: clone(cats), background: { title: "Background jobs", chain: clone(bg) }, connections: svcs, has_openrouter: false,
+    return { on: true, level, own_key: true, endpoint: "own", optional: !OWN_Q().includes("byokplan"), needs_choice: false, no_model: !cats[0].chain.length, problems: [], max_categories: 12, categories: clone(cats), background: { title: "Background jobs", chain: clone(bg) }, connections: svcs, has_openrouter: false,
       models: Object.fromEntries(OWN_MODELS.filter(m => used.has(m.id)).map(m => [m.id, { ...m, allowed: true }])) };
   }
   const view = () => { const cats = demo.categories || (demo.categories = [{ id: "general", title: "General", chain: DEMO.slice(0, 3).map(m => ({ model: m.id, effort: m.default_effort })), max_price: null }]);

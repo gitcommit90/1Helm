@@ -66,6 +66,7 @@ import { daySections, msgTime } from "./chat-dates";
 import { tkInit, tkLoad, tkEvent, tkOn, tkLiveCard, tkBtn, tkWrap, tkSync, tkChip, tkMsgOf, tkCardView, tkHelperCount, tkProgress, orbState, type EventView } from "./tracker";
 import { dictBtn, dictInit, dictActive } from "./dictate";
 import { slBtn, slInit, slGate, slSchedule, slBubbles, slSentNote, slSet } from "./send-later";
+import { versionsOpen } from "./versions";   // the Versions list of a Library file (file viewer and Library row)
 import { docEditable, zoneKind } from "./zone-doc";   // the Zone (zone.ts, loaded only when a file is opened in it): which files it can open
 import { dsAttr, dsBtn, dsCardHtml, dsInit, dsIsDeck, dsWire } from "./deck-styles";   // deck styles: Change style on a deck card, and the helper's picker card
 import { schInit, schPage, schPaint, schAfter, schRedirect, isSch, schSec } from "./scheduled";   // the one Scheduled view (repeats, follow-ups, send later)
@@ -89,7 +90,7 @@ import { sidebarInit, sidebarSync, sidebarReveal, sidebarCollapseButton, sidebar
 import { stInit, sync as stSync, headStop, rowStop, composerStop, stopTask, stopMany, stopBusy, pausedNote, SQ } from "./stop";   // Stop / Stop all
 import { nfInit, nfHtml, nfSeen, nfPerm, nfAsk, nfElsewhere } from "./notif";   // Settings → Notifications: switches, this device (Web Push), sounds
 import { followDrawn, followKeep, followSent } from "./chat-follow";
-import { maInit, maActs, maOpenCls, maQuote, rqHtml, rqTake, rqPut, rqClear, refOf, copyPlain, excerpt, type Pin, type Role } from "./msgreply";   // Copy + Reply on chat bubbles, the reply pinned above the composer
+import { maInit, maActs, maOpenCls, maQuote, rqHtml, rqTake, rqPut, rqClear, refOf, copyPlain, copyToClipboard, excerpt, type Pin, type Role } from "./msgreply";   // Copy + Reply on chat bubbles, the reply pinned above the composer
 import { sideGlideSync } from "./sidebar-glide";
 import { createRankedSearch, rankedRows } from "./task-search";   // sidebar and drawer Search: the server ranks every task after a pause
 import { sgInit, pauseSet, usageSet, usageAdd, usageNote } from "./spendguard";   // core runaway guard and per-task usage
@@ -111,6 +112,7 @@ const byok = () => hasFeature("billing") ? billingByok : coreByok;
 const BYK_SEC = coreByok.BYK_SEC;
 const bykInit = (d: Parameters<typeof billingByok.bykInit>[0]) => byok().bykInit(d);
 const bykWarm = (login = false) => byok().bykWarm(login);
+const bykRefresh = () => byok().bykRefresh();
 const bykPage = () => byok().bykPage();
 const bykAfter = () => byok().bykAfter();
 const bykBusy = () => byok().bykBusy();
@@ -152,7 +154,7 @@ type Saved = { to: "notebook" | "contact" | "memory" | "account"; channel?: stri
 type FileV = { version?: number; id: string; name: string; mime: string; bytes: number; at: number; source?: string; session?: string | null; image?: boolean; tags?: string[]; tx?: string };
 type Session = { id: any; srv?: any; loaded?: boolean; loading?: boolean; loadFailAt?: number; loadFailSince?: number; loadFails?: number; loadTimer?: any; streaming?: boolean; attached?: boolean; tmp?: string; rawLine?: string; title: string; status: string; state: string; updated: number; messages: Msg[]; line?: string; unread?: boolean; fresh?: boolean; pinned?: boolean; done?: boolean };
 type Channel = { id: number; slug: string; name: string; purpose: string; memory: string[]; notes?: any[]; jobs: any[]; sessions: Session[]; cs?: CS };
-type Art = { tx?: string; name: string; kind: "doc" | "sheet" | "pdf" | "image" | "link" | "code"; sid: any; at: number; size: string; fresh?: boolean; fid?: string; you?: boolean; mime?: string; bytes?: number; tags?: string[] };
+type Art = { tx?: string; name: string; kind: "doc" | "sheet" | "pdf" | "image" | "video" | "audio" | "link" | "code"; sid: any; at: number; size: string; fresh?: boolean; fid?: string; you?: boolean; mime?: string; bytes?: number; tags?: string[]; ver?: number };
 
 const NAMES: Record<string, string> = { main: "General", "weather-watch": "Weather", "family-schedule": "Family", "home-finances": "Finances", "trip-planning": "Japan trip", "side-project": "Side project" };
 const NOW = Date.now(), SHIFT = NOW - (seed as any).captured;
@@ -207,6 +209,7 @@ let nextId = 10000;
 
 // Icons (Lucide, MIT), stroke only.
 const I = (d: string, s = 16) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const VERS_P = '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>';
 const ic = {
   newS: I('<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a1 1 0 0 1 3 3l-9 9-3.9 1 1-3.9z"/>'),
   search: I('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>', 15),
@@ -238,6 +241,7 @@ const ic = {
   home: I('<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>', 16),
   nb: I('<path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"/><path d="M2 6h4M2 10h4M2 14h4M2 18h4"/><path d="M21.4 5.6a2 2 0 1 0-2.8-2.8l-5 5a2 2 0 0 0-.5.9l-.8 2.9 2.9-.8a2 2 0 0 0 .9-.5z"/>', 16),
   pen: I('<path d="M21.2 6.8a2.8 2.8 0 0 0-4-4L3.8 16.2a2 2 0 0 0-.5.9L2 22l4.9-1.3a2 2 0 0 0 .9-.5z"/>', 14),
+  vers: I(VERS_P, 14),
   trash: I('<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>', 14),
   people: I('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>', 16),
   msg: I('<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>'),
@@ -559,6 +563,8 @@ const KIND: Record<Art["kind"], [string, string]> = {
   sheet: ["Sheet", '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/>'],
   pdf: ["PDF", '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M8.5 15.5h7"/>'],
   image: ["Image", '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-4.5-4.5L5 21"/>'],
+  video: ["Video", '<rect x="2.5" y="5" width="14" height="14" rx="2"/><path d="m16.5 10 5-3v10l-5-3"/>'],
+  audio: ["Audio", '<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>'],
   link: ["Link", '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>'],
   code: ["Code", '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>'],
 };
@@ -568,22 +574,37 @@ const KB = (b: number) => b < 1024 ? `${b} B` : b < 1048576 ? `${Math.round(b / 
 function fkind(name: string, mime = ""): Art["kind"] {
   const e = (name.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
   if (/^image\//.test(mime) || /^(png|jpe?g|gif|webp|heic|heif|svg)$/.test(e)) return "image";
+  if (/^video\//.test(mime) || /^(mp4|m4v|mov|webm|mkv|avi)$/.test(e)) return "video";
+  if (/^audio\//.test(mime) || /^(mp3|m4a|wav|aac|ogg|oga|flac|opus)$/.test(e)) return "audio";
   if (e === "pdf" || mime === "application/pdf") return "pdf";
   if (/^(xlsx?|csv|tsv|numbers|ods)$/.test(e)) return "sheet";
-  if (/^(js|ts|py|json|html?|css|sh|zip|xml|sql|ipynb)$/.test(e)) return "code";
+  if (/^(js|ts|py|json|html?|css|sh|zip|xml|sql|ipynb|tar|gz|tgz|7z|rar)$/.test(e)) return "code";
   return "doc";
 }
-// ver: the version a message's card shows (the server keeps every version a reply shared and serves it with ?v=); no ver = the current file.
-const fileUrl = (slug: string, id: string, dl = false, ver?: number) => fileResUrl(LIVE!.api, slug, id, dl, ver);
+// Every place that opens a Library file asks for its CURRENT version. FVER holds the version the live file list (or the latest "file" event) reported;
+// it goes in the URL as ?c= (the server ignores it and always sends the current bytes) so the browser can never reuse a copy of an older version. The server
+// still keeps and serves older versions by ?v=, but nothing here asks for one, so a card shared at version 1 opens version 3 once the helper has updated the file.
+const FVER = new Map<string, number>();
+const fileBase = (slug: string, id: string) => fileResUrl(LIVE!.api, slug, id);   // file-url.mjs keeps the IDs inside their path segments
+const fileUrl = (slug: string, id: string, dl = false) => { const v = FVER.get(`${slug}|${id}`), u = fileResUrl(LIVE!.api, slug, id, dl); return v ? `${u}${dl ? "&" : "?"}c=${Math.floor(v)}` : u; };
+// Record a file's current version. true = it was known before and is different now (bytes, name or version).
+function noteVer(slug: string, f: { id: string; version?: number }): boolean {
+  const v = Number(f.version) || 0; if (!v) return false;
+  const k = `${slug}|${f.id}`, was = FVER.get(k); if (was != null && was >= v) return false;
+  FVER.set(k, v); return was != null;
+}
 const artHref = (ch: Channel, a: Art) => a.fid ? fileUrl(ch.slug, a.fid) : `#/${ch.slug}/s/${a.sid}`;
-const toArt = (f: FileV): Art => ({ name: f.name, kind: fkind(f.name, f.mime), sid: f.session, at: f.at, size: KB(f.bytes), fid: f.id, you: f.source === "upload", mime: f.mime, bytes: f.bytes, tags: f.tags, tx: f.tx });
+const toArt = (f: FileV): Art => ({ name: f.name, kind: fkind(f.name, f.mime), sid: f.session, at: f.at, size: KB(f.bytes), fid: f.id, you: f.source === "upload", mime: f.mime, bytes: f.bytes, tags: f.tags, tx: f.tx, ver: f.version });
 // Library files the person deleted: hidden at once, and kept hidden while the delete request runs, so a reload from the server can't bring them back.
 const FILE_DEL = new Set<string>();
 function setFiles(ch: Channel, files: FileV[]) {
   if (FILE_DEL.size) files = files.filter(f => !FILE_DEL.has(f.id));
   const was = LIB[ch.slug] || [], sig = (l: Art[]) => l.map(a => a.fid).sort().join(",");
+  const bumped = files.filter(f => noteVer(ch.slug, f));
   const next = files.map(toArt); next.forEach(a => { if (was.length && !was.some(w => w.fid === a.fid)) a.fresh = true; });
-  const changed = sig(was) !== sig(next); LIB[ch.slug] = next; return changed;
+  const changed = sig(was) !== sig(next) || bumped.length > 0; LIB[ch.slug] = next;
+  if (bumped.length) fileBumped(ch.slug, bumped, true);   // found by the list poll: another tab, a helper with no open stream, a reload
+  return changed;
 }
 if (LIVE) for (const c of BOOT?.channels || []) { const ch = channels.find(x => x.slug === c.slug); if (ch) setFiles(ch, c.files || []); }
 const lib = (ch: Channel) => (LIB[ch.slug] ??= []).sort((a, b) => b.at - a.at);
@@ -606,7 +627,7 @@ if (!LIVE) for (const [k, v] of Object.entries(EXTRA)) (LIB[k] ??= []).push(...v
 type LF = Art & { ch: Channel };
 const allFiles = (): LF[] => channels.flatMap(c => lib(c).map(a => ({ ...a, ch: c }))).sort((a, b) => b.at - a.at);
 // [key, label, kinds it shows (null = any), tag it shows (files tagged in the Library API's tags[], e.g. meeting notes)]
-const TYPES: [string, string, Art["kind"][] | null, string?][] = [["all", "All", null], ["doc", "Documents", ["doc"]], ["sheet", "Spreadsheets", ["sheet"]], ["pdf", "PDFs", ["pdf"]], ["image", "Images", ["image"]], ["link", "Links & code", ["link", "code"]], ["meeting", "Meetings", null, "meeting"], ["zone", "The Zone", null]];
+const TYPES: [string, string, Art["kind"][] | null, string?][] = [["all", "All", null], ["doc", "Documents", ["doc"]], ["sheet", "Spreadsheets", ["sheet"]], ["pdf", "PDFs", ["pdf"]], ["image", "Images & video", ["image", "video", "audio"]], ["link", "Links & code", ["link", "code"]], ["meeting", "Meetings", null, "meeting"], ["zone", "The Zone", null]];
 // The Zone can change a deck, a web page and a .docx; a PDF report and the other word formats only open there to read, so "The Zone" leaves them out.
 const ZSECS: [string, string][] = [["deck", "Presentations"], ["doc", "Documents"], ["page", "Websites"]];
 const zoneSec = (f: Art) => { const k = zoneKind(f); return k === "deck" || k === "page" || (k === "doc" && docEditable(f.name)) ? k : null; };
@@ -623,6 +644,7 @@ function libFilesHtml() {
   if (ups.length && !L.q) { const rest = libFilesInner(); return `<div class="lrows lups${L.scope === "ch" ? " one" : ""}">${ups.map(lupRow).join("")}</div>${/class="lempty"/.test(rest) ? "" : rest}`; }
   return libFilesInner();
 }
+const LCPN_ICO = `<span class="lcpn-i lcpn-copy">${I('<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h11"/>', 14)}</span><span class="lcpn-i lcpn-ok">${I('<path d="M20 6 9 17l-5-5"/>', 14)}</span>`;   // Library row: copy the file name (swaps to a check for 1.5 s)
 function libFilesInner() {
   const list = libFiltered(), one = L.scope === "ch", here = route().ch;
   if (!list.length) return `<div class="lempty">${L.q ? `Nothing matches “${esc(L.q)}”.` : L.type === "meeting" ? "No meeting notes yet." : L.type === "zone" ? "Nothing to open in the Zone yet." : one ? `Files ${esc(who(here))} makes for you, and files you add, show up here.${LIVE ? ` <button class="linkb" data-addfile>Add a file</button>` : ""}` : `No files here yet.`}</div>`;
@@ -633,7 +655,7 @@ function libFilesInner() {
       <span class="am">${one ? `${k} · ${esc(f.size)} · ${fileDate(f.at)}` : `${av(f.ch, "av xs")}${esc(f.ch.name)} · ${fileDate(f.at)}`}${LIVE ? shBadge(f.ch.slug, f.fid, f.name) : ""}</span></a>`; };
   const row = (f: LF) => { const [k, d] = KIND[f.kind], x = src(f), you = f.you ?? f.size === "You added";
     return `<a class="lrow${f.fresh ? " fresh" : ""}"${open(f)}><span class="aico k-${f.kind}">${I(d, 18)}</span>
-      <span class="lmain"><span class="ln">${esc(f.name)}</span><span class="lsub">${LIVE ? shBadge(f.ch.slug, f.fid, f.name).trimStart() : ""}${you ? "You added it" : `${esc(who(f.ch))} made it`}${x ? ` in “${esc(x.title)}”` : ""}${f.fid ? ` · ${esc(f.size)}` : ""}</span></span>${f.fid ? `<button class="ldel" data-fdel="${esc(f.ch.slug)}|${esc(f.fid)}" title="Delete" aria-label="Delete ${esc(f.name)}">${ic.trash}</button>` : ""}
+      <span class="lmain"><span class="lcpn-line"><span class="ln">${esc(f.name)}</span><button type="button" class="lcpn-btn" data-lcpn="${esc(f.name)}" title="Copy file name" aria-label="Copy file name">${LCPN_ICO}</button></span><span class="lsub">${LIVE ? shBadge(f.ch.slug, f.fid, f.name).trimStart() : ""}${you ? "You added it" : `${esc(who(f.ch))} made it`}${x ? ` in “${esc(x.title)}”` : ""}${f.fid ? ` · ${esc(f.size)}` : ""}</span></span>${f.fid ? `<span class="lact">${LIVE && (f.ver || 1) > 1 ? `<button class="ldel lver" data-fver="${esc(f.ch.slug)}|${esc(f.fid)}" title="Versions" aria-label="Versions of ${esc(f.name)}">${ic.vers}</button>` : ""}<button class="ldel" data-fdel="${esc(f.ch.slug)}|${esc(f.fid)}" title="Delete" aria-label="Delete ${esc(f.name)}">${ic.trash}</button></span>` : ""}
       <span class="ltype">${k}</span>${one ? "" : `<span class="lch">${av(f.ch, "av xs")}<span>${esc(f.ch.name)}</span></span>`}<span class="ldate">${fileDate(f.at)}</span></a>`; };
   const body = (l: LF[]) => L.view === "grid" ? `<div class="arts lgrid">${l.map(card).join("")}</div>` : `<div class="lrows${one ? " one" : ""}">${l.map(row).join("")}</div>`;
   if (zl) return ZSECS.map(([k, n]) => [n, list.filter(f => zoneSec(f) === k)] as const).filter(([, l]) => l.length).map(([n, l]) => `<h3 class="lzh">${n}</h3>${body(l)}`).join("");
@@ -757,9 +779,9 @@ async function upload(key: string | null, slug: string, list: File[]) {
     try {
       const f: FileV = await sendFile(slug, file, u.name, p => { u.pct = p; if (key) upPaint(key); else lupPaint(u); }, u.xhr, !!key);
       if (u.gone) { api(`/res/${slug}/files/${f.id}/delete`, {}).catch(() => {}); return; }   // removed while the server was finishing
-      if (f.image) { const j = await smallJpeg(file); if (j) await fetch(`${fileUrl(slug, f.id)}/view`, { method: "POST", credentials: "same-origin", headers: { "content-type": "image/jpeg" }, body: j }).catch(() => {}); }
+      if (f.image) { const j = await smallJpeg(file); if (j) await fetch(`${fileBase(slug, f.id)}/view`, { method: "POST", credentials: "same-origin", headers: { "content-type": "image/jpeg" }, body: j }).catch(() => {}); }
       if (u.gone) { api(`/res/${slug}/files/${f.id}/delete`, {}).catch(() => {}); return; }
-      u.f = f; u.pct = 100; done.push(f); if (!key) (LIB[slug] ??= []).unshift({ ...toArt(f), fresh: true });
+      noteVer(slug, f); u.f = f; u.pct = 100; done.push(f); if (!key) (LIB[slug] ??= []).unshift({ ...toArt(f), fresh: true });
     } catch (e: any) { if (u.gone) return; u.err = e.message; }
     if (key) upPaint(key); else { refresh(); trayPaint(); }   // each file swaps from its upload row to the real row as soon as it's in
   }));
@@ -921,7 +943,7 @@ async function zoneStart(slug: string, id: string) {
   void m.zoneOpen({ api: LIVE.api, v: String((LIVE as any).v || ""), fileUrl, who: sl => who(channels.find(c => c.slug === sl) || ch), pinKey: rqKey, pin: (k, ref) => { if (!k) return; if (ref) rqPut(k, ref); else rqClear(k); },
     note: (t, b) => note(ic.clock, t, b, ""), leave: () => { m.zoneClose(); render(); },
     styleBtn: ff => dsIsDeck(ff) ? `<span class="zwide" role="button" tabindex="0" ${dsAttr(ff.slug, ff)}>${I('<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.5-.7 1.5-1.5 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.8.7-1.5 1.5-1.5H16c3.3 0 6-2.7 6-6 0-4.9-4.5-9-10-9z"/>', 16)}<span>Change style</span></span>` : "", shareAttrs: ff => ` data-shn="${esc(ff.name)}" data-shm="${esc(ff.mime || "")}"`,
-    helperWorking: () => !!route().s?.streaming }, { slug, id: f.id, name: f.name, mime: f.mime, tags: f.tags, session: f.session, version: f.version, bytes: f.bytes }, String(s.id));
+    helperWorking: () => !!route().s?.streaming, bumped: (sl, ff) => { if (noteVer(sl, ff)) fileBumped(sl, [ff], true); } }, { slug, id: f.id, name: f.name, mime: f.mime, tags: f.tags, session: f.session, version: f.version, bytes: f.bytes }, String(s.id));
 }
 // The Zone belongs to the task it was opened from: leaving that task closes it.
 function zoneGuard() { if (!zoneMod?.zoneIsOpen()) return; const sid = zoneMod.zoneSession(), { s } = route(); if (!s || String(s.id) !== sid) zoneMod.zoneClose(); }
@@ -936,12 +958,32 @@ async function zoneFromLib(slug: string, id: string, sid: string) {
   for (let i = 0; i < 100; i++) { const { ch: c, s } = route(); if (c.slug === slug && s === to && (!LIVE || s.loaded) && document.getElementById("box")) break; await new Promise(r => setTimeout(r, 50)); }
   await zoneStart(slug, id);
 }
-if (LIVE) { document.addEventListener("click", e => { const z = (e.target as HTMLElement).closest<HTMLElement>("[data-zl]"); if (z && !(e.target as HTMLElement).closest("[data-fdel]")) { e.preventDefault(); e.stopPropagation(); const [slug, id, sid] = z.dataset.zl!.split("|"); void zoneFromLib(slug, id, sid); return; }
+if (LIVE) { document.addEventListener("click", e => { const z = (e.target as HTMLElement).closest<HTMLElement>("[data-zl]"); if (z && !(e.target as HTMLElement).closest("[data-fdel],[data-lcpn],[data-fver]")) { e.preventDefault(); e.stopPropagation(); const [slug, id, sid] = z.dataset.zl!.split("|"); void zoneFromLib(slug, id, sid); return; }
     const b = (e.target as HTMLElement).closest<HTMLElement>("[data-zone]"); if (!b) return; e.preventDefault(); e.stopPropagation(); const [slug, id] = b.dataset.zone!.split("|"); void zoneStart(slug, id); }, true);
   document.addEventListener("keydown", e => { const t = e.target as HTMLElement; if ((e.key === "Enter" || e.key === " ") && t?.matches?.("[data-zone]")) { e.preventDefault(); t.click(); } }); }
+// Versions list (versions.ts): the file's kept versions with Restore. A restore changes the file like a helper's update does: every card, the Library row and an open viewer take the new version.
+const fvVer = (f: { slug: string; id: string }) => (LIB[f.slug] || []).find(a => a.fid === f.id)?.ver || 1;
+function openVersions(slug: string, id: string) {
+  const a = (LIB[slug] || []).find(x => x.fid === id), v = FVS.list.find(x => x.slug === slug && x.id === id), name = a?.name || v?.name || "this file", mime = a?.mime || v?.mime || "", k = fkind(name, mime);
+  void versionsOpen({ api: LIVE!.api, slug, id, name, image: k === "image", icon: I(KIND[k][1], 26), currentUrl: () => fileUrl(slug, id), size: KB,
+    changed: f => { const x = (LIB[slug] || []).find(y => y.fid === f.id); if (x) { x.bytes = f.bytes; x.size = KB(f.bytes); x.at = f.at; x.ver = f.version; x.mime = f.mime; } noteVer(slug, f); fileBumped(slug, [f], true); } });
+}
+// A file has a new version (the stream's "file" event, the list poll). Every card for it in every loaded task takes the new size and version, an open viewer
+// showing it reloads, and (paint) the open chat or Library repaints now. Cards and links always build their URL from FVER, so a repaint is all they need.
+function fileBumped(slug: string, files: FileV[], paint: boolean) {
+  const ch = channels.find(c => c.slug === slug); if (!ch) return;
+  const by = new Map(files.map(f => [f.id, f] as const));
+  const patch = (f?: FileV) => { const n = f && by.get(f.id); if (f && n && f !== n) { f.version = n.version; f.bytes = n.bytes; f.name = n.name; f.mime = n.mime; f.at = n.at; f.tags = n.tags; f.tx = n.tx; } };
+  for (const s of ch.sessions) for (const m of s.messages || []) { (m.files || []).forEach(patch); for (const c of m.cards || []) if (c.t === "file") patch(c.f); }
+  let viewer = false;
+  for (const x of FVS.list) { const n = x.slug === slug ? by.get(x.id) : undefined; if (!n) continue; x.bytes = n.bytes; x.name = n.name; x.mime = n.mime; x.at = n.at; if (FVS.list[FVS.i] === x && document.getElementById("fv")) viewer = true; }
+  if (viewer) fvPaint();
+  if (!paint || route().ch !== ch) return;
+  const { s } = route(); if (isLib() || !s) refresh(); else paintChat(s);
+}
 function fileCard(ch: Channel, f: FileV, mine: boolean) {
-  const k = fkind(f.name, f.mime), u = fileUrl(ch.slug, f.id, false, f.version);
-  return `<div class="fcard chat-tile${mine ? " mine" : ""}" title="${esc(f.name)} · ${KIND[k][0]} · ${KB(f.bytes)}"><a class="chat-tile-open" href="${u}" data-fv="${esc(ch.slug)}|${esc(f.id)}${f.version ? `|${f.version}` : ""}" data-fvc aria-label="Open ${esc(f.name)}"><span class="chat-tile-preview${f.image ? " photo" : ""}">${f.image ? `<img src="${u}" alt="" loading="lazy">` : `<span class="aico k-${k}">${I(KIND[k][1], 28)}</span>`}</span><span class="chat-tile-name">${esc(f.name)}</span></a><span class="chat-tile-actions"><span class="chat-tile-kind">${dsIsDeck(f) ? "Deck" : KIND[k][0]}</span>${LIVE ? shFileBtn(ch.slug, f.id, f.name, f.mime, true) : ""}${dsBtn(ch.slug, f)}${zoBtn(ch.slug, f)}<a class="chat-tile-download" href="${fileUrl(ch.slug, f.id, true, f.version)}" download aria-label="Download ${esc(f.name)}" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 14)}</a></span></div>`;
+  const k = fkind(f.name, f.mime), u = fileUrl(ch.slug, f.id), now = (LIB[ch.slug] || []).find(a => a.fid === f.id), bytes = now?.bytes ?? f.bytes;   // always the file's current version and size, never the version the reply shared
+  return `<div class="fcard chat-tile${mine ? " mine" : ""}" title="${esc(f.name)} · ${KIND[k][0]} · ${KB(bytes)}"><a class="chat-tile-open" href="${u}" data-fv="${esc(ch.slug)}|${esc(f.id)}" data-fvc aria-label="Open ${esc(f.name)}"><span class="chat-tile-preview${f.image ? " photo" : ""}">${f.image ? `<img src="${u}" alt="" loading="lazy">` : `<span class="aico k-${k}">${I(KIND[k][1], 28)}</span>`}</span><span class="chat-tile-name">${esc(f.name)}</span></a><span class="chat-tile-actions"><span class="chat-tile-kind">${dsIsDeck(f) ? "Deck" : KIND[k][0]}</span>${LIVE ? shFileBtn(ch.slug, f.id, f.name, f.mime, true) : ""}${dsBtn(ch.slug, f)}${zoBtn(ch.slug, f)}<a class="chat-tile-download" href="${fileUrl(ch.slug, f.id, true)}" download aria-label="Download ${esc(f.name)}" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 14)}</a></span></div>`;
 }
 if (LIVE) {
   document.addEventListener("click", async e => {
@@ -951,7 +993,13 @@ if (LIVE) {
     const lx = t.closest<HTMLElement>("[data-lupx]"); if (lx) { e.preventDefault(); const i = LUP.findIndex(u => u.k === +lx.dataset.lupx!); if (i >= 0) { const u = LUP[i]; u.gone = true; if (!u.f && !u.err) u.xhr?.abort(); LUP.splice(i, 1); refresh(); trayPaint(); } return; }
     if (t.closest("[data-utx]")) { e.preventDefault(); for (let i = LUP.length - 1; i >= 0; i--) if (LUP[i].f || LUP[i].err) LUP.splice(i, 1); trayPaint(); return; }
     const rm = t.closest<HTMLElement>("[data-uprm]"); if (rm) { e.preventDefault(); const [key, k] = rm.dataset.uprm!.split("|"); upDrop(key, +k); return; }
+    const lcp = t.closest<HTMLElement>("[data-lcpn]"); if (lcp) {   // Library row: copy the file name; never opens or selects the row
+      e.preventDefault(); e.stopPropagation();
+      if (await copyToClipboard(lcp.dataset.lcpn || "")) { lcp.classList.add("done"); window.clearTimeout((lcp as any)._t); (lcp as any)._t = window.setTimeout(() => lcp.classList.remove("done"), 1500); }
+      return;
+    }
     if (t.closest("[data-fdl]")) return;   // a Download link is a plain <a href download>: the browser downloads it, so the app never navigates
+    const vr = t.closest<HTMLElement>("[data-fver]"); if (vr) { e.preventDefault(); e.stopPropagation(); const [slug, id] = vr.dataset.fver!.split("|"); openVersions(slug, id); return; }
     const del = t.closest<HTMLElement>("[data-fdel]"); if (del) {
       e.preventDefault(); e.stopPropagation(); const [slug, id] = del.dataset.fdel!.split("|"), a = (LIB[slug] || []).find(x => x.fid === id); if (!a) return;
       if (!(await ask({ title: `Delete “${a.name}”?`, body: `It's removed from the Library and from ${who(channels.find(c => c.slug === slug)!)}'s computer.`, confirm: "Delete", danger: true }))) return;
@@ -975,7 +1023,7 @@ if (LIVE) {
   });
   // Leaving the page with unsent attachments: delete those drafts now (the server also sweeps any it misses after a day).
   // (No "Leave site?" warning while files upload: that's the browser's own pop-up, and 1Helm never shows one. The upload tray shows progress.)
-  window.addEventListener("pagehide", () => { for (const key of Object.keys(UP)) for (const u of UP[key]) if (u.f && !u.lib) fetch(`${fileUrl(u.ch, u.f.id)}/delete`, { method: "POST", credentials: "same-origin", keepalive: true, headers: { "content-type": "application/json" }, body: "{}" }).catch(() => {}); });
+  window.addEventListener("pagehide", () => { for (const key of Object.keys(UP)) for (const u of UP[key]) if (u.f && !u.lib) fetch(`${fileBase(u.ch, u.f.id)}/delete`, { method: "POST", credentials: "same-origin", keepalive: true, headers: { "content-type": "application/json" }, body: "{}" }).catch(() => {}); });
   document.addEventListener("paste", e => {
     const t = e.target as HTMLElement; if (t.id !== "box" && t.id !== "nbox") return;
     const l = [...(e.clipboardData?.files || [])]; if (!l.length) return; e.preventDefault(); upload(t.id, upSlug(t.id), l);
@@ -986,7 +1034,7 @@ if (LIVE) {
 // audio/video play. Slide decks (.pptx…) and Word documents (.docx…) show the PDF the channel computer makes of them with
 // LibreOffice (GET …/files/<id>/preview, 1HC file-preview.js; the first open makes it, later opens are instant): a deck pages
 // slide by slide, a document scrolls like a PDF. Anything else gets a clean card with Download. ← → move through the list it was opened from.
-type FV = { ver?: number; slug: string; id: string; name: string; mime: string; bytes: number; at: number; sid?: any; you?: boolean; transcript?: string; tx?: string; spk?: { slug: string; task: string; n?: number } };
+type FV = { slug: string; id: string; name: string; mime: string; bytes: number; at: number; sid?: any; you?: boolean; transcript?: string; tx?: string; spk?: { slug: string; task: string; n?: number } };
 const FVS: { list: FV[]; i: number; zoom: number; gen: number; pdf?: any; slide?: (d: number, abs?: boolean) => boolean; transcript?: string; data?: any; speakers?: Speaker[] } = { list: [], i: 0, zoom: 1, gen: 0 };
 const fvExt = (n: string) => (n.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
 const fvKind = (f: FV) => { const e = (f.name.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase(), m = f.mime;
@@ -996,7 +1044,7 @@ const fvKind = (f: FV) => { const e = (f.name.match(/\.([a-z0-9]+)$/i)?.[1] || "
   if (/^(pptx|ppt|pps|ppsx|pptm|odp)$/.test(e)) return "deck";   // by extension only, like the server's previewKind
   if (/^(docx|doc|docm|odt|rtf)$/.test(e)) return "word";
   if (/^(html?|xhtml)$/.test(e) || m === "text/html") return "html";
-  if (/^video\//.test(m)) return "video"; if (/^audio\//.test(m)) return "audio";
+  if (/^video\//.test(m) || /^(mp4|m4v|mov|webm|mkv|avi)$/.test(e)) return "video"; if (/^audio\//.test(m) || /^(mp3|m4a|wav|aac|ogg|oga|flac|opus)$/.test(e)) return "audio";
   if (e === "md" || e === "markdown" || m === "text/markdown") return "md";
   if (e === "csv" || e === "tsv" || m === "text/csv" || m === "text/tab-separated-values") return "csv";
   if (/^text\//.test(m) || /^(txt|json|js|ts|py|sh|css|html?|xml|svg|yaml|yml|toml|ini|log|sql|ics)$/.test(e) || m === "application/json") return "text";
@@ -1074,7 +1122,7 @@ function openFile(list: FV[], i: number) {
 }
 function closeFile() { const w = document.getElementById("fv"); FVS.gen++; FVS.pdf?.destroy?.(); FVS.pdf = null; FVS.slide = undefined; document.body.classList.remove("fvopen"); if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!w.classList.contains("on")) w.remove(); }, 200); }
 function fvPaint() {
-  const w = document.getElementById("fv")!, f = FVS.list[FVS.i], k = fvKind(f), u = f.transcript || fileUrl(f.slug, f.id, false, f.ver), x = fvTask(f), n = FVS.list.length, gen = ++FVS.gen;
+  const w = document.getElementById("fv")!, f = FVS.list[FVS.i], k = fvKind(f), u = f.transcript || fileUrl(f.slug, f.id), x = fvTask(f), n = FVS.list.length, gen = ++FVS.gen;
   FVS.transcript = undefined; FVS.data = undefined; FVS.speakers = undefined; speakerEditorClose();
   FVS.zoom = 1; FVS.pdf?.destroy?.(); FVS.pdf = null; FVS.slide = undefined;
   const [kn0, kd] = KIND[fkind(f.name, f.mime)], kn = k === "deck" ? "Slide deck" : k === "word" ? "Document" : k === "html" ? "Web page" : kn0;
@@ -1082,6 +1130,7 @@ function fvPaint() {
     <header class="fvhd"><span class="aico k-${fkind(f.name, f.mime)}">${I(kd, 18)}</span><span class="fvt"><b title="${esc(f.name)}">${esc(f.name)}</b><span>${kn}${f.bytes ? ` · ${KB(f.bytes)}` : ""}${x ? ` · <a href="#/${esc(f.slug)}/s/${esc(x.id)}" data-fvgo>From “${esc(x.title)}”</a>` : f.you ? " · You added it" : ""}</span></span>
       ${k === "html" && n > 1 ? `<span class="fvhn" role="group" aria-label="Files"><button class="fvb" data-fvn="-1" aria-label="Previous file" title="Previous file"${FVS.i ? "" : " disabled"}>${I('<path d="m15 18-6-6 6-6"/>', 18)}</button><span class="fvhc">${FVS.i + 1} of ${n}</span><button class="fvb" data-fvn="1" aria-label="Next file" title="Next file"${FVS.i < n - 1 ? "" : " disabled"}>${I('<path d="m9 18 6-6-6-6"/>', 18)}</button></span>` : ""}
       ${LIVE && route().s && (k === "html" || k === "pdf" || (k === "word" && zoneKind(f))) ? `<button class="fvb" data-zone="${esc(f.slug)}|${esc(f.id)}" aria-label="Open in zone" title="Open in zone">${I('<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/><rect x="9" y="9" width="6" height="6" rx="1"/>', 18)}</button>` : ""}
+      ${LIVE && !f.transcript && fvVer(f) > 1 ? `<button class="fvb" data-fver="${esc(f.slug)}|${esc(f.id)}" aria-label="Versions" title="Versions">${I(VERS_P, 18)}</button>` : ""}
       ${k === "html" ? `<button class="fvb" data-fvfs aria-label="Full screen" title="Full screen">${I('<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>', 18)}</button>` : ""}
       ${k === "image" || k === "pdf" || k === "word" ? `<span class="fvzoom"><button data-fvz="-1" aria-label="Zoom out">${I('<path d="M5 12h14"/>', 16)}</button><button data-fvz="0" class="fvzl" aria-label="Fit">100%</button><button data-fvz="1" aria-label="Zoom in">${I('<path d="M5 12h14"/><path d="M12 5v14"/>', 16)}</button></span>` : ""}
       ${f.transcript ? `<button class="fvb" data-transcript-download disabled aria-label="Download transcript" title="Download transcript as text">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 18)}</button>` : `${shViewerBtns(f.slug, f.id, f.name, f.mime)}<a class="fvb" href="${fileUrl(f.slug, f.id, true)}" download aria-label="Download" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 18)}</a>`}
@@ -1217,17 +1266,17 @@ if (LIVE) {
       if (t.classList.contains("fvbody") || t.classList.contains("fvload") || t.classList.contains("fvslide")) { closeFile(); return; }
       return;
     }
-    const a = t.closest<HTMLElement>("[data-fv]"); if (!a || t.closest("[data-fdel],[data-fdl]")) return;
+    const a = t.closest<HTMLElement>("[data-fv]"); if (!a || t.closest("[data-fdel],[data-fdl],[data-lcpn],[data-fver]")) return;
     if (e.metaKey || e.ctrlKey || e.shiftKey || (e as MouseEvent).button === 1) return;   // ⌘-click still opens a tab on purpose
     e.preventDefault(); e.stopImmediatePropagation();
-    const [slug, id, vs] = a.dataset.fv!.split("|"), ver = vs ? +vs : undefined;
+    const [slug, id] = a.dataset.fv!.split("|");
     // The list to page through: the Library list as shown, or every file in this chat, or just this file.
     let list: FV[] = [];
     if (a.hasAttribute("data-fvl")) list = [...document.querySelectorAll<HTMLElement>("#lfiles [data-fv]")].map(el => { const [s, i] = el.dataset.fv!.split("|"); const x = (LIB[s] || []).find(y => y.fid === i); return x ? fvOf(s, x) : null; }).filter(Boolean) as FV[];
-    else if (a.hasAttribute("data-fvc")) { const { s } = route(); list = (s?.messages || []).flatMap(m => [...(m.files || []), ...(m.cards || []).filter(c => c.t === "file").map(c => c.f)]).map((f: FileV) => ({ slug, id: f.id, ver: f.version, name: f.name, mime: f.mime, bytes: f.bytes, at: f.at, sid: f.session, you: f.source === "upload", tx: f.tx })); }
+    else if (a.hasAttribute("data-fvc")) { const { s } = route(); list = (s?.messages || []).flatMap(m => [...(m.files || []), ...(m.cards || []).filter(c => c.t === "file").map(c => c.f)]).map((f: FileV) => ({ slug, id: f.id, name: f.name, mime: f.mime, bytes: f.bytes, at: f.at, sid: f.session, you: f.source === "upload", tx: f.tx })); }
     if (!list.some(f => f.id === id)) { const x = (LIB[slug] || []).find(y => y.fid === id); if (x) list = [fvOf(slug, x)]; }
     if (!list.length) return;
-    openFile(list, Math.max(0, list.findIndex(f => f.id === id && (ver == null || f.ver == null || f.ver === ver))));
+    openFile(list, Math.max(0, list.findIndex(f => f.id === id)));
   }, true);
   window.addEventListener("keydown", e => {
     if (!document.getElementById("fv") || document.querySelector(".spkpop")) return;   // the speaker name box handles its own keys
@@ -1276,7 +1325,7 @@ function openNew() {
   const nd = draftGet(`new|${NT.from}`); if (nd?.to && channels.some(c => c.slug === nd.to)) NT.to = nd.to;
   let w = document.getElementById("nt"); if (!w) { w = document.createElement("div"); w.id = "nt"; document.body.appendChild(w); }
   w.innerHTML = `<div class="nback" data-nclose></div><form class="nmodal" id="nsend" role="dialog" aria-label="New task">
-    ${phone() ? '<button type="button" class="grab" data-nclose aria-label="Close new task"></button>' : ""}<div class="ups" id="ups-nbox">${upsHtml("nbox")}</div><textarea id="nbox" rows="2" autocomplete="off"></textarea>
+    ${phone() ? '<button type="button" class="grab" data-nclose aria-label="Close new task"></button>' : ""}<div class="ups" id="ups-nbox">${upsHtml("nbox")}</div><textarea id="nbox" rows="2" spellcheck="false" autocomplete="off"></textarea>
     <div class="nrow">${cb("attach", "Attach", ic.plus)}
       <div class="npick"><button type="button" class="nwho" data-npick title="Who should do it"></button><div class="nlist"></div></div>
       <span class="grow"></span><span class="nkbd"><kbd>Esc</kbd> to close</span>${LIVE ? slBtn("nbox") + dictBtn("nbox", ic.mic) : cb("mic", "Talk", ic.mic, " mic")}
@@ -1534,7 +1583,7 @@ function startTask(ch: Channel, text: string, files: FileV[] = []) {
   return x;
 }
 const composer = (ph: string) => `<div class="ups" id="ups-box">${upsHtml("box")}</div>${rqHtml(rqKey())}<form class="composer${upHas("box") ? " has" : ""}" id="send">${cb("attach", "Attach", ic.plus)}
-  <textarea id="box" rows="1" placeholder="${ph}"></textarea>
+  <textarea id="box" rows="1" placeholder="${ph}" spellcheck="false" autocapitalize="sentences"></textarea>
   ${LIVE ? slBtn("box") + dictBtn("box", ic.mic) : cb("mic", "Talk", ic.mic, " mic")}
   <button id="go"${upHas("box") ? "" : " disabled"} aria-label="Send">${ic.up}</button>${LIVE ? composerStop() : ""}</form>${bykPlanLine(LIVE ? BOOT?.account?.chatgpt_plan === true : false)}`;
 // A reply part: cards when it's OpenUI Lang (genui-render.ts), else today's markdown bubble (after the code safety net). Prose
@@ -1607,9 +1656,8 @@ function claimFiles(m: Msg | undefined, text: string) {
 }
 function cardFile(ch: Channel, name: string, claim?: { byName: Map<string, FileV> }) {
   if (!LIVE) return null; const n = name.trim().replace(/^.*\//, "");
-  const t = claim?.byName.get(n), a = t ? { fid: t.id, kind: t.image ? "image" : "", ver: t.version } : (LIB[ch.slug] || []).find(x => x.fid && x.name.toLowerCase() === n.toLowerCase()); if (!a) return null;
-  const ver = (a as { ver?: number }).ver;   // a card the reply itself shared knows its version; a Library lookup by name is the current file
-  return { fv: `${ch.slug}|${a.fid}${ver ? `|${ver}` : ""}`, href: fileUrl(ch.slug, a.fid!, false, ver), dl: fileUrl(ch.slug, a.fid!, true, ver), image: a.kind === "image" ? fileUrl(ch.slug, a.fid!, false, ver) : undefined };
+  const t = claim?.byName.get(n), a = t ? { fid: t.id, kind: t.image ? "image" : "" } : (LIB[ch.slug] || []).find(x => x.fid && x.name.toLowerCase() === n.toLowerCase()); if (!a) return null;
+  return { fv: `${ch.slug}|${a.fid}`, href: fileUrl(ch.slug, a.fid!), dl: fileUrl(ch.slug, a.fid!, true), image: a.kind === "image" ? fileUrl(ch.slug, a.fid!) : undefined };
 }
 const cardIcon = (name: string) => { const k = fkind(name); return `<span class="aico k-${k}">${I(KIND[k][1], 30)}</span>`; };
 // Every message of a task, each knowing the next thing the person said after it (that locks a card's controls).
@@ -3122,7 +3170,7 @@ rpInit({ live: LIVE, before: () => { closeMenu(); if (mState.sheet === "set") cl
 if (hasFeature("smart_routing")) cmodelsInit({ api: LIVE ? (path, init) => fetch(`${LIVE.api}/${path}`, { method: init?.method || "GET", credentials: "same-origin", cache: "no-store", ...(init?.body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) } : {}) })
     .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok || d?.error) throw new Error(typeof d?.error === "string" ? d.error : `Something went wrong (${r.status}).`); return d; }) : null,
   repaint: () => sRender(), shown: () => S.open && (S.sec === CMCP_SEC || S.sec === BYK_SEC), srow: (i, t, s, r, a = "") => srow(i, t, s, r, a), ask: o => ask(o),
-  openAdvanced: () => { if (S.open) sGo(CMCP_SEC); else openSettings(CMCP_SEC); }, openAi: () => { if (S.open) sGo(BYK_SEC); else openSettings(BYK_SEC); }, version: String((LIVE as any)?.v || ""), noteBoot: v => { if (BOOT?.account) BOOT.account.custom_models = v; } }, BOOT?.account?.custom_models);
+  openAdvanced: () => { if (S.open) sGo(CMCP_SEC); else openSettings(CMCP_SEC); }, openAi: () => { if (S.open) sGo(BYK_SEC); else openSettings(BYK_SEC); }, version: String((LIVE as any)?.v || ""), saved: () => bykRefresh(), noteBoot: v => { if (BOOT?.account) BOOT.account.custom_models = v; } }, BOOT?.account?.custom_models);
 if (hasFeature("connected_apps")) cmcpInit({ api: LIVE ? (path, init) => fetch(`${LIVE.api}/${path}`, { method: init?.method || "GET", credentials: "same-origin", ...(init?.body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) } : {}) })
     .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) { const er = d?.error, e: any = new Error((typeof er === "string" ? er : er?.message) || `Something went wrong (${r.status}).`); e.status = r.status; e.code = er?.code; throw e; } return d; }) : null,
   repaint: () => sRender(), shown: () => S.open && S.sec === CMCP_SEC, srow: (i, t, s, r, a = "") => srow(i, t, s, r, a), icon: (k, z = 17) => G[k] ? g(k, z) : (ic as any)[k] || "",
@@ -3389,6 +3437,7 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
   else if (ev.t === "file") {   // share_file; the same id again = the helper updated that file in place: replace its card and Library row
     const cs = (reply.cards ??= []), i = cs.findIndex((c: any) => c.t === "file" && c.f?.id === ev.file.id); if (i >= 0) cs[i] = { t: "file", f: ev.file }; else cs.push({ t: "file", f: ev.file });
     LIB[ch.slug] = [{ ...toArt(ev.file), fresh: true }, ...(LIB[ch.slug] || []).filter((a) => a.fid !== ev.file.id)];
+    noteVer(ch.slug, ev.file); fileBumped(ch.slug, [ev.file], false);   // the new version is the one every earlier card, the Library row and an open viewer show (the caller repaints)
   }
   else if (ev.t === "done") {
     if(Number.isSafeInteger(ev.progress_omitted)&&ev.progress_omitted>0)reply.progressOmitted=ev.progress_omitted;
@@ -3749,6 +3798,15 @@ if (LIVE) {
     { const os = route().s; nfSeen(d.channels, os ? String(os.id) : null); }   // a task started waiting on you or finished: a soft chime (Settings → Notifications → Sounds)
   };
   setInterval(poll, 6000); document.addEventListener("visibilitychange", poll);
+  // While a file is open in the viewer, or the Library is on screen, the file list is read every 3 seconds, so a new version made anywhere (a helper, another tab,
+  // another device) reaches the open viewer, the Library and the chat cards without waiting for the 6-second boot poll. Nothing runs while neither is open.
+  let fastBusy = false;
+  setInterval(async () => {
+    if (document.hidden || fastBusy) return;
+    const slug = document.getElementById("fv") ? FVS.list[FVS.i]?.slug : isLib() ? route().ch.slug : ""; const ch = slug ? channels.find(c => c.slug === slug) : null; if (!ch) return;
+    fastBusy = true;
+    try { const d: any = await api(`/res/${slug}/files`, undefined, { signal: AbortSignal.timeout(8000) }); if (Array.isArray(d?.files) && setFiles(ch, d.files) && isLib()) refresh(); } catch { /* the next tick tries again */ } finally { fastBusy = false; }
+  }, 3000);
 }
 
 // Live computer pane: the channel computer's real Chrome, streamed over VNC. noVNC loads only when the pane opens, so chat never wakes the computer.

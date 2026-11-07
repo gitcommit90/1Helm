@@ -80,7 +80,7 @@ export function pmHtml(): string {
     <p class="sfine">Connected-app actions and website requests can require approval, including spending and unclassified actions. Saved “Always allowed” exceptions still apply. Separate checkout and publish confirmations remain in place.</p>
     <section id="pm-checkins" tabindex="-1" aria-labelledby="pm-checkins-title">
       <h3 id="pm-checkins-title">Agent check-ins</h3>
-      <p class="sfine">Choose when work pauses to check with you. Applies across this account, starting with the next turn (including Keep going).</p>
+      <p class="sfine">Choose when work pauses to check with you. Check-ins happen only while Pause to check spending is on in Settings. Applies across this account, starting with the next turn (including Keep going).</p>
       <div class="sc">${srow("", "Pause to check in", "After a number of tool calls without an update", `<button type="button" class="tg${ci.enabled ? " on" : ""}" role="switch" aria-checked="${ci.enabled}" aria-label="Agent check-ins" data-pmcheckswitch${busy ? " disabled" : ""}><i></i></button>`, " data-pmcheckrow")}
       ${ci.enabled ? (['silent', 'fast'] as const).map(key => {
         const saved = esc(String(checkinDraft[key] ?? ci[key]));

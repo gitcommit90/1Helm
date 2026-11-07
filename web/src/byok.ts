@@ -32,6 +32,7 @@ export function bykLoad(force = false) {
     .finally(() => { B.loading = false; D?.repaint(); });
 }
 export const bykWarm = (_login = false) => {};   // the licensed page warms the Claude engine; the core page has nothing to warm
+export const bykRefresh = () => {};   // the licensed page reloads its services after a save in the Models editor; the core page has nothing to reload
 export const bykUsageNote = () => "";
 const field = (name: "base" | "model" | "fast", title: string, hint: string) => `<label class="sf"><span>${title}</span><input data-bykf="${name}" value="${esc(B.form[name])}" placeholder="${esc(hint)}" autocapitalize="none" spellcheck="false">${B.field === name ? `<em class="bykerr" role="alert">${esc(B.error)}</em>` : ""}</label>`;
 const testLine = (test: Test | null) => !test ? "" : `<p class="byktest${test.ok ? "" : " fail"}" role="status">${test.ok ? "Connection and tool calling passed." : "The connection test did not pass."}</p>`;

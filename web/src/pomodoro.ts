@@ -291,7 +291,7 @@ function paintOverlay() {
     const was = P.ov; P.ov = id; host.className = `ph-${t!.phase}`; host.innerHTML = `<div class="pmovback"></div>${ovBody(k, t!)}`;
     requestAnimationFrame(() => requestAnimationFrame(() => host.classList.add("on")));
     if (P.pop || !was) host.classList.add("pop"); P.pop = false;
-    host.querySelector<HTMLElement>(".pmcard")?.focus({ preventScroll: true });   // read by screen readers; Tab reaches the buttons
+    { const a = document.activeElement as HTMLElement | null; if (!(a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)))) host.querySelector<HTMLElement>(".pmcard")?.focus({ preventScroll: true }); }   // never takes focus (and the phone keyboard) from a field being typed in   // read by screen readers; Tab reaches the buttons
     return;
   }
   if (!RUNNING.includes(t!.phase)) return;

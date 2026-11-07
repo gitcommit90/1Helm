@@ -222,7 +222,7 @@ function busyScreen(blocked: () => boolean) {
   if ([...document.querySelectorAll(OVERLAY)].some(shown)) return true;
   const a = document.activeElement as HTMLElement | null;   // typing: a draft in the composer, or any other field focused
   if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) {
-    if (a.id !== "box" || ((a as HTMLTextAreaElement).value || "").trim()) return true;   // the home page focuses an empty composer by itself
+    if (a.id !== "box" || ((a as HTMLTextAreaElement).value || "").trim() || matchMedia("(pointer:coarse)").matches) return true;   // the desktop home page focuses an empty composer by itself; on a touch screen a focused box means the keyboard is open
   }
   return false;
 }

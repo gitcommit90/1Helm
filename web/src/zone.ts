@@ -31,6 +31,7 @@ export type ZDeps = {
   styleBtn: (f: ZFileRef) => string;   // the deck styles button (deck-styles.ts), "" when the file is not a deck
   shareAttrs: (f: ZFileRef) => string;   // attributes that make an element open the share popover for the file (share.ts)
   helperWorking: () => boolean;   // the open task has a turn running
+  bumped?: (slug: string, f: any) => void;   // the person's own edit made a new version: cards, the Library and a viewer show it at once
 };
 
 type Target = { slide: number | null; slot?: string; n?: number; sel?: string | null };
@@ -334,7 +335,7 @@ async function sendEdits(edits: (Edit | DocEdit)[] | null, restore = false): Pro
   const r = await fetch(`${D().api}/res/${f.slug}/files/${f.id}/zone-edit`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(restore ? { base: Z.version, restore: "previous" } : { base: Z.version, edits }) });
   const j = await r.json().catch(() => ({}));
   if (gen !== Z.gen) return false;
-  if (r.ok && j.file) { Z.version = Number(j.file.version) || Z.version + 1; Z.hasPrev = true; if (j.file.bytes) Z.f!.bytes = j.file.bytes; return true; }
+  if (r.ok && j.file) { Z.version = Number(j.file.version) || Z.version + 1; Z.hasPrev = true; if (j.file.bytes) Z.f!.bytes = j.file.bytes; try { D().bumped?.(Z.f!.slug, j.file); } catch { /* the list poll catches up */ } return true; }
   if (r.status === 409) { D().note("The file changed", "It was changed since you opened it, so the latest version is shown. Your last change was not saved."); Z.undo = []; Z.redo = []; Z.version = Number(j.version) || Z.version; void meta(); void load(true); return false; }
   D().note("Couldn't save that change", String(j.error || `Something went wrong (${r.status}).`).slice(0, 160)); void load(true); return false;
 }
@@ -448,7 +449,7 @@ function fxStop(now: boolean) {
 async function loadPdf(gen: number, quiet: boolean) {
   const f = Z.f!, base = new URL("../pdfjs/", import.meta.url).href, lib: any = await import(/* @vite-ignore */ base + "pdf.min.mjs"), my = ++Z.seq;
   lib.GlobalWorkerOptions.workerSrc = base + "pdf.worker.min.mjs";
-  let src: any = { url: D().fileUrl(f.slug, f.id) + (quiet ? `?t=${Date.now()}` : ""), withCredentials: true };
+  let src: any = { url: (u => u + (quiet ? `${u.includes("?") ? "&" : "?"}t=${Date.now()}` : ""))(D().fileUrl(f.slug, f.id)), withCredentials: true };
   if (Z.kind === "doc") {   // the server's PDF preview of the Word file (src/file-preview.js, the same one the file viewer shows); the first one is made on the channel computer
     const slow = setTimeout(() => { const e = $("#zcanvas [data-zload] span"); if (e && !$("#zcanvas [data-zload]")?.classList.contains("off")) e.textContent = "Making the pages. The first time takes a few seconds."; }, 3500);
     try {

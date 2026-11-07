@@ -45,7 +45,7 @@ ok("services, then Models with the editor, then the fine print; Advanced shows n
 // Services connected, nothing chosen: one plain line and an empty slot that says Choose a model.
 p = await page("?byokthree&cmown&cmownnone");
 h = p.html();
-assert.match(h, /No model is chosen yet\./); assert.match(h, /cmempty/); assert.match(h, /Choose a model/);
+assert.doesNotMatch(h, /No model is chosen yet/, "on a full plan choosing is optional, so no warning"); assert.match(h, /cmempty/); assert.match(h, /Choose a model/); assert.match(h, /1Helm&#39;s models/, "empty Background jobs means 1Helm's models on a full plan");
 assert.strictEqual((h.match(/data-cmpick=/g) || []).length >= 1, true);
 assert.ok(!/data-bykchoose/.test(h), "the old Choose models banner is gone");
 ok("connected with no model chosen: one line and an empty Choose a model slot, nothing picked");

@@ -3,7 +3,10 @@
 // and Remove, and buttons Sign in with OpenRouter, Continue with ChatGPT, Use OpenCode and any OpenAI-compatible service), then a Models section (custom-models.ts cmodelsOwnPanel: the own-key editor, which lists
 // the models of every connected service together), then the plan options. After a service connects, the panel scrolls to Models, whose first slot says Choose a model; nothing is ever chosen for the person.
 // The plan options stay as they were. On the Bring your own key plan ($10/month, 100 GB; everything else 1Helm runs is paid from credits at cost + 15%) the connected services are
-// simply the AI. On a full plan (Personal/Plus/Power/Max) the person connects a service, then picks one of two options (Captain 10-06):
+// simply the AI. On a full plan (Personal/Plus/Power/Max) the person connects a service, chooses its models in Models (optional; Captain 2026-11-07: "the moment they authenticate there, they should now
+// optionally be able to select what model to use"), then picks one of the options (Captain 10-06):
+//   - Use my services now (mode "now"): the plan stays and chat answers on the services with General's first model, with no plan change. Choosing General's model while no option is chosen turns it on
+//     (the server does it with the save), so picking a model is enough. The computer, browser, web search and memory keep using the plan's usage; Background jobs left empty means 1Helm's models.
 //   - Keep my plan, use my key as a backup (mode "fallback"): 1Helm credits first; once they're used up, chat goes to the services until they refill.
 //   - Switch now to the $10 plan (POST /byok/switch-now, Captain 10-28): the plan changes at once, the unused plan usage becomes credits; the confirm dialog (from /byok/switch-preview) says so.
 //     A switch already scheduled for the renewal (mode "switch") keeps Undo and gets Switch now next to it. Refused in plain words when the account uses more than the $10 plan holds.
@@ -23,15 +26,15 @@ export const BYK_TITLE = "AI services";
 export const BYK_WARN = "With your own AI key, your messages and files that the AI reads go to that provider under their terms. 1Helm's zero-data-retention guarantee covers only the parts we run. Everything else stays private as before.";
 export const BYK_TERMS = "1Helm's instructions sent to your AI service remain 1Helm's and are covered by our Terms.";
 // A full plan: the caveat holds only while the key is actually answering.
-export const BYK_ZDR_FULL = "On your current plan this applies only while your key is in use: with the backup option, only after your 1Helm credits run out; with the switch, from the day it happens.";
+export const BYK_ZDR_FULL = "On your current plan this applies only while your key is in use: with Use my services now, from your next message; with the backup option, only after your 1Helm credits run out; with the switch, from the day it happens.";
 export const FALLBACK_NOTE = "Using your own AI key (1Helm credits used up)";
-export const BYK_ZDR_OPTS = "Zero data retention: while your key is in use, what the AI reads goes to your provider under their terms, and 1Helm's guarantee covers only the parts we run. With the backup, that's only after your 1Helm credits run out; with the switch, from the day it happens.";
+export const BYK_ZDR_OPTS = "Zero data retention: while your key is in use, what the AI reads goes to your provider under their terms, and 1Helm's guarantee covers only the parts we run. With Use my services now, that's from your next message; with the backup, only after your 1Helm credits run out; with the switch, from the day it happens.";
 export const OC_CONSOLE = "https://opencode.ai/console/account";
 type Check = { ok: boolean; error?: string; ms?: number; models?: number };
 type Test = { ok: boolean; checks: { reach?: Check }; ms?: number; at?: number };
 type Kind = "plain" | "openrouter" | "chatgpt" | "opencode" | "claudecode";
 type Conn = { id: string; kind: Kind; plan?: "go" | "payg"; label: string; host: string; last4: string; email?: string; plan_name?: string; signin_again?: boolean; added_at: number | null; tested_at: number | null; test: Test | null };
-type Mode = "" | "fallback" | "switch";
+type Mode = "" | "now" | "fallback" | "switch";
 type UsageWin = { id: string; label: string; used: number; resets_at: number | null };
 type Usage = { windows: UsageWin[]; at: number; tried: boolean; manage: string; limit: { window: string; resets_at: number | null } | null };
 type CgSum = { total: number; peak: number; days: number; window: number };
@@ -120,7 +123,11 @@ const STORAGE_MSG = "You're using 128 GB, and Bring your own key includes 100 GB
 async function mock(path: string, body?: any): Promise<any> {
   await new Promise(z => setTimeout(z, path.endsWith("/test") || path.endsWith("/opencode") || path.endsWith("/connections") ? 700 : 250));
   const add = (c: Conn) => { mockSt = { ...mockSt, connections: [...mockSt.connections.filter(x => x.id !== c.id), c] }; };
-  if (path === "/byok") return mockSt;
+  if (path === "/byok") {   // sandbox: the server turns Use my services now on when General's model is chosen and no option is chosen
+    const chosen = !!(globalThis as any).__cmLast?.categories?.[0]?.chain?.length;
+    if (mockSt.full && mockSt.connections.length && !mockSt.mode && chosen) mockSt = { ...mockSt, mode: "now", custom: { model: String((globalThis as any).__cmLast.categories[0].chain[0].model) } };
+    return mockSt;
+  }
   if (path === "/byok/chatgpt/invite-dismiss") { mockSt = { ...mockSt, chatgpt: { ...mockSt.chatgpt, invite: false } }; return { ok: true, ...mockSt }; }
   if (path === "/byok/chatgpt/welcomed") { mockSt = { ...mockSt, chatgpt: { ...mockSt.chatgpt, welcome: false } }; return { ok: true, ...mockSt }; }
   if (path === "/byok/usage") { if (QP.has("byokusagefail")) { await new Promise(z => setTimeout(z, 1500)); return { error: "Try again in a minute." }; } const kinds = mockSt.connections.map(c => c.kind).filter(k => k === "chatgpt" || k === "claudecode" || k === "opencode"); await new Promise(z => setTimeout(z, QP.has("byokusageslow") ? 4000 : 0)); mockSt = { ...mockSt, usage: mockUsage(kinds) }; return { usage: mockSt.usage, ...(kinds.includes("chatgpt") ? { chatgpt: { manage: mockSt.chatgpt.manage, summary: mockSt.chatgpt.summary } } : {}) }; }
@@ -153,6 +160,7 @@ async function mock(path: string, body?: any): Promise<any> {
   }
   if (path === "/byok/mode") {
     const m = String(body?.mode ?? "") as Mode;
+    if (m === "now" && !mockSt.custom.model) return { error: "Choose General's model in Settings, AI services, Models first." };
     if (m === "switch" && QP.has("byokstorage")) return { error: STORAGE_MSG, storage: { used: 128e9, limit: 100e9, need: 1 } };
     mockSt = { ...mockSt, mode: m, switch_at: m === "switch" ? MOCK_RENEW : null, fallback: m === "fallback" ? { active: QP.has("byokfb"), since: null } : undefined };
     return { ok: true, ...mockSt };
@@ -186,13 +194,14 @@ function cgOf(d: any, prev?: CgInfo | null): CgInfo {
   return { manage: CG_USAGE, summary: m ? { total: cgNum(m.total), peak: cgNum(m.peak), days: cgNum(m.days), window: cgNum(m.window) || 30 } : prev?.summary ?? null, welcome: "welcome" in x ? x.welcome === true : prev?.welcome === true, invite: "invite" in x ? x.invite === true : prev?.invite === true };
 }
 function stOf(d: any): St {
-  const m: Mode = d.mode === "fallback" || d.mode === "switch" ? d.mode : "";
+  const m: Mode = d.mode === "now" || d.mode === "fallback" || d.mode === "switch" ? d.mode : "";
   return { on_plan: !!d.on_plan, full: d.full ?? !d.on_plan, plan_name: String(d.plan_name || ""), price: Number(d.price) || 10, mode: m, switch_at: d.switch_at ?? null,
     connections: Array.isArray(d.connections) ? d.connections : [], ...(d.fallback ? { fallback: { active: !!d.fallback.active, since: d.fallback.since ?? null } } : {}),
     openrouter: { manage: /^https:\/\/openrouter\.ai\//.test(String(d.openrouter?.manage || "")) ? d.openrouter.manage : OR_KEYS }, custom: { model: typeof d.custom?.model === "string" ? d.custom.model : null }, usage: usageOf(d.usage), chatgpt: cgOf(d.chatgpt) };
 }
 const planName = () => B.st?.plan_name || "your plan";
 const fbOn = () => !!B.st && B.st.mode === "fallback" && !!B.st.fallback?.active;
+const nowOn = () => !!B.st && B.st.full && B.st.mode === "now" && !!B.st.custom.model;   // Use my services now, with General's model chosen
 const has = (k: Kind) => !!B.st?.connections.some(c => c.kind === k);
 // The last answer is kept in this browser (localStorage, by workspace; it holds no key or token: only the service names, last 4 characters and settings the page shows), so the page draws its
 // full content on every open. It is read again in the background at boot and whenever Settings opens, and the page changes in place only when the answer differs.
@@ -223,7 +232,7 @@ export function bykLoad(force = false) {
 // model on ChatGPT). A full plan on its backup key is known once this page's state has loaded. One line of OpenAI's own words, drawn with the composer so nothing moves when it shows.
 const SANDBOX_CGPLAN = new URLSearchParams(location.search).has("byokcgplan");
 export function bykPlanLine(boot: boolean): string {
-  const on = boot || SANDBOX_CGPLAN || (fbOn() && String(B.st?.custom.model || "").startsWith("chatgpt:"));
+  const on = boot || SANDBOX_CGPLAN || ((fbOn() || nowOn()) && String(B.st?.custom.model || "").startsWith("chatgpt:"));
   return on ? `<p class="siwcplan" role="status">Using ChatGPT plan <a href="${esc(CG_USAGE)}" target="_blank" rel="noopener noreferrer">Manage usage</a></p>` : "";
 }
 // The reply the server writes when the ChatGPT plan's usage limit is reached (src/byok-usage.js limitText). The chat shows it as the compact message of OpenAI's guideline: ChatGPT's identity,
@@ -416,9 +425,9 @@ function stepForm(): string {
 }
 export function bykPage(): string {
   if (!D) return "";
-  bykLoad(); cmodelsPrefetch(); if (B.st && !B.st.connections.some(c => c.kind === "claudecode" && !c.signin_again)) bykWarm(true); bykUsageLoad();
+  bykLoad(); cmodelsPrefetch(!!B.st?.connections.length); if (B.st && !B.st.connections.some(c => c.kind === "claudecode" && !c.signin_again)) bykWarm(true); bykUsageLoad();
   const who = esc(D.who()), s = B.st;
-  const head = `<h2>${BYK_TITLE}</h2><p class="slead">Connect the AI services you already pay for, then choose which of their models ${who} uses. ${s?.full ? `On ${esc(planName())}, they can be a backup for when your 1Helm credits run out, or you can switch to the $10 plan that runs on them.` : `${who} sends its AI work to them with your keys, so your providers bill you for the AI and 1Helm charges nothing for it.`}</p>`;
+  const head = `<h2>${BYK_TITLE}</h2><p class="slead">Connect the AI services you already pay for, then choose which of their models ${who} uses. ${s?.full ? `On ${esc(planName())}, ${who} can use them right away, keep them as a backup for when your 1Helm credits run out, or you can switch to the $10 plan that runs on them.` : `${who} sends its AI work to them with your keys, so your providers bill you for the AI and 1Helm charges nothing for it.`}</p>`;
   if (!s) return B.err ? `${head}<div class="sc">${D.srow("", "Couldn't load", esc(B.err), `<button class="sa blue" data-bykretry>Try again</button>`)}</div>`
     : `${head}<div class="sc cmskel" aria-hidden="true"></div><h3 data-cmown>Models</h3><div class="sc cmskel" aria-hidden="true"></div>`;   // the very first open on a new browser: the frame of the page, no loading line
   const cs = s.connections, plan = esc(planName());
@@ -426,7 +435,7 @@ export function bykPage(): string {
   const top = s.on_plan ? (cs.length ? "" : `<div class="bykplan need">${D.icon("help", 16)}<span>You're on the Bring your own key plan, so ${who} needs a connected AI service to answer. Add one below.</span></div>`)
     : s.mode === "switch" ? switchBanner(cs.length > 0)
     : fbOn() ? `<div class="bykplan bykfb">${D.icon("spark", 16)}<span><b>${esc(FALLBACK_NOTE)}</b>${who} is using your services for chat until your credits refill: when ${plan} renews, or when you add credits. The computer, browser, web search and memory need 1Helm credits, so they're paused until then.</span><button class="sa blue" data-bykcredits>Add credits</button></div>`
-    : cs.length ? "" : `<div class="bykplan">${D.icon("spark", 16)}<span><b>Two ways to use it on ${plan}</b>Connect a service below, then choose: keep ${plan} and use your services only when your 1Helm credits run out, or switch now to the $${s.price} plan with them.</span></div>`;
+    : cs.length ? "" : `<div class="bykplan">${D.icon("spark", 16)}<span><b>Ways to use it on ${plan}</b>Connect a service below, then choose its models: ${who} can use them right away, keep ${plan} and use your services only when your 1Helm credits run out, or switch now to the $${s.price} plan with them.</span></div>`;
   const list = cs.map(connRow).join(""), step = stepForm();
   const status = B.err && !B.step && !B.field ? `<p class="bykerr" role="alert">${esc(B.err)}</p>` : B.orErr ? `<p class="bykerr bykorerr" role="alert">${esc(B.orErr)}</p>` : "";
   return `${head}${step ? "" : inviteBanner()}${top}${list}${step || addButtons()}${status}${cmodelsOwnPanel(cs.length > 0)}${s.full && cs.length && !step ? choiceHtml() : ""}
@@ -444,6 +453,7 @@ function choiceHtml(): string {
     return `<button type="button" class="sr sradio bykopt${on ? " on" : ""}" role="radio" aria-checked="${on}" data-bykmode="${m}"${B.ch.busy ? " disabled" : ""}><span class="srt"><b>${title}</b><span>${sub}</span></span><span class="rck">${busy ? `<i class="apspin"></i>` : D!.icon("check", 18)}</span></button>`; };
   return `<h3 class="bykh">How ${who} uses your services</h3>${s.mode ? "" : `<p class="bykpick">Your services are connected but not in use yet. Choose one:</p>`}
     <div class="sc bykopts" role="group" aria-label="How ${who} uses your services">
+      ${opt("now", `Use my services now`, `${who} keeps your ${plan}, and its AI work goes to the models you chose above, with your services. 1Helm charges nothing for the AI. The computer, browser, web search and memory keep using your ${plan} usage, and 1Helm's models keep doing the background jobs you left empty.`)}
       ${opt("fallback", `Keep my plan, use my key as a backup`, `${who} uses your ${plan} credits first, as now. If they run out before your plan renews, chat switches to your services on its own until they refill. The computer, browser, web search and memory still need 1Helm credits, so they pause until then; plain chat keeps working.`)}
       <button type="button" class="sr sradio bykopt" role="button" data-bykswitchnow${B.ch.busy ? " disabled" : ""}><span class="srt"><b>Switch now to the $${s.price} plan with my key</b><span>Your plan changes now. It's $${s.price}/month with 100 GB of storage, ${who} runs on your services, and credits you add pay for the computer, browser and memory (cost + 15%). Your unused ${plan} usage becomes credits.</span></span><span class="rck">${B.ch.busy === "now" ? `<i class="apspin"></i>` : ""}</span></button>
       ${B.ch.err ? `<div class="bykcherr" role="alert"><p>${esc(B.ch.err)}</p>${B.ch.storage ? `<button type="button" class="sa blue" data-stnadd>Add storage</button>` : ""}</div>` : ""}
@@ -472,9 +482,8 @@ function test(id: string) {
 function reveal() { void cmodelsRefresh().then(() => { B.reveal = true; D?.repaint(); }); }
 function afterAdd(name: string) {
   const none = !B.st?.custom.model && !!B.st?.on_plan;
-  D?.note(true, `${name} connected`, none ? "Now choose your models, below." : B.st?.on_plan ? `${D.who()} can use its models from your next message.` : B.st?.mode === "fallback" ? `${D.who()} uses it only if your 1Helm credits run out.` : B.st?.mode === "switch" ? `It's used from ${dateText(B.st.switch_at) || "your next bill"}, when you switch to the $10 plan.` : "Now choose how to use it, below.");
+  D?.note(true, `${name} connected`, none ? "Now choose your models, below." : B.st?.on_plan ? `${D.who()} can use its models from your next message.` : B.st?.mode === "now" ? `${D.who()} uses its models from your next message.` : B.st?.mode === "fallback" ? `${D.who()} uses it only if your 1Helm credits run out.` : B.st?.mode === "switch" ? `It's used from ${dateText(B.st.switch_at) || "your next bill"}, when you switch to the $10 plan.` : "Choose its models, below, to use them.");
   reveal();
-  if (B.st?.full && !B.st.mode && !none) setTimeout(() => document.querySelector(".bykopts")?.scrollIntoView({ block: "center", behavior: "smooth" }), 80);
 }
 function add() {
   if (B.busy) return;
@@ -502,7 +511,7 @@ function remove(id: string) {
   const models = " Its models leave Models, and you'll be asked to choose replacements.";
   const q: Promise<"ok" | "alt" | "no"> = last && st.full && st.mode === "switch"
     ? choose({ title: T.title, body: `You're switching to the $10 plan with your own key on ${dateText(st.switch_at) || "your next bill"}. Without a connected service, ${who} can't answer after that. Cancel the switch too and keep ${planName()}?`, confirm: `Remove and keep ${planName()}`, alt: "Remove, keep the switch" })
-    : ask({ title: T.title, body: `${last && st.on_plan ? `You're on the Bring your own key plan, so ${who} can't answer until you connect a service again or change plan. ` : last && st.mode === "fallback" ? `${who} stops using it as a backup. If your 1Helm credits run out, ${who} pauses until they refill or you add more. ` : ""}${T.gone}${models}`, confirm: c.kind === "plain" ? "Remove" : "Disconnect", danger: true }).then(ok => ok ? "ok" : "no");
+    : ask({ title: T.title, body: `${last && st.on_plan ? `You're on the Bring your own key plan, so ${who} can't answer until you connect a service again or change plan. ` : last && st.mode === "now" ? `${who} goes back to 1Helm's models. ` : last && st.mode === "fallback" ? `${who} stops using it as a backup. If your 1Helm credits run out, ${who} pauses until they refill or you add more. ` : ""}${T.gone}${models}`, confirm: c.kind === "plain" ? "Remove" : "Disconnect", danger: true }).then(ok => ok ? "ok" : "no");
   q.then(pick => {
     if (pick === "no" || B.busy) return;
     B.busy = "del"; B.busyId = id; D?.repaint();
@@ -517,8 +526,9 @@ async function pickMode(m: Mode | "undo") {
   const st = B.st; if (!st || !st.full || B.ch.busy) return;
   const mode: Mode = m === "undo" ? "" : m, who = D!.who(), plan = planName();
   if (mode === st.mode) return;
+  if (mode === "now" && !st.custom.model) { B.ch.err = "Choose General's first model in Models, above, and it starts working right away."; B.ch.storage = false; D?.repaint(); return; }
   const ok = mode === "switch" ? await ask({ title: `Switch to the $${st.price} plan with your key?`, body: `You keep ${plan} until the end of this billing period. Then it's $${st.price}/month with 100 GB of storage and ${who} runs on your services; credits you add pay for the computer, browser and memory. Nothing is charged now, and you can undo it until then. From that day, 1Helm's zero-data-retention guarantee doesn't cover the AI part.`, confirm: "Switch at renewal" })
-    : st.mode === "switch" ? await ask({ title: `Keep ${plan}?`, body: `Your switch to the $${st.price} plan is cancelled. Nothing is charged.${mode === "fallback" ? ` Your services become a backup for when your 1Helm credits run out.` : " They stay connected; choose how to use them any time."}`, confirm: `Keep ${plan}` })
+    : st.mode === "switch" ? await ask({ title: `Keep ${plan}?`, body: `Your switch to the $${st.price} plan is cancelled. Nothing is charged.${mode === "now" ? ` ${who} uses your services now.` : mode === "fallback" ? ` Your services become a backup for when your 1Helm credits run out.` : " They stay connected; choose how to use them any time."}`, confirm: `Keep ${plan}` })
     : true;
   if (!ok) return;
   B.ch = { busy: m, err: "", storage: false }; D?.repaint();
@@ -528,6 +538,7 @@ async function pickMode(m: Mode | "undo") {
     else {
       B.st = stOf(d);
       if (mode === "switch") D?.note(true, `Switching on ${dateText(B.st.switch_at) || "your next bill"}`, `You keep ${plan} until then. Nothing was charged.`);
+      else if (mode === "now") D?.note(true, "Your services are in use", `${who} answers with the models you chose. Your ${plan} usage still pays for the computer, browser, web search and memory.`);
       else if (mode === "fallback") D?.note(true, "Your services are your backup", `${who} uses your 1Helm credits first and switches to your services only if they run out.`);
       else D?.note(true, `You're keeping ${plan}`, "Nothing changed on your bill.");
     }
@@ -625,6 +636,8 @@ export function bykSwitched() {
   if (D?.shown()) D.repaint();
 }
 
+// The models were saved (custom-models.ts): choosing General's model can turn Use my services now on, so read the plan option again.
+export function bykRefresh() { B.at = 0; bykLoad(true); }
 export function bykInit(d: Deps) {
   D = d;
   if (cacheOf()) window.setTimeout(() => { bykLoad(true); void cmodelsRefresh(); }, 1500);   // a browser that has the page cached: read both answers again in the background after the app has started

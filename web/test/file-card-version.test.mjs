@@ -1,20 +1,24 @@
-// node test/file-card-version.test.mjs: a reply's file card names the version that reply shared, so replacing the file later
-// (same id, version 2) does not change the earlier message. The server serves a version with ?v=<n>.
+// node test/file-card-version.test.mjs: a file card, link, thumbnail and the viewer always ask for the file's CURRENT version.
+// The URL carries ?c=<current version> only as a cache-buster (the server ignores it and sends the current bytes); nothing asks for an older version with ?v=.
 import assert from "node:assert"; import { readFileSync } from "node:fs";
 import { fileUrl as fileResUrl } from "../src/file-url.mjs";
 const src = readFileSync(new URL("../src/v3.ts", import.meta.url), "utf8");
-const line = src.split("\n").find(l => l.startsWith("const fileUrl = "));
-assert.ok(line && /fileResUrl\(LIVE!\.api, slug, id, dl, ver\)/.test(line), "fileUrl passes the version to the escaping URL helper");
-const fileUrl = (slug, id, dl = false, ver) => fileResUrl("/api", slug, id, dl, ver);
-assert.equal(fileUrl("c", "f1"), "/api/res/c/files/f1", "no version: the current file, as before");
-assert.equal(fileUrl("c", "f1", false, 1), "/api/res/c/files/f1?v=1", "the first reply's card asks for v1");
-assert.equal(fileUrl("c", "f1", false, 2), "/api/res/c/files/f1?v=2", "the second reply's card asks for v2");
-assert.equal(fileUrl("c", "f1", true, 1), "/api/res/c/files/f1?dl=1&v=1", "download keeps the version");
-assert.notEqual(fileUrl("c", "f1", false, 1), fileUrl("c", "f1", false, 2), "two replies for one file id never share an image URL");
-// Both message cards stay in their own message: the live "file" event replaces a card only inside the reply that shared it.
-assert.ok(/ev\.t === "file"\)[^\n]*\n\s*const cs = \(reply\.cards \?\?= \[\]\)/.test(src), "the file event works on the current reply's own cards");
-// Cards read the version from the file they hold, in the chat tile and in the File() card.
-assert.ok(/fileUrl\(ch\.slug, f\.id, false, f\.version\)/.test(src), "the chat tile uses its file's version");
-assert.ok(/ver: t\.version/.test(src) && /fileUrl\(ch\.slug, a\.fid!, false, ver\)/.test(src), "the File() card uses the claimed tile's version");
-assert.ok(/data-fv="\$\{esc\(ch\.slug\)\}\|\$\{esc\(f\.id\)\}\$\{f\.version/.test(src), "the open link names the version so two cards of one file open their own version");
+const grab = (start) => { const i = src.indexOf(start); assert.ok(i >= 0, start); return src.slice(i, src.indexOf("\n", i)); };
+const strip = (t) => t.replace(/: string|: number|\?: number|: boolean|!/g, "");
+const FVER = new Map();
+const fileBase = new Function("LIVE", "fileResUrl", strip(grab("const fileBase = ").replace("const fileBase = ", "return ")))({ api: "/api" }, fileResUrl);
+const fileUrl = new Function("LIVE", "FVER", "fileResUrl", strip(grab("const fileUrl = ").replace("const fileUrl = ", "return ")))({ api: "/api" }, FVER, fileResUrl);
+assert.equal(fileBase("c", "f1"), "/api/res/c/files/f1", "the base URL has no version");
+assert.equal(fileUrl("c", "f1"), "/api/res/c/files/f1", "version not known yet: the plain URL, which the server answers with the current file");
+FVER.set("c|f1", 1); assert.equal(fileUrl("c", "f1"), "/api/res/c/files/f1?c=1");
+FVER.set("c|f1", 2); assert.equal(fileUrl("c", "f1"), "/api/res/c/files/f1?c=2", "after the file goes to version 2 every card asks for version 2");
+assert.equal(fileUrl("c", "f1", true), "/api/res/c/files/f1?dl=1&c=2", "download keeps the current version");
+assert.ok(!/[?&]v=\$\{/.test(grab("const fileUrl = ")), "fileUrl never asks the server for an older version");
+// Cards no longer read the version their reply shared.
+assert.ok(!/f\.version/.test(grab("function fileCard(")) && !/f\.version/.test(src.slice(src.indexOf("function fileCard("), src.indexOf("function fileCard(") + 3000).split("\nif (LIVE)")[0]), "the chat tile does not use its own version");
+assert.ok(!/ver: t\.version/.test(src), "the File() card does not use the claimed tile's version");
+assert.ok(!/data-fv="\$\{esc\(ch\.slug\)\}\|\$\{esc\(f\.id\)\}\$\{f\.version/.test(src), "the open link does not name a version");
+// A new version reaches the app from the stream event and from the list poll.
+assert.ok(/noteVer\(ch\.slug, ev\.file\); fileBumped\(ch\.slug, \[ev\.file\], false\)/.test(src), "the file event records the version and refreshes every card");
+assert.ok(/const bumped = files\.filter\(f => noteVer\(ch\.slug, f\)\)/.test(src) && /fileBumped\(ch\.slug, bumped, true\)/.test(src), "the list poll records versions and repaints");
 console.log("PASS file-card-version");
