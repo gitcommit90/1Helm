@@ -11,7 +11,7 @@ import { recordTextReply, textWaitingNotices, recordTextCard, resolveTextCard, h
 // - Billing: every model call is reserved against the tenant ledger (balance + daily safety limit), then settled at cost+15%.
 import { DurableObject } from "cloudflare:workers";
 import { enabled as eeEnabled, toolEnabled as eeToolEnabled } from "./ee/index.js";
-import { protectedRequest, financeHost } from "./approval-scope.js";
+import { protectedRequest } from "./approval-scope.js";
 import { tolerantEnv, codeV, isResetErr, isLostErr } from "./do-stub.js";
 import { resumeInit, resumeMix, guardIn, JOURNALED, runIdOf } from "./resume.js";
 import { traceMix } from "./turn-trace.js";   // Langfuse turn traces: a root, a span per model step, a TOOL per tool run (no text)
@@ -79,7 +79,7 @@ import { jobModel, modelSettingsEnv, dispatch, CHAT_JOB, plannedChatMaxOutput, p
 import { limitsFor } from "./ee/index.js";
 import { DEFAULT_RUNTIME_LIMITS } from "./limits.js";
 import { METER as BYOK_METER, BYOK_MARKUP, hsRetainBatchNano, hsRecallNano } from "./byok-meter.js";
-import { loadByok, byokEnv, byokChat, isByokError, BYOK_CREDITS_REPLY, fallbackNotice, creditsLine, CREDITS_TOOL_ERR } from "./byok.js";   // own AI key: their endpoint for AI, our parts metered
+import { loadByok, byokEnv, byokChat, choresOnPlan, isByokError, BYOK_CREDITS_REPLY, fallbackNotice, creditsLine, CREDITS_TOOL_ERR } from "./byok.js";   // own AI key: their endpoint for AI, our parts metered
 import { checkRule, nextRun, describe, validTz, DEFAULT_TZ } from "./schedule.js";
 import { laterInit, laterNext, laterMix } from "./send-later.js";
 import { eventsInit, eventsNext, eventsMix, evOf, appEventView } from "./ee/index.js";   // "when <app event> happens" workflows (stage 5)
@@ -101,7 +101,7 @@ import { stallCheck } from './stall-guard.js';
 import { trimTurnState, resumedReplyState, diagnosticTrace } from './spend-retention.js';
 import { savedWorkflowHardReport } from './workflow-hard-report.js';
 import { safeName, nameWithSourceExt, mimeOf, humanBytes, MAX_UPLOAD, MAX_VIEW, storeUpload, storeView, viewJpeg, fileTags } from "./files.js";
-import { APP_FILE_MAX } from "./ee/index.js";
+import { APP_FILE_MAX, createAppLink } from "./ee/index.js";
 import { splitLongMessage } from "./long-message.js";
 import { stPut, stDelete } from "./storage.js";
 import { designToolDefs, designToolCall, prepareDesignTools, isDesignToolName } from "./design-tools.js";   // the five design MCP servers as tools
@@ -187,7 +187,6 @@ import { taskSearchInit, taskSearchMethods } from "./task-search.js";   // ranke
 import { DECK_STYLES_TOOL, DECK_TAG, deckStylesTool, turnHasDeckStyles } from "./deck-styles.js";
 import { lnResidentMethods } from "./ee/index.js";   // Live notes (SPEC §9): the task's mirror, the meeting doc, the per-turn tag
 import { WEB_SEARCH_TOOL, webSearch, WEB_SEARCH_NANO, isSearchFail, fetchPage, wantsMarkdown, publicPageUrl } from "./websearch.js";   // web_search (DuckDuckGo via Browser Run, paid fallback) + fetch_url pages as markdown
-import { VERTICAL_SEARCH_TOOL, VS_TOOL_NAME, VS_NANO, verticalSearch, searchNote } from "./ee/index.js";   // search_web_vertical: Composio's live search (flights, hotels, maps, shopping, finance…), one compact tool
 import { worklogInit, workLogged, wlNotes, isLookupTool, logBrowserTask, addFresh, WORK_LOG_TOOL, workLogTool, savedBody, relevantLookups, LOOKUPS_HEADER, retainPartial, retainPartials } from "./worklog.js";   // index of outside lookups, reuse, partial findings
 import { helperName } from "./helper-name.js";
 import { locationOf, placeLine, tzLabel, LOC_USE_MS, usableFix } from "./location.js";   // where the person is: one line per message (Notebook home + device → time zone)
@@ -266,7 +265,7 @@ const TOOLS = () => (toolDefs ??= [
   { type: "function", function: { name: "write_file", description: "Create or overwrite a text file on this channel's computer.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
   { type: "function", function: { name: "edit_file", description: "Change part of an existing text file by replacing an exact snippet. old_text must appear exactly once (include a few surrounding lines to make it unique), or set replace_all to change every occurrence. Prefer this over write_file for existing files: send only the part that changes. Returns a short diff.", parameters: { type: "object", properties: { path: { type: "string" }, old_text: { type: "string", description: "Exact text currently in the file, whitespace included" }, new_text: { type: "string" }, replace_all: { type: "boolean" } }, required: ["path", "old_text", "new_text"] } } },
   { type: "function", function: { name: "search_files", description: "Search file contents in this channel's files with ripgrep (case-insensitive). Returns matching lines with paths.", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
-  { type: "function", function: { name: "browser_navigate", description: "Open a web page in this channel's real Chrome browser (it runs on the channel computer; the person can watch it live and logins/cookies persist between conversations). Returns a text outline of the page where every clickable/typeable element has a ref like [e7]. Use for sites that need JavaScript, logins, forms, carts or checkout; for simply reading a page or feed prefer fetch_url.", parameters: { type: "object", properties: { url: { type: "string", description: "Full http(s) URL" } }, required: ["url"] } } },
+  { type: "function", function: { name: "browser_navigate", description: "Open a web page in this channel's real Chrome browser (it runs on the channel computer; the person can watch it live and logins/cookies persist between conversations). Returns a text outline of the page where every clickable/typeable element has a ref like [e7]. Use for sites that need JavaScript, logins, forms, carts or checkout; for simply reading a page or feed prefer fetch_url. To search the web use web_search; the browser's own searches go to Bing, because Google shows this computer's address a challenge page, and a Google search address opened here is sent to Bing.", parameters: { type: "object", properties: { url: { type: "string", description: "Full http(s) URL" } }, required: ["url"] } } },
   { type: "function", function: { name: "browser_snapshot", description: "Get a fresh text outline of the page currently open in the browser (a ref keeps pointing at the same element while that element stays on the page; browser_act returns only the lines that changed, so call this for the whole outline). Lines are ranked: an open dialog, the focused control and what is on screen come first, and a header line says how many lines follow after a marker and how many hidden controls are left out. A long page is listed in parts: when the outline ends with \"outline continues\", or the header gives a from_line, call again with from_line set to that number to read the next part.", parameters: { type: "object", properties: { from_line: { type: "integer", description: "First outline line to show (default 0). Use the number the previous outline gave after \"outline continues\"." } } } } },
   { type: "function", function: { name: "browser_act", description: "Do 1–20 steps in the open page, in order, using refs from the latest outline. Kinds: click {ref}; fill {ref, text, submit?} (replaces the field's text; submit presses Enter); type {ref, text} (appends); select {ref, text} (picks a dropdown item by its text, in a native list or a custom dropdown; typed text in a dropdown is not a choice, and it fails if the choice does not stick); press {key} (one key or a combination, joined with +: Enter, Tab, Escape, ArrowDown, PageDown, Backspace, Delete, Home, End, F1 to F12, Shift+Tab, Control+A, Control+Shift+K; Cmd and Meta count as Control here; press never types text, so use fill or type for text and use a letter only with Control or Alt); hover {ref or x,y} (move the mouse over something, to open a menu or tooltip that shows on hover; the new outline shows what appeared); double_click {ref or x,y} (for example to start editing a label or open an item); right_click {ref or x,y} (opens the page's context menu, if it has one); drag {ref or x,y, to_ref or to_x,to_y} (press on the start, move to the end in small steps, then release: for sliders, sortable lists, resizing and drag and drop; to move an item in a list, ref is the item and to_ref is the item it should land on); scroll {direction: down|up}; wait {ms} (one wait step waits at most 10000 ms and the result says when it was shortened; use several wait steps to wait longer); upload {ref, path} (puts a file from your computer into the page: path is relative to /workspace or absolute, the same as share_file; ref is a file input or the visible button or link that opens a file chooser, such as 'Add photos or video'; it picks the file for you, no chooser stays open; several files at once: paths: [..]); click_at {x, y} (a pixel position on the screen, 0 to 1280 across and 0 to 800 down, for things with no ref such as a canvas; get the position from browser_screenshot with look: true). Returns only the outline lines that changed since you last looked at this tab (the whole outline after a page change), plus an Outcome line that says what happened and suggests a next step. When the page's own script throws an error while the steps run, the result quotes the error, because the page itself may be broken. fill and type need the ref of the field, which a click or double click that opened it lists in the changed lines. Typing the person's personal details (name, phone, email, address, date of birth) is allowed directly on the Standard permission level; on Careful or Locked down 1Helm asks them first with a card (Allow once or Always allow). Never type a password, card number or ID number here.", parameters: { type: "object", properties: { actions: { type: "array", items: { type: "object", properties: { kind: { type: "string", enum: ["click", "click_at", "hover", "drag", "double_click", "right_click", "fill", "type", "select", "press", "scroll", "wait", "upload"] }, ref: { type: "string" }, x: { type: "number" }, y: { type: "number" }, to_ref: { type: "string", description: "drag: ref of the element to drag to" }, to_x: { type: "number", description: "drag: end position across, 0 to 1280" }, to_y: { type: "number", description: "drag: end position down, 0 to 800" }, text: { type: "string" }, path: { type: "string", description: "upload: file path on your computer" }, paths: { type: "array", items: { type: "string" }, description: "upload: several file paths for one control" }, submit: { type: "boolean" }, key: { type: "string", description: "press: a key or a combination such as Enter, Shift+Tab, Control+A" }, direction: { type: "string" }, ms: { type: "integer" } }, required: ["kind"] } }, fills_personal: { type: "boolean", description: "true when any text you type is the person's (or their guest's) name, phone, email, address or date of birth" } }, required: ["actions"] } } },
   { type: "function", function: { name: "browser_handoff", description: "Ask the person to take over the browser themselves: logging in when there's no saved login for the site (if there is one, use browser_fill_login instead), a CAPTCHA, a code sent to their phone, card details, ID numbers (passport, license, SSN), personal details they didn't allow you to fill in, or approving a purchase. Never type passwords, card numbers or one-time codes yourself. The app shows them the live browser with a Take control button. After calling this, end your turn and tell them briefly what to do; continue when they say they're done.", parameters: { type: "object", properties: { instructions: { type: "string", description: "One or two plain sentences for the person, e.g. 'Please sign in to Target, then tell me when you're done.'" } }, required: ["instructions"] } } },
@@ -302,7 +301,7 @@ const TOOLS = () => (toolDefs ??= [
   WORK_LOG_TOOL,
 ]);
 let freshReady = false;
-const ensureFreshTools = () => { if (!freshReady) { addFresh([...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, WEB_SEARCH_TOOL, VERTICAL_SEARCH_TOOL]); freshReady = true; } };   // worklog.js: fresh: true skips the work log's reuse
+const ensureFreshTools = () => { if (!freshReady) { addFresh([...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, WEB_SEARCH_TOOL]); freshReady = true; } };   // worklog.js: fresh: true skips the work log's reuse
 // Offered only when the browser slot switch is on (env BROWSER_AGENT=jev or the channel's TEST_MODE setting).
 const BROWSER_TASK_TOOL = { type: "function", function: { name: "browser_task", description: "Hand a multi-step browser job to the browser worker. If it finishes within about a minute, its result comes back in this turn. If it takes longer, this call returns \"still working in the background\" with a job number, the job keeps going on its own, and its result arrives later as a new message in this task (do not present it as finished until then). Give the start URL and the task, including exact values to type. A browser agent picks actions one at a time, up to 25 steps. Only one browser job can run per channel; list_browser_tasks checks it and stop_browser_task stops it. Check a consequential result against the page. Logins, codes, cards, ID numbers and purchases still use the separate secure paths.", parameters: { type: "object", properties: { url: { type: "string", description: "Full start URL; omit to continue on the open page" }, task: { type: "string" }, values: { type: "array", items: { type: "string" }, description: "Optional: exact strings it may need to type" }, fills_personal: { type: "boolean", description: "true when it will type the person's (or their guest's) name, phone, email, address or date of birth" } }, required: ["task"] } } };
 // Keep the two most recent tool results whole; older ones in this turn shrink to head+tail (the model already acted on them).
@@ -347,7 +346,7 @@ export function egressLabel(r) {
   const said = (xs) => [...new Set(xs.map((e) => `${e.method} ${e.host}`))].slice(0, 4).join(", ");
   const denied = blocked.filter((e) => /the person denied it/.test(e.why || "")), quiet = blocked.filter((e) => /\(not sent\)$/.test(e.why || "")), held = blocked.filter((e) => !denied.includes(e) && !quiet.includes(e));
   if (denied.length) s += `[The person said no to sending ${said(denied)} (1Helm Sentinel). Nothing was sent. Don't retry it or send it another way; tell them it wasn't sent.]\n`;
-  if (held.length) s += `[1Helm Sentinel held ${held.length} outgoing request(s) that send data (${said(held)}). They wait in the app for the person's approval, and you are told when they decide. Don't retry in a loop; carry on with the rest of the task.]\n`;
+  if (held.length) s += `[1Helm Sentinel held ${held.length} outgoing request(s) that use a saved key (${said(held)}). They wait in the app for the person's approval, and you are told when they decide. Don't retry in a loop; carry on with the rest of the task.]\n`;
   return s;
 }
 // The longest start of text that fits in max UTF-16 units and ends between whole characters (emoji sequences stay whole).
@@ -376,9 +375,9 @@ export function lineFor(name, a = {}) {
     write_file: file ? `writing ${file}` : "writing a file", edit_file: file ? `updating ${file}` : "updating a file",
     browser_navigate: host ? `opening ${host}` : "using the browser", browser_snapshot: "reading the page", browser_act: "using the browser",
     browser_handoff: "waiting for you in the browser", request_saved_login: "asking to use a saved login", request_purchase: "asking to start a purchase", browser_task: host ? `working on ${host}` : "using the browser", browser_screenshot: "taking a screenshot", browser_record: a.action === "stop" ? "finishing the screen recording" : "starting a screen recording", browser_fill_card: "filling in the payment", browser_fill_login: a.site ? `signing in to ${normSite(a.site) || "a site"}` : "signing in", buy_with_link: "asking you to approve a purchase", gmail_search: "checking your email", gmail_read: "reading an email", gmail_draft: "writing a draft", gmail_send: "sending your email", calendar_events: "checking your calendar", calendar_add: "adding to your calendar",
-    check_purchase: "checking the purchase", fetch_url: host ? `reading ${host}` : "reading a web page", web_search: "searching the web", search_web_vertical: a.kind === "flights" ? "checking flights" : a.kind === "hotels" ? "checking hotels" : a.kind === "finance" ? "checking the markets" : a.kind === "events" ? "looking for events" : "searching live listings", text_person: "texting you", text_captain: "texting you",
+    check_purchase: "checking the purchase", fetch_url: host ? `reading ${host}` : "reading a web page", web_search: "searching the web", text_person: "texting you", text_captain: "texting you",
     schedule_workflow: "setting up a scheduled check", schedule_followup: "setting a reminder", recall_history: "looking back through earlier work", file_text: a.query ? `searching ${String(a.file || "a file").split("/").pop().slice(0, 60)}` : `reading ${String(a.file || "a file").split("/").pop().slice(0, 60)}`, work_log: "checking what it already looked up", bring_back: "looking back at an earlier step", remember: a.fact ? `remembering: ${String(a.fact).slice(0, 140)}` : "remembering",
-    save_skill: a.delete ? "deleting a saved skill" : a.slug ? `saving the ${String(a.slug).slice(0, 40)} skill` : "saving a skill", list_workflows: "checking its scheduled jobs", set_workflow_status: "updating a scheduled job", set_workflow_gate: "updating a scheduled job", save_run_notes: "saving notes", update_todos: "updating the to-do list", share_file: file ? `sharing ${file}` : "sharing a file", show_deck_styles: "showing deck styles", start_helper: a.name ? `starting a helper: ${String(a.name).slice(0, 60)}` : "starting a helper", stop_helper: "stopping a helper", start_browser_task: "starting a browser job", list_browser_tasks: "checking browser jobs", stop_browser_task: "stopping a browser job", read_skill: "checking its playbook", app_actions: a.app ? `looking in ${isCustomSlug(a.app) ? CUSTOM_WORDS : String(a.app).replace(/super$/, "")}` : "looking in your apps", app_run: "working in your apps", app_proxy: "working in your apps", apps_i_use: APPS_USED_LINE, ...CONNECT_LINES })[name] || "working";
+    save_skill: a.delete ? "deleting a saved skill" : a.slug ? `saving the ${String(a.slug).slice(0, 40)} skill` : "saving a skill", list_workflows: "checking its scheduled jobs", set_workflow_status: "updating a scheduled job", set_workflow_gate: "updating a scheduled job", save_run_notes: "saving notes", update_todos: "updating the to-do list", share_file: file ? `sharing ${file}` : "sharing a file", show_deck_styles: "showing deck styles", start_helper: a.name ? `starting a helper: ${String(a.name).slice(0, 60)}` : "starting a helper", stop_helper: "stopping a helper", start_browser_task: "starting a browser job", list_browser_tasks: "checking browser jobs", stop_browser_task: "stopping a browser job", read_skill: "checking its playbook", app_actions: a.app ? `looking in ${isCustomSlug(a.app) ? CUSTOM_WORDS : String(a.app).replace(/super$/, "")}` : "looking in your apps", app_run: "working in your apps", app_proxy: "working in your apps", app_file_link: "working in your apps", apps_i_use: APPS_USED_LINE, ...CONNECT_LINES })[name] || "working";
 }
 // remember's result, plus a live "saved" event saying where it really went (saved-to.js), for the chat's "Added to …" chip.
 function savedNote(ctx, a, out) { const saved = savedTo("remember", a, out); if (saved.length) ctx.emit?.({ t: "saved", saved }); return out; }
@@ -396,7 +395,7 @@ function composioCtxOf(res, ctx = {}) {
   } : { get: () => ctx?._composioSession || null, set: (r) => { if (ctx) ctx._composioSession = r; } };
   return { store, batch: ctx?.readBatch || null, onQueued: ctx?.onAppQueued || null, stats: ctx?.composioStats || (ctx ? (ctx.composioStats = {}) : null),
     // Files in and out of app actions (stage 4, composio-files.js): read a Library file / computer path, save a file to this channel's Library.
-    files: { read: (ref) => res.appFileRead(ref), save: (f) => res.appFileSave(f, ctx || {}) },
+    files: { read: (ref) => res.appFileRead(ref), save: (f) => res.appFileSave(f, ctx || {}), link: (ref, o) => res.appFileLink(ref, ctx || {}, o || {}) },
     // A change in their app: the confirm card and the server-checked tap (confirm.js). Always passed, so no write runs on a model flag.
     confirm: (spec) => confirmGate(res, ctx, spec) };
 }
@@ -466,7 +465,7 @@ export function composeSystemPrompt(env, { flagOpts = {}, stable = false, cards 
 // The channel's tool list before the task adds its own: the base set, the browser and Better Design tools when on, and General's extra tools.
 export function chatBaseTools(env, { workmem = false, browser = false, betterDesign = false, general = false, sidecars } = {}) {
   ensureFreshTools();
-  const base0 = [...(eeEnabled(env) && env.COMPOSIO_KEY ? [...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, ...(eventsReady(env) ? [APP_EVENTS_TOOL] : []), ...CONNECT_TOOLS, APPS_USED_TOOL, VERTICAL_SEARCH_TOOL] : TOOLS()), WEB_SEARCH_TOOL], base = workmem ? [...base0, BRING_BACK_TOOL] : base0; return [...(browser ? [...base, BROWSER_TASK_TOOL] : base), LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, ...HELPER_TOOLS, PROPOSE_PLAN_TOOL, POMODORO_TOOL, ...SHARE_TOOLS, ...NATIVE_TOOLS, ...designToolDefs({ betterDesign: betterDesign }), ...(general ? [MARK_DONE_TOOL, LIST_CHANNELS_TOOL, CREATE_CHANNEL_TOOL, START_TASK_TOOL, ...(eeEnabled(env) ? [AMBIENT_QUERY_TOOL] : []), LOCATION_QUERY_TOOL] : [])].filter((t) => (t !== FILE_TEXT_TOOL || sidecars !== false) && eeToolEnabled(env, t.function.name));
+  const base0 = [...(eeEnabled(env) && env.COMPOSIO_KEY ? [...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, ...(eventsReady(env) ? [APP_EVENTS_TOOL] : []), ...CONNECT_TOOLS, APPS_USED_TOOL] : TOOLS()), WEB_SEARCH_TOOL], base = workmem ? [...base0, BRING_BACK_TOOL] : base0; return [...(browser ? [...base, BROWSER_TASK_TOOL] : base), LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, ...HELPER_TOOLS, PROPOSE_PLAN_TOOL, POMODORO_TOOL, ...SHARE_TOOLS, ...NATIVE_TOOLS, ...designToolDefs({ betterDesign: betterDesign }), ...(general ? [MARK_DONE_TOOL, LIST_CHANNELS_TOOL, CREATE_CHANNEL_TOOL, START_TASK_TOOL, ...(eeEnabled(env) ? [AMBIENT_QUERY_TOOL] : []), LOCATION_QUERY_TOOL] : [])].filter((t) => (t !== FILE_TEXT_TOOL || sidecars !== false) && eeToolEnabled(env, t.function.name));
 }
 // Every tool a task may be offered: the base list plus the routing, context and archive tools, minus the ones this task excludes.
 export function availableChatTools(env, base, channelOf, tc = null) {   // channelOf: a function, read only when the front door setting is on
@@ -547,6 +546,8 @@ export class Resident extends DurableObject {
     try { this.sql.exec("ALTER TABLE workflows ADD COLUMN cron TEXT"); } catch {}
     try { this.sql.exec("ALTER TABLE workflows ADD COLUMN tz TEXT"); } catch {}
     this.sql.exec("CREATE INDEX IF NOT EXISTS turns_session ON turns(session, at)");
+    // msgs had no index on turn, so every read of one turn's messages (a card step, resume, history, delete of a task) scanned the whole table. 2026-11-07.
+    try { this.sql.exec("CREATE INDEX IF NOT EXISTS msgs_turn ON msgs(turn)"); } catch (e) { console.log("msgs index", e.message); }
     this.active = new Map(); this.sessQ = new Map();
     this.sql.exec("CREATE TABLE IF NOT EXISTS gate_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, workflow_id INTEGER NOT NULL, code INTEGER, ms INTEGER, verdict TEXT NOT NULL, out TEXT)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS shots (id TEXT PRIMARY KEY, at INTEGER NOT NULL, turn TEXT, session TEXT, url TEXT, caption TEXT, r2key TEXT NOT NULL, bytes INTEGER)");
@@ -1225,14 +1226,16 @@ export class Resident extends DurableObject {
     const route = tc?.route || null; let tools = noTools && !tc?.appendRuntime ? null : this.modelTools(tc);
     // The output limit is the saved max output of the category the turn was routed to, read again at every step; empty means no limit is sent. The model and its
     // reasoning level stay as the task froze them. The spend hold below is sized from the model's published maximum when no limit is saved.
+    // Use my services now with no Background jobs chosen (byok.js choresOnPlan): the hand-off note is 1Helm's, the "handoff" job, reserved and charged like any full plan call.
+    const last0 = messages.at(-1), choreOnPlan = choresOnPlan(this.env) && noTools && !tc?.appendRuntime && last0?.role === "user" && typeof last0.content === "string" && last0.content.startsWith(HANDOFF_PREFIX), chatJob = choreOnPlan ? "handoff" : CHAT_JOB;
     const frozen = tc?.taskProfile, chatCategory = frozen?.category || "general", savedOut = await plannedChatMaxOutput(this.env, chatCategory).catch(() => null);
     const lastTry = tc?.finalAttempt || null;   // callModel's last attempt after repeated loops: next model in the plan, short output cap
     const requestMaxOut = lastTry?.capOut && Number.isFinite(lastTry.capOut) ? (Number.isFinite(savedOut) ? Math.min(savedOut, lastTry.capOut) : lastTry.capOut) : savedOut;
-    const holdOutNanoNow = frozen ? holdOutNano({ catalog: { [frozen.requestedModel]: frozen.catalog } }, frozen.requestedModel, savedOut) : await plannedChatHoldNano(this.env, chatCategory).catch(() => 0);
+    const holdOutNanoNow = choreOnPlan ? await plannedHoldNano(this.env, "handoff").catch(() => 0) : frozen ? holdOutNano({ catalog: { [frozen.requestedModel]: frozen.catalog } }, frozen.requestedModel, savedOut) : await plannedChatHoldNano(this.env, chatCategory).catch(() => 0);
     let backgroundFormat = tc?.appendRuntime && noTools ? (tc.taskProfile.catalog.tool_choice.includes("none") ? { tool_choice: "none" } : {}) : noTools && messages.at(-1)?.role === "user" && String(messages.at(-1)?.content).startsWith(HANDOFF_PREFIX) ? { response_format: structuredFormat("handoff_notes", HANDOFF_SCHEMA) } : {};
     const estIn = Math.ceil(JSON.stringify(messages).length / 3);
     // Own AI key (byok.js): their endpoint and models, nothing reserved or charged for the call (their provider bills them).
-    let byok = this.env.BYOK || null, viaOR = !byok && (!!tc?.taskProfile || useOpenRouter(this.env));
+    let byok = choreOnPlan ? null : this.env.BYOK || null, viaOR = !byok && (!!tc?.taskProfile || useOpenRouter(this.env));
     if (!eeEnabled(this.env) && (!byok || byok.missing)) throw Object.assign(new Error("Set up your own AI key in Settings before starting a task."), { status: 409 });
     const fallbackOut = viaOR || byok ? 0 : await plannedHold(this.env, "workers_ai_chat").catch(() => 0);
     let reserve = byok ? 0 : Math.ceil((viaOR ? estIn * OR_RESERVE_PRICE.in * CACHE_WRITE_MULT + holdOutNanoNow : estIn * PRICE.in + fallbackOut * PRICE.out) * MARKUP), rid = `res:${crypto.randomUUID()}`;
@@ -1287,14 +1290,14 @@ export class Resident extends DurableObject {
         const px = `${prefixPrint(messages, tools)}.${runPrint(tc)}`;   // gateway log: which cached prefix this call used, and which task/run it belongs to (model.js)
         const prov = this.provenance(messages, tc);   // what this payload carries
         try {
-          stream = (await waitModel(dispatch(this.env, CHAT_JOB, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat", px, _prov: prov, ...this.otelMeta(tc) }, signal, session: sess, route }))).body;
+          stream = (await waitModel(dispatch(this.env, chatJob, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat", px, _prov: prov, ...this.otelMeta(tc) }, signal, session: sess, route }))).body;
           provider = "openrouter"; thinkDone = true;   // OpenRouter streams reasoning separately; content is the answer
         } catch (e) {
           // 400 = our request is wrong: surface it. Anything else (402/429/5xx/network): retry once after 1.5 s, then Workers AI.
           if (e.taskAffinity || e.contextOverflow || e.orStatus === 400 || e.privacy || signal.aborted) throw signal.aborted ? aborted() : e;
           fellBack = String(e.message || e).slice(0, 160);
           try { await waitModel(new Promise((z) => setTimeout(z, 1500))); if (signal.aborted) throw aborted();
-            stream = (await waitModel(dispatch(this.env, CHAT_JOB, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-retry", px, _prov: prov, ...this.otelMeta(tc) }, signal, session: sess, route }))).body;
+            stream = (await waitModel(dispatch(this.env, chatJob, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-retry", px, _prov: prov, ...this.otelMeta(tc) }, signal, session: sess, route }))).body;
             provider = "openrouter"; thinkDone = true; fellBack = null;   if (tc?.otelStep) tc.otelStep.retry = true;   // turn-trace.js: this step is named "chat-retry" like the gateway kind
           } catch (e2) { if (e2.orStatus === 400 || e2.privacy || signal.aborted) throw signal.aborted ? aborted() : e2; fellBack = String(e2.message || e2).slice(0, 160); console.log("openrouter unavailable twice, using workers ai", fellBack); }
         }
@@ -1457,7 +1460,13 @@ export class Resident extends DurableObject {
     const live = name === "browser_navigate" && navRepeatPending(tc, a) ? await this.liveTab(tc) : null;   // only read the tab when a repeat is suspected
     const again = repeatBlock(tc, name, a, live); if (again) return again;
     if (name === "browser_navigate" || (name === "browser_task" && a.url)) { const af = await appFirstBlock(this, tc, name, a.url); if (af) return af; }
-    else if (name === "browser_fill_login" && a.site) return await appFirstBlock(this, tc, name, a.site, { site: true });
+    else if (name === "browser_fill_login" && a.site) {
+      // The saved login for a shared sign-in site (accounts.google.com) may be for "Sign in with Google" on another site: judge the page that is open.
+      const lv = await this.liveTab(tc), site = String(a.site).toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+      let h = ""; try { h = new URL(lv?.url || "").hostname.toLowerCase(); } catch {}
+      if (h && (h === site || h.endsWith(`.${site}`) || site.endsWith(`.${h}`))) return await appFirstBlock(this, tc, name, lv.url);
+      return await appFirstBlock(this, tc, name, a.site, { site: true });
+    }
     return hintNudge(this, tc, name, a);   // integration-hint.js: this turn's hint named the site's app; once per app per task
   }
   // Whether the model running this task can take a picture as input: the task's saved model facts, else the saved catalog's entry for the
@@ -1964,13 +1973,12 @@ export class Resident extends DurableObject {
         if (out.startsWith("Saved") || out.startsWith("Removed")) { this._conns = null; ctx.emit?.({ t: "apps_changed", app: String(a.app || "").toLowerCase() }); }   // the apps line and the app's lists pick it up
         return out;
       }
-      case "app_actions": case "app_run": case "app_proxy": {   // app_proxy (stage 3): the app's own API, same checks as app_run
+      case "app_actions": case "app_run": case "app_proxy": case "app_file_link": {   // app_proxy (stage 3): the app's own API, same checks as app_run
         { const g = await cmpGate(this, ctx); if (g) return g; }
         let c = await this.conns(); if (!c.some((x) => x.status === "connected")) c = await this.conns(true);
         const cx = composioCtxOf(this, ctx);
         const one = async (x) => { let out = await runAppTool(this.env, this.get("tenant"), name, x, c, cx);
           if (out.startsWith("NOT CONNECTED") || out.startsWith("error: no ")) { c = await this.conns(true); out = await runAppTool(this.env, this.get("tenant"), name, x, c, { ...cx, batch: null }); }
-          if (name === "app_run" && /^COMPOSIO_SEARCH_/i.test(String(x.action || "")) && / ok\b/.test(out.split("\n", 1)[0])) await this.chargeExtra("vs", VS_NANO, ctx);   // a Composio search call (vertical-search.js)
           return name === "app_run" ? slidesImageNote(x, out) : out; };   // deck-route.js: pictures asked for but not made
         const logged = (x) => (name === "app_run" || name === "app_proxy" ? workLogged(this, ctx, name, x, one, c) : one(x));   // worklog.js: reads logged, reused, big results trimmed
         const out = await guardedTool(this, ctx, name, a, c, logged);   // ask-first.js: which account, when several fit and nobody said
@@ -1990,24 +1998,6 @@ export class Resident extends DurableObject {
           return r.out;
         }, []);
         return wlNotes(ctx) + (isSearchFail(out) ? out : untrusted("web search results", out));
-      }
-      case VS_TOOL_NAME: {   // vertical-search.js: Composio's live search (no sign-in), lean per kind; each answered search billed like a paid web search
-        if (!this.env.COMPOSIO_KEY) return "error: live search isn't set up on this server. Use web_search.";
-        const now = Date.now(); let fix = null;
-        try { const f = await locationOf(this.env, this.get("tenant")); if (usableFix(f) && now - Number(f.at) <= LOC_USE_MS) fix = f; } catch {}
-        const today = new Intl.DateTimeFormat("en-CA", { timeZone: this.tz(), year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
-        const out = await workLogged(this, ctx, name, a, async (x) => {
-          const rid = `vs:${crypto.randomUUID()}`, most = Math.ceil((VS_NANO + WEB_SEARCH_NANO) * MARKUP);
-          let led = null; try { led = this.ledger(); } catch {}
-          if (led && !(await led.reserve(rid, most)).ok) { if (this.env.BYOK) { if (ctx) ctx.creditsOut = true; return CREDITS_TOOL_ERR; } return "error: out of credits for live search. Add credits to continue."; }
-          let r = { out: "error: live search failed. Use web_search instead.", ok: false }, webNano = 0;
-          const web = async (q) => { const w = await webSearch(this.env, { query: q }); webNano += w.nano && !isSearchFail(w.out) ? w.nano : 0; return w.out; };   // the events fallback
-          try { r = await verticalSearch(this.env, this.get("tenant"), x, { today, fix, web }); } finally {
-            const paid = Math.min(most, (r.ok ? Math.ceil(VS_NANO * MARKUP) : 0) + Math.ceil(webNano * MARKUP));
-            if (led) { await led.settle(rid, paid); if (paid && ctx) ctx.extraCharge = (ctx.extraCharge || 0) + paid; } }
-          return r.out;
-        }, []);
-        return wlNotes(ctx) + (out.startsWith("error") ? out : untrusted(`live search results (${String(a.kind || "").toLowerCase()})`, out)) + searchNote(ctx, a);
       }
       case "fetch_url": {   // websearch.js fetchPage: pages as readable markdown (Browser Run), feeds/APIs/files and raw: true as the plain body
         const u = publicPageUrl(a.url, this.env); if (!u) return "error: only public http(s) URLs can be read";
@@ -3043,6 +3033,7 @@ export class Resident extends DurableObject {
           liveTurnOf(this, h.session)?.emit?.(o);
           for (const watcher of this._routingObservers?.get(h.session) || []) watcher(o);
         }
+        if (o.t === "file") this.passHelperFileUpdate(h.session, o);   // file-versions.js: an in-place update of a file the person already has shows at once
         if (o.t === "done") this.touchSession(h.session);
         if (o.t === "done") for (const watcher of this._routingObservers?.get(h.session) || []) watcher({t:"idle",session:this.sessionView(this.session(h.session))});
       };
@@ -4908,17 +4899,8 @@ export class Resident extends DurableObject {
     const tenant = this.get("tenant"), channel = this.get("channel");
     if (a.restore) {
       const f = this.libFile(a.restore); if (!f) return `error: there's no "${a.restore}" in this channel's Library.`;
-      const toOrig = a.original === true || a.original === "true";
-      if (toOrig && !f.orig_key) return `error: "${f.name}" has no original upload kept (it was never replaced, or it was made by you, not uploaded by the person).`;
-      if (toOrig && f.orig_key === f.r2key) return `error: "${f.name}" is already the person's original upload.`;
-      if (!toOrig && !f.prev_key) return `error: "${f.name}" has no earlier version kept (only the version before the last update is kept).`;
-      const to = toOrig ? { key: f.orig_key, bytes: f.orig_bytes ?? 0 } : { key: f.prev_key, bytes: f.prev_bytes ?? 0 };
-      this.sql.exec("UPDATE files SET r2key=?, bytes=?, prev_key=?, prev_bytes=?, view_key=NULL, version=?, at=?, synced=0 WHERE id=?", to.key, to.bytes, f.r2key, f.bytes, Number(f.version || 1) + 1, Date.now(), f.id);   // a restore is a new version number, so a version number names one set of bytes
-      const drop = [...(f.view_key ? [f.view_key] : []), ...(toOrig && f.prev_key && f.prev_key !== f.orig_key && f.prev_key !== f.r2key && !this.heldKeys(f.id).has(f.prev_key) ? [{ key: f.prev_key, size: f.prev_bytes ?? null }] : [])];   // the original is never deleted
-      if (drop.length) { try { await stDelete(this.env, drop); } catch {} }
-      this.sidecarKick?.(this.sql.exec("SELECT * FROM files WHERE id=?", f.id).one());   // sidecar.js: the restored bytes get their own
-      // path null: only pages made from the Library file are put back (a page from a computer folder shows what's on the computer)
-      return await this.fileUpdated(f, { r2key: to.key, bytes: to.bytes, path: null }, ctx, `Put back ${toOrig ? "the person's original upload" : "the earlier version"} of "${f.name}" (${humanBytes(to.bytes)}). The one you replaced is kept; restore again swaps back.${this.keptLine(f.id)}`);
+      const r = await this.restoreVersion(f, { original: a.original === true || a.original === "true" }, ctx, (to, toOrig) => `Put back ${toOrig ? "the person's original upload" : "the earlier version"} of "${f.name}" (${humanBytes(to.bytes)}). The one you replaced is kept; restore again swaps back.${this.keptLine(f.id)}`);
+      return r.error ? `error: ${r.error}` : r.said;
     }
     const path = String(a.path || "").trim().replace(/^\/workspace\//, "").replace(/^\.\//, ""); if (!path) return "error: path required";
     const name = safeName(nameWithSourceExt(a.name, path) || path.split("/").pop());
@@ -4945,7 +4927,7 @@ export class Resident extends DurableObject {
     const lib = path === `files/${target.name}`;   // it edited the Library copy itself
     await this.putVersion(target, { key, bytes: r.bytes, src_path: lib ? target.src_path : path, synced: lib ? 1 : 0, session: ctx.session || null, turn: ctx.turn || null });
     return await this.fileUpdated(target, { r2key: key, bytes: r.bytes, path }, ctx,
-      `Updated "${target.name}" in place (${humanBytes(r.bytes)}, version ${v}): the same Library file, not a copy, because ${why}. The person sees no second file.${a.name && safeName(a.name) !== target.name ? ` It keeps its name "${target.name}".` : ""}${this.keptLine(target.id)}`);
+      `Updated "${target.name}" in place (${humanBytes(r.bytes)}, version ${v}), because ${why}. It is the same Library file, not a copy, and the person now sees the new version everywhere this file appears, including cards shared earlier.${a.name && safeName(a.name) !== target.name ? ` It keeps its name "${target.name}".` : ""}${this.keptLine(target.id)}`);
   }
   // After a file's bytes changed in place: its share links serve the new bytes, its published pages are republished, the card shows.
   async fileUpdated(f, { r2key, bytes, path }, ctx, said) {
@@ -4954,7 +4936,7 @@ export class Resident extends DurableObject {
     const v = this.fileView(this.sql.exec("SELECT * FROM files WHERE id=?", f.id).one());
     ctx.emit?.({ t: "file", file: v }); this.recordShare(f, ctx.turn);
     const pages = await this.republishPages(f, r2key, path, ctx);
-    return `${said} The card shows under your reply in this chat and in the Library; its share link, if it has one, now gives the new version.${pages}`;
+    return `${said} The card shows under your reply in this chat and in the Library, cards shared earlier for this file now show the new version too, and its share link, if it has one, gives the new version.${pages}`;
   }
   async republishPages(f, r2key, path, ctx) {
     let done = []; try { done = await republishFrom(this, { fileId: f.id, r2key, path }, ctx); } catch (e) { console.log("republish", e.message); }
@@ -4981,13 +4963,30 @@ export class Resident extends DurableObject {
     if (!r?.ok) return { error: r?.error || `couldn't read /workspace/${path}.` };
     return { name: safeName(path.split("/").pop()), mime: mimeOf(path), bytes: r.bytes };
   }
+  // A temporary read-only link for one of the person's files (app-file-links.js), for an app action that takes a file as a URL.
+  // ref: a Library file (name or id), else a computer path, which is saved to the Library first (appFileSave). soft: a bare value that might not be a file
+  // at all (a name given to a URL input): null when it isn't one of the Library's files and isn't a /workspace path. → { url, expires_at, name, bytes, saved? } | { error } | null.
+  async appFileLink(ref, ctx = {}, o = {}) {
+    const s = String(ref || "").trim(); if (!s) return { error: "which file? Give a Library file name or a /workspace path." };
+    let row = this.libFile(s), saved = false;
+    if (!row) {
+      if (o.soft && !s.startsWith("/workspace/")) return null;
+      const f = await this.appFileRead(s); if (f.error) return { error: f.error };
+      const sv = await this.appFileSave({ name: f.name, mime: f.mime, bytes: f.bytes }, ctx); if (sv.error || !sv.file) return { error: sv.error || "couldn't save the file to the Library first." };
+      row = this.sql.exec("SELECT * FROM files WHERE id=?", sv.file.id).toArray()[0]; saved = true;
+      if (!row) return { error: "couldn't save the file to the Library first." };
+    }
+    const tenant = this.get("tenant"), t = await this.env.DB.prepare("SELECT id, slug, host_ready FROM tenants WHERE id=?").bind(tenant).first(); if (!t) return { error: "this workspace isn't set up." };
+    const r = await createAppLink(this.env, t, { id: row.id, name: row.name, mime: row.mime, bytes: row.bytes, r2key: row.r2key }, { channel: this.get("channel"), session: ctx.session, app: o.app, action: o.action, via: o.via });
+    return r.error ? r : { ...r, saved };
+  }
   // A file an app action returned → this channel's Library (R2 through storage.js, refused when the account is full) and, when the
   // computer is up, /workspace/files right away (else the next file sync puts it there). → { file } | { error, full }.
   async appFileSave({ name, mime, bytes }, ctx = {}) {
     if (ctx.helper?.dynamic_routing) return { file: await stageRoutingFile(this, ctx.helper, { name, mime, bytes }) };
     const tenant = this.get("tenant"), channel = this.get("channel"), nm = safeName(name), size = bytes?.byteLength ?? 0;
     // The same file returned again after a change (an edit made in the app) is a new version of its Library file, not "name (2)".
-    const m = this.resolveFile({ name: nm, session: ctx.session }), target = m?.file || null;
+    const m = this.resolveFile({ name: nm, session: ctx.session, strict: true }), target = m?.file || null;   // strict: a different file of the app with alike words in its name is not an edit
     const id = target ? target.id : crypto.randomUUID(), v = target ? Number(target.version || 1) + 1 : 1, key = `t/${tenant}/files/${channel}/${id}${target ? `.v${v}` : ""}`;
     try { await stPut(this.env, key, bytes, { httpMetadata: { contentType: mime }, customMetadata: { name: nm.slice(0, 200) } }, { check: true, size }); }
     catch (e) { if (e.code === "storage_full") return { error: e.toolNote, full: true }; throw e; }
@@ -5034,6 +5033,15 @@ export class Resident extends DurableObject {
   // Zone A (zone-edit.js): the person's direct edits and "restore the previous version" of a Library .html file, with no model. Added methods only.
   async zoneEdit(fileId, base, body) { return zoneEditFile(this, fileId, base, body); }
   async zoneInfo(fileId) { return zoneInfo(this, fileId); }
+  async fileVersions(id) { return this.fvList(id); }   // index.js: GET .../files/<id>/versions
+  async fileKeptKey(id, which) { return this.fvKeptKey(id, which); }   // index.js: GET .../files/<id>?kept=previous|original
+  async fileRestore(id, which, base) {   // index.js: POST .../files/<id>/restore → { ok, file, restored } | { error, status, version? }
+    const row = await this.fileRow(id); if (!row) return { error: "No such file.", status: 404 };
+    if (base != null && Number(base) !== Number(row.version || 1)) return { error: "The file changed since you opened it.", status: 409, version: Number(row.version || 1) };
+    if (which !== "previous" && which !== "original") return { error: 'restore must be "previous" or "original".', status: 400 };
+    const r = await this.restoreVersion(row, { original: which === "original" }, {}, () => ""); if (r.error) return { error: r.error, status: 400 };
+    return { ok: true, restored: true, file: this.fileView(this.sql.exec("SELECT * FROM files WHERE id=?", id).one()) };
+  }
   async fileVersionKey(id, version) { return this.fvVersionKey(id, version); }   // index.js file route ?v=
   async fileRow(id) { return this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(id)).toArray()[0] || null; }
   async deleteFile(id) {
@@ -5284,11 +5292,6 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
   // that have a computer tool running right now (else every turn in flight). If that's more than one task, it is allowed only when
   // the permission covers every one of them, and the approval card goes to all of them.
   async egressDecision({ host, method, path, bytes, keys, via = null, page = "" }) {
-    // A payment request a web page sends on its own while nothing is being bought in this channel (e.g. X's script calling grok.com's
-    // checkout for its Premium upsell) never reaches the person: dropped quietly, logged with the reason, so the page carries on. It only
-    // turns an ask into a deny, so it cannot spend money. Keys, key operations and commands are not covered and keep asking.
-    if (via === "page" && !(keys || []).length && (protectedRequest(method, path, host) && !protectedRequest("GET", path, host) || financeHost(host) && !["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase()) && !protectedRequest("GET", path, host)) && !(await this.purchaseInProgress()))
-      return { verdict: "deny", why: "a web page's own payment request while no purchase is in progress (not sent)", rule: "page-payment-idle", quiet: true };
     // During a browser job, an approval belongs to that job's task, not whichever
     // unrelated turn is active. After a reset the lease can outlive the runner;
     // without its in-memory owner, deny rather than borrow another task's grant.
@@ -5356,13 +5359,6 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), ...(turnH
       return { verdict: "deny", why: `no answer yet; request #${a.id} is waiting ${texted ? "on their phone and " : ""}in the app, and the helper is told when the person decides` };
     }
     return { verdict: "deny", why: `nobody is watching this run; request #${a.id} is waiting in the app, and the helper is told when the person decides` };
-  }
-  // A purchase is in progress when the helper clicked a buy or checkout control in the last 90 seconds (noteBrowserActs), or this channel
-  // has a Link purchase that is waiting, approved and not finished, updated in the last 30 minutes. When that can't be read, say yes (ask).
-  async purchaseInProgress() {
-    if (this._buyClickAt && Date.now() - this._buyClickAt < 90e3) return true;
-    try { return !!(await this.env.DB.prepare("SELECT 1 FROM link_purchases WHERE tenant_id=? AND channel=? AND status IN ('created','pending_approval','approved') AND updated_at>? LIMIT 1")
-      .bind(this.get("tenant"), this.get("channel"), Date.now() - 30 * 60e3).first()); } catch { return true; }
   }
   // Called with the browser steps the helper is about to run and the outline they were chosen from.
   noteBrowserActs(actions, page = {}) { try { if (buyControlTargeted(actions, page)) this._buyClickAt = Date.now(); } catch {} }

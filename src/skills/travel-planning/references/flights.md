@@ -4,7 +4,7 @@ Use this to find a good route shape before live booking checks, when dates, airp
 are still open (open-jaw, multi-city, flexible dates or nearby airports, stopover tradeoffs, airline or alliance limits,
 times that must fit a fixed event). For a simple route with set dates and travellers, skip it and go to the booking skill.
 
-{{#apps}}Start with `search_web_vertical` (kind flights) for each candidate shape: live fares and times in one step. {{/apps}}Then public
+Public
 sources: the airlines' own sites and flight search sites in the browser, and `web_search`. Every price is a planning signal until a
 checkout page shows the total.
 

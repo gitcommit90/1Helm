@@ -18,7 +18,7 @@ and timing from their calendar where useful; state the assumption with the recom
 
 ## Search
 
-{{#apps}}Find candidates with `search_web_vertical` (kind places: rating, price level, hours, address, phone, website) first. {{/apps}}Tables
+Find candidates with `web_search`. Tables
 are checked and booked on the web:
 
 - **A named restaurant:** its own reservation link first (on its site, often through a booking platform such as OpenTable,

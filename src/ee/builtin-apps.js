@@ -2,17 +2,17 @@
 // Composio's no_auth / NO_AUTH flag isn't enough (Gemini lists NO_AUTH and API_KEY, and running it without a connection fails), so this
 // list comes from design-sandbox scripts/integrations-builtin.mjs, which checks each candidate with real calls in the Composio version
 // 1Helm uses. Its saved result is test/fixtures/composio-builtin-audit.json; test/builtin-apps.test.mjs keeps this list, the catalog's
-// b flags and that snapshot in step. Re-run the script (and update this list) when Composio adds or changes no-sign-in apps.
+// b flags and that snapshot in step. The snapshot and the catalog still mark composio_search, weathermap, seat_geek and yelp as built in
+// (Composio ended their no-sign-in access on 2026-11-13, so they are no longer listed here and the tests skip them). Re-run the script (and update this list) when Composio adds or changes no-sign-in apps.
 export const BUILTIN_APPS = new Map([
-  ["hackernews", "Hacker News"], ["weathermap", "OpenWeatherMap"], ["composio_search", "Composio Search (web, news, maps, shopping search)"],
-  ["codeinterpreter", "Code Interpreter"], ["gleif", "GLEIF"], ["seat_geek", "Seat Geek"],
+  ["hackernews", "Hacker News"], ["codeinterpreter", "Code Interpreter"], ["gleif", "GLEIF"],
 ]);
 // On Composio's LATEST toolkit versions (env COMPOSIO_TOOLKIT_VERSION="latest", composio.js) more no-sign-in apps have actions and pass
 // the same audit (design-sandbox scripts/integrations-builtin.mjs with COMPOSIO_TOOLKIT_VERSION=latest; saved result
 // test/fixtures/composio-builtin-audit-latest.json, catalog app-static/integrations-latest.json). Most are other companies' public
 // MCP servers that Composio hosts; each one's real read-only call succeeded with no connection.
 export const BUILTIN_APPS_LATEST = new Map([...BUILTIN_APPS,
-  ["yelp", "Yelp"], ["text_to_pdf", "Text to PDF"], ["osv", "OSV (open-source vulnerabilities)"], ["deepwiki_mcp", "DeepWiki (GitHub repo docs)"],
+  ["text_to_pdf", "Text to PDF"], ["osv", "OSV (open-source vulnerabilities)"], ["deepwiki_mcp", "DeepWiki (GitHub repo docs)"],
   ["alltrails_mcp", "AllTrails"], ["trivago_mcp", "trivago"], ["viator_mcp", "Viator"], ["taskrabbit_mcp", "Taskrabbit"],
   ["godaddy_mcp", "GoDaddy (domain search)"], ["malwarebytes_mcp", "Malwarebytes (link, email and phone checks)"], ["dice_mcp", "Dice (tech jobs)"],
   ["granted_mcp", "Granted (grants)"], ["aws_marketplace_mcp", "AWS Marketplace"], ["mermaid_chart_mcp", "Mermaid Chart"], ["excalidraw_mcp", "Excalidraw"],
@@ -27,10 +27,7 @@ import { isHiddenApp, isHiddenToolkitAction } from "./app-visibility.js";
 // The audit lists above stay as they are (they record what Composio offers; test/builtin-apps.test.mjs keeps them in step).
 export { HIDDEN_TOOLKITS, isHiddenApp, HIDDEN_TEXT } from "./app-visibility.js";
 export const HIDDEN_ACTIONS = new Map([
-  ["COMPOSIO_SEARCH_GROQ_CHAT", "an LLM call on Composio's account, outside 1Helm's model routing, metering and zero data retention"],
-  ["COMPOSIO_SEARCH_EXA_ANSWER", "deprecated by Composio"],
   ["AWS_MARKETPLACE_MCP_SUBMIT_AWS_MARKETPLACE_FEEDBACK", "a write, with 'you MUST ask the user' text aimed at the model"],
-  ["YELP_GET_REVIEW_HIGHLIGHTS", "always 403 (needs Yelp Premium)"],
 ]);
 export const isHiddenAction = (slug) => HIDDEN_ACTIONS.has(String(slug || "").toUpperCase()) || isHiddenToolkitAction(slug);
 const visible = (m) => new Map([...m].filter(([s]) => !isHiddenApp(s)));

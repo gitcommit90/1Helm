@@ -20,7 +20,7 @@ unanswered stays open even if they answered something else: ask again before sea
 
 ## Search
 
-{{#apps}}Find what's on with `search_web_vertical` (kind events) first. {{/apps}}Check the official schedule, then primary sellers (the venue's box office, Ticketmaster,
+Find what's on with `web_search`. Check the official schedule, then primary sellers (the venue's box office, Ticketmaster,
 AXS or the team's or artist's official seller) on their own sites in the browser. Then, when legal and useful, reputable
 resale marketplaces with a buyer guarantee. Label primary versus resale clearly.
 

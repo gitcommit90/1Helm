@@ -308,11 +308,7 @@ export async function zoneEditFile(R, fileId, base, body) {
 async function zoneRestore(R, row, what) {
   if (what !== "previous") return fail(400, 'restore must be "previous".');
   if (!row.prev_key) return fail(400, "no earlier version kept");
-  const to = { key: row.prev_key, bytes: row.prev_bytes ?? 0 }, v = Number(row.version || 1) + 1;
-  R.sql.exec("UPDATE files SET r2key=?, bytes=?, prev_key=?, prev_bytes=?, view_key=NULL, version=?, at=?, synced=0 WHERE id=?", to.key, to.bytes, row.r2key, row.bytes, v, Date.now(), row.id);
-  if (row.view_key) { try { await stDelete(R.env, [row.view_key]); } catch {} }
-  R.sidecarKick?.(R.sql.exec("SELECT * FROM files WHERE id=?", row.id).one());
-  await R.fileUpdated(row, { r2key: to.key, bytes: to.bytes, path: null }, {}, "");
+  const r = await R.restoreVersion(row, {}, {}, () => ""); if (r.error) return fail(400, r.error);
   return { ok: true, file: R.fileView(R.sql.exec("SELECT * FROM files WHERE id=?", row.id).one()), restored: true };
 }
 // → { version, has_previous, previous_at } | { error, status }

@@ -138,6 +138,7 @@ export const residentDeletion = {
     // Their share links die with them (share.js keeps them in D1, keyed by file).
     const tid = this.get("tenant");
     if (tid && gone.length && this.env.DB) for (const c of chunks(gone.map((f) => f.id), 50)) { try { const r = await this.env.DB.prepare(`DELETE FROM share_links WHERE tenant_id=? AND file_id IN (${ph(c)})`).bind(tid, ...c).run(); counts.share_links = (counts.share_links || 0) + Number(r?.meta?.changes || 0); } catch (e) { if (!/no such table/.test(e.message)) throw e; } }
+    if (tid && gone.length && this.env.DB) for (const c of chunks(gone.map((f) => f.id), 50)) { try { await this.env.DB.prepare(`DELETE FROM app_file_links WHERE tenant_id=? AND file_id IN (${ph(c)})`).bind(tid, ...c).run(); } catch {} }   // temporary links for apps (app-file-links.js); the table may not exist yet
     delIn(sql, "file_shares", "file_id", gone.map((f) => f.id)); counts.files = delIn(sql, "files", "id", gone.map((f) => f.id));
     dropPreviewRows(sql, gone.map((f) => f.id)); dropSidecarRows(sql, gone.map((f) => f.id));
     counts.shots = delIn(sql, "shots", "id", shots.map((s) => s.id));

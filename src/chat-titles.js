@@ -72,7 +72,7 @@ const answerOf = (r) => r?.choices?.[0]?.message?.content;
 export async function nameChat({ env, ledger = null, meta = {}, claim, bill = BILL_LABELLER, signal } = {}) {
   if (!claim || !useOpenRouter(env)) return null;
   const request = chatTitleRequest(claim.text, await plannedMaxOutput(env, CHAT_TITLE_JOB).catch(() => null) ?? undefined);
-  const rid = `title:${crypto.randomUUID()}`, billed = !!(bill && ledger && !env?.BYOK);   // own AI key: their model, nothing to bill
+  const rid = `title:${crypto.randomUUID()}`, billed = !!(bill && ledger && !(env?.BYOK && !env.BYOK.choresOnPlan));   // own AI key: their model, nothing to bill (Use my services now with no Background jobs: 1Helm's model, billed)
   if (billed) { try { const r = await ledger.reserve(rid, backgroundReserve(request, 1, await plannedHoldNano(env, CHAT_TITLE_JOB).catch(() => 0))); if (!r?.ok) return null; } catch { return null; } }
   let answer = null, charge = 0;
   try {

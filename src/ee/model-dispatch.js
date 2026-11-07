@@ -45,7 +45,7 @@ import { privacyOf } from "../privacy.js";
 import { boundedText } from "../bounded-body.js";
 import { cappedResponseBytes } from "../bounded-response.js";
 import { customRouting } from "./custom-models.js";
-import { byokChat } from "../byok.js";
+import { byokChat, choresOnPlan, plainEnv } from "../byok.js";
 import { orFetch, orFetchPath, firstOk, replayFor, cacheKey, aiOpts, routedChat, byokFast } from "../model.js";
 import { cloudflareChat, cloudflareEmbeddings, cloudflareRerank, authorizeCloudflare, cfOptions, abortable, isCloudflareModel } from "../cloudflare-models.js";
 import { selfHostedEmbeddings } from "../selfhost-models.js";
@@ -203,6 +203,9 @@ export async function dispatch(env, jobId, request = {}, { meta = {}, signal = n
   // Own AI key: the person's own endpoint answers every chat call, whatever the saved settings say. It needs no plan and does not read the saved settings,
   // so this check comes first. Every other job (no messages: the browser's next step, the screen look, speech, ...) falls through to the saved settings below.
   // A task's route is checked by routedChat first (a task that began on managed models stops when the mode changed to an own key).
+  // Use my services now on a full plan with no Background jobs chosen (byok.js choresOnPlan): a job with no route is 1Helm's, as on any full plan; its caller bills it (chat-titles.js, tracker.js).
+  // A chore is a call with no route, or a route byokFast calls a chore (a hand-off note); a chat route stays on the services.
+  if (choresOnPlan(env) && Array.isArray(request?.messages) && !route?.taskAffinity && (!route || byokFast(route, request))) env = plainEnv(env);
   if (env.BYOK && Array.isArray(request?.messages) && !route?.taskAffinity) {
     return byokChat(env.BYOK, request, { fast: route ? byokFast(route, request) : true, signal, session, purpose: jobId ? String(jobId) : null, privacy: level ?? await privacyOf(env, meta?.tenant) });
   }

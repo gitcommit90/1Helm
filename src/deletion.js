@@ -243,6 +243,7 @@ async function wipeChannelEverywhere(env, job, tid, slug, cid, prefix = "") {
       out[t] = Number((await DB.prepare(q).bind(tid, slug).run().catch(() => ({ meta: {} }))).meta?.changes || 0);
     // Share links of its files, offers prepared in it, and pages published from it (bytes first, then the row).
     out.share_links = Number((await DB.prepare("DELETE FROM share_links WHERE tenant_id=? AND channel=?").bind(tid, slug).run().catch(() => ({ meta: {} }))).meta?.changes || 0);
+    try { await DB.prepare("DELETE FROM app_file_links WHERE tenant_id=? AND channel=?").bind(tid, slug).run(); } catch {}   // temporary links for apps (app-file-links.js); the table may not exist yet
     out.share_chats = await shareChatsGone(env, tid, { channel: slug });   // links to shared chats of this channel, and their copies
     out.published_pages = 0; out.share_offers = 0;
     for (const t of ["share_offers", "published_pages"]) for (const o of (await DB.prepare(`SELECT * FROM ${t} WHERE tenant_id=? AND channel=?`).bind(tid, slug).all().catch(() => ({ results: [] }))).results || []) {

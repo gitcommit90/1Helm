@@ -30,7 +30,7 @@ import { fileStoreFetch } from "./composio-files.js";
 // Stage 6: composioRequest retries reads and never re-sends a write whose outcome is unknown (its rules: composio-api.js). Each call here says
 // which it is (retry: "read" | "write"); a rate-limited or may-or-may-not-have-happened error is never re-sent by a fallback below.
 const settled = (e) => e?.unknownOutcome || e?.rateLimited;
-import { slimInputs, exampleOf, cleanWant, fileInputs } from "./composio-schema.js";
+import { slimInputs, exampleOf, cleanWant, fileInputs, urlInputs } from "./composio-schema.js";
 import { listManagedConnections, appConnectLink, appDisconnect, defaultsOf, notesOf, dropNotes, appName } from "./composio.js";   // a cycle on purpose: used only at call time
 import { appsMode, mcpCaller, isEnded, selfApps, rememberApps, SELF_DEFAULT_APPS, LIST } from "./composio-self.js";
 import { resolveAccountIdentity, disambiguateAccountLabels } from "./composio-identity.js";
@@ -46,16 +46,16 @@ const uid = (tenantId) => `1hc:${tenantId}`;
 export const META_TOOLS = new Set(["COMPOSIO_SEARCH_TOOLS", "COMPOSIO_GET_TOOL_SCHEMAS", "COMPOSIO_MULTI_EXECUTE_TOOL", "COMPOSIO_EXECUTE_TOOL",
   "COMPOSIO_MANAGE_CONNECTIONS", "COMPOSIO_WAIT_FOR_CONNECTIONS", "COMPOSIO_REMOTE_WORKBENCH", "COMPOSIO_REMOTE_BASH_TOOL", "COMPOSIO_SUBMIT_FEEDBACK",
   "COMPOSIO_INITIATE_CONNECTION", "COMPOSIO_CHECK_ACTIVE_CONNECTION", "COMPOSIO_LIST_TOOLKITS", "COMPOSIO_GET_REQUIRED_PARAMETERS",
-  "COMPOSIO_SEARCH_SKILLS", "COMPOSIO_USE_SKILL", "COMPOSIO_MANAGE_SKILL"]);   // Connect MCP's skill tools (10-06 tools/list): COMPOSIO_SEARCH_SKILLS would pass the composio_search rule below
-// Anything in Composio's own "composio" toolkit is meta; the built-in composio_search toolkit (web/news search) is an ordinary app.
-export const isMetaTool = (slug) => { const s = String(slug || "").toUpperCase(); return META_TOOLS.has(s) || (s.startsWith("COMPOSIO_") && !s.startsWith("COMPOSIO_SEARCH_")); };
+  "COMPOSIO_SEARCH_SKILLS", "COMPOSIO_USE_SKILL", "COMPOSIO_MANAGE_SKILL"]);   // Connect MCP's skill tools (10-06 tools/list)
+// Anything in Composio's own "composio" toolkit is meta.
+export const isMetaTool = (slug) => { const s = String(slug || "").toUpperCase(); return META_TOOLS.has(s) || s.startsWith("COMPOSIO_"); };
 export const isMetaToolkit = (slug) => String(slug || "").toLowerCase() === "composio";
 
 // What app_run needs to know about one action: its app, read-only or not, the exact version, its input names (to catch renamed inputs).
 export const metaOf = (t, app) => ({ slug: t.slug, app: (app || t.toolkit?.slug || "").toLowerCase(), readonly: (t.tags || []).includes("readOnlyHint"),
   destructive: (t.tags || []).includes("destructiveHint"), version: t.version || undefined, inputs: Object.keys(t.input_parameters?.properties || {}),
   required: Array.isArray(t.input_parameters?.required) ? t.input_parameters.required.filter((k) => typeof k === "string") : [],
-  open: !!t.input_parameters?.additionalProperties, schema: slimInputs(t.input_parameters), files: fileInputs(t.input_parameters) });
+  open: !!t.input_parameters?.additionalProperties, schema: slimInputs(t.input_parameters), files: fileInputs(t.input_parameters), urls: urlInputs(t.input_parameters) });
 // One action as the helper sees it in app_actions.
 export const actionView = (t) => {
   const e = exampleOf(t.input_parameters);
@@ -119,6 +119,17 @@ export function sessionConfig(tenantId, ctx = {}) {
     multi_account: { enable: true, max_accounts_per_toolkit: 10, require_explicit_selection: false },
     workbench: { enable: false }, manage_connections: { enable: false }, proxy_execute: { enable: false }, instant: false };
 }
+// {a:{b:[1,2]},c:true} → {"a[b][0]":"1","a[b][1]":"2","c":"true"}: the bracket notation form APIs read; null and undefined fields are left out.
+export const formEncode = (v) => Object.entries(formFields(v)).map(([k, x]) => `${encodeURIComponent(k)}=${encodeURIComponent(x)}`).join("&");
+const b64 = (t) => { let bin = ""; for (const b of new TextEncoder().encode(t)) bin += String.fromCharCode(b); return btoa(bin); };
+export function formFields(v, prefix = "", out = {}) {
+  if (Array.isArray(v)) v.forEach((x, i) => formFields(x, `${prefix}[${i}]`, out));
+  else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) formFields(x, prefix ? `${prefix}[${k}]` : k, out);
+  else if (v != null && prefix) out[prefix] = String(v);
+  return out;
+}
+// Actions app_actions lists at most (Composio's own search often names only 3 to 6; the app's own listing tops it up to SEARCH_FLOOR).
+export const SEARCH_MAX = 12, SEARCH_FLOOR = 8;
 export const PROXY_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const sigOf = (cfg) => JSON.stringify([cfg.toolkits.enable, cfg.connected_accounts || {}]);
 const SESSION_GONE = /not found|expired|deleted|invalid session|trs_/i;
@@ -186,11 +197,11 @@ export function managedTransport(env, tenantId, ctx0 = {}) {
   // The legacy search: Composio's tool listing for one app with our own top-up ranking (small apps).
   async function directSearch(want, ctx) {
     const app = ctx.app, c = isCustomSlug(app), tk = c ? String(app).toUpperCase() : app, vq = c ? "&toolkit_versions=latest" : versionQuery(env), o = c ? { custom: true } : {};
-    let list = (await req(env, ctx, "tools", `/tools?toolkit_slug=${tk}&query=${encodeURIComponent(want)}&limit=8${vq}`, o)).items || [];
+    let list = (await req(env, ctx, "tools", `/tools?toolkit_slug=${tk}&query=${encodeURIComponent(want)}&limit=${SEARCH_MAX + 3}${vq}`, o)).items || [];
     if (list.length < 3) {
       const words = String(want).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2), all = (await req(env, ctx, "tools", `/tools?toolkit_slug=${tk}&limit=100${vq}`, o)).items || [];
       const score = (t) => { const h = `${t.slug} ${t.name} ${t.description}`.toLowerCase(); return words.reduce((n, w) => n + (h.includes(w) ? 1 : 0), 0); };
-      const seen = new Set(list.map((t) => t.slug)); list = [...list, ...all.filter((t) => !seen.has(t.slug)).map((t) => [score(t), t]).sort((x, y) => y[0] - x[0]).slice(0, 8 - list.length).map((x) => x[1])];
+      const seen = new Set(list.map((t) => t.slug)); list = [...list, ...all.filter((t) => !seen.has(t.slug)).map((t) => [score(t), t]).sort((x, y) => y[0] - x[0]).slice(0, SEARCH_MAX - list.length).map((x) => x[1])];
     }
     return list.filter((t) => !isMetaTool(t.slug));
   }
@@ -230,17 +241,18 @@ export function managedTransport(env, tenantId, ctx0 = {}) {
         const tools = await directSearch(q, { ...ctx, app }); return { ...base, tools: rankActions(tools.map((t) => t.slug), want).map((s) => tools.find((t) => t.slug === s)), fallback: true };
       }
       const res = (r.results || [])[0] || {}, inApp = (s) => String(s).toLowerCase().startsWith(`${app}_`) && !isMetaTool(s);
-      const slugs = rankActions([...(res.primary_tool_slugs || []), ...(res.related_tool_slugs || [])].filter(inApp), want).slice(0, 8);
+      const ranked = rankActions([...new Set([...(res.primary_tool_slugs || []), ...(res.related_tool_slugs || [])])].filter(inApp), want), slugs = ranked.slice(0, SEARCH_MAX);
       // Full metadata (tags, version, schema) for the matches in one call; the search's own schema when the listing misses one.
       const meta = await describe(slugs, ctx);
       let tools = slugs.map((s) => meta[s] || (r.tool_schemas?.[s]?.input_schema ? { slug: s, description: r.tool_schemas[s].description, input_parameters: r.tool_schemas[s].input_schema, tags: [], toolkit: { slug: app } } : null)).filter(Boolean);
-      if (tools.length < 3) {   // Composio's search found little in this app: top up from the app's own listing
-        const more = await directSearch(q, { ...ctx, app }).catch(() => []), seen = new Set(tools.map((t) => t.slug));
-        tools = [...tools, ...more.filter((t) => !seen.has(t.slug))].slice(0, 8);
+      let more = ranked.length - slugs.length;
+      if (tools.length < SEARCH_FLOOR) {   // Composio's search named few actions (Stripe: 4, with no price-creating one): top up from the app's own listing
+        const found = await directSearch(q, { ...ctx, app }).catch(() => []), seen = new Set(tools.map((t) => t.slug)), fresh = found.filter((t) => !seen.has(t.slug));
+        const room = SEARCH_MAX - tools.length, take = fresh.slice(0, room); tools = [...tools, ...take]; more += fresh.length - take.length;
       }
       const st = (r.toolkit_connection_statuses || []).find((x) => x.toolkit === app);
       return { ...base, via: "session", tools, plan: lines(res.recommended_plan_steps, 10, 320), pitfalls: lines(res.known_pitfalls, 8, 320),
-        difficulty: String(res.difficulty || "").slice(0, 120), composio_connected: st ? !!st.has_active_connection : undefined };
+        difficulty: String(res.difficulty || "").slice(0, 120), composio_connected: st ? !!st.has_active_connection : undefined, ...(more > 0 ? { more } : {}) };
     },
     // version: the version app_actions listed (sessions: the latest), or an exact one with ctx.exactVersion (1Helm's own tools).
     // ctx.account: the connected account id 1Helm picked (null for built-in apps). ctx.readonly: the caller checked it's a read.
@@ -300,7 +312,12 @@ export function managedTransport(env, tenantId, ctx0 = {}) {
       if (isCustomSlug(toolkit) || isCustomSlug(ctx.app)) throw new Error("app_proxy isn't available for custom MCP servers. Use app_actions and app_run.");
       if (!PROXY_METHODS.has(method)) throw new Error(`app_proxy can't send ${method}.`);
       const params = []; for (const [name, v] of Object.entries(r.query || {})) for (const x of (Array.isArray(v) ? v : [v])) if (x != null) params.push({ name: String(name), value: typeof x === "object" ? JSON.stringify(x) : String(x), type: "query" });
-      const call = { endpoint: String(r.endpoint || ""), method, ...(params.length ? { parameters: params } : {}), ...(method !== "GET" && r.body != null ? { body: r.body } : {}) };
+      // form: the API only takes application/x-www-form-urlencoded (Stripe, Twilio, …). Composio's `body` is a JSON object, and its docs list no
+      // header that changes that, so a form goes the documented raw way: `binary_body: { base64, content_type }` ("Binary body to send. For binary
+      // upload via base64: use {base64: "...", content_type?: "..."}"), carrying the url-encoded fields with the form content type.
+      const formOn = r.form === true && method !== "GET" && r.body && typeof r.body === "object";
+      const call = { endpoint: String(r.endpoint || ""), method, ...(params.length ? { parameters: params } : {}),
+        ...(formOn ? { binary_body: { base64: b64(formEncode(r.body)), content_type: "application/x-www-form-urlencoded" } } : method !== "GET" && r.body != null ? { body: r.body } : {}) };
       const pinned = (ctx.accounts || {})[toolkit] || [], one = !ctx.account || (pinned.length === 1 && pinned[0] === ctx.account);
       const retry = method === "GET" ? "read" : "write";
       const direct = () => req(env, ctx, "proxy", "/tools/execute/proxy", { method: "POST", retry, body: JSON.stringify({ ...call, ...(ctx.account ? { connected_account_id: ctx.account } : {}) }) });

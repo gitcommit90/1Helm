@@ -9,7 +9,8 @@
 //   POST /api/account/email/cancel     → { ok }
 //   POST /api/account/signout { id } | { others: true } → { ok, signed_out }
 //   POST /api/account/prefs { better_design: boolean } → { ok, better_design: { choice, on } }   (better-design.js; tenant_flags k='better_design')
-//   GET  /api/account/custom-models → the switch, the privacy level, any models that need replacing, the account's categories (custom-models.js)
+//   GET  /api/account/custom-models[?scope=services] → the switch, the privacy level, any models that need replacing, the account's categories (custom-models.js).
+//        scope=services (Settings → AI services) is the own-key editor on every plan; without it a full plan gets 1Helm's models unless its own key answers chat
 //   GET  /api/account/custom-models/catalog?q= → { level, models }: chat models with a provider allowed at the account's level
 //   POST /api/account/custom-models { on?: boolean, categories?: [...] } → the same view as the GET (owner only, same origin, validated server-side)
 //   POST /api/account/privacy { level } → { ok, ai_privacy: { level, chosen, version, at } }   (AI data privacy, privacy.js; validated
@@ -28,6 +29,7 @@ import { emailChangePage } from "./onboarding.js";
 import { boundedForm, boundedJson, BodyTooLargeError } from "./bounded-body.js";
 import { privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // Settings → General → AI data privacy
 import { betterDesignView, betterDesignChoice, setBetterDesign } from "./better-design.js";   // Settings: Better Design as a design source
+import { autoUseNow } from "./byok.js";   // Use my services now: choosing General's model turns it on (licensed own-key editor only)
 import { enabled as eeEnabled, customView, readCustom, saveCustom, pickerModels, statusOfRow, ownKeyKind, ownKindForStatus, ownViewFor, ownPicker, saveOwn, warmLists, readModelSettings } from "./ee/index.js";   // Settings → Advanced: Custom Model Selection (licensed; off unless ONEHELM_EE)
 import { hsWalls, frontDoorSet } from "./walls.js";   // HS_WALLS: General's front door setting
 
@@ -76,6 +78,15 @@ export function deviceOf(ua) {
 }
 const mask = (email) => { const [u, d] = String(email).split("@"); return d ? `${u.slice(0, Math.min(2, Math.max(1, u.length - 1)))}•••@${d}` : email; };
 
+// Which editor a custom-models request is for. Settings → AI services sends ?scope=services and always gets the own-key editor (the services' models, saved in custom_models_own) on every plan,
+// as soon as a service is connected. Settings → Advanced sends no scope and gets the own-key editor only while an own key answers chat (the byok plan, a backup episode, Use my services now),
+// otherwise 1Helm's models (custom_models), exactly as before.
+async function editorKind(env, t, url) {
+  if (url.searchParams.get("scope") === "services") return "own";
+  return ownKeyKind(env, t);
+}
+// On a full plan choosing the services' models is optional: the editor shows no "choose a model" warning (byok-custom view field `optional`).
+const optionalOn = (t, view) => (view && t.plan !== "byok" ? { ...view, optional: true } : view);
 async function listSessions(env, req, userId) {
   const cur = await sha256(cookieToken(req) || "-");
   const rows = (await env.DB.prepare("SELECT token_hash, expires_at, created_at, ua, place FROM sessions WHERE user_id=? AND expires_at>? ORDER BY COALESCE(created_at, expires_at - ?) DESC LIMIT 100")
@@ -118,13 +129,13 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
     return json({ name: t.first_name || "", email: user.email, pending: await pendingChange(env, user.id), sessions: await listSessions(env, req, user.id), passwordless: true, show_costs: Number(t.show_costs) === 1, shortcuts: shortcutsView(t), ai_privacy: privacyView(t), ...(eeEnabled(env) ? { custom_models: statusOfRow(t, await ownKindForStatus(env, t)) } : {}), better_design: betterDesignView(t, await betterDesignChoice(env, t.id)),
       ...(hsWalls(env) ? { front_door_available: true, front_door: Number(t.front_door) === 1 } : {}) });   // HS_WALLS: General's front door (walls.js)
   if (eeEnabled(env) && req.method === "GET" && sub === "/api/account/custom-models") {
-    const own = await ownKeyKind(env, t);
-    if (own) { try { return json(await ownViewFor(env, t, own)); } catch { return json({ error: "Couldn't load this. Try again in a minute." }, 503); } }
+    const own = await editorKind(env, t, url);
+    if (own) { try { return json(optionalOn(t, await ownViewFor(env, t, own))); } catch { return json({ error: "Couldn't load this. Try again in a minute." }, 503); } }
     return json(customView(await readCustom(env, t.id)));
   }
   if (eeEnabled(env) && req.method === "GET" && sub === "/api/account/custom-models/catalog") {
     if (!catalogAllowed(t.id)) return json({ error: "Too many searches. Wait a moment and try again." }, 429);
-    const st = await readCustom(env, t.id), q = String(url.searchParams.get("q") || "").slice(0, 120), own = await ownKeyKind(env, t);
+    const st = await readCustom(env, t.id), q = String(url.searchParams.get("q") || "").slice(0, 120), own = await editorKind(env, t, url);
     if (own) {   // the models their own endpoint serves (OpenRouter: the same catalog and privacy filter as a full plan)
       try {
         const fetchImpl = deps.fetchImpl || globalThis.fetch, settings = await savedSettings(env, deps);
@@ -188,9 +199,13 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
 
   if (eeEnabled(env) && sub === "/api/account/custom-models") {
     if (JSON.stringify(b).length > 65536) return json({ error: "That is too large to save." }, 413);
-    const own = await ownKeyKind(env, t);
+    const own = await editorKind(env, t, url);
     try {
-      if (own) return json({ ok: true, ...(await saveOwn(env, t.id, b, { settings: await savedSettings(env, deps), lookup: deps.lookup, fetchImpl: deps.fetchImpl || globalThis.fetch, at })) });
+      if (own) {
+        const view = await saveOwn(env, t.id, b, { settings: await savedSettings(env, deps), lookup: deps.lookup, fetchImpl: deps.fetchImpl || globalThis.fetch, at });
+        await autoUseNow(env, t).catch((e) => console.log("byok auto use now", String(e?.message || e).slice(0, 120)));   // a full plan that chose General's model uses its services now (byok.js)
+        return json({ ok: true, ...optionalOn(t, view) });
+      }
       return json({ ok: true, ...(await saveCustom(env, t.id, b, { settings: await savedSettings(env, deps), at, lookup: deps.lookup })) });
     }
     catch (e) { const s = [400, 409, 413, 503].includes(e?.status) ? e.status : 503; return json({ error: e?.status === s ? e.message : "Couldn't save. Try again." }, s); }

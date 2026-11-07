@@ -28,6 +28,7 @@ import { CHAT_CSS } from "./share-chat-css.js";
 //   · POST /share/pages/<name>/unpublish · POST /share/offers/<id>/accept {name?, expires?} · POST /share/offers/<id>/decline
 import { PAGE_MAX_BYTES, PAGES_PER_TENANT, NAME_RE, pageName, pageView, listPages, getPage, freeName, stageFromR2, stageFromComputer, publishVersion, unpublish, dropPrefix, servePage } from "./publish.js";
 import { boundedJson, BodyTooLargeError } from "./bounded-body.js";
+import { enabled as eeEnabled, serveAppLink, listAppLinks } from "./ee/index.js";   // temporary app file links (licensed, ee/app-file-links.js)
 import { stPut, stDeleteListed, room, fullMessage } from "./storage.js";
 import { SNAPSHOT_VERSION, CHAT_IMG_MAX_BYTES, CHAT_IMG_TOTAL_BYTES, CHAT_IMG_MAX, CHAT_JSON_MAX_BYTES, CHATS_PER_TENANT, IMG_TYPES, sniffImage, snapshotFromDetail, renderChatPage, chatHeaders } from "./share-chat.js";
 
@@ -64,8 +65,8 @@ const slugHost = (env, host) => {
 };
 // Is this request for a public share route? (index.js: answered before any sign-in gate; the dev strip is never injected.)
 export function isPublicShare(env, url) {
-  return /^\/s\/[a-z0-9-]+\/(f|p)\/./.test(url.pathname) || /^\/s\/[a-z0-9-]+\/c\/[A-Za-z0-9_-]{43}(\/|$)/.test(url.pathname)
-    || (!!slugHost(env, url.hostname) && (/^\/(f|p)\/./.test(url.pathname) || /^\/c\/[A-Za-z0-9_-]{43}(\/|$)/.test(url.pathname)));   // /c/<43 chars>: a card page's token is another length, so texted cards keep working
+  return /^\/s\/[a-z0-9-]+\/(f|p|a)\/./.test(url.pathname) || /^\/s\/[a-z0-9-]+\/c\/[A-Za-z0-9_-]{43}(\/|$)/.test(url.pathname)
+    || (!!slugHost(env, url.hostname) && (/^\/(f|p|a)\/./.test(url.pathname) || /^\/c\/[A-Za-z0-9_-]{43}(\/|$)/.test(url.pathname)));   // /c/<43 chars>: a card page's token is another length, so texted cards keep working
 }
 
 // ---- file links ----
@@ -175,11 +176,12 @@ export async function servePublic(req, env, url) {
   const host = slugHost(env, url.hostname);
   if (s) { slug = s[1]; rest = s[2]; base = `/s/${slug}`; if (host && host !== slug) return notFound(); }   // someone's address only serves their own things
   else { slug = host; rest = url.pathname; base = ""; }
-  if (!slug || !/^\/(f|p)\/./.test(rest) && !/^\/c\/[A-Za-z0-9_-]{43}(\/|$)/.test(rest)) return null;
+  if (!slug || !/^\/(f|p|a)\/./.test(rest) && !/^\/c\/[A-Za-z0-9_-]{43}(\/|$)/.test(rest)) return null;
   if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
   const t = await env.DB.prepare("SELECT id, slug FROM tenants WHERE slug=?").bind(slug).first();
   if (!t) return notFound();
   const f = rest.match(/^\/f\/([^/]+)(?:\/.*)?$/); if (f) return serveLink(req, env, t, f[1]);
+  const al = rest.match(/^\/a\/([^/]+)(?:\/.*)?$/); if (al) return eeEnabled(env) ? serveAppLink(req, env, t, al[1]) : notFound();   // app-file-links.js: a short-lived link for a connected app (licensed; the same 404 as any unknown address without it)
   const p = rest.match(/^\/p\/([^/]+)(\/.*)?$/); if (p) return servePage(req, env, t, p[1], p[2] || "", base);
   const c = rest.match(/^\/c\/([^/]+)(?:\/img\/(\d{1,3}))?\/?$/); if (c) return serveChat(req, env, t, c[1], c[2] == null ? null : Number(c[2]), `${base}/c/${c[1]}`);
   return notFound();
@@ -369,7 +371,7 @@ export async function shareApi(req, env, t, sub, access) {
   const base = publicBase(env, t);
   if (sub === "/api/share" && req.method === "GET") {
     const [links, pages, chats] = await Promise.all([liveLinks(env, t.id), listPages(env, t.id), listChatRows(env, t.id)]);
-    return out({ base, links: await Promise.all(links.map((l) => linkView(env, base, l))), pages: pages.map((p) => pageView(base, p)), chats: await Promise.all(chats.map((c) => chatView(env, base, c))), limits: { link_bytes: LINK_MAX_BYTES, page_bytes: PAGE_MAX_BYTES, links: LINKS_PER_TENANT, pages: PAGES_PER_TENANT, chats: CHATS_PER_TENANT } });
+    return out({ base, links: await Promise.all(links.map((l) => linkView(env, base, l))), pages: pages.map((p) => pageView(base, p)), chats: await Promise.all(chats.map((c) => chatView(env, base, c))), app_links: eeEnabled(env) ? await listAppLinks(env, t.id) : [], limits: { link_bytes: LINK_MAX_BYTES, page_bytes: PAGE_MAX_BYTES, links: LINKS_PER_TENANT, pages: PAGES_PER_TENANT, chats: CHATS_PER_TENANT } });
   }
   if (req.method !== "POST") return out({ error: "method", status: 405 });
   let b;

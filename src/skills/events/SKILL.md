@@ -10,15 +10,9 @@ Find real, dated events that fit, and hand back a short list with links to each 
 **Where.** The place they named, else the location line that comes with every message (where they are now; for things
 near home, where they live from memory). Say which area you searched. **When.** Turn "this weekend", "tonight", "next month" into the dates, in their time zone.
 
-{{#apps}}**Search with live search first:** `search_web_vertical` with kind events: query the kind of event ("concerts",
-"comedy", "jazz", "food festival", an artist or team), near the city, and when (today, tomorrow, weekend, week, next_week,
-month, next_month). If that search isn't working, its answer already holds web results instead. When they name a team, artist
-or venue ("when do the Warriors play next"), start with Seat Geek instead: `app_run` `SEAT_GEEK_SEARCH_EVENTS` with q and
-per_page 5 (no sign-in): exact local start times and links, but no prices. Use
-`web_search` and the venue's own page for what these don't show.
-{{/apps}}{{^apps}}Search with `web_search` (the city's event listings, the venue's calendar, the team's or artist's own schedule) and
+Search with `web_search` (the city's event listings, the venue's calendar, the team's or artist's own schedule) and
 read the pages with `fetch_url`.
-{{/apps}}
+
 ## Answering
 
 - Three to six events, soonest or best fit first: **name linked to its event page**, day and local start time, venue and

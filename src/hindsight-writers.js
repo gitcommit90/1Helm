@@ -273,6 +273,7 @@ export const writerMethods = {
     console.log("memory retain queued for retry", String(e?.message || e).slice(0, 160));
     try { this.mem.receipt({ mode: "hs-retain", query: items[0]?.document_id, error: `queued for retry: ${String(e?.message || e).slice(0, 200)}` }); } catch {}
     this.hsOutboxInit(); for (const i of items) this.sql.exec("INSERT INTO hs_outbox (doc, item, del, paid, at, tries, ref) VALUES (?,?,0,?,?,1,?)", i.document_id, JSON.stringify(i), paid ? 0 : 1, Date.now(), i.key ? String(i.key) : null);
+    try { this.arm?.()?.catch?.(() => {}); } catch {}   // the alarm is what sends the outbox again (hsOutboxNext); a channel with no other activity has none armed, so a failed save was never retried (release 88 check-wsmemory)
     return { queued: items.length };
   },
   // Send what the outbox holds, oldest first, at most `max` rows. An entry that fails stays (its tries go up, and after

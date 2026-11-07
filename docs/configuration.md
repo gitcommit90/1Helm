@@ -4,7 +4,7 @@
 
 `SELFHOST_STORAGE_GB` sets the owner's storage safety limit in decimal gigabytes (default 100). Increase it in your private `wrangler.jsonc` and redeploy if you want to retain more files in R2. This changes the app's limit; your Cloudflare account pays for the actual R2 usage.
 
-`SENTINEL_DEFAULT` is `on` for a new install. The computer sends HTTP and HTTPS through the Worker checkpoint so saved keys can be swapped only for their configured sites and outgoing requests can follow the owner's approval rules. Keep it on for saved keys and approvals to work. The computer needs the checkpoint's CA trust setup and Cloudflare Containers outbound interception; verify both in your own account before relying on it.
+`SENTINEL_DEFAULT` is `on` for a new install. The computer sends HTTPS requests to the sites your saved keys are for, and to your own app's address, through the Worker checkpoint, so saved keys can be swapped only for their configured sites and a request that carries a saved key follows the owner's approval rules. All other traffic leaves the computer directly and is not checked or logged. Keep it on for saved keys and approvals to work. The computer needs the checkpoint's CA trust setup and Cloudflare Containers outbound interception; verify both in your own account before relying on it.
 
 The `.env.example` file lists optional defaults for setup prompts. If you use a local `.env`, export it in your shell before running setup. Do not put secrets in `.env` for deployment. `ONEHELM_EE` is absent from the example config and must remain absent for public installs.
 

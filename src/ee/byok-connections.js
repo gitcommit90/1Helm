@@ -4,7 +4,7 @@
 // in byok_chatgpt (byok-chatgpt.js) and the row only says it exists.
 // Models are named per connection everywhere, <connection id>:<model id>, so the same model name on two services never collides. The id of a connection that can only exist once is its kind
 // (openrouter, chatgpt, opencode); a plain one is p_ and a few letters or digits. No id has a colon, so the first colon splits the name.
-// Where the models are chosen: Settings, Advanced, Custom Model Selection (byok-custom.js). This file knows nothing about the choice, except that removing a connection takes its models out.
+// Where the models are chosen: Settings, AI services, Models (byok-custom.js). This file knows nothing about the choice, except that removing a connection takes its models out.
 // Existing accounts need no action. The first time anything reads their connections (ensureUpgrade), the one saved key of the old byok row, and a saved ChatGPT sign-in, become connections,
 // and the saved main model, fast model and reasoning levels become the own-key Custom Model Selection setting (General's first model, Background jobs). byok_multi marks it done. The old row is only copied from, never changed.
 import { sealSecret, openSecret } from "../sentinel.js";

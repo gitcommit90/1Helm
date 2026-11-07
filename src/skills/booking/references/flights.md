@@ -23,12 +23,9 @@ the date they gave.
 
 ## Search
 
-{{#apps}}Start with `search_web_vertical` (kind flights; from and to as airport codes, date, return_date for a round trip, adults,
-children, cabin): live Google Flights fares and times in one step, priced for everyone searched. Search each sensible airport of
-a multi-airport city. Then confirm the chosen itinerary on the airline's or seller's site. The sources below are for what it
-can't answer (fare brands, bags, member prices, an airline missing from its results, unusual routings).
+Search each sensible airport of a multi-airport city, and confirm the chosen itinerary on the airline's or seller's site.
 
-{{/apps}}Good sources, in the browser{{#browser_task}} (`browser_task` handles a search
+Good sources, in the browser{{#browser_task}} (`browser_task` handles a search
 site's forms well: give it the link, airports, dates, travellers, cabin and "search only, buy nothing, report each
 itinerary"){{/browser_task}}:
 

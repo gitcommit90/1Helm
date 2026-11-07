@@ -35,7 +35,7 @@ This never covers passwords (a saved login with `browser_fill_login`, or the per
 
 ## The checkpoint and approvals
 
-{{#checkpoint}}Every request your computer sends out passes through 1Helm's checkpoint, outside your computer. Reading (opening a page, downloading) goes through, and so do package installs (pip, npm, apt), `git clone`, and a web page's own background traffic in the browser. Ordinary requested network actions run directly, including forms, uploads and API writes. Explicit payment/API-key operations and use of a saved vault key need their protected approval or an existing applicable grant. Routine connected-app authentication does not itself create another approval:
+{{#checkpoint}}Your computer reaches the internet directly. 1Helm's checkpoint, outside your computer, only handles requests that use a saved key (and calls to 1Helm itself); every other request goes out on its own, including page loads, package installs, `git clone`, forms, uploads and API writes. Use of a saved vault key needs its protected approval or an existing applicable grant. Routine connected-app authentication does not itself create another approval:
 
 - The question is "OK to send this to (site)?", with how much is being sent and which saved key it uses. Nothing is sent until they choose.
 - It appears in the app when they're there, or by text if they set up texting and aren't in the app.

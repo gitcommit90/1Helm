@@ -33,10 +33,10 @@ export const WL_DDL = `CREATE TABLE IF NOT EXISTS work_log (id INTEGER PRIMARY K
 export function worklogInit(sql) { sql.exec(WL_DDL); }
 
 const H = 3600e3;
-export const WINDOW = { email: 24 * H, calendar: 1 * H, web: 1 * H, app: 6 * H, browser: 0, live: H / 4 };   // live: search_web_vertical (prices move)
+export const WINDOW = { email: 24 * H, calendar: 1 * H, web: 1 * H, app: 6 * H, browser: 0 };
 export const APP_LEAN_CHARS = 6000;   // an app_run result over this is trimmed to its key fields
 const FULL_KEEP = 300, FULL_MAX = 300000;
-const LOOKUP_TOOLS = new Set(["gmail_search", "gmail_read", "calendar_events", "app_run", "app_proxy", "fetch_url", "web_search", "search_web_vertical"]);
+const LOOKUP_TOOLS = new Set(["gmail_search", "gmail_read", "calendar_events", "app_run", "app_proxy", "fetch_url", "web_search"]);
 export const isLookupTool = (name) => LOOKUP_TOOLS.has(name);
 const SAVED_FILES = / ok[^\n]*\. (?:Saved "[^"\n]+" \([^)]*\) to the Library \(file id |Updated "[^"\n]+" in place in the Library \()/;
 const FRESH = { type: "boolean", description: "true = run it again in full even if the work log has this lookup (only when the person asks to re-check, or the earlier result is clearly stale)" };
@@ -62,10 +62,6 @@ export function lookupSpec(name, a = {}, conns = []) {
   if (name === "calendar_events") return { tool: name, kind: "calendar", family: "calendar:googlecalendar", app: "googlecalendar", account: accountOf(conns, "googlecalendar", a.account), query: str(a.search), from: Date.parse(a.from) || null, to: Date.parse(a.to) || null, key: JSON.stringify([str(a.from), str(a.to), str(a.search).toLowerCase(), Number(a.max) || 25]), exact: true };
   if (name === "web_search") { const q = String(a.query ?? "").replace(/\s+/g, " ").trim().slice(0, 400), n = Math.max(1, Math.min(10, Math.round(Number(a.count)) || 5));
     return { tool: name, kind: "web", family: "web.search", app: "", account: "", query: q, exact: true, key: JSON.stringify([q.toLowerCase(), n, String(a.freshness || ""), String(a.region || "").toLowerCase()]) }; }   // websearch.js
-  if (name === "search_web_vertical") {   // vertical-search.js: the same live search again within 15 minutes is the saved copy
-    const { fresh, step_title, ...rest } = a || {}, kind = str(rest.kind).toLowerCase();
-    return { tool: name, kind: "live", family: `web.vertical:${kind}`, app: "", account: "", query: clip([rest.query, rest.from && `${rest.from}→${rest.to || "?"}`, rest.near && `near ${rest.near}`, rest.date, rest.check_in && `${rest.check_in}–${rest.check_out || "?"}`].filter(Boolean).join(" "), 300), key: JSON.stringify(stable(rest)), exact: true };
-  }
   if (name === "fetch_url") return { tool: name, kind: "web", family: "web.fetch", app: "", account: "", query: normUrl(a.url), exact: true, ...(a.raw === true ? { key: JSON.stringify([normUrl(a.url), "raw"]) } : {}) };
   if (name === "browser_task") return { tool: name, kind: "browser", family: "web.browser", app: "", account: "", query: clip(`${a.url ? `${a.url} ` : ""}${a.task || ""}`, 400), logOnly: true };
   // Custom MCP servers (custom-mcp.js): never logged or replayed. A saved copy of one's result must not outlive a switch-off or a disconnect.
@@ -124,7 +120,6 @@ export function rowLine(r, { hits = 3, tz } = {}) {
   const verb = r.family.startsWith("email.search") ? `Searched ${where(r)} for "${clip(r.query, 120)}"` : r.family.startsWith("email.read") ? `Read message ${clip(r.query, 40)} in ${where(r)}`
     : r.family.startsWith("calendar") ? `Checked ${where(r)}${r.query ? ` for "${clip(r.query, 60)}"` : ""}${r.date_from ? ` ${shortDate(new Date(r.date_from).toISOString())}–${r.date_to ? shortDate(new Date(r.date_to).toISOString()) : ""}` : ""}`
     : r.family.startsWith("app:proxy:") ? `Called the ${APP_NAMES[r.app] || r.app} API${r.account ? ` in ${where(r)}` : ""} (${clip(r.query, 120)})`
-    : r.family.startsWith("web.vertical:") ? `Live search (${r.family.slice(13)}) for "${clip(r.query, 120)}"`
     : r.family === "web.search" ? `Searched the web for "${clip(r.query, 120)}"` : r.family === "web.fetch" ? `Fetched ${clip(r.query, 160)}` : r.family === "web.browser" ? `Browser task: ${clip(r.query, 160)}` : `Ran ${r.family.slice(4)}${r.account ? ` in ${where(r)}` : ""} (${clip(r.query, 100)})`;
   const hs = parseHits(r).slice(0, hits).map(hitText).filter(Boolean);
   const res = r.status === "error" ? `error${r.note ? `: ${clip(r.note, 120)}` : ""}` : r.status === "empty" ? "nothing found" : `${r.count} result${r.count === 1 ? "" : "s"}${r.max && r.count >= r.max ? ` (hit its limit of ${r.max})` : ""}`;
@@ -235,7 +230,7 @@ export async function workLogged(res, ctx, name, a, run, conns = null) {
   if (prior?.mode === "saved") {
     const body = savedBody(res.sql, prior.row.id);
     if (body != null) {
-      note(ctx, `[Work log] Already ${sp.family.startsWith("email.read") ? "read this message" : sp.family === "web.search" ? "ran this web search" : sp.kind === "live" ? "ran this live search" : sp.kind === "web" ? "fetched this page" : "ran this exact lookup"}${prior.row.account ? ` in ${where(prior.row)}` : ""} at ${fmtTime(prior.row.at, tz)} (${ago(prior.row.at, now)}); this is the saved result (key wl${prior.row.id}), nothing was fetched again. Pass fresh: true only if it may have changed since.`);
+      note(ctx, `[Work log] Already ${sp.family.startsWith("email.read") ? "read this message" : sp.family === "web.search" ? "ran this web search" : sp.kind === "web" ? "fetched this page" : "ran this exact lookup"}${prior.row.account ? ` in ${where(prior.row)}` : ""} at ${fmtTime(prior.row.at, tz)} (${ago(prior.row.at, now)}); this is the saved result (key wl${prior.row.id}), nothing was fetched again. Pass fresh: true only if it may have changed since.`);
       return present(res, sp, body, prior.row.id);
     }
   }

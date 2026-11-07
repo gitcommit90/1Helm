@@ -223,6 +223,20 @@ let IDX, PAGE1, LINK1;
   ok("two channels never match: the same name and the same task evidence in another channel make a new file");
 }
 
+// ---- an app returns a different file whose name has the same words (a Drive "Logo (1).png" next to "Logo 2.png") ----
+{
+  const logo = await upload("LO Art Light Logo 2.png", "RIGHT LOGO"), L = await sid("Logo task");
+  R.noteFileUse(L, logo, "read_file");   // the helper read the Library file in this task, so the old rule matched any alike name
+  const r = await R.appFileSave({ name: "LO Art Light Logo (1).png", mime: "image/png", bytes: enc("OTHER DRIVE LOGO") }, { session: L });
+  assert.ok(!r.file.updated, "a different app file is saved as its own file"); assert.notEqual(r.file.id, logo);
+  assert.equal(await fileBytes(logo), "RIGHT LOGO", "the Library file the earlier tasks used keeps its bytes");
+  // the same name still updates in place, and an agent-made edit keeps the old alike rule
+  const r2 = await R.appFileSave({ name: "LO Art Light Logo 2.png", mime: "image/png", bytes: enc("EDITED IN DRIVE") }, { session: L });
+  assert.equal(r2.file.id, logo); assert.equal(await fileBytes(logo), "EDITED IN DRIVE");
+  assert.equal(R.resolveFile({ name: "LO Art Light Logo 2 final.png", session: L })?.file?.id, logo, "an agent-made file keeps the alike rule");
+  ok("an app file with alike words in its name is its own Library file; the same name still updates in place");
+}
+
 // ---- tradeoff, written down as a test: two unrelated files with the same name merge, and the person's original is kept ----
 {
   const keep = await upload("notes.md", "MY OWN NOTES"), A = await sid("Take notes"); put("workspace/n1/notes.md", "agent's unrelated notes");

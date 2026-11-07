@@ -8,8 +8,7 @@ always: false
 Save the person money: find good, well-priced products that meet every constraint they gave, from sellers they can trust,
 and show them a short, verified answer. Buying happens only with their approval of the exact total, through Link.
 
-**How 1Helm shops.** {{#apps}}Live search first: `search_web_vertical` with kind shopping (prices across stores), or amazon / walmart
-when they name that store, returns current listings with price, rating and link in one step. {{/apps}}You read product pages with
+**How 1Helm shops.** You read product pages with
 `fetch_url`, search the web with `web_search`, and use the browser on your computer for store searches, carts and checkout.
 
 ## Required attributes come first
@@ -31,13 +30,11 @@ If they can't or won't answer, don't guess: search each plausible value separate
 1. Make sure you understand the request and its required attributes.
 2. Get context when it helps: typical prices, well-known sellers for the category, what reviewers rate, with `web_search`.
 3. Search for real product listings across a few sellers (two or three is often enough for a strong, varied answer):
-   {{#apps}}`search_web_vertical` first (one search per store or kind, with the constraints in the query and max_price), then {{/apps}}{{#browser_task}}`browser_task` on a store's own search (give it the store link, every constraint, and "find products only: no cart, no
+   {{#browser_task}}`browser_task` on a store's own search (give it the store link, every constraint, and "find products only: no cart, no
    checkout; report name, seller, price, sale price only if the page shows a real sale, availability and the product page link"),
    {{/browser_task}}`fetch_url` on a store's search-results or product pages, and `web_search` with the product and constraints.
-   {{#apps}}If your connected apps line lists a built-in search app with a shopping search, it can add candidates (`app_actions`).
-   {{/apps}}Long, broad comparisons can go to a background helper with `start_helper` (it can search and read pages, but it can't start a purchase).
-4. **Verify before you show anything.** {{#apps}}A live search listing (`search_web_vertical`) is the store's current price and link:
-   you may show it as is, naming the store. {{/apps}}Open a candidate's product page with `fetch_url` (or the browser when it needs
+   Long, broad comparisons can go to a background helper with `start_helper` (it can search and read pages, but it can't start a purchase).
+4. **Verify before you show anything.** Open a candidate's product page with `fetch_url` (or the browser when it needs
    one) to check what a listing doesn't show (size, fit, compatibility, stock), and always before buying. Web search
    snippets are often stale or wrong: never quote a price, availability or link from them. Drop
    results far outside the normal price range (fakes, mislabelled items). Prefer the seller's site for the person's country.

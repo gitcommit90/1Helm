@@ -56,6 +56,8 @@ export const KINDS = [
   // General's front door (HS_WALLS, walls.js and front-door.js): never asked by level. With front_door off, General's reads of other channels wait for this card.
   // "Always" is not a perm_allow row: it sets the account's front_door to 1 (Settings turns it off again). It sits at Standard so no level hides it.
   { id: "channels", name: "Look in your other channels", level: "standard", ask: "Inspect other channels?", always: "Always let General look in other channels" },
+  // A link that lets an app fetch one of the person's own files (app-file-links.js app_file_link): asks at every level, Standard included, because the link text goes to the helper and could be passed on.
+  { id: "file_link", name: "Give an app a link to your file", level: "standard", ask: "OK to make a temporary link to this file for an app?", always: "Always allow file links for apps" },
   { id: "personal", name: "Fill in your personal details", level: "standard", ask: "OK to fill in your personal details on this website?", always: "Always allow filling in your details" },
 ];
 export const KIND = Object.fromEntries(KINDS.map((k) => [k.id, k]));
@@ -81,7 +83,7 @@ function appKind(app, act) {
 }
 const COMPUTER_RUN = new Set(["run_command", "write_file", "edit_file"]);
 const VISIT = new Set(["browser_navigate", "browser_act", "browser_task", "start_browser_task", "browser_fill_login", "fetch_url"]);
-export const GATED_TOOLS = new Set(["gmail_search", "gmail_read", "calendar_events", "app_run", "app_proxy", "web_search", "search_web_vertical", "start_helper", "schedule_workflow", "schedule_followup", ...COMPUTER_RUN, ...VISIT]);
+export const GATED_TOOLS = new Set(["gmail_search", "gmail_read", "calendar_events", "app_run", "app_proxy", "app_file_link", "web_search", "start_helper", "schedule_workflow", "schedule_followup", ...COMPUTER_RUN, ...VISIT]);
 export function kindFor(name, a = {}, conns = []) {
   if (name === "gmail_search" || name === "gmail_read") return "email";
   if (name === "calendar_events") return "calendar";
@@ -89,6 +91,7 @@ export function kindFor(name, a = {}, conns = []) {
   // by READ/WRITE words: every call is its own kind, which asks at every level (like personal details) until the person chooses Always allow.
   if (name === "app_run" && isCustomSlug(a.action)) return "custom_mcp";
   if (name === "app_proxy" && isCustomSlug(a.app)) return "custom_mcp";
+  if (name === "app_file_link") return "file_link";
   if (name === "app_run") {
     const act = String(a.action || "").toUpperCase().replace(/[^A-Z0-9_]/g, ""); if (!act) return null;
     const app = appOfAction(act, conns);
@@ -103,7 +106,7 @@ export function kindFor(name, a = {}, conns = []) {
   }
   if (COMPUTER_RUN.has(name)) return "computer";
   if (VISIT.has(name)) return "browser";
-  if (name === "web_search" || name === "search_web_vertical") return "web";   // vertical-search.js: a live search is a web search
+  if (name === "web_search") return "web";
   if (name === "start_helper") return "helpers";
   if (name === "schedule_workflow" || name === "schedule_followup") return "schedule";
   return null;
@@ -152,7 +155,7 @@ export async function allowKind(env, tenant, kind, via = "card") {
   await env.DB.prepare("INSERT INTO perm_allow (tenant_id,kind,at,via) VALUES (?,?,?,?) ON CONFLICT(tenant_id,kind) DO UPDATE SET at=excluded.at, via=excluded.via").bind(tenant, kind, Date.now(), via).run();
   return { ok: true };
 }
-export const asks = (level, kind) => kind === 'personal' || kind === 'custom_mcp' || kind === 'channels' || (RANK[level] ?? 0) >= (RANK[KIND[kind]?.level] ?? 99);
+export const asks = (level, kind) => kind === 'personal' || kind === 'custom_mcp' || kind === 'file_link' || kind === 'channels' || (RANK[level] ?? 0) >= (RANK[KIND[kind]?.level] ?? 99);
 
 // ---- the texts the helper sees ----
 const doingOf = (name, a = {}) => {
@@ -162,6 +165,7 @@ const doingOf = (name, a = {}) => {
     case "gmail_read": return "open an email";
     case "calendar_events": return "look at your calendar";
     case "app_run": return `use ${q(String(a.action || "").toLowerCase().replace(/_/g, " "), 80) || "one of your apps"}`;
+    case "app_file_link": return `make a temporary link to ${q(a.file, 80) || "a file"} for ${q(a.app, 40) || "an app"}`;
     case "app_proxy": return `look in ${q(a.app, 40) || "one of your apps"} (${q(String(a.method || "GET").toUpperCase(), 8)} ${q(a.path, 80)})`;
     case "run_command": return `run \`${q(a.command, 100)}\` on the computer`;
     case "write_file": case "edit_file": return `change ${q(a.path, 80) || "a file"} on the computer`;
@@ -171,7 +175,6 @@ const doingOf = (name, a = {}) => {
     case "start_browser_task": return a.url ? `start a browser job on ${(() => { try { return new URL(String(a.url)).host; } catch { return "a website"; } })()}` : "start a browser job";
     case "browser_fill_login": return `sign in to ${q(a.site, 60) || "a site"}`;
     case "web_search": return `search the web for "${q(a.query, 80)}"`;
-    case "search_web_vertical": return `search ${q(a.kind, 20) || "live results"} for "${q([a.query, a.from, a.to, a.near].filter(Boolean).join(" "), 80)}"`;
     case "start_helper": return `start a background helper${a.name ? `: ${q(a.name, 60)}` : ""}`;
     case "schedule_workflow": return `schedule "${q(a.name, 60) || "a recurring job"}"`;
     case "schedule_followup": return `set a follow-up${a.reason ? `: ${q(a.reason, 60)}` : ""}`;
@@ -197,10 +200,10 @@ export async function permGate(res, tc, name, a = {}) {
   }
   const st = await turnPerms(res, tc);
   const custom = (name === "app_run" && isCustomSlug(a.action)) || (name === "app_proxy" && isCustomSlug(a.app));
-  if (st.level === "standard" && !custom) return null;   // custom MCP tools ask at Standard too
+  if (st.level === "standard" && !custom && name !== "app_file_link") return null;   // custom MCP tools ask at Standard too
   const kind = kindFor(name, a, name === "app_run" ? await res.conns().catch(() => []) : []);
   if (!kind || !asks(st.level, kind) || st.allow.has(kind) || tc.permOk?.has(kind)) return null;
-  if (kind === "web" && !personalIn(name === "search_web_vertical" ? [a.query, a.near, a.from, a.to].filter(Boolean).join(" ") : a.query, tc.permInfo ||= await personalInfo(res))) return null;
+  if (kind === "web" && !personalIn(a.query, tc.permInfo ||= await personalInfo(res))) return null;
   if (tc.permNo?.has(kind)) return notAllowed(kind);
   // A one-use grant left by a late "Allow once" (this turn resumed the task after they answered).
   if (takeGrant(res, tc, kind)) { (tc.permOk ||= new Set()).add(kind); return null; }

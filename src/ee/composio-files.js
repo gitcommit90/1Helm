@@ -18,7 +18,9 @@ import { safeName, mimeOf, extOf, humanBytes, LIBRARY_MIMES, extForMime } from "
 export const APP_FILE_MAX = 25 * 1024 * 1024;   // per file, both ways (Gmail's own message limit; uploads to the Library allow more)
 export const MAX_FILES_IN = 10, MAX_FILES_OUT = 10;
 // Where Composio puts staged files (its presigned URLs): an s3url anywhere else is not fetched.
-const FILE_HOSTS = /(^|\.)(composio\.dev|composio\.io|amazonaws\.com|blob\.core\.windows\.net|r2\.cloudflarestorage\.com|storage\.googleapis\.com)$/i;
+// Apps whose own results hold a signed link to a file they made (Canva's export-download.canva.com and document-export.canva.com, Figma's image
+// exports on S3 / CloudFront) are listed too: the link is the only way to get that file, so it is downloaded and saved like a Composio file.
+const FILE_HOSTS = /(^|\.)(composio\.dev|composio\.io|amazonaws\.com|blob\.core\.windows\.net|r2\.cloudflarestorage\.com|storage\.googleapis\.com|canva\.com|cloudfront\.net)$/i;
 export const fileHostOk = (u) => { try { const x = new URL(String(u)); return x.protocol === "https:" && !x.username && !x.password && FILE_HOSTS.test(x.hostname); } catch { return false; } };
 
 // Check every transfer hop ourselves. Fetch's automatic redirects can move a
@@ -45,6 +47,32 @@ const SIGNED = /https?:\/\/[^\s"'<>\\]+?(?:[?&](?:X-Amz-[A-Za-z-]+|X-Goog-[A-Za-
 const STORE_URL = /https?:\/\/(?:[\w-]+\.)*(?:amazonaws\.com|blob\.core\.windows\.net|r2\.cloudflarestorage\.com|storage\.googleapis\.com|storage\.composio\.dev)\/[^\s"'<>\\]*/gi;
 export const SIGNED_NOTE = "[signed file link left out]";
 export const scrubSigned = (s) => String(s ?? "").replace(SIGNED, SIGNED_NOTE).replace(STORE_URL, SIGNED_NOTE);
+
+// A result that holds a signed link to a file as a plain string (Canva's CANVA_MCP_EXPORT_DESIGN "urls", GET_DESIGN_THUMBNAIL "url") has no
+// { name, mimetype, s3url } object, so saveOutputs() would skip it and scrubSigned() would then cut the link, leaving the helper no way to
+// get the file (Rams stickers task, 11-07: it guessed media.canva.com addresses, got "Signature invalid", and opened Canva in the browser).
+// Every string that is exactly one signed https link to a host in FILE_HOSTS becomes { s3url, name } so saveOutputs() saves it to the Library.
+// The name carries the action and a short hash of the link without its signature, so two exports never overwrite one file in place.
+const SIGNED_ONE = new RegExp(`^${SIGNED.source}$`, "i"), STORE_ONE = new RegExp(`^${STORE_URL.source}$`, "i");
+const shortHash = (str) => { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return h.toString(36).padStart(7, "0").slice(0, 6); };
+export function linksToFiles(data, prefix = "file") {
+  const pre = String(prefix || "file").toLowerCase().replace(/[^a-z0-9_-]+/g, "_").slice(0, 60) || "file";
+  const asFile = (str) => {
+    const t = str.trim(); if (!(SIGNED_ONE.test(t) || STORE_ONE.test(t)) || !fileHostOk(t)) return null;
+    let u; try { u = new URL(t); } catch { return null; }
+    let base = ""; try { base = decodeURIComponent(u.pathname.split("/").pop() || ""); } catch {}
+    const ext = /\.[A-Za-z0-9]{1,5}$/.exec(base)?.[0] || "";
+    return { s3url: t, name: `${pre}-${shortHash(u.host + u.pathname)}${ext}` };
+  };
+  const walk = (v, d) => {
+    if (d > 12) return v;
+    if (typeof v === "string") return asFile(v) || v;
+    if (Array.isArray(v)) return v.map((x) => walk(x, d + 1));
+    if (v && typeof v === "object") return typeof v.s3url === "string" ? v : Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x, d + 1)]));
+    return v;
+  };
+  return walk(data, 0);
+}
 
 // ---- md5 (Composio's upload request wants it): Workers' WebCrypto has MD5; elsewhere (tests) a small JS one ----
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -203,7 +231,7 @@ export async function saveOutputs(data, { save, max = APP_FILE_MAX, maxFiles = M
     if (r?.full) { full = r.error; return no("storage is full"); }
     if (!r?.file) return no(r?.error ? String(r.error).replace(/^error: /, "") : "saving failed");
     const f = r.file; saved.push(f);
-    if (f.updated) return { saved_to_library: `Updated ${f.name} in place in the Library (${humanBytes(f.bytes)}), not a copy.${f.updated}`, file_id: f.id, name: f.name, bytes: f.bytes, path: `/workspace/files/${f.name}` };
+    if (f.updated) return { saved_to_library: `Updated ${f.name} in place in the Library (${humanBytes(f.bytes)}), not a copy. The person now sees the new version everywhere this file appears, including cards shared earlier.${f.updated}`, file_id: f.id, name: f.name, bytes: f.bytes, path: `/workspace/files/${f.name}` };
     return { saved_to_library: `Saved ${f.name} (${humanBytes(f.bytes)}) to the Library`, file_id: f.id, name: f.name, bytes: f.bytes, path: `/workspace/files/${f.name}` };
   }
   async function walk(v, d) {
@@ -218,7 +246,7 @@ export async function saveOutputs(data, { save, max = APP_FILE_MAX, maxFiles = M
 }
 // The one line in front of the result (on the result's first line, so the work log's trimming keeps it).
 export function savedLine({ saved = [], skipped = [] } = {}) {
-  const s = saved.map((f) => f.updated ? `Updated "${f.name}" in place in the Library (${humanBytes(f.bytes)}, file id ${f.id}), not a copy.${f.updated}` : `Saved "${f.name}" (${humanBytes(f.bytes)}) to the Library (file id ${f.id})`);
+  const s = saved.map((f) => f.updated ? `Updated "${f.name}" in place in the Library (${humanBytes(f.bytes)}, file id ${f.id}), not a copy. The person now sees the new version everywhere this file appears, including cards shared earlier.${f.updated}` : `Saved "${f.name}" (${humanBytes(f.bytes)}) to the Library (file id ${f.id})`);
   const k = skipped.map((x) => `NOT saved "${x.name}": ${x.why}`);
   if (!s.length && !k.length) return "";
   return ` ${[...s, ...k].join("; ")}.${s.length ? ` The person sees ${s.length > 1 ? "them" : "it"} as a download card in this chat and in the Library; on your computer: ${saved.map((f) => `/workspace/files/${f.name}`).join(", ")}. Don't paste the contents.` : ""}`;

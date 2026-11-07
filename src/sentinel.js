@@ -1,13 +1,12 @@
-// Sentinel: the only way out of a channel computer. Every HTTP(S) request the container makes is intercepted here,
-// OUTSIDE the VM (Workers runtime), before it reaches the internet. Modeled on Meta Muse's Sentinel (2026-09-08).
-//   1. Stand-in tokens: the computer receives stand-ins ("1hs_…"). The real key is swapped in here, and only
+// Sentinel: the checkpoint for saved keys on a channel computer. HTTPS requests to the hosts the account's saved keys are for, and to
+// 1Helm's own hosts, are intercepted here, OUTSIDE the VM (Workers runtime); all other traffic leaves the computer directly (since 2026-11-07). Modeled on Meta Muse's Sentinel (2026-09-08).
+//   1. Stand-in tokens: the computer only ever holds stand-ins ("1hs_…"). The real key is swapped in here, and only
 //      when the request goes to a host that key is bound to. A stand-in sent anywhere else stays a useless stand-in.
 //      Echoed raw/URL-encoded keys in upstream responses are replaced before the computer sees them.
-//   2. Approvals: a request that sends data (POST/PUT/PATCH/DELETE) waits for the person's decision in the app,
-//      unless Always Approve is on (thread → channel → global) or a grant covers it. The model cannot approve.
-//   3. Traffic log: which hosts answered during each command, so the resident can label that output untrusted.
-//   Which requests go out on their own (reads, 1Helm's storage, git clone, npm audit, a web page's background traffic) and which
-//   ask: egress-policy.js.
+//   2. Approvals: a request that carries a saved key waits for the person's decision in the app, unless Always Approve is on
+//      (thread → channel → global) or a grant covers it. The model cannot approve. A request with no saved key goes out.
+//   3. Traffic log: the intercepted requests only (not the computer's direct traffic).
+//   Which requests ask and which are refused: egress-policy.js.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { linkFetch } from "./channel-computer.js";
 import { rewriteRequest, trimKey, readCapped, bodyKind, BODY_SCAN_MAX, STANDIN_RE } from "./sentinel-swap.js";

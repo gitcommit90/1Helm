@@ -32,6 +32,24 @@ export function fileInputs(p) {
   return out;
 }
 
+// ---- which inputs of an action want a URL (app-file-links.js hands a temporary link to one of the person's files to these) ----
+// Top-level inputs that are a string or a list of strings and are described as a URL: format uri / url, a name like url / image_url / file_link,
+// or a description that says URL. → a list of input names.
+const NAMEY = /(^|_)(url|uri|link)s?($|_)|(url|uri)s?$/i, DESCY = /\b(url|uri|urls|publicly accessible link|public link)\b/i;
+const isStr = (v = {}) => { const t = Array.isArray(v.type) ? v.type.filter((x) => x !== "null") : [v.type]; return t.length === 1 && t[0] === "string" || (!v.type && !v.items && !v.properties); };
+export function urlInputs(schema) {
+  const out = [];
+  for (const [k, v0] of Object.entries(schema?.properties || {})) {
+    const alt = (v0?.anyOf || v0?.oneOf || []).filter((x) => x && x.type !== "null"), v = alt.length === 1 ? { ...alt[0], description: v0.description || alt[0].description } : v0 || {};
+    const item = v.items && !Array.isArray(v.items) ? v.items : null, base = item || v;
+    if (item ? !isStr(item) : !isStr(v)) continue;
+    if (v.properties || base.properties || v.enum || base.enum) continue;
+    if (/^(uri|url|iri)$/i.test(base.format || "") || NAMEY.test(k) || DESCY.test(String(v0?.description || "")) ) out.push(k);
+  }
+  return out;
+}
+
+
 const MAX_FIELDS = 25, DESC = 160, NESTED_DESC = 100, FIELD_MAX = 420;
 const typeName = (v = {}) => {
   if (Array.isArray(v.type)) return v.type.filter((t) => t !== "null").join("|");

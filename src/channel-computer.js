@@ -4,6 +4,8 @@
 // routed to ComputerLink with this channel's DO id baked into its props, so a container can only reach its own files.
 // Layers: newest first; a session's changes are one "delta" layer (replaced on each save in that session).
 // A layer only becomes part of the workspace after its bytes are in R2 and the SHA-256 matched.
+import { SEARCH_POLICY, searchUrlFor, blockedNote } from "./computer-search.js";
+import { interceptTargets } from "./sentinel-hosts.js";
 import { SNAP_CMD } from "./files-saveback.js";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { tolerantEnv } from "./do-stub.js";
@@ -67,7 +69,7 @@ const PROFILE = "/workspace/.browser/profile", POLICY_DIR = "/etc/opt/chrome_for
 // Not CDP Browser.setDownloadBehavior: Chrome resets it as soon as the client that set it disconnects (checked 2026-10-06),
 // and the browser service holds no lasting browser-level connection without an image change.
 export function browserSetupCmd({ policyDir = POLICY_DIR, profile = PROFILE, downloads = DOWNLOADS } = {}) {
-  const policy = JSON.stringify({ CommandLineFlagSecurityWarningsEnabled: false, BrowserSignin: 0, PromotionsEnabled: false, DownloadDirectory: downloads, PromptForDownloadLocation: false });
+  const policy = JSON.stringify({ CommandLineFlagSecurityWarningsEnabled: false, BrowserSignin: 0, PromotionsEnabled: false, DownloadDirectory: downloads, PromptForDownloadLocation: false, ...SEARCH_POLICY });
   const prefs = `const fs=require("fs"),f=process.argv[1],d=process.argv[2];let j={};try{j=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}`
     + `if(j.download?.default_directory===d&&j.download?.prompt_for_download===false)process.exit(0);`
     + `j.download={...(j.download||{}),default_directory:d,prompt_for_download:false,directory_upgrade:true};j.savefile={...(j.savefile||{}),default_directory:d};`
@@ -195,8 +197,21 @@ export class ChannelComputer extends DurableObject {
   async egressLog(n = 50) { return this.sql.exec("SELECT * FROM egress ORDER BY seq DESC LIMIT ?", n).toArray(); }
   // Saved keys appear in the computer only as stand-ins (env vars); the Sentinel swaps in the real value at the network edge.
   async loadStandins() {
-    try { const rows = (await this.env.DB.prepare("SELECT name, standin FROM vault WHERE tenant_id=?").bind(this.get("tenant")).all()).results || [];
-      this._standins = Object.fromEntries(rows.map((r) => [r.name, r.standin])); } catch { this._standins = {}; }
+    try { const rows = (await this.env.DB.prepare("SELECT name, standin, hosts FROM vault WHERE tenant_id=?").bind(this.get("tenant")).all()).results || [];
+      this._standins = Object.fromEntries(rows.map((r) => [r.name, r.standin]));
+      await this.syncIntercepts(rows);
+    } catch { this._standins = {}; }
+  }
+  // Sentinel sits on the hosts the account's saved keys are for, plus 1Helm's own hosts; all other traffic leaves the computer directly.
+  // Intercepts can be added while the container runs but never removed, so a host of a key saved later is added here (at each command or
+  // start) and a removed key's host stays intercepted until the next start. interceptTargets caps the list at the platform's limit.
+  async syncIntercepts(rows) {
+    if (!this.ctx.container.running || this.get("started_sentinel") !== "on") return;
+    const S = this.ctx.exports.Sentinel({ props: { id: this.ctx.id.toString(), tenant: this.get("tenant"), channel: this.get("channel") } });
+    this._intercepted ||= new Set();
+    for (const h of interceptTargets(rows, this.env).targets) if (!this._intercepted.has(h)) {
+      try { await this.ctx.container.interceptOutboundHttps(h, S); this._intercepted.add(h); } catch (e) { this.log(`intercept ${h} failed: ${String(e?.message || e).slice(0, 120)}`); }
+    }
   }
   // On unless this channel was switched off (TEST_MODE /api/res/<ch>/sentinel) or the Worker's SENTINEL_DEFAULT isn't "on".
   sentinelOn() { return this.env.NATIVE_NETWORK === 'on' || (this.get("sentinel") || this.env.SENTINEL_DEFAULT || "off") === "on"; }
@@ -376,14 +391,18 @@ export class ChannelComputer extends DurableObject {
     const gap = Number(this.get("stopped_at") || 0) + Number(this.get("gap_override") ?? RESTART_GAP_MS) - Date.now();
     let gapMs = 0; if (gap > 0) { gapMs = gap; await sleep(gap); }
     await this.ctx.container.interceptOutboundHttp("computer.internal", this.ctx.exports.ComputerLink({ props: { id: this.ctx.id.toString() } }));
-    // Sentinel: every other HTTP(S) request leaves through a checkpoint outside the VM (stand-in keys, approvals, traffic log).
-    // Strict mode also closes every non-HTTP port (raw TCP/SSH can't bypass it); DNS still works.
+    // The computer has direct internet, so sites see the computer's own Chrome (a request re-made by this Worker is Cloudflare Worker
+    // traffic, which Canva, Google and others block). Sentinel sits only on the hosts the account's saved keys are for and on 1Helm's
+    // own hosts: stand-in keys are swapped for real keys there, and a real key never sits inside the computer.
     const sentinel = this.sentinelOn();
     this.put("started_sentinel", sentinel ? "on" : "off");
+    this._intercepted = new Set();
     if (sentinel) {
       const S = this.ctx.exports.Sentinel({ props: { id: this.ctx.id.toString(), tenant: this.get("tenant"), channel: this.get("channel") } });
-      await this.ctx.container.interceptOutboundHttps("*", S);
-      await this.ctx.container.interceptAllOutboundHttp(S);
+      const rows = await this.env.DB.prepare("SELECT name, standin, hosts FROM vault WHERE tenant_id=?").bind(this.get("tenant")).all().then((r) => r.results || []).catch(() => []);
+      const t = interceptTargets(rows, this.env);
+      if (t.dropped.length) this.log(`intercept limit: ${t.dropped.length} key host(s) not intercepted: ${t.dropped.slice(0, 5).join(", ")}`);
+      for (const h of t.targets) { try { await this.ctx.container.interceptOutboundHttps(h, S); this._intercepted.add(h); } catch (e) { this.log(`intercept ${h} failed: ${String(e?.message || e).slice(0, 120)}`); } }
     }
     // Bounded start: each attempt gets START_ATTEMPT_MS to answer exec; a stuck or refused start is destroyed and retried.
     let up = false, attempts = 0, lastErr = "", busySince = 0;
@@ -391,7 +410,7 @@ export class ChannelComputer extends DurableObject {
       attempts++; lastErr = "";
       let exited = null;
       if (!this.ctx.container.running) {
-        try { this.ctx.container.start({ entrypoint: sentinel ? ["bash", "-c", TRUST_CA + "exec /opt/1hc/init.sh"] : ["/opt/1hc/init.sh"], enableInternet: !sentinel }); } catch (e) { lastErr = String(e?.message || e); if (isCapacityError(lastErr)) exited = lastErr; }   // refused: no need to wait out the attempt
+        try { this.ctx.container.start({ entrypoint: sentinel ? ["bash", "-c", TRUST_CA + "exec /opt/1hc/init.sh"] : ["/opt/1hc/init.sh"], enableInternet: true }); } catch (e) { lastErr = String(e?.message || e); if (isCapacityError(lastErr)) exited = lastErr; }   // refused: no need to wait out the attempt
       }
       this.ctx.container.monitor().then(() => { exited = "exit"; this.put("ready", "0"); this.put("draining", "0"); })
         .catch((e) => { exited = String(e?.message || e); lastErr = exited; this.put("ready", "0"); this.put("draining", "0"); });
@@ -528,6 +547,7 @@ export class ChannelComputer extends DurableObject {
   async browser(op, body = {}, ownerToken = null, tabKey = "") {
     if (!/^(navigate|snapshot|act|back|screenshot|status|record|activate|closetab)$/.test(op)) return { ok: false, error: "unknown browser op" };
     const tab = tabOf(tabKey || body?._tab); if (tab) body = { ...body, _tab: tab };
+    if (op === "navigate" && typeof body?.url === "string") { const to = searchUrlFor(body.url); if (to !== body.url) body = { ...body, url: to }; }   // a Google search goes to the computer's search engine (computer-search.js)
     const denied = this.#browserOwnerGate(op, ownerToken, false, tab); if (denied) return denied;
     // Reserve the call before the first await, so a job cannot acquire ownership while Chrome is waking.
     const busyId = op === "status" ? null : this.#busyStart((ownerToken == null ? "browser" : "owner_browser") + (tab ? `@${tab}` : ""));
@@ -558,6 +578,7 @@ export class ChannelComputer extends DurableObject {
           if (lost) return { ...lost, operation_may_have_completed: true };
         }
         if (boot.cold) out.computer_woke_ms = boot.wake_ms;
+        const gn = out && typeof out.url === "string" ? blockedNote(out.url) : ""; if (gn) out.tab_note = [out.tab_note, gn].filter(Boolean).join(" ");
         return out;
       } finally { this.inflight--; }
     } finally {

@@ -9,14 +9,10 @@ Find real places that fit, check them, and hand back a short answer with links t
 app. Not for building a trip (travel-planning), choosing between cities, dated events or showtimes, or booking a table
 (booking).
 
-**What you have.** {{#apps}}Start with live search: `search_web_vertical` with kind places (query: the kind of place or its name; near: a
-place name, or "me" for where they are now) returns Google Maps results in one step: rating, reviews, price level, address,
-hours and open now, phone, website and a map link. Things to do and sights: kind tripadvisor. Use `web_search` and `fetch_url`
-only for what it doesn't show (a menu, a booking page, a local guide's "best of"), or when it found nothing. Built in, no sign-in,
-straight with `app_run`: reviews or Yelp named → `YELP_SEARCH_BUSINESSES` (term, location, limit), then `YELP_GET_BUSINESS_DETAILS`
-for hours; hikes and trails → `ALLTRAILS_MCP_SEARCH_TRAILS_BY_NAME` or `ALLTRAILS_MCP_FIND_TRAILS_NEAR_LOCATION` (length, gain,
-difficulty, rating; `ALLTRAILS_MCP_GET_TRAIL_WEATHER_OVERVIEW` for the trailhead forecast).{{/apps}}{{^apps}}You find places with `web_search`, check them
-on their own sites or reliable listings with `fetch_url`, and give map links built from the name and address.{{/apps}} There's no
+**What you have.** You find places with `web_search`, check them
+on their own sites or reliable listings with `fetch_url`, and give map links built from the name and address.{{#apps}} Built in, no sign-in,
+straight with `app_run`: hikes and trails → `ALLTRAILS_MCP_SEARCH_TRAILS_BY_NAME` or `ALLTRAILS_MCP_FIND_TRAILS_NEAR_LOCATION` (length, gain,
+difficulty, rating; `ALLTRAILS_MCP_GET_TRAIL_WEATHER_OVERVIEW` for the trailhead forecast).{{/apps}} There's no
 map widget or routing: directions are links that open their map app (below).
 
 ## Where
@@ -53,8 +49,7 @@ covered in the answer.
 
 ## Checking the details
 
-{{#apps}}A live search result already holds what you need for each place (name, address, hours, price level, phone, website, map
-link): use it as read. {{/apps}}For anything it doesn't show, open the place's own site or a reliable listing with `fetch_url` and take what matters: exact name,
+Open the place's own site or a reliable listing with `fetch_url` and take what matters: exact name,
 street address, area, opening hours, price level, phone, website. Facts come from what you read, never from memory. Leave a
 field out rather than guess it. Hours are as published ("Mon–Sat 8:00–18:00"): say "open now" only after comparing them with
 the local time, and say they're the published hours. Dynamic claims (waits, crowds, availability) need a current source;

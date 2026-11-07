@@ -112,7 +112,6 @@ export function fallbackStepTitle(tool, a = {}) {
     search_files: () => `Searched files for ${qt(a.pattern)}`,
     fetch_url: () => host ? `Read ${host}` : "Read a web page",
     web_search: () => a.query ? `Searched the web for ${qt(a.query)}` : "Searched the web",
-    search_web_vertical: () => `Searched ${({ flights: "flights", hotels: "hotels", places: "places", restaurants: "restaurants", amazon: "Amazon", walmart: "Walmart", shopping: "stores", finance: "markets", events: "events", tripadvisor: "Tripadvisor" })[String(a.kind || "").toLowerCase()] || "live results"}${a.query || a.from ? ` for ${qt([a.query, a.from && a.to ? `${a.from} to ${a.to}` : ""].filter(Boolean).join(" "))}` : ""}`,
     browser_navigate: () => host ? `Opened ${host}` : "Opened a page",
     browser_snapshot: () => "Read the page",
     browser_act: () => host ? `Used the browser on ${host}` : "Used the browser",
@@ -558,7 +557,7 @@ export function labelRequest(input, maxTokens = undefined) {
 export async function summarizeCard({ env, ledger = null, meta = {}, input, bill = BILL_LABELLER, timeoutMs } = {}) {
   if (skipLabeller(input)) return autoLabels(input);
   const request = labelRequest(input, await plannedMaxOutput(env, "label").catch(() => null) ?? undefined);
-  const rid = `sum:${crypto.randomUUID()}`, billed = !!(bill && ledger && !env?.BYOK);   // own AI key: their fast model, $0 to us, nothing to bill
+  const rid = `sum:${crypto.randomUUID()}`, billed = !!(bill && ledger && !(env?.BYOK && !env.BYOK.choresOnPlan));   // own AI key: their fast model, $0 to us, nothing to bill (Use my services now with no Background jobs: 1Helm's model, billed)
   if (billed) { try { const r = await ledger.reserve(rid, backgroundReserve(request, 2, await plannedHoldNano(env, "label").catch(() => 0))); if (!r?.ok) return autoLabels(input); } catch { return autoLabels(input); } }
   let text = "", charge = 0;
   try {

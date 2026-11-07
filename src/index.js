@@ -20,7 +20,7 @@ import { logoRoute } from "./logo.js";
 import { appLogoRoute } from "./ee/index.js";
 import { isPublicShare, servePublic, shareApi, attachOffers } from "./share.js";
 import { LONG_MESSAGE } from "./long-message.js";
-import { safeName, mimeOf, servedHeaders, MAX_UPLOAD, MAX_VIEW, storeUpload, storeView } from "./files.js";
+import { safeName, mimeOf, servedHeaders, serveStoredBytes, MAX_UPLOAD, MAX_VIEW, storeUpload, storeView } from "./files.js";
 import { previewFileName } from "./file-preview.js";
 import { stComplete, stDelete, room, fullMessage, noteRefused, storageOf, storageView, setBlocks, syncBlocks, recount, recountStale, noticeSeen, rearmNotice, RECOUNT_MS } from "./storage.js";
 import { readImportManifest, readImportRows, validateImportManifest } from "./import-data.js";
@@ -187,7 +187,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "359";
+const APP_V = "360";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -611,9 +611,10 @@ export default {
     env = tolerantEnv(env);   // do-stub.js: every Durable Object call survives a deploy's skew/reset window
     const res = withAppV(new URL(req.url), transportHeaders(req, await this.route(req, env, ctx)), { APP_V });
     if (isPublicShare(env, new URL(req.url))) return res;   // share links and published pages are the person's content: never touched
-    // Dev environment: a yellow DEV strip on every page, so dev can never be mistaken for Live.
-    if (env.ENV_NAME === "dev" && (res.headers.get("content-type") || "").includes("text/html"))
-      return new HTMLRewriter().on("body", { element(e) { e.prepend(`<div id="devstrip" style="position:fixed;z-index:2147483647;top:0;left:50%;transform:translateX(-50%);background:#f5bd3c;color:#1c1b19;font:600 11px/1 system-ui,sans-serif;letter-spacing:.08em;padding:4px 10px;border-radius:0 0 8px 8px;pointer-events:none">DEV · test data · nothing here is Live</div>`, { html: true }); } }).transform(res);
+    // Dev environment: a yellow DEV strip on every page, so dev can never be mistaken for Live. Not inside the native iOS/Android app
+    // (user agent token 1HelmMobile): there dev looks exactly like Live, with no strip and so no space reserved for it.
+    if (env.ENV_NAME === "dev" && !nativeMobile(req) && (res.headers.get("content-type") || "").includes("text/html"))
+      return new HTMLRewriter().on("body", { element(e) { e.prepend(`<div id="devstrip" style="position:fixed;z-index:2147483647;top:env(safe-area-inset-top);left:50%;transform:translateX(-50%);background:#f5bd3c;color:#1c1b19;font:600 11px/1 system-ui,sans-serif;letter-spacing:.08em;padding:4px 10px;border-radius:0 0 8px 8px;pointer-events:none">DEV · test data · nothing here is Live</div>`, { html: true }); } }).transform(res);
     return res;
   },
   async route(req, env, ctx) {
@@ -1700,8 +1701,8 @@ export default {
           else return json({ error: "action must be start, stop, continue, presence, mic, speaker, apply or skip" }, 400);
           return json(v, v?.error ? 409 : 200);
         }
-        // Files: /api/res/<ch>/files (GET list, POST upload: raw body + x-file-name) · /files/<id> (GET bytes, ?dl=1 download) · /files/<id>/view (POST small JPEG for the model) · /files/<id>/delete · /files/<id>/zone-edit (POST) · /files/<id>/zone-info (GET)
-        const fm = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/files(?:\/([0-9a-f-]{36})(?:\/(view|delete|preview|zone-edit|zone-info|transcript(?:\/speakers)?))?)?$/);
+        // Files: /api/res/<ch>/files (GET list, POST upload: raw body + x-file-name) · /files/<id> (GET bytes, ?dl=1 download) · /files/<id>/view (POST small JPEG for the model) · /files/<id>/delete · /files/<id>/zone-edit (POST) · /files/<id>/zone-info (GET) · /files/<id>/versions (GET kept versions) · /files/<id>/restore (POST {which: "previous"|"original", base})
+        const fm = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/files(?:\/([0-9a-f-]{36})(?:\/(view|delete|preview|zone-edit|zone-info|versions|restore|transcript(?:\/speakers)?))?)?$/);
         if (fm) {
           const chans = await archive(env, t.id).channels(), slugOf = (c) => c.slug || c.name, ch = chans.find((c) => slugOf(c) === fm[1]);
           if (!ch) return json({ error: "no such channel" }, 404);
@@ -1709,18 +1710,20 @@ export default {
           if (!fm[2] && req.method === "GET") { const [files, tx] = await Promise.all([R.listFiles(), Promise.resolve(R.txIds()).catch(() => [])]), has = new Set(tx); return json({ files: files.map((f) => has.has(f.id) ? { ...f, tx: `/w/${t.slug}/api/res/${fm[1]}/files/${f.id}/transcript` } : f) }); }
           if (fm[2] && !fm[3] && req.method === "GET") {
             const row = await R.fileRow(fm[2]); if (!row) return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
-            const hd = servedHeaders(row.mime, row.name, url.searchParams.get("dl") === "1"), inm = req.headers.get("if-none-match");
+            const hd = servedHeaders(row.mime, row.name, url.searchParams.get("dl") === "1");
             // ?v=<n>: the bytes of version n, for a card whose reply shared that version (same channel wall and auth as the current file; the row above is checked first)
-            const vq = url.searchParams.get("v"), vk = vq != null && /^\d{1,6}$/.test(vq) ? await R.fileVersionKey(fm[2], Number(vq)) : null, vkey = vk?.key || row.r2key;
-            const o = await env.WS.get(vkey, inm ? { onlyIf: { etagDoesNotMatch: inm.replace(/^W\//, "").replace(/"/g, "") } } : {}); if (!o) return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
-            if (!("body" in o) || !o.body) return new Response(null, { status: 304, headers: { ...hd, etag: o.httpEtag } });
-            return new Response(o.body, { headers: { ...hd, etag: o.httpEtag, "content-length": String(o.size) } });
+            // ?kept=previous|original: the bytes of a kept older version, for the Versions list's previews (file-versions.js fvKeptKey)
+            const kq = url.searchParams.get("kept"), kk = kq === "previous" || kq === "original" ? await R.fileKeptKey(fm[2], kq) : null; if (kq && !kk) return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
+            const vq = url.searchParams.get("v"), vk = !kk && vq != null && /^\d{1,6}$/.test(vq) ? await R.fileVersionKey(fm[2], Number(vq)) : null, vkey = kk || vk?.key || row.r2key;
+            // Byte ranges (files.js serveStoredBytes) so a video or audio file can be scrubbed on desktop.
+            return (await serveStoredBytes(req, env, vkey, hd)) || new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
           }
           // file-preview.js: a deck or Word document as a PDF for the viewer, made on the computer on first open (then from R2).
           // View-as and read-only accounts only get one already made: nothing here wakes their computer.
           // The transcript of an audio or video file with its speakers (sidecar.js fileTranscript), and naming a speaker ({ speaker, name?, contact_id? } → { speakers } | { error }).
           // Zone A (zone-edit.js): GET zone-info → { version, has_previous, previous_at }.
           if (fm[3] === "zone-info" && fm[2] && req.method === "GET") { const d = await R.zoneInfo(fm[2]); return json(d.error ? { error: d.error } : d, d.error ? d.status : 200); }
+          if (fm[3] === "versions" && fm[2] && req.method === "GET") { const d = await R.fileVersions(fm[2]); return d ? json(d, 200, { "cache-control": "no-store" }) : json({ error: "No such file." }, 404); }
           if (fm[3] === "transcript" && req.method === "GET") { const d = await R.fileTranscript(fm[2]); return json(d, d.error ? 404 : 200); }
           if (fm[3] === "transcript/speakers" && req.method === "POST") {
             if (access.mode === "read_only") return payRequired(access);
@@ -1739,6 +1742,12 @@ export default {
           if (req.method !== "POST") return json({ error: "method" }, 405);
           if (access.mode === "read_only") return payRequired(access);
           if (fm[3] === "delete") { const result = await R.deleteFile(fm[2]); return json(result, result?.status || 200); }
+          // Versions list: put back the version before the current one, or the person's original upload (file-versions.js restoreVersion, the same swap share_file's restore does). Body { which, base }.
+          if (fm[3] === "restore" && fm[2]) {
+            const rb = await boundedJson(req, 4096);
+            const d = await R.fileRestore(fm[2], rb.which, rb.base);
+            return json(d.error ? { error: d.error, ...(d.version != null ? { version: d.version } : {}) } : d, d.error ? d.status : 200);
+          }
           // Zone A: a direct edit of a Library .html file, no model. Body { base, edits: [...] } or { base, restore: "previous" } (zone-edit.js).
           if (fm[3] === "zone-edit" && fm[2]) {
             const zlen = Number(req.headers.get("content-length") || -1);
@@ -1867,7 +1876,11 @@ export default {
             if (!message && !fids.length) return json({ error: "Message required." }, 400);   // over 100,000 characters: Resident.chatStream saves it as a file
             // cid: the app's own id for this message, so a retry joins as a dup instead of twice. A message sent while the helper works
             // steers that turn ({"t":"steered"} then the stream ends); too many on one turn → 429.
-            const body = await R.chatStream(t.id, slugOf(ch), String(ch.id), String(message || ""), { session: session ? String(session) : null, files: fids, cid: typeof cid === "string" && cid ? cid.slice(0, 64) : null, ...(typeof cont === "string" && /^[0-9a-f-]{36}$/.test(cont) ? { continue: cont } : {}), ...(replyRef(reply) ? { reply: replyRef(reply) } : {}), ...(inputMeta ? { input_reply: inputMeta } : {}) });   // reply: the message it answers (reply-to.js)
+            // A reset can end the object mid-request (a deploy, or a storage operation that ran too long). With the app's message id (cid) the send is safe to
+            // make again, because the Resident finds the saved message by that id and answers "joined" instead of starting a second turn. So a reset on the first
+            // try never reaches the person as "Not sent".
+            const sendArgs = [t.id, slugOf(ch), String(ch.id), String(message || ""), { session: session ? String(session) : null, files: fids, cid: typeof cid === "string" && cid ? cid.slice(0, 64) : null, ...(typeof cont === "string" && /^[0-9a-f-]{36}$/.test(cont) ? { continue: cont } : {}), ...(replyRef(reply) ? { reply: replyRef(reply) } : {}), ...(inputMeta ? { input_reply: inputMeta } : {}) }];
+            const body = await sendOnce(env, () => env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:${slugOf(ch)}`)), sendArgs, typeof cid === "string" && !!cid, R);   // reply: the message it answers (reply-to.js)
             if (body && !(body instanceof ReadableStream) && body.error) return json({ error: body.error, ...(body.duplicate ? { duplicate: true } : {}) }, body.status || 400);
             return new Response(body, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store", "x-accel-buffering": "no" } });
           }
@@ -1988,6 +2001,18 @@ export async function skewRetry(env, fn) {
     if (!rpcSkew(e)) throw e;
     await new Promise((z) => setTimeout(z, Number(env?.SKEW_WAIT_MS ?? 1500)));
     return await fn();
+  }
+}
+// The Resident's chatStream, made again on a fresh stub when a reset ends it, but only for a send that carries the app's message id (see the stream route).
+export const STREAM_SEND_TRIES = 4;
+export async function sendOnce(env, mk, args, hasCid, first = null) {
+  const base = Number(env?.SKEW_WAIT_MS ?? 500);
+  for (let i = 0; ; i++) {
+    try { return await (i === 0 && first ? first : mk()).chatStream(...args); } catch (e) {
+      if (!hasCid || !transientError(e) || i >= STREAM_SEND_TRIES - 1) throw e;
+      console.log("stream send: reset, sending again with the same message id", i + 1, String(e?.message || e).slice(0, 120));
+      await new Promise((z) => setTimeout(z, base * 2 ** i));
+    }
   }
 }
 export const transientError = (e) => !!(e?.retryable || e?.overloaded || DO_TRANSIENT_RE.test(String(e?.message || e || "")) || rpcSkew(e));

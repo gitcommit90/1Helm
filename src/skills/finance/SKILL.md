@@ -7,13 +7,8 @@ always: false
 
 Give the number they asked for, from a live source, with when it's from.
 
-{{#apps}}**Look it up with live search first:** `search_web_vertical` with kind finance and query the symbol: AAPL (or AAPL:NASDAQ
-when a symbol trades in several places), an index such as .INX:INDEXSP (S&P 500), .DJI:INDEXDJX (Dow) or .IXIC:INDEXNASDAQ,
-BTC-USD for a crypto, USD-EUR for an exchange rate. Turn a company name into its ticker yourself; if two companies could
-match, say which one you looked up. Add window (5D, 1M, 6M, YTD, 1Y, 5Y) for "how has it done". Use `web_search` only when live
-search has no quote for it, or for the story behind a move.
-{{/apps}}{{^apps}}Look it up with `web_search` and an official quote page (the exchange, or a major financial site) with `fetch_url`.
-{{/apps}}
+Look it up with `web_search` and an official quote page (the exchange, or a major financial site) with `fetch_url`.
+
 ## Saying it
 
 - The price with its currency and the time it's from, and the day's change ("$340.11, up $3.44 (1.0%) as of 2:43 PM New York

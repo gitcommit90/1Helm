@@ -9,10 +9,8 @@ Turn a booking request into a verified reservation or purchase with as little wo
 dinner tomorrow for two", "get me a flight from SFO to JFK next Tuesday", "find a hotel in SoHo for Friday", "two tickets to
 the Patriots' next home game".
 
-**How 1Helm books.** {{#apps}}Live search first: `search_web_vertical` returns live fares and times (kind flights), hotel rates for the
-dates (hotels), restaurants and places (places) and events (events) in one step, before any web search. It finds and prices;
-it doesn't book. {{/apps}}You check the chosen option on the venue's, airline's or a reputable seller's own site in the browser
-on your computer (`web_search` and `fetch_url` for what live search can't answer), and pay only through Link, with the
+**How 1Helm books.** You find options with `web_search` and `fetch_url`, check the chosen option on the venue's, airline's or a reputable seller's
+own site in the browser on your computer, and pay only through Link, with the
 person's approval of the exact total every time.
 
 Read only the reference for this booking (`read_skill` with slug booking and the ref):
@@ -28,7 +26,7 @@ Read only the reference for this booking (`read_skill` with slug booking and the
 ## Rules that always hold
 
 1. **Never invent availability or prices.** A price or slot is real only when a live page shows it for these dates, this
-   party and this item: a live search result{{#apps}} (`search_web_vertical`){{/apps}} for these dates and this party counts for the shortlist,
+   party and this item: a live page for these dates and this party counts for the shortlist,
    and the seller's checkout shows the bookable total. Web search snippets, old pages and your memory are hints. Anything you couldn't check stays out of the
    bookable shortlist and is labelled "not checked" or "not stated".
 2. **Never book or buy without an explicit OK on the exact terms.** Before the final button (Reserve, Book, Place order,
@@ -89,7 +87,7 @@ they state with `remember` (a concise fact, not the receipt).
 2. **Ask only for a true blocker.** Start searching as soon as a useful search can run. Ask only when a missing fact would
    change the search a lot, risk booking the wrong thing, or is needed to book. One question at a time, with a suggested
    default.
-3. **Search the best available path,** in order: {{#apps}}live search (`search_web_vertical`) for options and prices, a connected app, {{/apps}}the person's own account on the provider's site
+3. **Search the best available path,** in order: {{#apps}}a connected app, {{/apps}}the person's own account on the provider's site
    (loyalty, credits, saved profile); the venue's or airline's own site; a reputable booking site. Actually try a path before
    calling it unavailable: one site's miss isn't proof it can't be booked. When one path fails, go on to the next without
    asking. Stop only when every path needs a decision, a detail, a sign-in or a commitment from them.

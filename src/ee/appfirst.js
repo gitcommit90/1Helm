@@ -58,6 +58,33 @@ const asUrl = (s) => { const t = String(s || "").trim(); if (!t) return null; tr
 // A saved-login site name ("google.com", "accounts.google.com") for browser_fill_login: the whole site, so paths don't matter.
 const SITE_ALIASES = { "google.com": "accounts.google.com", "microsoft.com": "login.live.com", "live.com": "login.live.com", "microsoftonline.com": "login.microsoftonline.com" };
 
+const NEXT_PARAMS = ["continue", "followup", "redirect_uri", "redirect_url", "return_to"];
+const isSigninHost = (h) => SITES.some((x) => x.signin && onHost(h, x.host));
+// The first address a sign-in page leads to that is not itself a shared sign-in page, looking through up to 3 sign-in pages. null: none.
+function nextTarget(u, depth = 0) {
+  for (const k of NEXT_PARAMS) {
+    const v = u.searchParams.get(k), nu = v && asUrl(v); if (!nu) continue;
+    if (!isSigninHost(nu.hostname.toLowerCase())) return v;
+    if (depth < 3) { const deeper = nextTarget(nu, depth + 1); if (deeper) return deeper; }
+  }
+  return null;
+}
+
+// Pages of a service's own site where a person signs in or works, named after the connected app: dashboard.stripe.com for the app "stripe".
+// Only these (the public pages of stripe.com, docs and the like, stay open): a host label from this list, or a sign-in path.
+const OWN_SITE_LABEL = /^(dashboard|app|admin|login|auth|accounts?|my|portal|manage|console|secure)$/;
+const OWN_SITE_PATH = /^\/(login|signin|sign-in|sign_in|log-in|dashboard|register)(\/|$)/;
+const compactName = (x) => String(x || "").toLowerCase().replace(/_mcp$/, "").replace(/[^a-z0-9]/g, "");
+export function ownSiteFor(u, live) {
+  const parts = u.hostname.toLowerCase().replace(/^www\./, "").split(".");
+  if (parts.length < 2) return null;
+  const tail = parts.length > 2 && parts.at(-1).length === 2 && parts.at(-2).length <= 3 ? 3 : 2;   // example.co.uk
+  const reg = parts.at(-tail), sub = parts.slice(0, -tail);
+  if (!(sub.length && sub.every((x) => OWN_SITE_LABEL.test(x))) && !OWN_SITE_PATH.test(u.pathname)) return null;
+  for (const [app, name] of live) if (compactName(app) === reg || compactName(name) === reg) return { app, name };
+  return null;
+}
+
 // → { app, name } of the connected app this address belongs to, or null. conns: Resident.conns() rows.
 export function connectedServiceFor(target, conns = [], { site = false, depth = 0 } = {}) {
   const live = new Map(); for (const c of conns || []) if (c.status === "connected" && !live.has(c.app)) live.set(c.app, c.name || c.app);
@@ -68,14 +95,17 @@ export function connectedServiceFor(target, conns = [], { site = false, depth = 
   for (const s of SITES) {
     if (!onHost(h, s.host) || (!site && s.path && !s.path.test(u.pathname))) continue;
     if (s.signin) {
-      // A shared sign-in page on its way to somewhere specific (?continue=…) belongs to that place: YouTube's sign-in isn't Calendar's.
-      const next = !site && depth < 2 && (u.searchParams.get("continue") || u.searchParams.get("followup") || u.searchParams.get("redirect_uri"));
-      if (next) { const nu = asUrl(next); if (nu && !SITES.some((x) => x.signin && onHost(nu.hostname.toLowerCase(), x.host))) return connectedServiceFor(next, conns, { depth: depth + 1 }); }
+      // A shared sign-in page on its way to somewhere specific (?continue=…, ?redirect_uri=…) belongs to that place: YouTube's sign-in isn't
+      // Calendar's, and "Sign in with Google" on another site (Stripe's dashboard) isn't Gmail's. The place can sit behind another sign-in
+      // address (a Google sign-in whose ?continue= is Google's consent page whose redirect_uri is the other site), so follow up to 3 hops.
+      const next = !site && depth < 3 && nextTarget(u, depth);
+      if (next) return connectedServiceFor(next, conns, { depth: depth + 1 });
       const app = s.signin.find((a) => live.has(a)); if (app) return { app, name: live.get(app), signin: true };
       continue;
     }
     const app = s.apps.find((a) => live.has(a)); if (app) return { app, name: live.get(app) };
   }
+  { const own = ownSiteFor(u, live); if (own) return own; }   // a connected app's own dashboard or sign-in page that SITES doesn't list
   return null;
 }
 

@@ -23,9 +23,8 @@ times.
 
 ## Search
 
-{{#apps}}Start with `search_web_vertical` (kind hotels; query the city, area or hotel, check_in, check_out, adults, children; sort
-price or rating): live rates and the full-stay total for these dates from Google Hotels in one step. Then {{/apps}}Search hotel booking sites
-and the hotels' own sites with `web_search`, `fetch_url` and the browser for what it doesn't show. Confirm each
+Search hotel booking sites
+and the hotels' own sites with `web_search`, `fetch_url` and the browser. Confirm each
 shortlisted rate on a live page for these dates and this party; teaser prices don't count. Check the chain's own site (signed
 in, when they have an account) when status, member prices, points or certificates matter. Compare direct and third-party
 rates on the same room and terms: a cheaper third-party rate can lose status credit, breakfast, flexibility or direct

@@ -121,10 +121,8 @@ arithmetic in the open. Never invent a duration or claim savings from incomplete
 
 ## Hand concrete candidates to booking
 
-{{#apps}}For live fares, hotel rates, places, things to do and events while planning, `search_web_vertical` (kinds flights, hotels,
-places, tripadvisor, events) answers in one step: use it before web searches; it's research, never a booking. Built in, straight
-with `app_run`: tours and day trips → `VIATOR_MCP_SEARCH_EXPERIENCES` (price, rating, free cancellation); "cheapest month to
-go" → `TRIVAGO_MCP_TRIVAGO_DESTINATION_PRICE_TRENDS`; current weather there → `WEATHERMAP_WEATHER` (no forecast).
+{{#apps}}Built in, straight with `app_run`: tours and day trips → `VIATOR_MCP_SEARCH_EXPERIENCES` (price, rating, free cancellation);
+"cheapest month to go" → `TRIVAGO_MCP_TRIVAGO_DESTINATION_PRICE_TRENDS`.
 
 {{/apps}}When a part of the plan is concrete enough to check live price, availability or terms, read the booking skill (and its
 handoff notes in this skill's handoff reference) and do the check in the same conversation. Don't send the person off to do
@@ -172,4 +170,4 @@ a separate step only when they ask.
 | flights | Shaping or comparing a complex flight route |
 | handoff | Passing a candidate into live price, availability or booking |
 
-TODO(Captain): 1Helm has no flight, hotel, restaurant or ticket BOOKING APIs (no Duffel, OpenTable, FlightAware or Ticketmaster integration). Live search (search_web_vertical: Composio's Google Flights / Hotels / Maps / Events / Tripadvisor) finds and prices; checks and bookings run through the browser; purchases through the browser + Link. A provider API added later gets its rules in the booking skill's references.
+TODO(Captain): 1Helm has no flight, hotel, restaurant or ticket BOOKING APIs (no Duffel, OpenTable, FlightAware or Ticketmaster integration). Web search finds and prices; checks and bookings run through the browser; purchases through the browser + Link. A provider API added later gets its rules in the booking skill's references.

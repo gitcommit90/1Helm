@@ -295,7 +295,7 @@ export async function ownKeyPlan(env, tenantId, cfg, categoryId = "general") {
   if (!cfg || cfg.missing || !env?.DB) return null;
   const st = await readOwn(env, tenantId), config = st.config;
   if (!config?.categories?.length) throw new ByokError(chooseModelText(cfg));
-  const problems = ownProblems(config, st.level); if (problems.length) throw new CustomModelsRequired(requiredMessage(problems, st.level), { problems, level: st.level });
+  const problems = ownProblems(config, st.level); if (problems.length) throw new CustomModelsRequired(requiredMessage(problems, st.level, "Settings, AI services, Models"), { problems, level: st.level });
   const general = config.categories.find((c) => c.id === "general") || config.categories[0];
   const picked = config.categories.find((c) => c.id === categoryId), cat = picked?.chain?.length ? picked : general;   // a category with nothing left in it answers from General
   if (!cat?.chain?.length) throw new ByokError(chooseModelText(cfg));

@@ -190,7 +190,9 @@ const rowDocs = (m) => m.d1.prepare("SELECT doc FROM mem WHERE doc IS NOT NULL O
   const r = await R.hsTurnWrite({ turn: "t2", session: "s1", at: T1 + 1, userText: "more", reply: "ok" }); assert.equal(r.skipped, 1); assert.equal(X.calls.length, n0, "out of credits: not saved"); assert.ok(holds.some((h) => h[0] === "skipped"));
   R.byokHold = async () => ({ done: async () => 0 });
   // a server error: the item goes to the outbox and the alarm sends it again
+  let armed = 0; R.arm = () => { armed++; return Promise.resolve(); };
   m.fail(503, false); const rq = await R.hsTurnWrite({ turn: "t3", session: "s1", at: T1 + 2, userText: "retry me", reply: "ok" }); assert.equal(rq.queued, 1); assert.equal(R.hsOutboxCount(), 1);
+  assert.ok(armed >= 1, "a queued save arms the alarm, so a quiet channel still retries it");
   assert.ok(R.hsOutboxNext() > Date.now(), "the alarm is asked to come back"); m.heal(); const fl = await R.hsFlush({ max: 10, paid: true }); assert.equal(fl.sent, 1); assert.equal(R.hsOutboxCount(), 0);
   assert.match(await txt(m, "conv:s1:2026-10-14"), /retry me/, "the queued turn arrived");
   // a client error is dropped, not retried forever

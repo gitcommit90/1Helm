@@ -17,67 +17,27 @@ const rule = (o) => egressRule({ env: env0, headers: H(), ...o });
 
 // ---- 1. the policy table ----
 const cases = [
-  ["payment POST", { host: "api.stripe.com", method: "POST", path: "/v1/payment_intents" }, "ask", null],
-  ["payment background XHR still protected", { host: "shop.example", method: "POST", path: "/checkout", headers: H(CHROME_XHR) }, "ask", null],
-  ["API key GET", { host: "api.example", method: "GET", path: "/v1/api_keys" }, "ask", null],
+  // [what, input, verdict, rule]
+  ["payment POST with no saved key goes out", { host: "api.stripe.com", method: "POST", path: "/v1/payment_intents" }, "allow", "no-key"],
+  ["a payment company's sign-in XHR goes out", { host: "dashboard.stripe.com", method: "POST", path: "/ajax/sessions/new", headers: H(CHROME_XHR) }, "allow", "no-key"],
+  ["a payment company's checkout background XHR goes out", { host: "shop.example", method: "POST", path: "/checkout", headers: H(CHROME_XHR) }, "allow", "no-key"],
+  ["key-looking path with no saved key goes out", { host: "api.example", method: "GET", path: "/v1/api_keys" }, "allow", "no-key"],
   ["saved-key GET", { host: "api.example", method: "GET", path: "/v1/items", keys: ["K"] }, "ask", null],
-  // [what, input, verdict, rule-or-why]
-  ["GET anywhere", { host: "httpbin.org", method: "GET", path: "/get" }, "allow", "read"],
-  ["HEAD", { host: "pypi.org", method: "HEAD" }, "allow", "read"],
-  ["OPTIONS preflight", { host: "api.x.com", method: "OPTIONS" }, "allow", "read"],
-  ["GET with a saved key retains scoped approval", { host: "api.openweathermap.org", method: "GET", keys: ["OWM"] }, "ask", null],
-  ["curl POST to a third party", { host: "httpbin.org", method: "POST", path: "/post", headers: H({ "content-type": "application/x-www-form-urlencoded" }) }, "allow", "task-action"],
-  ["PUT / PATCH / DELETE", { host: "api.github.com", method: "DELETE", path: "/repos/a/b" }, "allow", "task-action"],
-  ["git push (receive-pack)", { host: "github.com", method: "POST", path: "/a/b.git/git-receive-pack", headers: H({ "content-type": "application/x-git-receive-pack-request" }) }, "allow", "task-action"],
-  ["git clone (upload-pack)", { host: "github.com", method: "POST", path: "/octocat/Hello-World/git-upload-pack", headers: H({ "content-type": "application/x-git-upload-pack-request" }) }, "allow", "git-read"],
-  ["upload-pack path without git's content type", { host: "evil.example", method: "POST", path: "/x/git-upload-pack", headers: H({ "content-type": "application/json" }) }, "allow", "task-action"],
-  ["LFS download batch", { host: "huggingface.co", method: "POST", path: "/m/x.git/info/lfs/objects/batch", lfsOp: "download" }, "allow", "git-read"],
-  ["LFS upload batch", { host: "github.com", method: "POST", path: "/a/b.git/info/lfs/objects/batch", lfsOp: "upload" }, "allow", "task-action"],
-  ["npm audit", { host: "registry.npmjs.org", method: "POST", path: "/-/npm/v1/security/advisories/bulk" }, "allow", "npm-audit"],
-  ["npm publish", { host: "registry.npmjs.org", method: "PUT", path: "/my-pkg" }, "allow", "task-action"],
-  ["npm audit path on another host", { host: "npm.evil.example", method: "POST", path: "/-/npm/v1/security/advisories/bulk" }, "allow", "task-action"],
-  ["1Helm storage (presigned PUT)", { host: "acct123.r2.cloudflarestorage.com", method: "PUT", path: "/bucket/t/x" }, "allow", "own-storage"],
-  ["someone else's R2", { host: "other.r2.cloudflarestorage.com", method: "PUT", path: "/b/x" }, "allow", "task-action"],
+  ["saved-key POST", { host: "api.example", method: "POST", path: "/v1/items", keys: ["K"] }, "ask", null],
+  ["saved-key with forged browser headers", { host: "api.openai.com", method: "POST", path: "/v1/x", keys: ["OPENAI_KEY"], headers: H(CHROME_XHR) }, "ask", null],
+  ["saved-key on a git upload-pack", { host: "github.com", method: "POST", path: "/a/b/git-upload-pack", keys: ["GH_TOKEN"], headers: H({ "content-type": "application/x-git-upload-pack-request" }) }, "ask", null],
+  ["saved-key on 1Helm storage", { host: "acct123.r2.cloudflarestorage.com", method: "PUT", path: "/b", keys: ["K"] }, "ask", null],
+  ["ordinary POST", { host: "httpbin.org", method: "POST", path: "/post" }, "allow", "no-key"],
   ["1Helm itself", { host: "owner.example.com", method: "POST", path: "/w/x/api/res/main/approve" }, "deny", "self"],
   ["1Helm itself, case", { host: "OWNER.example.COM", method: "POST", path: "/" }, "deny", "self"],
-  ["Next.js telemetry", { host: "telemetry.nextjs.org", method: "POST", path: "/api/v1/record" }, "deny", "telemetry"],
-  ["Chrome's own GCM registration (no page)", { host: "android.clients.google.com", method: "POST", path: "/c2dm/register3" }, "deny", "chrome-service"],
-  ["Chrome's update check, even with fetch metadata (as seen on dev)", { host: "update.googleapis.com", method: "POST", path: "/service/update2/json", headers: H(CHROME_BEACON) }, "deny", "chrome-service"],
-  ["GCM with fetch metadata", { host: "android.clients.google.com", method: "POST", path: "/c2dm/register3", headers: H(CHROME_XHR) }, "deny", "chrome-service"],
-  // The browser's own reports (seen on dev: POST w3-reporting-nel.reddit.com/reports while kayak.com loaded → a card)
-  ["NEL report (Reporting API), no fetch metadata", { host: "w3-reporting-nel.reddit.com", method: "POST", path: "/reports", headers: H({ "content-type": "application/reports+json" }) }, "deny", "browser-report"],
-  ["Reporting API to any host, by content type", { host: "collector.example.org", method: "POST", path: "/r", headers: H({ "content-type": "application/reports+json; charset=utf-8" }) }, "deny", "browser-report"],
-  ["CSP violation report", { host: "csp.example.net", method: "POST", path: "/csp", headers: H({ "content-type": "application/csp-report" }) }, "deny", "browser-report"],
-  ["Expect-CT report", { host: "ct.example.net", method: "POST", path: "/", headers: H({ "content-type": "application/expect-ct-report+json" }) }, "deny", "browser-report"],
-  ["Cloudflare NEL collector without content type", { host: "a.nel.cloudflare.com", method: "POST", path: "/report/v4" }, "deny", "browser-report"],
-  ["reddit reporting host without content type", { host: "w3-reporting.reddit.com", method: "POST", path: "/reports" }, "deny", "browser-report"],
-  ["Google CSP collector", { host: "csp.withgoogle.com", method: "POST", path: "/csp/x" }, "deny", "browser-report"],
-  ["report-uri.com", { host: "acme.report-uri.com", method: "POST", path: "/r/d/csp/enforce" }, "deny", "browser-report"],
-  ["a report content type carrying a saved key still asks", { host: "w3-reporting-nel.reddit.com", method: "POST", path: "/reports", keys: ["K"], headers: H({ "content-type": "application/reports+json" }) }, "ask", null],
-  ["a clicked form is never a 'report'", { host: "w3-reporting.reddit.com", method: "POST", path: "/x", headers: H(CHROME_FORM) }, "allow", "task-action"],
-  ["look-alikes are not report hosts", { host: "channel.example.com", method: "POST", path: "/" }, "allow", "task-action"],
-  ["…nor is a site merely containing 'nel'", { host: "panel.example.com", method: "POST", path: "/" }, "allow", "task-action"],
-  ["…nor a lookalike of report-uri.com", { host: "notreport-uri.com", method: "POST", path: "/" }, "allow", "task-action"],
-  ["a page's XHR to a third party is still the page's", { host: "api.example.com", method: "POST", path: "/x", headers: H(CHROME_XHR) }, "allow", "browser-page"],
-  ["browser XHR POST (site search)", { host: "www.kayak.com", method: "POST", path: "/i/api/search", headers: H(CHROME_XHR) }, "allow", "browser-page"],
-  ["browser beacon (analytics)", { host: "bat.bing.com", method: "POST", path: "/actionp/0", headers: H(CHROME_BEACON) }, "allow", "browser-page"],
-  ["browser form submit (click)", { host: "httpbin.org", method: "POST", path: "/post", headers: H(CHROME_FORM) }, "allow", "task-action"],
-  ["browser auto-submitted redirect form (no click)", { host: "login.example.com", method: "POST", path: "/saml/acs", headers: H({ ...CHROME_FORM, "sec-fetch-user": "" }) }, "allow", "browser-redirect"],
-  // A key never rides an automatic rule, whatever the request looks like.
-  ["key + forged browser headers", { host: "api.openai.com", method: "POST", path: "/v1/x", keys: ["OPENAI_KEY"], headers: H(CHROME_XHR) }, "ask", null],
-  ["key + git upload-pack", { host: "github.com", method: "POST", path: "/a/b/git-upload-pack", keys: ["GH_TOKEN"], headers: H({ "content-type": "application/x-git-upload-pack-request" }) }, "ask", null],
-  ["key + npm audit", { host: "registry.npmjs.org", method: "POST", path: "/-/npm/v1/security/audits/quick", keys: ["NPM_TOKEN"] }, "ask", null],
-  ["key + own storage", { host: "acct123.r2.cloudflarestorage.com", method: "PUT", path: "/b", keys: ["K"] }, "ask", null],
+  ["1Helm itself, even a read", { host: "owner.example.com", method: "GET", path: "/" }, "deny", "self"],
 ];
 for (const [what, input, verdict, r] of cases) {
   const d = rule(input);
   assert.equal(d.verdict, verdict, `${what}: ${JSON.stringify(d)}`);
   if (verdict !== "ask") assert.equal(d.rule, r, what);
 }
-assert.equal(rule({ host: "telemetry.nextjs.org", method: "POST" }).quiet, true);
 assert.equal(egressVia(H()), "command"); assert.equal(egressVia(H(CHROME_FORM)), "form"); assert.equal(egressVia(H(CHROME_BEACON)), "page");
-assert.equal(rule({ host: "httpbin.org", method: "POST", headers: H(CHROME_FORM) }).via, "form");
-assert.equal(rule({ host: "httpbin.org", method: "POST" }).via, "command");
 // no env (unit default): nothing about 1Helm's own hosts is assumed
 assert.equal(egressRule({ host: "acct123.r2.cloudflarestorage.com", method: "PUT", headers: H() }).verdict, "allow");
 assert.equal(lfsOperation('{"operation":"download","objects":[]}'), "download"); assert.equal(lfsOperation("nope"), null);
@@ -123,11 +83,11 @@ assert.equal(notes[0].verdict, "deny");
 reset(); answer = { verdict: "allow", why: "approved by the person (once)" };
 res = await go("https://api.weather.example/v1/alerts", { method: "POST", body: "a=1", headers: { authorization: `Bearer ${SIN}` } });
 assert.equal(res.status, 200); assert.equal(upstream[0].headers.authorization, `Bearer ${REAL}`); assert.equal(upstream[0].body, "a=1");
-// a curl POST asks (via command); a browser form asks (via form); a page's XHR and git clone go out without asking
+// without a saved key, a curl POST, a browser form, a page's XHR and a git clone all go out without asking
 reset(); await go("https://httpbin.org/post", { method: "POST", body: "x" }); assert.equal(asks.length, 0); assert.equal(upstream[0].body, "x");
 reset(); await go("https://httpbin.org/post", { method: "POST", body: "x", headers: CHROME_FORM }); assert.equal(asks.length, 0); assert.equal(upstream[0].body, "x");
 reset(); res = await go("https://www.kayak.com/i/api/search", { method: "POST", body: "{}", headers: CHROME_XHR });
-assert.equal(res.status, 200); assert.equal(asks.length, 0); assert.equal(notes[0].why, "web page background request");
+assert.equal(res.status, 200); assert.equal(asks.length, 0); assert.equal(notes[0].why, "no saved key on the request");
 reset(); await go("https://github.com/octocat/Hello-World/git-upload-pack", { method: "POST", body: "0032want", headers: { "content-type": "application/x-git-upload-pack-request" } });
 assert.equal(asks.length, 0); assert.equal(upstream[0].body, "0032want");
 // Git LFS: the batch body is read to tell a download from an upload, and still forwarded whole
@@ -140,12 +100,9 @@ assert.equal(asks.length, 0); assert.equal(upstream[0]?.body, up);   // allowed 
 // 1Helm itself: refused, never asked
 reset(); res = await go("https://owner.example.com/w/x/api/res/main/approve", { method: "POST", body: "{}" });
 assert.equal(res.status, 403); assert.equal(asks.length, 0); assert.equal(upstream.length, 0);
-// telemetry: not sent, no card, a quiet note
-reset(); res = await go("https://telemetry.nextjs.org/api/v1/record", { method: "POST", body: "{}" });
-assert.equal(res.status, 403); assert.equal(res.headers.get("x-1helm-sentinel"), "skipped"); assert.equal(asks.length, 0);
-// the browser's NEL report (as seen on dev): not sent, no card, a quiet note
-reset(); res = await go("https://w3-reporting-nel.reddit.com/reports", { method: "POST", body: "[]", headers: { "content-type": "application/reports+json" } });
-assert.equal(res.status, 403); assert.equal(res.headers.get("x-1helm-sentinel"), "skipped"); assert.equal(asks.length, 0); assert.equal(upstream.length, 0);
+// a payment company's sign-in (page XHR, no saved key) is answered by the site, not refused (2026-11-07)
+reset(); res = await go("https://dashboard.stripe.com/ajax/sessions/new", { method: "POST", body: "email=a", headers: CHROME_XHR });
+assert.equal(res.status, 200); assert.equal(asks.length, 0); assert.equal(upstream[0].body, "email=a");
 // props without tenant (a computer started before this change): asks the computer who it is
 { const S2 = new Sentinel({ props: { id: "cc1" } }, envS); reset(); await S2.fetch(new Request(`https://api.weather.example/x`, { headers: { a: SIN } })); assert.equal(upstream[0].headers.a, REAL); }
 

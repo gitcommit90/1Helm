@@ -86,9 +86,9 @@ export function ownProblems(config, level) {
   });
   return out;
 }
-export function requiredMessage(problems, level) {
+export function requiredMessage(problems, level, where = "Settings, Advanced, Custom Model Selection") {
   const list = problems.slice(0, 6).map((p) => p.model ? `${p.name || p.model} (${p.category}, ${SLOT_NAME[p.slot] || "model"})` : `${p.category}: ${p.why}`).join(", ");
-  return `Your AI data privacy setting is ${PRIVACY_LABEL[normalizePrivacy(level)]}, and these models in Custom Model Selection can't be used with it: ${list}. Nothing was sent. Open Settings, Advanced, Custom Model Selection and choose new models to continue.`;
+  return `Your AI data privacy setting is ${PRIVACY_LABEL[normalizePrivacy(level)]}, and these models in Custom Model Selection can't be used with it: ${list}. Nothing was sent. Open ${where} and choose new models to continue.`;
 }
 
 // ---- reading the account's setting ----

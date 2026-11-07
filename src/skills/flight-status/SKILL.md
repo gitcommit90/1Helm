@@ -7,8 +7,7 @@ always: false
 
 Answer about one exact flight on one exact date, from a current source, in plain words.
 
-**Where the facts come from.** Live status comes from public sources{{#apps}} (live search, `search_web_vertical` kind flights, shows
-which flights fly a route with their scheduled times and fares, but not a flight's live status){{/apps}}: the operating airline's own
+**Where the facts come from.** Live status comes from public sources: the operating airline's own
 flight-status page (it owns the facts), the departure and arrival airports' flight boards, and public flight trackers such as
 FlightAware or Flightradar24, with `web_search`, `fetch_url` and, when a page needs it, the browser. If a source can't be
 read right now, say so and try another; never ask the person for an API key.

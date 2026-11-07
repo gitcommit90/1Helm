@@ -34,6 +34,37 @@ export function servedHeaders(mime, name, download = false) {
   return { "content-type": risky ? "application/octet-stream" : text ? "text/plain; charset=utf-8" : mime, "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(name)}`,
     "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox", "cache-control": "private, no-cache" };
 }
+// Byte ranges (RFC 9110): one range of "bytes=a-b", "bytes=a-" or "bytes=-n" against a file of `size` bytes.
+// Returns null when the header is absent, malformed or asks for several ranges (the caller then sends the whole file),
+// "unsatisfiable" when the range is outside the file, or { offset, length } (the last byte is clamped to the file end).
+export function parseByteRange(header, size) {
+  const m = /^\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*$/i.exec(String(header || "")); if (!m || (m[1] === "" && m[2] === "")) return null;
+  if (m[1] === "") { const n = Number(m[2]); return n === 0 || size === 0 ? "unsatisfiable" : { offset: Math.max(0, size - n), length: Math.min(n, size) }; }
+  const a = Number(m[1]), b = m[2] === "" ? size - 1 : Math.min(Number(m[2]), size - 1);
+  if (m[2] !== "" && Number(m[2]) < a) return null;   // "bytes=5-2" is not a valid range: ignored
+  return a >= size ? "unsatisfiable" : { offset: a, length: b - a + 1 };
+}
+// The one way the app answers a GET for stored file bytes that a browser may play (video, audio) or show. headers: servedHeaders(...).
+// No Range header: 200 with the whole file. A Range header: 206 + Content-Range with just that part, or 416 outside the file.
+// Always sends Accept-Ranges: bytes (desktop Chrome refuses to seek without it) and the ETag; If-None-Match gives 304.
+// If-Range: when its ETag no longer matches, the whole file is sent. Resolves to a Response, or null when the object is missing.
+export async function serveStoredBytes(req, env, key, headers) {
+  const inm = req.headers.get("if-none-match"), rng = req.headers.get("range"), base = { ...headers, "accept-ranges": "bytes" }, bare = (x) => String(x || "").replace(/^W\//, "").replace(/"/g, "");
+  const cond = inm ? { onlyIf: { etagDoesNotMatch: bare(inm) } } : {};
+  if (!rng) {
+    const o = await env.WS.get(key, cond); if (!o) return null;
+    if (!("body" in o) || !o.body) return new Response(null, { status: 304, headers: { ...base, etag: o.httpEtag } });
+    return new Response(o.body, { headers: { ...base, etag: o.httpEtag, "content-length": String(o.size) } });
+  }
+  const head = await env.WS.head(key); if (!head) return null;
+  const etag = head.httpEtag, ir = req.headers.get("if-range");
+  if (inm && etag && bare(inm) === bare(etag)) return new Response(null, { status: 304, headers: { ...base, etag } });
+  const r = ir && bare(ir) !== bare(etag) ? null : parseByteRange(rng, head.size);
+  if (r === "unsatisfiable") return new Response(null, { status: 416, headers: { ...base, etag, "content-range": `bytes */${head.size}`, "cache-control": "no-store" } });
+  if (!r) { const o = await env.WS.get(key); return o ? new Response(o.body, { headers: { ...base, etag: o.httpEtag, "content-length": String(o.size) } }) : null; }
+  const o = await env.WS.get(key, { range: { offset: r.offset, length: r.length } }); if (!o) return null;
+  return new Response(o.body, { status: 206, headers: { ...base, etag: o.httpEtag || etag, "content-range": `bytes ${r.offset}-${r.offset + r.length - 1}/${head.size}`, "content-length": String(r.length) } });
+}
 export const humanBytes = (b) => b < 1024 ? `${b} B` : b < 1048576 ? `${Math.round(b / 1024)} KB` : `${(b / 1048576).toFixed(b < 10485760 ? 1 : 0)} MB`;
 // The one place an uploaded file's bytes land, for the app's POST /files and for a file texted to the helper:
 // R2 key t/<tenant>/files/<channel>/<id> + metadata. The caller then registers it with Resident.addUpload.

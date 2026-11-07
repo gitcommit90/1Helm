@@ -179,7 +179,7 @@ export async function privacyBoot(env, t) {
   const v = privacyView(t); let byok = null;
   try {   // "openrouter" only when every connected service is OpenRouter (the setting reaches it); with any other service in play their terms apply. Read with plain SQL: this file must not import the byok modules.
     const b = await env.DB.prepare("SELECT mode, base_url FROM byok WHERE tenant_id=?").bind(t.id).first();
-    if (t.plan === "byok" || b?.mode === "fallback") {
+    if (t.plan === "byok" || b?.mode === "fallback" || b?.mode === "now") {
       const done = await env.DB.prepare("SELECT 1 x FROM byok_multi WHERE tenant_id=?").bind(t.id).first().catch(() => null);
       if (done) {
         const rows = (await env.DB.prepare("SELECT kind FROM byok_connections WHERE tenant_id=?").bind(t.id).all()).results || [];

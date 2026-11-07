@@ -54,7 +54,7 @@ export const WAITING_CONFIRM = (title, updated = true) => `WAITING FOR CONFIRM: 
 export const HELPER_REVIEW = new Set(["approve_subagent", "message_subagent", "decide_worker_request"]);
 
 // ---- what kind of call (§3.3.2) ----
-const READ = new Set(["web_search", "search_web_vertical", "fetch_url", "read_file", "search_files", "calendar_events", "gmail_search", "gmail_read", "work_log", "bring_back", "recall_history",
+const READ = new Set(["web_search", "fetch_url", "read_file", "search_files", "calendar_events", "gmail_search", "gmail_read", "work_log", "bring_back", "recall_history",
   "read_skill", "read_doc", "load_tools", "read_context", "recall_memory", "ambient_query", "location_query", "list_channels", "list_tasks", "read_task", "browser_snapshot", "browser_screenshot", "browser_navigate", "list_workflows", "app_actions", "app_events", "find_app", "memory_explain", "check_purchase", "ping"]);
 const EXEC = new Set(["run_command", "write_file", "edit_file"]);
 const ONCE = new Set(["start_helper", "schedule_followup", "schedule_workflow"]);

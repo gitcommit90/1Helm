@@ -33,6 +33,15 @@ import { boundedJson } from "./bounded-body.js";
 //     failure part way is finished by trying again. The mode "switch" (scheduled for the renewal) stays for accounts that already have
 //     one: Undo as before, or Switch now. A later invoice.paid for the plan the account left is handled in index.js (stale invoice).
 //   - Removing the key ends fallback (the row goes); with a switch pending, the app asks whether to cancel the switch too.
+//   - "now" (Use my services now, Captain 2026-11-07: "the moment they authenticate there, they should now optionally be able to select what model to use"): the plan stays, and chat answers on the
+//     services at once, with General's first model chosen in Settings → AI services → Models (the same editor the byok plan has; it saves to tenants.custom_models_own on every plan).
+//     It is on while a service is connected AND General has a model (answersOnOwnKey, loadByok): with no service or no General model chat goes back to 1Helm's models, and the plan's mode stays
+//     "now" so choosing a model again turns it on. Choosing General's first model while no option is chosen sets it (autoUseNow, called by the account route after the save), so picking a model is enough.
+//     The AI part is never charged (reserve 0, like the byok plan). The computer, browser, web search and memory are metered by byokHold/byokMeter from the plan's own balance (the Ledger draws the plan's
+//     included usage first, then any credits), exactly as in an active backup episode, so non-AI parts cost the plan's usage, not a separate credit. Background jobs left empty here means 1Helm's models keep
+//     doing every background job (cfg.choresOnPlan, read through choresOnPlan(env) / plainEnv(env): dispatch() and orFetch() skip the own-key branch for any chore, the hand-off note runs the "handoff" job, and each caller bills as on any
+//     full plan); chat turns stay on the services. On the byok plan an empty list
+//     keeps its old meaning (General's model does them). Backup mode (fallback) reads the same models. Switch now needs only the same General model.
 // On the byok plan there's no choice: the key is simply their AI.
 import { sealSecret, openSecret } from "./sentinel.js";
 import { enabled as eeEnabled, effortBody, ownChorePlan, parseOwn, listedRecords, changePlan, nextPlan,
@@ -67,7 +76,7 @@ export const BYOK_CREDITS_REPLY = "Your credits for the computer, browser and me
 export const isByokError = (e) => !!e?.byok || BYOK_REPLY_RE.test(String(e?.message ?? e ?? ""));
 
 // ---- a key on a full plan: the two options ----
-export const MODES = ["fallback", "switch"];
+export const MODES = ["now", "fallback", "switch"];
 export const isFullPlan = (plan) => !!plan && plan !== BYOK_PLAN;
 export const FALLBACK_NOTE = "Using your own AI key (1Helm credits used up)";
 export const ZDR_FALLBACK = "The zero-data-retention note applies only while your key is in use: then the AI part goes to your provider under their terms. While 1Helm credits last, nothing changes.";
@@ -260,6 +269,9 @@ export async function firstEventOk(cfg, stream) {
 // `facts` the saved facts of the model (the same as on a full plan), `maxPrice` the category's max price. Without them the call is exactly as before.
 // Effort goes the way the endpoint takes it: OpenRouter gets reasoning.effort (effortBody, as for a full plan), any other endpoint gets
 // reasoning_effort, and only a level its model's facts listed can be saved, so none is ever sent that the model did not say it supports.
+// Use my services now with no Background jobs chosen (cfg.choresOnPlan): every chore is 1Helm's, as on any full plan. These two are the one decision every caller uses.
+export const choresOnPlan = (env) => !!env?.BYOK?.choresOnPlan;
+export const plainEnv = (env) => env.__byokBase || Object.create(env, { BYOK: { value: null } });
 export function effortFields(cfg, effort, model, facts = null) {
   if (!effort || effort === "default") return {};
   if (isOpenRouterBase(cfg?.base)) return effortBody(effort, model, { catalog: facts ? { [model]: facts } : {} });
@@ -267,8 +279,8 @@ export function effortFields(cfg, effort, model, facts = null) {
 }
 // Several AI services (byok-connections.js): cfg.connections maps a connection id to the config of one service, and a model is named <connection id>:<model>. byokChat sends the call to
 // the connection the model belongs to, with that connection's key and API; the rest (one call to one service) is byokChatOne. A cfg with no connections is one service, as it always was.
-export const chooseModelText = (cfg) => `Your AI service is connected, but no model is chosen for this yet. Choose one in ${cfg?.settings ? `[Settings, Advanced, Custom Model Selection](${cfg.settings.replace(/settings=byok/, "settings=advanced")})` : "Settings, Advanced, Custom Model Selection"}.`;
-const goneText = (cfg, ns) => `Your AI service for ${String(ns).slice(0, 80)} was disconnected. Choose another model in Settings, Advanced, Custom Model Selection.`;
+export const chooseModelText = (cfg) => `Your AI service is connected, but no model is chosen for this yet. Choose one in ${cfg?.settings ? `[Settings, AI services, Models](${cfg.settings})` : "Settings, AI services, Models"}.`;
+const goneText = (cfg, ns) => `Your AI service for ${String(ns).slice(0, 80)} was disconnected. Choose another model in Settings, AI services, Models.`;
 export async function byokChat(cfg, body, opts = {}) {
   if (!cfg || cfg.missing || typeof cfg.key !== "string") throw new ByokError(missingText(cfg));   // "" = no key (Ollama, LM Studio, vLLM…)
   const { fast = false, signal = null, fetchImpl = globalThis.fetch, privacy = null, maxPrice = null, session = null, purpose = null } = opts;
@@ -376,15 +388,16 @@ export async function loadByok(env, tenantId) {
   const r = await byokRow(env, tenantId);
   if (!r) return null;
   const onPlan = r.plan === BYOK_PLAN;
-  if (!onPlan && r.mode !== "fallback") return null;
+  if (!onPlan && r.mode !== "fallback" && r.mode !== "now") return null;
+  const now = !onPlan && r.mode === "now";
   const settings = appUrl(env, r.slug), credits = appUrl(env, r.slug, "credits");
   const rows = await listRows(env, tenantId);
   const conns = await connCfgs(env, tenantId, { settings, credits, helper: r.helper_name || "" });
   const usable = Object.keys(conns).filter((k) => !conns[k].missing);
   if (!usable.length) return onPlan ? { missing: true, ...(rows.length ? { unreadable: true } : {}), settings } : null;   // never fall back to 1Helm's AI
-  const cfg = withKey({ base: "", host: usable.map((k) => conns[k].host || conns[k].label).join(", "), model: "", fast: "", last4: "", effort: "", fastEffort: "", settings, credits, helper: r.helper_name || "", ...(onPlan ? {} : { fallback: true }) }, "");
+  const cfg = withKey({ base: "", host: usable.map((k) => conns[k].host || conns[k].label).join(", "), model: "", fast: "", last4: "", effort: "", fastEffort: "", settings, credits, helper: r.helper_name || "", ...(onPlan ? {} : now ? { now: true } : { fallback: true }) }, "");
   Object.defineProperty(cfg, "connections", { value: conns, enumerable: false, writable: false });
-  for (const c of Object.values(conns)) c.fallback = !onPlan;
+  for (const c of Object.values(conns)) c.fallback = !onPlan && !now;
   try {
     const t = await env.DB.prepare("SELECT custom_models_own_on, custom_models_own FROM tenants WHERE id=?").bind(tenantId).first(), config = parseOwn(t?.custom_models_own);
     if (config) {
@@ -392,8 +405,10 @@ export async function loadByok(env, tenantId) {
       if (general) { cfg.model = general.model; cfg.effort = general.effort || ""; Object.defineProperty(cfg, "facts", { value: config.catalog?.[general.model] || null, enumerable: false }); }
       const chain = ownChorePlan(t, cfg); if (chain) cfg.background = chain;
       cfg.fast = chain?.[0]?.model || cfg.model;
+      if (now && !(Array.isArray(config.background?.chain) && config.background.chain.some((e) => e && typeof e.model === "string"))) cfg.choresOnPlan = true;   // Use my services now with no Background jobs chosen: 1Helm's models keep doing them
     }
   } catch (e) { if (!/no such column/i.test(String(e?.message))) throw e; }   // before migration 080 there is nothing chosen
+  if (now && !cfg.model) return null;   // no General model: chat stays on 1Helm's models
   return cfg;
 }
 // The Ledger side of fallback (mixed into the per-tenant Ledger in index.js, next to spendguard's ledgerGuard: its guardKv, sql,
@@ -465,10 +480,23 @@ export async function answersOnOwnKey(env, t) {
   if (t.plan === BYOK_PLAN) return true;
   try {
     const r = await env.DB.prepare("SELECT mode FROM byok WHERE tenant_id=?").bind(String(t.id)).first();
+    if (r?.mode === "now") return await nowReady(env, t.id);
     if (r?.mode !== "fallback") return false;
     const L = ledgerOf(env, t.id), f = typeof L?.byokFbState === "function" ? await L.byokFbState() : null;
     return !!f?.active;
   } catch { return false; }
+}
+
+// "Use my services now" is on only while a connected service serves General's first model (see the header).
+async function nowReady(env, tid) {
+  const model = (await ownMain(env, tid)).model, sp = model ? splitModel(model) : null;
+  return !!sp && (await listRows(env, tid)).some((r) => r.id === sp.conn);
+}
+// Choosing General's first model on a full plan with no option chosen turns "Use my services now" on, so picking a model is enough. Called after a save of the own-key models.
+export async function autoUseNow(env, t) {
+  if (!isFullPlan(t?.plan) || (await modeOf(env, t.id))) return false;
+  if (!(await nowReady(env, t.id))) return false;
+  await setMode(env, t.id, "now"); return true;
 }
 
 // ---- Settings API (/api/byok…) ----
@@ -508,7 +536,7 @@ export async function switchNow(env, t, d, { fetchImpl = globalThis.fetch } = {}
   if (!t.stripe_subscription) return { error: "No active plan to change yet.", status: 409 };
   const conns = await connCfgs(env, t.id), ids = Object.keys(conns);
   if (!ids.length) return { error: "Connect your AI service first, then switch.", status: 409 };
-  if (!(await ownModelChosen(env, t.id))) return { error: "Choose your models in Settings, Advanced, Custom Model Selection first, then switch.", status: 409 };
+  if (!(await ownModelChosen(env, t.id))) return { error: "Choose your models in Settings, AI services, Models first, then switch.", status: 409 };
   if (!(await rateOk(env, t.id))) return { error: RATE_MSG, rate_limited: true, status: 429 };
   const tests = await Promise.all(ids.map((id) => testConnection(conns[id], { fetchImpl })));
   const test = tests.find((x) => x.ok) || tests[0];
@@ -539,10 +567,10 @@ async function ownMain(env, tid) {
   } catch { return { on: true, model: null, fast: null }; }
 }
 // "Using ChatGPT plan" under the composer (OpenAI's UI guidelines): the Bring your own key plan answers with General's first model, so it shows when that model is on the ChatGPT connection.
-// A full plan on its backup key is told to the app by the same line when its Settings page has loaded (byok.ts); boot only answers for the plan that always runs on the key.
+// A full plan answers the same way while its services answer (Use my services now, or an active backup episode).
 export async function chatgptPlanInUse(env, t) {
   try {
-    if (t?.plan !== BYOK_PLAN) return false;
+    if (t?.plan !== BYOK_PLAN && !(Number(t?.custom_models_own_on) === 1 && await answersOnOwnKey(env, t))) return false;   // a full plan: only while its services answer (Use my services now, or a backup episode)
     const m = (await ownMain(env, t.id)).model;
     return typeof m === "string" && m.startsWith(`${CG_SOURCE}:`) && (await listRows(env, t.id)).some((r) => r.kind === "chatgpt");
   } catch { return false; }
@@ -558,7 +586,7 @@ async function stateOf(env, t, d, next) {
   const stored = row.mode || "", has = rows.length > 0;
   if (next === undefined) o.mode = stored;   // Stripe couldn't be read: what was chosen
   else if (next?.plan === BYOK_PLAN) { o.mode = "switch"; o.switch_at = next.at || null; if (stored !== "switch") await setMode(env, t.id, "switch"); }
-  else { o.mode = stored === "fallback" ? "fallback" : ""; if (stored === "switch") await setMode(env, t.id, ""); }
+  else { o.mode = stored === "fallback" || stored === "now" ? stored : ""; if (stored === "switch") await setMode(env, t.id, ""); }
   if (has && o.mode === "fallback") { try { const L = ledgerOf(env, t.id); const f = typeof L?.byokFbState === "function" ? await L.byokFbState() : null; o.fallback = { active: !!f?.active, since: f?.since || null }; } catch { o.fallback = { active: false, since: null }; } }
   return o;
 }
@@ -566,8 +594,9 @@ async function stateOf(env, t, d, next) {
 // storage check); "fallback" and "" (keep my plan, key unused) put the plan's own price back first if a switch was pending.
 async function chooseMode(env, t, d, mode, has) {
   if (t.plan === BYOK_PLAN) return { error: "You're on the Bring your own key plan already, so your key is simply your AI.", status: 409 };
-  if (!["fallback", "switch", ""].includes(mode)) return { error: "Choose one of the two options.", status: 400 };
+  if (!["now", "fallback", "switch", ""].includes(mode)) return { error: "Choose one of the options.", status: 400 };
   if (mode && !has) return { error: "Connect your AI service first, then choose how to use it.", status: 409 };
+  if (mode === "now" && !(await ownModelChosen(env, t.id))) return { error: "Choose General's model in Settings, AI services, Models first.", status: 409 };
   if (!d?.stripe) return { error: "Plans can't be changed right now. Try again in a minute.", status: 503 };
   const next = t.stripe_subscription ? await nextPlan(env, t, d) : null, pending = next?.plan === BYOK_PLAN;
   if (mode === "switch") {

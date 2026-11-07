@@ -92,7 +92,7 @@ export function split(raw) {
   return { data, own, plain };
 }
 // Sentences in our own tool text that talk to the model, not the person: dropped.
-const TOOL_WORD = /(?<![\w/.-])(?:read_skill|read_doc|bring_back|work_log|recall_history|web_search|fetch_url|search_web_vertical|run_command|read_file|write_file|edit_file|search_files|share_file|share_file_link|publish_page|app_actions|app_run|app_proxy|app_events|find_app|offer_connect|browser_\w+|gmail_\w+|calendar_\w+|text_person|start_helper|stop_helper|schedule_\w+|set_workflow_\w+|list_workflows|save_run_notes|remember|memory_explain|propose_plan|buy_with_link|check_purchase|file_text|update_todos|apps_i_use|note_account|mark_task_done)\b/;
+const TOOL_WORD = /(?<![\w/.-])(?:read_skill|read_doc|bring_back|work_log|recall_history|web_search|fetch_url|run_command|read_file|write_file|edit_file|search_files|share_file|share_file_link|publish_page|app_actions|app_run|app_proxy|app_events|find_app|offer_connect|browser_\w+|gmail_\w+|calendar_\w+|text_person|start_helper|stop_helper|schedule_\w+|set_workflow_\w+|list_workflows|save_run_notes|remember|memory_explain|propose_plan|buy_with_link|check_purchase|file_text|update_todos|apps_i_use|note_account|mark_task_done)\b/;
 const DIRECTIVE = /^(?:tell|don'?t|do not|never|always|end your|use|call|reply|answer|say|put|keep|just|ask|check|show|offer|mention|remember|read|try|make sure|only|stop|wait|give|open|pass|pick|follow|include|write|let|carry on|confirm|retry|search|look|start|run|change|add|instead|otherwise|if (?:they|the person|you|it|so|that|nothing)|when (?:they|the person|you))\b/i;
 const MODELISH = /\b(?:the person|this person|your turn|your reply|your report|you get a note|the helper|tool call|step_title|1Helm doesn't read|in front of the person|they see it|the model)\b/i;
 export const isDirective = (s) => DIRECTIVE.test(one(s)) || MODELISH.test(s) || TOOL_WORD.test(s);
@@ -158,10 +158,6 @@ const fromName = (s) => one(String(s || "").replace(/<[^>]*>/g, "").replace(/"/g
 export function itemLine(o, key = "") {
   if (o == null) return "";
   if (typeof o !== "object") return ell(o, 140);
-  if (key === "options" && Array.isArray(o.legs)) {   // a flight option (vertical-search.js lean flights)
-    const l = o.legs, a = l[0] || {}, z = l[l.length - 1] || {};
-    return ell([[a.airline, a.flight].filter(Boolean).join(" "), a.from && z.to ? `${a.from} → ${z.to}` : "", o.stops ? plural(o.stops, "stop") : "nonstop", o.total || "", priceOf(o) != null ? money(priceOf(o)) : ""].filter(Boolean).join(" · "), 140);
-  }
   const title = pick(o, ["subject", "title", "name", "summary", "full_name", "filename", "displayName", "label", "headline", "action", "slug", "query"]);
   const who = key === "messages" || key === "emails" || o.subject ? fromName(pick(o, ["from", "sender"])) : "";
   const when = pick(o, ["start", "when", "date", "published", "filed", "created_at", "updated_at"]);
@@ -252,7 +248,7 @@ const titleOfPage = (t) => {
   const h = s.match(/<title[^>]*>([^<]+)<\/title>/i); if (h) return one(h[1]);
   const md = s.match(/(?:^|\n)#\s+(.+)/); return md ? one(md[1]) : "";
 };
-// GOOGLECALENDAR_LIST_CALENDARS (Google Calendar) → "list calendars"; SEAT_GEEK_SEARCH_EVENTS (Seat Geek) → "search events".
+// GOOGLECALENDAR_LIST_CALENDARS (Google Calendar) → "list calendars"; SLACK_FIND_CHANNELS (Slack) → "find channels".
 const actionWords = (action, app) => {
   const seg = String(action).toUpperCase().split("_").filter(Boolean), A = String(app || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (seg[0] === "COMPOSIO" && seg[1] === "SEARCH") return human(["search", ...seg.slice(2)].join(" "));
@@ -314,16 +310,6 @@ const P = {
   share_file(c) {
     const m = c.s.plain.match(/^Shared "([^"]+)"(?: \(([^)]+)\))?/); if (!m) return null;
     return { text: `Shared ${m[1]}${m[2] ? ` (${m[2]})` : ""}`, files: [{ name: m[1], size: m[2] || "" }] };
-  },
-  search_web_vertical(c) {
-    if (/^error/i.test(c.s.plain.trim())) return { error: plainError(c.raw) };
-    const kind = String(c.a.kind || "").toLowerCase(), j = jsonIn(c.s.data.join("\n") || c.s.plain)?.value;
-    if (!j) return null;
-    if (j.quote) { const q = j.quote; return { text: ell([q.name || q.symbol, q.price != null ? `${q.price}${q.currency && q.currency !== "USD" ? ` ${q.currency}` : ""}` : "", q.change].filter(Boolean).join(" · "), 160), items: (j.news || []).slice(0, 3).map((n) => itemLine(n)), links: (j.news || []).map(linkOf).filter(Boolean).slice(0, 3), details: c.details ? readable(j) : undefined, more: true }; }
-    const noun = { flights: "flight", hotels: "hotel", places: "place", restaurants: "place", amazon: "product", walmart: "product", shopping: "product", events: "event", news: "article", papers: "paper", sec_filings: "filing", tripadvisor: "result" }[kind] || null;
-    const js = jsonSummary(j, { noun });
-    const check = isUrl(j.check_at) ? [{ title: `See all on ${hostOf(j.check_at)}`, url: j.check_at, host: hostOf(j.check_at) }] : [];
-    return { text: js.text, items: js.items, links: [...js.links.slice(0, 4), ...check].slice(0, 5), details: c.details ? readable(j) : undefined, more: true };
   },
   app_run(c) {
     const t = c.s.plain.trim();

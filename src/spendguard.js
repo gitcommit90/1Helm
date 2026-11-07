@@ -35,7 +35,6 @@ import { limitsFor } from "./ee/index.js";
 import { setStatus } from "./tracker.js";
 import { textConnected, textSend } from "./ee/index.js";
 import { PAUSE_FACTS, callKey } from "./ee/index.js";
-import { loopWords } from "./ee/index.js";   // a live search: changing a real field (date, place) is a new search, not a loop
 import { loadCheckins, normalizeCheckins } from "./agent-checkins.js";
 import { stallAsk } from './stall-guard.js';
 import { SPEND_PAUSES_KEY, CHECKIN_PAUSES, isHelperTurn, spendPausesOn, checkinsOn, applySpendPreference, readSpendPreference } from './spend-preferences.js';
@@ -113,7 +112,7 @@ const accountOf = (args) => { let a = args; if (typeof a === "string") { try { a
 export function noteCalls(w, calls, at = Date.now()) {
   for (const [name, args] of calls) {
     if (speaks(String(name), args)) w.said = true;
-    w.calls.push({ name: String(name), words: String(name) === "search_web_vertical" ? loopWords(args) : argWords(args), account: accountOf(args), at, quiet: QUIET.has(String(name)) });
+    w.calls.push({ name: String(name), words: argWords(args), account: accountOf(args), at, quiet: QUIET.has(String(name)) });
   }
 }
 // The two agent check-in signs alone (agent-checkins.js), for a turn whose spending pauses are off. enabled false looks for nothing.
@@ -172,7 +171,7 @@ export function noticeText(level, used, allowance, helper = "Your helper", secon
 }
 
 // ---- per-turn checks (tc.guard is set by spendStart; a turn without one is unguarded, e.g. helpers) ----
-function pauseAt(tc, reason) { if (tc.abort || tc.pause || !(spendPausesOn(tc) || (checkinsOn(tc) && CHECKIN_PAUSES.includes(reason)))) return false; tc.pause = { reason }; tc.abort = "soft"; return true; }
+function pauseAt(tc, reason) { if (tc.abort || tc.pause || !spendPausesOn(tc)) return false; tc.pause = { reason }; tc.abort = "soft"; return true; }
 const spentOf = (tc, stats) => (stats?.charge || 0) + (tc.extraCharge || 0);
 // After each model call: the turn's budget, and today's check-in line. names: the tools this step calls (a step that only reads the
 // playbook or updates the to-do list is left out of the soft budget: g.reading).
@@ -189,12 +188,12 @@ export function guardModel(tc, stats, content = "", more = true, names = []) {
 }
 // After a round of tool calls: [[name, args], …].
 export function guardTools(tc, calls, now = Date.now()) {
-  const g = tc?.guard; if (!g || !(spendPausesOn(tc) || checkinsOn(tc))) return null;
+  const g = tc?.guard; if (!g || !spendPausesOn(tc)) return null;
   // integration-hint.js marks a call it answered without running (tc.unrun): skipped, so a one-time nudge and its retry never add up to a loop.
   if (tc.unrun?.length) calls = calls.filter(([n, a]) => { const i = tc.unrun.indexOf(callKey(String(n), a)); if (i < 0) return true; tc.unrun.splice(i, 1); return false; });
   noteCalls(g.watch, calls, now);
   const ck = normalizeCheckins(g.checkins);
-  const s = spendPausesOn(tc) ? runawaySign(g.watch, now, ck) : checkinSign(g.watch, now, ck);   // spending pauses off: only the check-in signs
+  const s = runawaySign(g.watch, now, ck);
   return s && pauseAt(tc, s.reason) ? tc.pause : null;
 }
 // ---- run_command: its time limit, and notes on what came back ----

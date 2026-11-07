@@ -19,7 +19,7 @@ export const textSend = (env, tenantId, message) => enabled(env) ? deliverText(e
 const EE_TOOL_NAMES = new Set([
   "app_actions", "app_run", "app_proxy", "app_events", "apps_i_use", "find_app", "offer_connect",
   "gmail_search", "gmail_read", "gmail_draft", "gmail_send", "calendar_events", "calendar_add",
-  "search_web_vertical", "note_account", "text_person", "buy_with_link", "check_purchase", "browser_fill_card", "browser_task", "start_browser_task", "list_browser_tasks", "stop_browser_task", "ambient_query",
+  "note_account", "text_person", "buy_with_link", "check_purchase", "browser_fill_card", "browser_task", "start_browser_task", "list_browser_tasks", "stop_browser_task", "ambient_query",
 ]);
 export const toolEnabled = (env, name) => enabled(env) || !EE_TOOL_NAMES.has(name);
 
@@ -60,6 +60,7 @@ export { BUILTIN_APPS, BUILTIN_TEXT, builtinApps } from "./builtin-apps.js";
 export { hiddenReason, isHiddenApp, isHiddenToolkitAction, visibleCatalog, connectRefusal } from "./app-visibility.js";
 export { cancelApi, cancelCron, cancelSync, cancelWebhook } from "./cancel.js";
 export { APP_FILE_MAX } from "./composio-files.js";
+export { createAppLink, serveAppLink, listAppLinks } from "./app-file-links.js";
 export { ENDED_PREFIX, appsMode, appsModeRoute, composioDonePage, endedToolText, isEnded, saveOnboardingChoice, selfAvailable, selfSignOut, selfStatus, signInFinish, signInStart } from "./composio-self.js";
 export { ReadBatch, transportFor } from "./composio-transport.js";
 export { pacedConnect } from "./connect-pace.js";
@@ -84,7 +85,6 @@ export { INACTIVE_MSG, PAUSED_TEXT, PAY_MSG } from "./readonly.js";
 export { HANDOFF_PREFIX, choreRouteFor, dispatchOrder, isHandoff, markServed, policyRoute, routeTwoTurn } from "./route2.js";
 export { ledgerGuard } from "./spendguard-ledger.js";
 export { appLink, deliverCard, deliverReaction, deliverText, fetchTextedFile, textTyping, textingDebug, textingLine, textingNewCode, textingOff, textingPoll, textingStart, textingStatus, textingUseProject, textingWebhook } from "./texting.js";
-export { VERTICAL_SEARCH_TOOL, VS_NANO, VS_TOOL_NAME, loopWords, searchNote, verticalSearch } from "./vertical-search.js";
 
 export { ambientSettingsRoute } from "./ambient-settings.js";
 
