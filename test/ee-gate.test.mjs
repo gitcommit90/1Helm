@@ -1,0 +1,49 @@
+import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { enabled, features, registry, routeEnabled, toolEnabled } from "../src/ee/index.js";
+import { staticCore } from "../src/prompt/index.js";
+import { readSkill } from "../src/skills/index.js";
+
+const providerKeys = { COMPOSIO_KEY: "present", BROWSER_AGENT: "jev" };
+for (const value of [undefined, "", "true", "1", "1HC"]) {
+  const env = { ...providerKeys, ONEHELM_EE: value };
+  assert.equal(enabled(env), false, `ONEHELM_EE=${value}`);
+  assert.deepEqual(features(env), []);
+  assert.deepEqual(registry(env), { routes: { global: [], workspace: [] }, tools: [], crons: [], durableObjects: {}, skills: [], features: [] });
+  for (const [path, scope] of [["/c/card-token", "global"], ["/composio/webhook", "global"], ["/stripe/webhook", "global"], ["/api/apps", "workspace"], ["/api/library/bee/conversations", "workspace"], ["/api/library/bee/conversations/12/export", "workspace"], ["/api/account/custom-models", "workspace"], ["/api/account/custom-models/catalog", "workspace"], ["/api/portal", "workspace"], ["/api/res/main/sessions/123/livenotes", "workspace"], ["/api/res/main/event-log", "workspace"], ["/api/res/main/event-workflow", "workspace"]])
+    assert.equal(routeEnabled(env, path, scope), false, `${scope} ${path}`);
+  for (const tool of ["app_run", "app_action_schema", "result_read", "save_link", "image_generate", "image_edit", "offer_image_generation", "gmail_search", "text_person", "browser_task", "start_browser_task", "list_browser_tasks", "stop_browser_task", "buy_with_link"])
+    assert.equal(toolEnabled(env, tool), false, tool);
+  for (const path of ["/api/image-intent", "/api/res/main/sessions/0123456789abcdef0123456789abcdef0123/image-mode"]) assert.equal(routeEnabled(env, path, "workspace"), false, path);
+  assert.equal(routeEnabled(env, "/api/share", "workspace"), true);
+  assert.equal(toolEnabled(env, "web_search"), true);
+}
+
+const on = { ...providerKeys, ONEHELM_EE: "1hc" };
+assert.equal(enabled(on), true);
+assert.equal(features(on).length, 5);
+assert.deepEqual(Object.keys(registry(on).durableObjects).sort(), ["BeeSync", "ClaudeEngine", "Ledger", "LiveNotes"]);
+assert.deepEqual(registry(on).skills, ["gmail", "google-calendar", "google-drive"]);
+assert.ok(registry(on).crons.includes("bee"));
+assert.equal(routeEnabled(on, "/api/apps", "workspace"), true);
+for (const path of ["/api/library/bee/conversations", "/api/account/custom-models", "/api/account/custom-models/catalog"]) assert.equal(routeEnabled(on, path, "workspace"), true, path);
+assert.equal(toolEnabled(on, "app_run"), true);
+for (const tool of ["image_generate", "image_edit", "offer_image_generation"]) assert.equal(toolEnabled(on, tool), true, tool);
+assert.equal(routeEnabled(on, "/api/image-intent", "workspace"), true);
+for (const tool of ["start_browser_task", "list_browser_tasks", "stop_browser_task"]) assert.equal(toolEnabled(on, tool), true, tool);
+
+const publicPrompt = staticCore({ apps: false, browser_task: false, ee: false });
+for (const slug of ["gmail", "google-calendar", "google-drive"]) {
+  assert.doesNotMatch(publicPrompt, new RegExp(`- ${slug}:`));
+  assert.match(readSkill({ slug }, { ee: false }), /no skill called/);
+  assert.match(readSkill({ slug }, { ee: true }), /\[1Helm skill:/);
+}
+assert.match(publicPrompt, /- artifacts:/);
+
+// Core imports EE code through the one module boundary.
+const src = new URL("../src/", import.meta.url);
+for (const file of readdirSync(src).filter((name) => name.endsWith(".js"))) {
+  const code = readFileSync(new URL(file, src), "utf8");
+  for (const match of code.matchAll(/(?:from\s*|import\s*\()\s*["']\.\/ee\/([^"']+)["']/g))
+    assert.equal(match[1], "index.js", `${file} imports EE ${match[1]} directly`);
+}

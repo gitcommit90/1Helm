@@ -1,0 +1,11 @@
+node_modules/
+apps/node_modules/
+web/node_modules/
+.wrangler/
+.dev.vars*
+.env
+.env.*
+!.env.example
+wrangler.jsonc
+backups/
+dist/

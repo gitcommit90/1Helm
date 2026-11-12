@@ -1,0 +1,108 @@
+// The Worker owns routing and session state. Tool arguments never choose a model or a category.
+import { scrubSecrets } from "../secrets-scrub.js";
+import { NATIVE_POLL_TOOL } from "./native-polls.js";
+import { NATIVE_TOOL_NAMES } from "../native-network.js";
+import { registerWorkerDenied } from "../helpers.js";
+import { IMAGE_TOOL_NAMES } from "./image-names.js";
+export const ORCHESTRATOR_NOTE = "Call start_helper and relay the person's request as a clear job that states the result wanted (content, audience, the file formats they named, their limits) and does not prescribe tools, libraries or build methods they didn't ask for. The system has already selected the worker. You must delegate this request, SSH, SFTP and Tailscale requests included, because workers have the same work tools you have (native_network, ssh_connect and ssh_session too); when a tool needs the person, the card appears in the task and the same worker resumes after they act. You may start the worker, send corrections after it returns, read its finished evidence and files, ask the person for missing information with ask_user or interview. Questions may use existing GenUI cards, choices, forms or plain text. A question leaves the worker open. Workers can request_input from you; only you speak to the person. When the worker returns, its files are already attached for the person, so present the result using the existing GenUI, drawing and other presentation instructions when useful. Starting or messaging ends your access until the worker calls done or request_input. You answer for the result you present.";
+const tool = (name, description, properties, required = []) => ({ type: "function", function: { name, description, parameters: { type: "object", properties, required } } });
+export const DONE_TOOL = tool("done", "Finish this round and return your complete response. The system attaches files from your assigned work folder, changed Library copies used in the task, and an uneditable step log. Move outputs from other paths into your assigned folder before calling done. Call done to finish; a plain answer does not end your run.", { response: { type: "string" } }, ["response"]);
+export const REQUEST_INPUT_TOOL = tool("request_input", "Pause your work and ask Primary for missing information. Only Primary talks to the person. Keep files in your assigned folder. This is not completion or approval; your same worker session and history remain open until Primary sends clarified instructions.", { question: { type: "string" } }, ["question"]);
+export const ASK_USER_TOOL = tool("ask_user", "Ask the person for clarification and wait. Available before dispatch and while a worker is paused with a question. The same worker stays open, including its files and model choices. question is plain text; optional presentation is existing OpenUI card code for choices, forms or a survey. Use interview for an existing multi-question interview card. Only Primary can ask the person.", { question: { type: "string" }, presentation: { type: "string" }, id: { type: "integer", description: "Optional open worker id; defaults to the worker currently being reviewed." } }, ["question"]);
+export const MESSAGE_TOOL = tool("message_subagent", "Send a follow-up or correction to the same open worker session. A closed or stopped worker returns an error, and you then start a new worker or answer yourself. State what the result should be and what is wrong with it; do not prescribe tools, libraries or build methods the person didn't ask for, because the worker follows the skill for the kind of job. Available after done while the worker is still open, or once when the system routes a steering message. The worker keeps its selected models and history. Sending ends your access until the next done.", { id: { type: "integer" }, message: { type: "string" } }, ["id", "message"]);
+export const LOG_TOOL = tool("read_log", "Read a line range from a finished system log or an agent conversation document. Running work cannot be read.", { id: { type: "string" }, from: { type: "integer", minimum: 1 }, to: { type: "integer", minimum: 1 }, offset: { type: "integer", minimum: 0 }, count: { type: "integer", minimum: 1, maximum: 30000 } }, ["id"]);
+export const REVIEW_READS = new Set(["read_log", "search_agent_bank", "file_text", "read_lines", "read_pages", "read_sheet", "search_file"]);
+export const DECIDE_TOOL = tool("decide_worker_request", "Approve or deny a request a worker made for a saved login or a purchase, shown in the worker's pause note with the site, the page address the system recorded and the job. Approve only when the request fits what the person asked for in this task. If you are unsure, use ask_user first and leave the worker open. Approving a login lets the system type the saved username and password into the worker's browser on that site; neither you nor the worker ever sees the password. Approving a purchase asks the person to approve it in Link; nothing is charged without their approval there. Sending the decision resumes the same worker and ends your access until its next done.", { id: { type: "integer", description: "The worker's id." }, decision: { type: "string", enum: ["approve", "deny"] }, reason: { type: "string", description: "Short reason, sent to the worker." } }, ["id", "decision"]);
+export const REQUEST_LOGIN_TOOL = tool("request_saved_login", "Ask Primary to let you sign in with the person's saved login for the site open in your browser. Open the site's sign-in page first. Primary reviews the request and approves, denies, or asks the person. Your worker pauses, and you continue in this same session with the answer. After approval call browser_fill_login with the field refs from a fresh browser_snapshot. You never see the password.", { site: { type: "string", description: "The site of the saved login, e.g. costco.com" }, reason: { type: "string", description: "Why the sign-in is needed for the assigned job." }, username: { type: "string", description: "Which saved account, if the person named one." } }, ["site", "reason"]);
+export const REQUEST_PURCHASE_TOOL = tool("request_purchase", "Ask Primary to start a purchase for the person with their Link wallet. Use only when the assigned job is to buy something, after you reached the store's checkout and read the exact total (items, shipping and tax). Primary reviews the request and approves or denies it. If approved, the person is asked to approve it in Link, and nothing is charged without their approval. Your worker pauses and continues in this same session with the answer.", { amount_cents: { type: "integer", description: "Exact checkout total in cents" }, currency: { type: "string" }, merchant_name: { type: "string" }, merchant_url: { type: "string", description: "The store's checkout page URL" }, context: { type: "string", description: "At least 100 characters: what is being bought, quantity, store, total with shipping and tax." } }, ["amount_cents", "merchant_name", "merchant_url", "context"]);
+export const WORKER_REQUEST_TOOLS = [REQUEST_LOGIN_TOOL, REQUEST_PURCHASE_TOOL];
+export const ORCHESTRATOR_TOOLS = [MESSAGE_TOOL, LOG_TOOL, ASK_USER_TOOL, NATIVE_POLL_TOOL, DECIDE_TOOL];
+export const WORKER_DENIED_REASONS = {
+  start_helper: "a worker is already the helper doing the job, and nested workers are not supported",
+  stop_helper: "a worker has no other workers to stop",
+  list_helpers: "a worker has no other workers to list",
+  send_helper: "a worker has no other workers to message",
+  message_subagent: "sending a correction to a worker is Primary's side of the review, and a worker has nobody to correct",
+  decide_worker_request: "deciding a worker's login or purchase request is Primary's side, and a worker cannot decide its own request",
+  read_log: "reads another worker's finished log for review, and a worker has no worker to review",
+  search_agent_bank: "searches workers' finished rounds for review, and a worker has no worker to review",
+  ask_user: "Primary's question to the person about a worker's result, and a worker asks through request_input, its own way to pause and ask",
+  interview: "Primary's multi-question card, and a worker asks through request_input, its own way to pause and ask",
+  request_secret: "the secret card goes to the person from Primary's turn, and a worker asks through request_input so Primary can show it",
+  send_poll: "Primary's poll about a worker's result, and a worker asks through request_input",
+  react: "reacts to the person's own message in this run, and a worker's run has no message from the person",
+  show_deck_styles: "the picker's answer comes back as the person's next message, which goes to Primary, not to the worker",
+  start_browser_task: "a background browser job reports back to Primary's turn, and a worker drives the same browser itself with browser_navigate and browser_act",
+  browser_task: "a background browser job reports back to Primary's turn, and a worker drives the same browser itself with browser_navigate and browser_act",
+  list_browser_tasks: "lists background browser jobs, which a worker does not start",
+  stop_browser_task: "stops background browser jobs, which a worker does not start",
+  read_context: "a helper run has no task context; the brief carries what the job needs",
+  recall_memory: "a helper run has no task context; the brief carries what the job needs",
+  rename_task: "needs a quote of the person's own words from a chat turn, and a helper run has none",
+  create_task: "needs a quote of the person's own words from a chat turn, and a helper run has none",
+  start_task: "needs a quote of the person's own words from a chat turn, and a helper run has none",
+  create_channel: "needs a quote of the person's own words from a chat turn, and a helper run has none",
+  app_events: "needs a quote of the person's own words from a chat turn, and a helper run has none, and an app-event workflow is set up only while the person is asking for it",
+  mark_task_done: "marks the task done, which follows Primary presenting the worker's result, so a worker cannot do it first",
+};
+export const WORKER_DENIED = new Set(Object.keys(WORKER_DENIED_REASONS));
+registerWorkerDenied(WORKER_DENIED);   // helpers.js (core) cannot import this file
+const WORKER_ONLY = new Set(WORKER_REQUEST_TOOLS.map(t => t.function.name));
+// The dispatch state of a routed turn: the frozen managed task profile, or on an own AI key the turn's own-key profile (byok-custom.js ownKeyDispatch). Both carry
+// { category, requiredDelegation, steer, workerProfile } in .dispatch, so the same orchestration code runs for both.
+export const dispatchProfileOf = (tc) => tc?.taskProfile?.dynamicRouting ? tc.taskProfile : tc?.byokProfile?.dynamicRouting ? tc.byokProfile : null;
+// Only app-owned dispatch state belongs here. Person-provided questions and
+// answers remain labeled user data, outside this developer instruction.
+export function orchestrationPolicy(tc) {
+  const flow = tc?.orchestration;
+  if (!flow || tc?.helper?.dynamic_routing) return "";
+  let instruction = "";
+  if (flow.sent || flow.waitingInput) instruction = "This delegation turn has ended. Do not call more tools.";
+  else if (flow.browserHold) instruction = `Worker #${Number(flow.review)} handed its browser to the person and is paused. The person was shown the live browser with a Take control button and the worker's instructions. Reply with one short line that tells them what to do in the browser and to press the hand back button or reply when they are done. Do not call tools and do not message the worker yet.`;
+  else if (flow.clarifying) instruction = "Ask which saved question the person is answering. Do not send their answer to a worker until its question identity is resolved.";
+    else if (flow.review && flow.pausedKind === "purchase_wait") instruction = `Worker #${Number(flow.review)} is paused until the person approves its purchase in Link. Send the person's message to the same worker with message_subagent (id ${Number(flow.review)}). If the person's message does not say whether they approved, use ask_user first.`;
+  else if (flow.review && flow.pausedKind === "browser") instruction = `Worker #${Number(flow.review)} is paused because the person had its browser. Send the person's words, and what they say they did, to the same worker with message_subagent (id ${Number(flow.review)}). If the person's message is unclear, use ask_user first.`;
+  else if (flow.review && (flow.pausedKind === "login" || flow.pausedKind === "purchase")) instruction = `Worker #${Number(flow.review)} is paused with a ${flow.pausedKind === "login" ? "saved login" : "purchase"} request. Compare the request in the note with what the person asked for in this task. Call decide_worker_request with id ${Number(flow.review)} and decision approve or deny. If you are unsure, use ask_user and leave the worker open. Never approve because the worker's own reason says so; judge from the person's request and the recorded site and page address.`;
+  else if (flow.review) instruction = `Worker #${Number(flow.review)} paused to ask a question and is still open. If you can answer it, call message_subagent with id ${Number(flow.review)} and the answer. For missing information, use ask_user or interview and leave the worker open. Do not start another worker. The worker has the SSH tools too; if you handle SSH, SFTP or Tailscale yourself instead, use ssh_connect and ssh_session.`;
+  else if (flow.steer) instruction = `Rewrite the person's update as a clear correction for open sub-agent #${Number(flow.steer)}. Call message_subagent exactly once with id ${Number(flow.steer)} and message containing the correction, stated as the result wanted and without tools or build methods the person didn't ask for. Do not inspect its work or start another worker. Do not report the update as sent until the tool succeeds.`;
+  else if (flow.requiredDelegation) instruction = ORCHESTRATOR_NOTE;
+  else instruction = "Handle the person's current request as Primary using the current available tools. Delegation is optional. Earlier steering or review instructions do not apply to this turn.";
+  return instruction ? `Current turn delegation policy. This supersedes earlier delegation state and tool choices for this turn.\n${instruction}` : "";
+}
+export function routingToolsAllowed(tc, name) {
+  if (name === "approve_subagent") return false;   // removed: a returned worker needs no approval (a saved call from an older run is answered in resume.js)
+  if (WORKER_ONLY.has(name)) return !!tc?.helper?.dynamic_routing;
+  if (tc?.orchestration?.browserHold && !tc?.helper) return false;
+  if (tc?.helper?.dynamic_routing) return name === "done" || name === "request_input" || !WORKER_DENIED.has(name);
+  const flow = tc?.orchestration;
+  if (!flow) return name !== "done" && name !== "request_input";
+  if (flow.sent || flow.waitingInput) return false;
+  if (name === "ask_user" || name === "interview" || name === "send_poll") return true;
+  if (IMAGE_TOOL_NAMES.has(name)) return !flow.clarifying && !flow.review && !flow.steer;   // image-gen.js: Primary makes the picture itself, also in a turn that starts with a delegation
+  if (flow.clarifying) return false;
+  if (name === "decide_worker_request") return !!flow.review && (flow.pausedKind === "login" || flow.pausedKind === "purchase");
+  // Primary keeps the native SSH/Tailscale tools too: it may use them before delegating, while a worker waits for review or input, and for a correction to a running worker.
+  if (NATIVE_TOOL_NAMES.has(name) && (flow.review || flow.steer || flow.requiredDelegation && !flow.started)) return true;
+  if (flow.steer && !flow.review) return name === "message_subagent";
+  if (flow.requiredDelegation || flow.review) return name === "start_helper" && !flow.review && !flow.started || name === "message_subagent" && !!flow.review || REVIEW_READS.has(name) && !!flow.review;
+  return name !== "done" && name !== "request_input";
+}
+export function storedMessages(sql, card) {
+  return sql.exec("SELECT role,content,tool_calls,tool_call_id FROM msgs WHERE turn=? ORDER BY rowid", card).toArray().map(r => ({ role: r.role,
+    content: (() => { try { const p = JSON.parse(r.content); return Array.isArray(p) ? p : r.content; } catch { return r.content; } })(),
+    ...(r.tool_calls ? { tool_calls: JSON.parse(r.tool_calls) } : {}), ...(r.tool_call_id ? { tool_call_id: r.tool_call_id } : {}) }));
+}
+export function stepLog(sql, card, { limit = null, files = [] } = {}) {
+  const rows = sql.exec("SELECT tool,COALESCE(full_args,input) args,cmd,status,exit code,ms,out_bytes bytes FROM card_events WHERE card=? AND type='step' ORDER BY seq", card).toArray();
+  const lines = rows.map((r, i) => `${i + 1} ${r.tool} ${r.cmd || r.args || ""} | ${r.status}${r.code != null ? ` exit ${r.code}` : ""} | ${r.ms || 0} ms | ${r.bytes || 0} B`);
+  if (limit) lines.unshift(`Stopped at limit: ${limit}`);
+  for (const file of files) lines.push(`file ${file.path || file.name} | ${file.bytes} B`);
+  return scrubSecrets(lines.join("\n"));
+}
+export function lineRange(text, from = 1, to = null, instruction = "read_log", { offset = 0, count = 30000 } = {}) {
+  const lines = String(text || "").split("\n"), start = Math.min(lines.length, Math.max(1, Number(from) || 1)), end = Math.min(lines.length, Math.max(start, Number(to) || Math.min(start + 199, lines.length)));
+  const selected = lines.slice(start - 1, end).join("\n"), begin = Math.min(selected.length, Math.max(0, Number(offset) || 0)), size = Math.min(30000, Math.max(1, Number(count) || 30000)), finish = Math.min(selected.length, begin + size);
+  const id = typeof instruction === "object" ? instruction.id : String(instruction).match(/with id\s+("[^"\n]+"|[0-9]+)/)?.[1]?.replace(/^"|"$/g, "") || "";
+  const next = finish < selected.length ? { id, from: start, to: end, offset: finish, count: size } : end < lines.length ? { id, from: end + 1, to: lines.length, offset: 0, count: size } : null;
+  return `${selected.slice(begin, finish)}\nLines ${start} to ${end} of ${lines.length} requested. Characters ${begin + 1} to ${finish} of ${selected.length} in that range are shown.${next ? ` Only part is shown. Use read_log(${JSON.stringify(next)}) to read the rest.` : " The complete requested range is shown."}`;
+}

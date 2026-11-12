@@ -1,0 +1,10 @@
+1Helm licensing notice
+
+Copyright (c) 2026 Joseph Yaksich.
+
+1Helm releases up to and including v0.0.8 were released under the MIT License.
+1Helm releases v0.0.9 and later are released under AGPL-3.0-only.
+
+The license applicable to a particular release is the license included with
+that release. This notice records the version boundary and does not change the
+license already granted for releases through v0.0.8.

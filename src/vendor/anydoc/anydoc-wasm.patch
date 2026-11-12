@@ -1,0 +1,59 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 6bb48e2..d284f14 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -127,6 +127,7 @@ version = "0.2.4"
+ dependencies = [
+  "anydoc",
+  "js-sys",
++ "pdf-inspector",
+  "serde",
+  "serde-wasm-bindgen",
+  "serde_bytes",
+diff --git a/wasm/Cargo.toml b/wasm/Cargo.toml
+index cfeb09a..13eddc7 100644
+--- a/wasm/Cargo.toml
++++ b/wasm/Cargo.toml
+@@ -21,6 +21,7 @@ wasm-opt = ["-O", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+ 
+ [dependencies]
+ anydoc = { path = ".." }
++pdf-inspector = "1.14.2"
+ js-sys = "0.3"
+ serde = { version = "1", features = ["derive"] }
+ serde_bytes = "0.11"
+diff --git a/wasm/src/lib.rs b/wasm/src/lib.rs
+index 6898bb6..0f4b13a 100644
+--- a/wasm/src/lib.rs
++++ b/wasm/src/lib.rs
+@@ -138,3 +138,30 @@ fn convert_error(error: anydoc::ConvertError) -> JsValue {
+     }
+     thrown.into()
+ }
++
++/// 1Helm addition (sidecar prep): a PDF's Markdown page by page, so the
++/// sidecar keeps page markers. Returns `{ pageCount, pages: [{ page (1-based),
++/// markdown, needsOcr }], needsOcr: [1-based pages] }`. Local only: no OCR,
++/// no network.
++#[wasm_bindgen(js_name = pdfPages)]
++pub fn pdf_pages(bytes: &[u8]) -> Result<JsValue, JsValue> {
++    let r = pdf_inspector::extract_pages_markdown_mem(bytes, None).map_err(|e| {
++        let thrown = js_sys::Error::new(&e.to_string());
++        let code = match e { pdf_inspector::PdfError::Encrypted => "encrypted", _ => "malformed" };
++        let _ = js_sys::Reflect::set(&thrown, &JsValue::from_str("code"), &JsValue::from_str(code));
++        JsValue::from(thrown)
++    })?;
++    let out = js_sys::Object::new();
++    let pages = js_sys::Array::new();
++    for p in &r.pages {
++        let o = js_sys::Object::new();
++        let _ = js_sys::Reflect::set(&o, &"page".into(), &JsValue::from(p.page + 1));
++        let _ = js_sys::Reflect::set(&o, &"markdown".into(), &JsValue::from_str(&p.markdown));
++        let _ = js_sys::Reflect::set(&o, &"needsOcr".into(), &JsValue::from(p.needs_ocr));
++        pages.push(&o);
++    }
++    let _ = js_sys::Reflect::set(&out, &"pageCount".into(), &JsValue::from(r.pages.len() as u32));
++    let _ = js_sys::Reflect::set(&out, &"pages".into(), &pages);
++    let _ = js_sys::Reflect::set(&out, &"needsOcr".into(), &r.pages_needing_ocr.iter().map(|&p| JsValue::from(p)).collect::<js_sys::Array>());
++    Ok(out.into())
++}

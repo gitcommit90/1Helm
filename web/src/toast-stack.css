@@ -1,0 +1,43 @@
+/* Toast stack. Copyright (c) 2026 Bruno Delorence. MIT License (components-src/bd/toast-stack, ported; MIT text in THIRD-PARTY-NOTICES.md).
+   toast-stack.ts puts each toast's place in custom properties: --i (0 is the newest, in front), --h (its own height), --fh (the
+   front toast's height) and --up (how far up it goes when fanned out). Stacked, each toast behind sits a peek higher, 5% smaller and
+   fainter, as tall as the one in front; fanned out (data-open), each is in a row of its own at full size. #toast is only the anchor. */
+#toast{position:fixed;right:22px;bottom:96px;z-index:70;width:min(400px,calc(100vw - 44px));height:0;pointer-events:none;
+  --spring:cubic-bezier(.25,1.2,.4,1);--peek:10px}
+@supports (transition-timing-function:linear(0,1)){#toast{--spring:linear(0,.047,.161,.308,.462,.607,.734,.838,.918,.976,1.016,1.039,1.05,1.053,1.05,1.044,1.036,1.028,1.02,1.014,1.008,1.004,1.001,.999,.998,.997,.998,.999,1)}}
+.bdts-t{--y:calc(var(--i,0)*var(--peek)*-1);--sc:calc(1 - var(--i,0)*.05);--op:calc(1 - var(--i,0)*.16);
+  position:absolute;left:0;right:0;bottom:0;height:var(--fh,auto);overflow:hidden;box-sizing:border-box;z-index:calc(50 - var(--i,0));
+  border-radius:16px;background:var(--sheet);box-shadow:0 0 0 1px var(--line),var(--lift);
+  opacity:var(--op);transform:translate(var(--dx,0px),calc(var(--y) + var(--dy,0px))) scale(var(--sc));transform-origin:50% 0;pointer-events:auto;touch-action:none;
+  transition:transform .66s var(--spring),opacity .35s ease,height .5s var(--spring)}
+.bdts-t[data-new]{opacity:0;transform:translateY(calc(var(--fh,60px) + 48px))}
+.bdts-t[data-hidden]{--op:0;pointer-events:none}
+/* fanned out */
+#toast[data-open] .bdts-t{--y:calc(var(--up,0px)*-1);--sc:1;--op:1;height:var(--h,auto)}
+#toast[data-open] .bdts-t[data-hidden]{pointer-events:auto}
+/* behind the front one, only the card shows until the stack opens */
+#toast:not([data-open]) .bdts-t:not([data-front]) .bdts-in{opacity:0}
+.bdts-in{display:flex;align-items:center;gap:10px;padding:12px 44px 12px 14px;transition:opacity .3s ease}
+/* leaving: fades and sinks a little */
+.bdts-t[data-leaving]{pointer-events:none;opacity:0;transform:translate(var(--dx,0px),calc(var(--y) + var(--dy,0px) + 14px)) scale(calc(var(--sc) * .94));
+  transition:transform .34s cubic-bezier(.4,0,.9,.6),opacity .3s ease}
+/* following a finger: no easing while it is held (--dx and --dy are set by toast-stack.ts), a spring back when it is let go early */
+.bdts-t[data-drag]{transition:none}
+/* a swipe sends the toast on in the direction it was going */
+.bdts-t[data-leaving][data-swiped]{transition:transform .26s cubic-bezier(.3,0,.8,.6),opacity .26s ease}
+/* the pointer moving between fanned toasts never leaves the stack */
+.bdts-t::after{content:"";position:absolute;top:100%;left:0;right:0;height:11px}
+/* what is in a toast */
+.bdts-t .tok{width:34px;height:34px;border-radius:10px;background:color-mix(in srgb,var(--ink) 8%,var(--sheet))!important;color:var(--ink)!important}
+.bdts-t .tmsg{flex:1 1 auto;margin-right:0}
+.bdts-t .tmsg b{font-size:13.5px;line-height:18px;letter-spacing:-.005em;overflow:hidden;text-overflow:ellipsis}
+.bdts-t .tmsg span{font-size:13px;line-height:17px;white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2}
+.bdts-t .tx{position:absolute;top:8px;right:8px;width:26px;height:26px;border-radius:8px;color:var(--faint,var(--mute))}
+.bdts-t .tx svg{width:12px;height:12px}
+/* the look stays 26px; the tap area is 44 by 44 (the toast's own edge clips it on the top and right) */
+.bdts-t .tx::before{content:"";position:absolute;top:-8px;right:-8px;bottom:-10px;left:-10px}
+.bdts-t .tx:focus-visible,.bdts-t .tview:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:599px),(max-height:499px){
+  #toast{left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom));width:auto}
+}
+@media (prefers-reduced-motion:reduce){.bdts-t,.bdts-t[data-leaving],.bdts-t[data-leaving][data-swiped],.bdts-in{transition:none}}

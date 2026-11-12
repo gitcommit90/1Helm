@@ -1,0 +1,179 @@
+// One rule for every path where an agent adds a file to the Library (share_file, browser downloads, files an app action returns):
+// if the new file is an edit of a file that is already in the Library, it becomes a new version of that Library file (same id, same
+// name, same share links and published pages) and the person never sees a second copy.
+//
+// Which Library file is it an edit of? Evidence first, name last. Every Library file is a candidate (uploads too), in this channel only
+// (each channel has its own Resident and Library, so a match can never cross channels or accounts).
+//  1. "library copy": the path is files/<name>, the Library copy on the computer.
+//  2. "same path": a Library file that was saved from this same computer path (the earlier rule about names and tasks still applies).
+//  3. "used in this task": the agent read, copied or opened that Library file in this task (file_text, read_file, a command naming
+//     files/<name> or its loose copy by name, the person attached it, or the agent already updated it in this task) and the names are alike ("Kyoto plan v2.pdf",
+//     "Kyoto trip plan.pdf" from "Kyoto plan.pdf"; same extension). The uses are in file_uses.
+//  4. "same name": the same name ignoring a " (N)" suffix (a file the Library shows as "plan (2).html" counts as plan.html).
+//     A Library file that was made or updated in this same task (files.session is the task) counts as used: "horse-tinder-v2.html" after
+//     "horse-tinder.html" in one task is an edit of it, whatever folder or helper made it.
+// A file an app returned (strict: true, e.g. a Drive download) is a file the app holds, not an edit the agent made, so rule 3 matches only the
+// same stem ("LO Art Light Logo (1).png" never replaces "LO Art Light Logo 2.png", which is another Drive file with the same words in its name).
+// A file the agent used in this task whose new name is nothing like it is NOT matched (it could be a new file made from a template);
+// the agent names it with replace: when it is an edit.
+// copy: true and an explicit replace: are handled by the caller. The person's uploaded original is never lost (see putVersion).
+import { extOf } from "./files.js";
+import { stDelete } from "./storage.js";
+
+const unsuffixed = (n) => String(n).replace(/ \(\d+\)(\.[^.]{1,8})?$/, "$1").toLowerCase();
+const NOISE = new Set(["v", "final", "edited", "edit", "updated", "update", "new", "copy", "revised", "rev", "draft", "latest", "fixed"]);
+// "Kyoto plan v2 (final).pdf" and "kyoto-plan.pdf" both become "kyoto plan".
+const stem = (n) => String(n).toLowerCase().replace(/\.[^.]{1,8}$/, "").replace(/ \(\d+\)$/, "").replace(/[^a-z0-9]+/g, " ").split(" ").filter((w) => w && !NOISE.has(w) && !/^(v|rev)\d+$/.test(w)).join(" ").trim();
+const alike = (a, b) => { const x = stem(a), y = stem(b); if (!x || !y) return false; if (x === y) return true; const [s, l] = x.length <= y.length ? [x, y] : [y, x]; if (s.length >= 3 && l.includes(s)) return true; const ls = new Set(l.split(" ")); return s.split(" ").length >= 2 && s.split(" ").every((w) => ls.has(w)); };   // one name inside the other, or all the words of the shorter one in the longer
+const exactStem = (a, b) => stem(a) !== "" && stem(a) === stem(b);
+
+export const fileVersionsMethods = {
+  fvInit() {
+    // orig_key/orig_bytes: the bytes of a file the person uploaded, kept for good when an agent first replaces it. Additive columns only.
+    for (const c of ["orig_key TEXT", "orig_bytes INTEGER"]) { try { this.sql.exec(`ALTER TABLE files ADD COLUMN ${c}`); } catch {} }
+    // file_uses: which Library files the agent read, copied, opened or was given in a task. The evidence that a new file is an edit.
+    // file_shares: the version of a file each turn's reply shared (turn, file, version, the R2 key of those bytes). A later in-place
+    // replacement of the file moves files.turn to the newer turn, so this table is what keeps an earlier reply on the version it shared.
+    // Its keys are never deleted while the file exists. Additive table only.
+    this.sql.exec("CREATE TABLE IF NOT EXISTS file_shares (turn TEXT NOT NULL, file_id TEXT NOT NULL, version INTEGER NOT NULL, r2key TEXT NOT NULL, bytes INTEGER, at INTEGER NOT NULL, PRIMARY KEY (turn, file_id, version))");
+    try { this.sql.exec("CREATE INDEX IF NOT EXISTS file_shares_file ON file_shares (file_id, version)"); } catch {}
+    this.sql.exec("CREATE TABLE IF NOT EXISTS file_uses (session TEXT NOT NULL, file_id TEXT NOT NULL, at INTEGER NOT NULL, how TEXT, PRIMARY KEY (session, file_id))");
+  },
+  // The reply of `turn` shared the file's current version: remember that version and its bytes.
+  recordShare(file, turn) {
+    if (!turn || !file) return;
+    const r = this.sql.exec("SELECT id, version, r2key, bytes FROM files WHERE id=?", String(file.id)).toArray()[0]; if (!r) return;
+    try { this.sql.exec("INSERT OR REPLACE INTO file_shares (turn,file_id,version,r2key,bytes,at) VALUES (?,?,?,?,?,?)", String(turn), r.id, Number(r.version || 1), r.r2key, r.bytes, Date.now()); } catch (e) { console.log("file share", e.message); }
+  },
+  // A background helper updated a Library file in place (its "file" event has a version above 1). The person already has that file, so the task's
+  // running main turn gets the same event a share_file there would send, and that reply keeps a card for the new version after a reload. A first
+  // share by a background helper stays on its own card for the main helper to present. Returns true when it was passed on.
+  passHelperFileUpdate(session, o) {
+    if (o?.t !== "file" || !(Number(o.file?.version) > 1)) return false;
+    const live = this.liveTurn?.(session); if (!live?.emit) return false;
+    try { live.emit(o); this.recordShare(o.file, live.turn); } catch (e) { console.log("helper file update", e.message); return false; }
+    return true;
+  },
+  // R2 keys of versions some reply still refers to; replacing or restoring a file never deletes these.
+  heldKeys(fileId) { try { return new Set(this.sql.exec("SELECT r2key FROM file_shares WHERE file_id=?", String(fileId)).toArray().map((x) => x.r2key)); } catch { return new Set(); } },
+  // Every version a reply shared (key and size), to delete with the file.
+  shareKeys(fileId) { try { return this.sql.exec("SELECT r2key, bytes FROM file_shares WHERE file_id=?", String(fileId)).toArray().map((x) => ({ key: x.r2key, size: x.bytes ?? null })); } catch { return []; } },
+  // The files a turn's reply shared or updated in place (a file the person uploaded that the helper updated has a card too), each at the version that reply shared. Files shared before this table existed (no rows at all)
+  // are found by files.turn as before and show the current version.
+  sharedForTurn(turn) {
+    const out = [], seen = new Set();
+    for (const s of this.sql.exec("SELECT s.version AS sv, s.bytes AS sb, f.* FROM file_shares s JOIN files f ON f.id=s.file_id WHERE s.turn=? AND f.deleted=0 ORDER BY s.at", String(turn)).toArray()) {
+      seen.add(s.id); out.push({ ...this.fileView(s), version: Number(s.sv), bytes: s.sb ?? s.bytes });
+    }
+    for (const f of this.sql.exec("SELECT * FROM files WHERE turn=? AND deleted=0 AND source='helper' ORDER BY at", String(turn)).toArray()) {
+      if (seen.has(f.id)) continue;
+      let any = false; try { any = this.sql.exec("SELECT 1 FROM file_shares WHERE file_id=? LIMIT 1", f.id).toArray().length > 0; } catch {}
+      if (!any) out.push(this.fileView(f));
+    }
+    return out;
+  },
+  // The bytes of one version: { key, bytes } or null. A version no reply recorded is served only when it is the one before the current
+  // (kept as prev_key); any other unknown version gets the current bytes, as before versions were served by number.
+  fvVersionKey(fileId, version) {
+    const f = this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(fileId)).toArray()[0]; if (!f) return null;
+    const v = Number(version);
+    if (Number.isInteger(v) && v >= 1 && v !== Number(f.version || 1)) {
+      let s = null; try { s = this.sql.exec("SELECT r2key, bytes FROM file_shares WHERE file_id=? AND version=? ORDER BY at DESC LIMIT 1", f.id, v).toArray()[0]; } catch {}
+      if (s) return { key: s.r2key, bytes: s.bytes };
+      if (f.prev_key && v === Number(f.version || 1) - 1) return { key: f.prev_key, bytes: f.prev_bytes };
+    }
+    return { key: f.r2key, bytes: f.bytes };
+  },
+  // The one restore: put back the version before the current one (or, with original: true, the person's original upload) as a NEW version
+  // number of the same file (same id, name, share links and pages). The version it replaces is kept as the one before, so a restore can be undone
+  // by restoring again. Used by share_file {restore}, the viewer's "Restore" in the Zone and the Versions list (routes in index.js).
+  // said: (to, toOrig) => text for fileUpdated. → { ok, said, to, toOrig } | { error }
+  async restoreVersion(f, { original = false } = {}, ctx = {}, said = () => "") {
+    const toOrig = original === true;
+    if (toOrig && !f.orig_key) return { error: `"${f.name}" has no original upload kept (it was never replaced, or it was made by you, not uploaded by the person).` };
+    if (toOrig && f.orig_key === f.r2key) return { error: `"${f.name}" is already the person's original upload.` };
+    if (!toOrig && !f.prev_key) return { error: `"${f.name}" has no earlier version kept (only the version before the last update is kept).` };
+    const to = toOrig ? { key: f.orig_key, bytes: f.orig_bytes ?? 0 } : { key: f.prev_key, bytes: f.prev_bytes ?? 0 };
+    this.sql.exec("UPDATE files SET r2key=?, bytes=?, prev_key=?, prev_bytes=?, view_key=NULL, version=?, at=?, synced=0 WHERE id=?", to.key, to.bytes, f.r2key, f.bytes, Number(f.version || 1) + 1, Date.now(), f.id);   // a restore is a new version number, so a version number names one set of bytes
+    const drop = [...(f.view_key ? [f.view_key] : []), ...(toOrig && f.prev_key && f.prev_key !== f.orig_key && f.prev_key !== f.r2key && !this.heldKeys(f.id).has(f.prev_key) ? [{ key: f.prev_key, size: f.prev_bytes ?? null }] : [])];   // the original is never deleted
+    if (drop.length) { try { await stDelete(this.env, drop); } catch {} }
+    this.sidecarKick?.(this.sql.exec("SELECT * FROM files WHERE id=?", f.id).one());   // sidecar.js: the restored bytes get their own
+    // path null: only pages made from the Library file are put back (a page from a computer folder shows what's on the computer)
+    return { ok: true, to, toOrig, said: await this.fileUpdated(f, { r2key: to.key, bytes: to.bytes, path: null }, ctx, said(to, toOrig)) };
+  },
+  // The kept versions of a Library file, newest first, for the Versions list: the current one, the one before it, and the person's original
+  // when it is a different one. which: "current" | "previous" | "original" (restore takes the last two). at is when the bytes were stored (R2's own
+  // upload time; the current one has the file's last-change time). Who made a version is not recorded, except that the original is the person's upload.
+  async fvList(fileId) {
+    const f = this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(fileId)).toArray()[0]; if (!f) return null;
+    const up = async (key, fallback) => { try { const h = await this.env.WS.head(key); const u = h?.uploaded; return u ? new Date(u).getTime() : fallback; } catch { return fallback; } };
+    const out = [{ which: "current", version: Number(f.version || 1), bytes: f.bytes, at: f.at, mime: f.mime }];
+    if (f.prev_key) out.push({ which: "previous", bytes: f.prev_bytes ?? null, at: await up(f.prev_key, null), mime: f.mime, you: f.prev_key === f.orig_key });
+    if (f.orig_key && f.orig_key !== f.r2key && f.orig_key !== f.prev_key) out.push({ which: "original", bytes: f.orig_bytes ?? null, at: await up(f.orig_key, null), mime: f.mime, you: true });
+    return { id: f.id, name: f.name, version: Number(f.version || 1), versions: out };
+  },
+  // R2 key of a kept version for the file route's ?kept=previous|original (the Versions list's previews). null when there is none.
+  fvKeptKey(fileId, which) {
+    const f = this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(fileId)).toArray()[0]; if (!f) return null;
+    const key = which === "previous" ? f.prev_key : which === "original" ? f.orig_key : null; return key || null;
+  },
+  noteFileUse(session, ids, how) {
+    if (!session) return;
+    for (const id of [].concat(ids || [])) { if (id) try { this.sql.exec("INSERT INTO file_uses (session,file_id,at,how) VALUES (?,?,?,?) ON CONFLICT(session,file_id) DO UPDATE SET at=excluded.at", String(session), String(id), Date.now(), how || "used"); } catch {} }
+  },
+  // A command or path the agent runs: every Library file it names (files/<name> or the bare full name next to "files") was used.
+  noteFilesIn(session, text) {
+    const t = String(text || ""); if (!session || t.length < 4) return;
+    // Any command naming the file counts, also its loose copy outside files/ (cat /workspace/horse-tinder.html): evidence only, never a match alone.
+    const hit = []; for (const f of this.sql.exec("SELECT id,name FROM files WHERE deleted=0 AND pending=0").toArray()) {
+      if (f.name.length < 4) continue;
+      if (t.includes(f.name) || t.includes(f.name.replace(/ /g, "\\ ")) || t.includes(f.name.replace(/'/g, "'\\''"))) hit.push(f.id);
+    }
+    if (hit.length) this.noteFileUse(session, hit, "command");
+  },
+  // → { file, why } | null (a new file). opts: { path, name, named, session, strict }.
+  resolveFile({ path = null, name, named = false, session = null, strict = false }) {
+    const rows = this.sql.exec("SELECT * FROM files WHERE deleted=0 AND pending=0 ORDER BY at DESC LIMIT 1000").toArray();
+    const lc = name.toLowerCase(), ext = extOf(name), usedAt = new Map(), read = new Set();   // read: real use evidence (read, copied, opened, attached), not just made or updated in this task
+    if (session) for (const u of this.sql.exec("SELECT file_id, at, how FROM file_uses WHERE session=?", String(session)).toArray()) { usedAt.set(u.file_id, u.at); if (u.how !== "updated") read.add(u.file_id); }
+    const same = (f) => !!session && f.session === session, exact = (f) => f.name.toLowerCase() === lc, asked = (f) => exact(f) || unsuffixed(f.name) === lc;
+    let f;
+    if (path && (f = rows.find((r) => path === `files/${r.name}`))) return { file: f, why: "it is the Library copy on your computer" };
+    if (path && (f = rows.find((r) => r.src_path === path && (!named || asked(r) || same(r))))) return { file: f, why: "it was saved from the same path" };
+    const stamp = (r) => Math.max(usedAt.get(r.id) || 0, same(r) ? r.at || 0 : 0);   // made or updated in this task counts as used
+    const used = rows.filter((r) => (usedAt.has(r.id) || same(r)) && extOf(r.name) === ext).sort((a, b) => stamp(b) - stamp(a));
+    // Real use evidence keeps the alike() rule. A file that counts only because this task made or updated it matches the same stem only
+    // ("report.html" then "report-appendix.html" are two files; "report.html" then "report-v2.html" is one).
+    const likely = used.filter((r) => read.has(r.id) && !strict ? alike(r.name, name) : exactStem(r.name, name));
+    if (likely.length) return { file: likely.find((r) => exactStem(r.name, name)) || likely[0], why: "you used it in this task and the new file has a similar name" };
+    const byName = rows.filter((r) => unsuffixed(r.name) === unsuffixed(name));
+    if (byName.length) return { file: byName.find(exact) || byName.find(same) || byName[0], why: "it has the same name" };
+    return null;
+  },
+  // The words every tool result ends with: which file, which versions are kept.
+  keptLine(fileId) {
+    const r = this.sql.exec("SELECT * FROM files WHERE id=?", String(fileId)).toArray()[0]; if (!r) return "";
+    const v = Number(r.version || 1), kept = [`version ${v} (current)`];
+    if (r.prev_key) kept.push(r.prev_key === r.orig_key ? "the version before it (which is also the person's original)" : `the version before it`);
+    if (r.orig_key && r.orig_key !== r.r2key && r.orig_key !== r.prev_key) kept.push(`the person's original upload, always kept`);
+    return ` Library file "${r.name}" (id ${r.id}). Versions kept: ${kept.join(", ")}.${r.prev_key ? ` share_file {"restore": "${r.name}"} puts back the version before it.` : ""}${r.orig_key && r.orig_key !== r.r2key ? ` share_file {"restore": "${r.name}", "original": true} puts back the person's original.` : ""}`;
+  },
+  // Make the bytes already stored at newKey the current version of `target` (same id, name, links and pages). The version before is kept,
+  // the one before that is deleted, except the person's original: the first time an agent replaces a file the person uploaded, its
+  // bytes are kept under orig_key for good, so no number of edits can push it out.
+  async putVersion(target, { key, bytes, src_path, synced = 0, session = null, turn = null }) {
+    const v = Number(target.version || 1) + 1;
+    const orig = target.orig_key || (target.source === "upload" ? target.r2key : null), origBytes = target.orig_key ? target.orig_bytes : (target.source === "upload" ? target.bytes : null);
+    this.sql.exec("UPDATE files SET r2key=?, bytes=?, prev_key=?, prev_bytes=?, version=?, view_key=NULL, at=?, session=COALESCE(?,session), turn=COALESCE(?,turn), synced=?, src_path=COALESCE(?,src_path), orig_key=?, orig_bytes=? WHERE id=?",
+      key, bytes, target.r2key, target.bytes, v, Date.now(), session, turn, synced, src_path ?? null, orig, origBytes ?? null, target.id);
+    const gone = [];
+    const held = this.heldKeys(target.id);
+    if (target.prev_key && target.prev_key !== orig && !held.has(target.prev_key)) gone.push({ key: target.prev_key, size: target.prev_bytes ?? null });
+    if (target.view_key) gone.push(target.view_key);
+    try { await stDelete(this.env, gone); } catch (e) { console.log("file old version", e.message); }
+    this.noteFileUse(session, target.id, "updated");   // a file this task already updated is evidence for its next edit
+    this.sidecarKick?.(this.sql.exec("SELECT * FROM files WHERE id=?", target.id).one());
+    return v;
+  },
+};
+export function fileVersionsMix(Cls) { Object.assign(Cls.prototype, fileVersionsMethods); }

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>1Helm</title>
+  <style>
+    :root { --page: #f3f2ef; --sheet: #fff; --ink: #1c1b19; --ink2: #44423d; --mute: #77746c; --line: #e7e5e0; --line2: #d9d6cf; --bad: #b42318; --shadow: 0 24px 60px -42px rgba(28, 27, 25, .5);
+      --sans: "Instrument Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; --serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+      font-family: var(--sans); color: var(--ink); background: var(--page); }
+    @media (prefers-color-scheme: dark) { :root { --page: #121212; --sheet: #1b1b1c; --ink: #f1f0ee; --ink2: #cfcdc8; --mute: #96938c; --line: #2a2a2c; --line2: #38383b; --bad: #ff6b6b; --shadow: none; } }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; padding: 2rem; display: grid; place-items: center; }
+    main { width: min(100%, 27rem); padding: 1.75rem; border: 1px solid var(--line); border-radius: 1rem; background: var(--sheet); box-shadow: var(--shadow); }
+    .mark { display: block; width: 4rem; height: 4rem; margin: 0 auto 1rem; object-fit: contain; }
+    h1 { margin: 0; font: 400 2.2rem/1.05 var(--serif); letter-spacing: -.015em; text-align: center; }
+    p { margin: .6rem 0 1.25rem; color: var(--mute); font-size: .92rem; line-height: 1.55; text-align: center; }
+    label { display: block; margin-bottom: .4rem; font-size: .78rem; font-weight: 600; }
+    input, button { width: 100%; min-height: 3rem; border-radius: .65rem; font: inherit; }
+    input { border: 1px solid var(--line2); padding: .75rem; background: var(--sheet); color: var(--ink); outline: none; }
+    input:focus { border-color: var(--ink2); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 8%, transparent); }
+    button { margin-top: .75rem; border: 0; padding: .7rem 1rem; background: var(--ink); color: var(--sheet); font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: default; }
+    button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+    .workspace-field { display: flex; min-height: 3rem; overflow: hidden; border: 1px solid var(--line2); border-radius: .65rem; background: var(--sheet); }
+    .workspace-field input { min-width: 0; border: 0; border-radius: 0; text-align: right; outline: none; box-shadow: none; }
+    .workspace-field:focus-within { border-color: var(--ink2); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 8%, transparent); }
+    .suffix { display: flex; align-items: center; padding: 0 .8rem 0 0; color: var(--mute); font-weight: 600; white-space: nowrap; }
+    .quiet { min-height: auto; margin-top: .7rem; padding: .35rem; background: transparent; color: var(--ink2); font-size: .8rem; font-weight: 400; text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px; }
+    #status { min-height: 1.25rem; margin: .65rem 0 0; color: var(--bad); font-size: .78rem; text-align: left; }
+    small { display: block; margin-top: .9rem; color: var(--mute); font-size: .72rem; line-height: 1.5; text-align: center; }
+    .new-user { margin-top: 1rem; padding-top: .25rem; border-top: 1px solid var(--line); }
+    .server { border: 1px solid var(--line2); background: transparent; color: var(--ink); font-size: .86rem; line-height: 1.25; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <img class="mark" src="icons/1helm-icon.png" alt="1Helm">
+    <h1>1Helm</h1>
+    <p>Sign in to your 1Helm account.</p>
+    <button id="cloud" type="button">Sign in</button>
+    <form id="connect" novalidate hidden>
+      <label for="server">Server address</label>
+      <input id="server" type="url" inputmode="url" autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="example.com" required>
+      <button id="submit" type="submit">Connect</button>
+    </form>
+    <button id="alternate" class="quiet" type="button">Use my own server</button>
+    <div id="status" role="alert"></div>
+  </main>
+  <script>
+    const query = new URLSearchParams(location.search);
+    const actionOrigin = "https://desktop-action.1helm.invalid";
+    const form = document.getElementById("connect");
+    const input = document.getElementById("server");
+    const submit = document.getElementById("submit");
+    const alternate = document.getElementById("alternate");
+    const cloud = document.getElementById("cloud");
+    const status = document.getElementById("status");
+    const cloudOrigin = "https://app.1helm.com";
+
+    const normalize = (value) => {
+      const raw = value.trim(), hint = "That doesn't look like a web address. Try something like example.com.";
+      if (!raw) throw new Error("Enter your server's address, like example.com.");
+      let parsed;
+      try { parsed = new URL(raw.includes("://") ? raw : `https://${raw}`); } catch { throw new Error(hint); }
+      if (!parsed.hostname.includes(".")) throw new Error(hint);
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash || (parsed.pathname !== "/" && parsed.pathname !== "")) throw new Error("That doesn't look like a web address. Try something like example.com.");
+      return parsed.origin;
+    };
+    const showCustomUrl = (custom, value = "") => {
+      form.hidden = !custom;
+      cloud.hidden = custom;
+      input.value = value;
+      alternate.textContent = custom ? "Back" : "Use my own server";
+      status.textContent = "";
+      if (custom) input.focus();
+    };
+    alternate.addEventListener("click", () => showCustomUrl(form.hidden, input.value));
+    const connect = (origin, button) => {
+      status.textContent = "";
+      button.disabled = true;
+      button.textContent = "Connecting…";
+      location.href = `${actionOrigin}/connect?origin=${encodeURIComponent(origin)}`;
+    };
+    cloud.addEventListener("click", () => connect(cloudOrigin, cloud));
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      try { connect(normalize(input.value), submit); }
+      catch (error) { status.textContent = error.message; }
+    });
+
+    const prior = query.get("origin") || "";
+    showCustomUrl(Boolean(prior && prior !== cloudOrigin), prior === cloudOrigin ? "" : prior);
+    status.textContent = query.get("error") || "";
+  </script>
+</body>
+</html>

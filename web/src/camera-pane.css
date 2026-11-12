@@ -1,0 +1,49 @@
+/* In-app camera and the phone Add files menu (src/camera-pane.ts). Every class starts with cmp- and both roots have their own id. */
+#cmp-menu{position:fixed;inset:0;z-index:70}
+#cmp-menu .cmp-scrim{position:absolute;inset:0}
+.cmp-pop{position:fixed;display:flex;flex-direction:column;width:min(236px,calc(100vw - 24px));padding:6px;overflow-y:auto;background:var(--sheet);border:1px solid var(--line);border-radius:22px;box-shadow:0 18px 50px rgba(28,27,25,.18),var(--lift);opacity:0;transform:translateY(6px) scale(.98);transform-origin:bottom left;transition:opacity .16s,transform .18s cubic-bezier(.2,.8,.2,1)}
+.cmp-pop:not(.up){transform-origin:top left;transform:translateY(-6px) scale(.98)}
+#cmp-menu.on .cmp-pop{opacity:1;transform:none}
+:root[data-theme=dark] .cmp-pop{box-shadow:0 30px 80px rgba(0,0,0,.55)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .cmp-pop{box-shadow:0 30px 80px rgba(0,0,0,.55)}}
+.cmp-item{display:flex;align-items:center;gap:14px;width:100%;min-height:50px;padding:0 14px;border-radius:16px;color:var(--ink);font-size:16.5px;text-align:left;-webkit-tap-highlight-color:transparent}
+label.cmp-item{cursor:pointer;position:relative}
+.cmp-fin{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0 0 0 0);pointer-events:none;margin:0;padding:0;border:0}
+.cmp-item span{white-space:nowrap}
+.cmp-item svg{flex:none;color:var(--ink2)}
+.cmp-item:active,.cmp-item:focus-visible{background:var(--hover)}
+.cmp-item:focus-visible{outline-offset:-2px}
+
+/* The camera: a large rounded panel over the lower part of the chat; the chat stays visible above it. */
+#cmp-pane{position:fixed;inset:0;z-index:80}
+#cmp-pane .cmp-scrim{position:absolute;inset:0;background:rgba(0,0,0,.28);opacity:0;transition:opacity .25s}
+#cmp-pane.on .cmp-scrim{opacity:1}
+.cmp-panel{position:absolute;left:max(8px,env(safe-area-inset-left));right:max(8px,env(safe-area-inset-right));bottom:max(8px,env(safe-area-inset-bottom));height:min(68dvh,calc(100dvh - 120px - env(safe-area-inset-top)));overflow:hidden;background:#000;border-radius:34px;color:#fff;box-shadow:0 24px 70px rgba(0,0,0,.45);transform:translateY(24px);opacity:0;transition:transform .32s cubic-bezier(.2,.8,.2,1),opacity .2s}
+#cmp-pane.on .cmp-panel{transform:none;opacity:1}
+.cmp-panel video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000;opacity:0;transition:opacity .25s}
+#cmp-pane.live video{opacity:1}
+#cmp-pane.front video{transform:scaleX(-1)}
+.cmp-flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
+#cmp-pane.shot .cmp-flash{opacity:.7}
+.cmp-b{position:absolute;bottom:max(18px,env(safe-area-inset-bottom));width:52px;height:52px;border-radius:50%;display:grid;place-items:center;color:#fff;background:rgba(40,36,32,.62);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);-webkit-tap-highlight-color:transparent}
+.cmp-b:active{background:rgba(70,64,58,.8)}
+.cmp-back{left:18px}.cmp-more{right:18px}
+.cmp-shutter{position:absolute;left:50%;bottom:max(14px,env(safe-area-inset-bottom));width:78px;height:78px;margin-left:-39px;border-radius:50%;border:4px solid rgba(255,255,255,.72);display:grid;place-items:center;-webkit-tap-highlight-color:transparent}
+.cmp-shutter i{display:block;width:60px;height:60px;border-radius:50%;background:#fff;transition:transform .1s}
+.cmp-shutter:active i{transform:scale(.88)}
+.cmp-panel :focus-visible{outline:2px solid #fff;outline-offset:3px}
+.cmp-mm{position:absolute;right:14px;bottom:calc(max(18px,env(safe-area-inset-bottom)) + 66px);width:max-content;min-width:200px;max-width:calc(100% - 28px);padding:6px;background:var(--sheet);border:1px solid var(--line);border-radius:22px;box-shadow:0 18px 50px rgba(0,0,0,.4);color:var(--ink)}
+.cmp-mm[hidden]{display:none}
+/* A phone on its side: the panel fills the height and the three buttons stack on its right edge. */
+@media (orientation:landscape) and (max-height:499px){
+  .cmp-panel{top:max(8px,env(safe-area-inset-top));height:auto;left:max(8px,env(safe-area-inset-left));border-radius:26px}
+  .cmp-b{bottom:auto;left:auto;right:18px;width:46px;height:46px}
+  .cmp-back{top:16px}.cmp-more{bottom:16px;top:auto}
+  .cmp-shutter{left:auto;right:12px;bottom:auto;top:50%;margin:-35px 0 0;width:70px;height:70px}
+  .cmp-shutter i{width:54px;height:54px}
+  .cmp-mm{right:76px;bottom:12px}
+}
+@media (prefers-reduced-motion:reduce){
+  .cmp-pop,.cmp-panel,#cmp-pane .cmp-scrim,.cmp-panel video,.cmp-shutter i{transition:none}
+  .cmp-panel{transform:none}.cmp-pop,.cmp-pop:not(.up){transform:none}
+}

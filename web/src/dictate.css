@@ -1,0 +1,46 @@
+/* Voice dictation (dictate.ts): only the mic button and the text cursor change. The composer keeps its size and layout. */
+:root{--rec:#dc2626;--recsoft:rgba(220,38,38,.16)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--rec:#ef4444;--recsoft:rgba(239,68,68,.22)}}
+:root[data-theme=dark]{--rec:#ef4444;--recsoft:rgba(239,68,68,.22)}
+/* The mic stays next to Send once there's text, so more can be added by voice. */
+.composer.has .cbtn.dict{display:grid}
+.cbtn.dict{position:relative;transition:box-shadow .12s}
+.cbtn.dict.rec{background:var(--rec);color:#fff;box-shadow:0 0 0 calc(2px + var(--lvl,0) * 4px) var(--recsoft)}
+@media (hover:hover) and (pointer:fine){.cbtn.dict.rec:hover{background:var(--rec);color:#fff;filter:brightness(1.06)}}
+.cbtn.dict.rec:focus-visible{outline:2px solid var(--rec);outline-offset:3px}
+.cbtn.dict.busy{background:var(--abub);color:var(--ink2);cursor:default}
+.cbtn.dict:disabled{opacity:1}
+.dspin{width:16px;height:16px;border-radius:50%;border:2px solid var(--line2);border-top-color:var(--ink2);animation:dspin .8s linear infinite}
+@keyframes dspin{to{transform:rotate(1turn)}}
+form.dicting #go,form.dicting #ngo{opacity:.35;pointer-events:none}
+/* While the microphone opens the button just looks pressed (no spinner, no text). */
+.cbtn.dict.on.arm{background:var(--ink);color:var(--sheet);cursor:default}
+@media (hover:hover) and (pointer:fine){.cbtn.dict.arm:hover{background:var(--ink);color:var(--sheet)}}
+/* While recording the browser's own caret turns red and pulses, so it is always where the next words go. */
+textarea.dact::placeholder{color:transparent!important;opacity:0!important}
+textarea.drec{caret-color:var(--rec);animation:dcaret 1.1s ease-in-out infinite}
+@keyframes dcaret{50%{caret-color:color-mix(in srgb,var(--rec) 35%,transparent)}}
+.dsr{position:fixed;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+@media (prefers-reduced-motion:reduce){.dspin{animation:none}.cbtn.dict{transition:none}textarea.drec{animation:none}}
+/* Voice memo (voicememo.ts): the same button, held. Phones: no text selection, callout or context menu while holding. */
+.cbtn.dict{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;touch-action:none;-webkit-tap-highlight-color:transparent}
+.cbtn.dict.mrec{background:var(--rec);color:#fff;box-shadow:0 0 0 calc(2px + var(--lvl,0) * 4px) var(--recsoft)}
+@media (hover:hover) and (pointer:fine){.cbtn.dict.mrec:hover{background:var(--rec);color:#fff}}
+/* Recording pill and voice glow while a voice memo records (memopill.ts). The pill is a fixed element over the composer's text row. */
+.cbtn.dict.mrec{transform:scale(1.15);transition:transform .15s,box-shadow .12s}
+.cbtn.dict.mrec.mleave{background:var(--abub);color:var(--ink2);box-shadow:none}
+.vmpill{position:fixed;z-index:61;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:0 16px;background:var(--sheet);border:1px solid color-mix(in srgb,var(--rec) 40%,var(--line));color:var(--ink);overflow:hidden;animation:vmin .16s ease-out;transition:opacity .18s}
+.vmpill.out{opacity:0;pointer-events:none}
+.vmpill.leaving{border-color:var(--line2)}
+.vmpill.leaving>*{opacity:.55;transition:opacity .15s}
+.vmpill.leaving .vmdot{animation:none;background:var(--faint)}
+.vmdot{width:10px;height:10px;border-radius:50%;background:var(--rec);flex:none;animation:vmdot 1.2s ease-in-out infinite}
+.vmt{font-variant-numeric:tabular-nums;font-weight:600;font-size:15px;min-width:2.4em;flex:none}
+.vmwave{flex:1;min-width:0;height:24px;align-self:center}
+.vmline{flex:none;font-size:13px;color:var(--mute);white-space:nowrap}
+form.composer.vmglow,form.nmodal.vmglow{border-color:color-mix(in srgb,var(--rec) calc(35% + var(--vml,0) * 60%),var(--line));box-shadow:0 0 calc(8px + var(--vml,0) * 22px) calc(1px + var(--vml,0) * 4px) color-mix(in srgb,var(--rec) calc(22% + var(--vml,0) * 45%),transparent),var(--lift)}
+@keyframes vmin{from{opacity:0;transform:scale(.97)}}
+@keyframes vmdot{50%{opacity:.35}}
+.uchip.pop{animation:vmpop .28s cubic-bezier(.2,.9,.3,1.2)}
+@keyframes vmpop{from{opacity:0;transform:scale(.8)}}
+@media (prefers-reduced-motion:reduce){.vmpill,.vmdot,.uchip.pop{animation:none}.cbtn.dict.mrec{transition:none}.vmpill{transition:none}}

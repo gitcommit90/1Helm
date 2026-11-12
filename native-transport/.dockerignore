@@ -1,0 +1,9 @@
+*
+!go.mod
+!go.sum
+!main.go
+!broker.go
+!enrollment.go
+!patch-tailscale.sh
+!tailscale-resume.patch
+!exit.go

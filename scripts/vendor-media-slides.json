@@ -1,0 +1,31 @@
+{
+ "cartesian": {
+  "base": "statement"
+ },
+ "playful": {
+  "base": "closing"
+ },
+ "raw-grid": {
+  "base": "quote-stats"
+ },
+ "coral": {
+  "base": "introduction",
+  "accent": "rgb(212, 74, 74)"
+ },
+ "pin-and-paper": {
+  "bodyFamily": "'Space Grotesk', sans-serif"
+ },
+ "retro-zine": {
+  "bodyFamily": "'Space Grotesk', sans-serif"
+ },
+ "scatterbrain": {
+  "bodyFamily": "'Zilla Slab', serif"
+ },
+ "retro-windows": {
+  "projectTitlePx": 56,
+  "statPx": 84
+ },
+ "grove": {
+  "dropColor": "rgb(212, 207, 191)"
+ }
+}

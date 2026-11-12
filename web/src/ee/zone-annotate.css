@@ -1,0 +1,47 @@
+/* Pencil marks in the Zone (zone-annotate.ts): boxes, dots, badges and the note box are plain elements placed by percent. */
+html.zdoc-image .zpages{align-items:center;justify-content:center}
+.zimgw{position:relative;flex:none;border-radius:6px;box-shadow:var(--zpg);background:var(--sheet);user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.zimgw:not([data-ready]){width:min(60%,420px);aspect-ratio:1/1}
+.zimg{display:block;width:100%;height:100%;border-radius:6px;object-fit:fill;pointer-events:none;-webkit-user-drag:none}
+.zann-m{position:absolute;width:0;height:0}
+.zann-ring{position:absolute;left:-9px;top:-9px;width:18px;height:18px;box-sizing:border-box;border:3px solid var(--c);border-radius:50%;box-shadow:0 0 0 1.5px rgba(255,255,255,.9),inset 0 0 0 1.5px rgba(255,255,255,.9);pointer-events:none}
+.zann-b{position:absolute;left:-11px;top:-11px;width:22px;height:22px;display:grid;place-items:center;padding:0;border-radius:50%;border:2px solid #fff;background:var(--c);color:#fff;font-size:12px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;box-shadow:0 1px 4px rgba(0,0,0,.35);cursor:pointer;pointer-events:auto;touch-action:manipulation}
+.zann-b.off{left:2px;top:-24px}
+.zann-b:focus-visible{outline:2px solid var(--zsel);outline-offset:2px}
+.zann-pop{position:absolute;z-index:6;pointer-events:auto;width:min(230px,calc(100vw - 32px));box-sizing:border-box;padding:6px 8px;background:var(--sheet);border:1px solid var(--line);border-left:4px solid var(--c);border-radius:12px;box-shadow:var(--lift)}
+.zann-pop textarea{display:block;width:100%;min-height:22px;max-height:96px;margin:0;padding:1px 0;border:0;outline:0;resize:none;background:none;color:var(--ink);font:inherit;font-size:14px;line-height:1.45}
+@media (max-width:599px),(max-height:499px){.zann-pop textarea{font-size:16px}.zann-b{width:26px;height:26px;left:-13px;top:-13px}.zann-b.off{left:2px;top:-28px}}
+.zib.zpencil{position:relative}.zib.zpencil.on{background:var(--ink);color:var(--sheet)}@media (hover:hover) and (pointer:fine){.zib.zpencil.on:hover:not(:disabled){background:var(--ink);color:var(--sheet);opacity:.88}}
+.zib.zpencil i{position:absolute;right:3px;top:3px;min-width:15px;height:15px;padding:0 3px;box-sizing:border-box;border-radius:8px;background:var(--zsel);color:#fff;font:700 10px/15px system-ui,sans-serif;font-style:normal;text-align:center}
+
+/* the image view has no inspector: the canvas takes its column */
+html.zdoc-image #zinsp,html.zdoc-image .zinspb,html.zdoc-image .zstrip{display:none!important}
+html.zone-open.zdoc-image{--zinspw:0px;--zgaps:30px}
+html.zone-open.zdoc-image body,html.zone-open.zdoc-image body.pc-on{grid-template-columns:var(--zchatw) minmax(0,1fr)}
+html.zone-open.zdoc-image.zchat-off body,html.zone-open.zdoc-image.zchat-off body.pc-on{grid-template-columns:minmax(0,1fr)}
+html.zone-open.zdoc-image.zchat-off #zcanvas{grid-column:1}
+@media (max-width:599px),(max-height:499px){html.zone-open.zdoc-image .zcv{height:34dvh}html.zone-open.zdoc-image .zpages{padding:8px}}
+
+/* the cards above the composer: one per mark, in the style of the reply bar (msgreply.css .rqin) */
+.annbar{max-width:760px;margin:0 auto;max-height:min(220px,32dvh);overflow-y:auto;overscroll-behavior:contain}
+.anncard{display:flex;align-items:center;gap:8px;margin:0 6px 6px;padding:5px 6px 5px 6px;background:var(--sheet);border:1px solid var(--line);border-left:4px solid var(--c);border-radius:16px;box-shadow:var(--lift);animation:mapop .14s ease-out}
+.annb{flex:none;display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--c);color:#fff;font-size:12.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.annn{flex:1;min-width:0;height:32px;padding:0 10px;border:0;border-radius:10px;outline:0;background:var(--hover);color:var(--ink);font:inherit;font-size:14px}
+.annn:focus{box-shadow:0 0 0 2px color-mix(in srgb,var(--c) 45%,transparent)}
+.annx{flex:none;display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:10px;background:none;color:var(--ink2);cursor:pointer}@media (hover:hover) and (pointer:fine){.annx:hover{background:var(--hover);color:var(--ink)}}
+@media (max-width:599px),(max-height:499px){.anncard{margin:0 2px 6px}.annn{font-size:16px;height:36px}.annx{width:40px;height:40px}}
+.composer.ann-hl{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 30%,transparent),var(--lift)}
+@media (prefers-reduced-motion:reduce){.anncard{animation:none}}
+/* a phone turned sideways is short: the canvas takes about half the height and the cards stay compact */
+@media (max-width:599px) and (orientation:landscape),(max-height:499px) and (orientation:landscape){html.zone-open.zdoc-image .zcv{height:48dvh}.annbar{max-height:24dvh}.anncard{margin-bottom:4px;padding:3px 4px 3px 5px}.annn{height:30px}.annx{width:32px;height:32px}.zann-pop{width:min(200px,calc(100vw - 32px))}}
+
+/* Pencil marks on any file: a layer over each unit (the image, a slide, a web page's window, a PDF page). It never changes layout: it is positioned over what it marks. */
+.zann-layer{position:absolute;inset:0;pointer-events:none;border-radius:inherit}
+.zann-boxes,.zann-pins{position:absolute;inset:0;overflow:hidden;pointer-events:none;border-radius:inherit}
+.zann-box{position:absolute;box-sizing:border-box;border:3px solid var(--c);border-radius:3px;background:color-mix(in srgb,var(--c) 12%,transparent);box-shadow:0 0 0 1.5px rgba(255,255,255,.9),inset 0 0 0 1.5px rgba(255,255,255,.9)}
+.zann-live{position:absolute;box-sizing:border-box;border:2px dashed var(--c);border-radius:3px;background:color-mix(in srgb,var(--c) 10%,transparent);pointer-events:none}
+.zann-hit{position:absolute;inset:0;pointer-events:none;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+html.zann-on .zann-hit{pointer-events:auto;cursor:crosshair}
+.zannl{position:absolute;z-index:2}
+.zpg .zann-layer{z-index:2}
+.zann-pins{overflow:visible}.zannl .zann-pins{overflow:hidden}

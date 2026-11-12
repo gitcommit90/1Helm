@@ -1,0 +1,25 @@
+1Helm licensing notice
+
+Copyright (c) 2026 Joseph Yaksich.
+
+1Helm releases up to and including v0.0.8 were released under the MIT License.
+1Helm releases v0.0.9 and later are released under AGPL-3.0-only for
+core files. The cloud-only directories named in ee/LICENSE have separate terms.
+The license applicable to a particular release is the license included with
+that release. This notice does not change grants for earlier releases.
+
+Bundled fonts:
+- Instrument Sans: Copyright 2022 The Instrument Sans Project Authors.
+  SIL Open Font License 1.1; see licenses/Instrument-Sans-OFL.txt.
+- Instrument Serif: Copyright 2022 The Instrument Serif Project Authors.
+  SIL Open Font License 1.1; see licenses/Instrument-Serif-OFL.txt.
+- Caveat: Copyright 2014 The Caveat Project Authors.
+  SIL Open Font License 1.1; see licenses/Caveat-OFL.txt.
+
+The HTML deck templates in app-assets/deck-templates/ (MIT) embed Google Fonts families under the SIL Open Font License 1.1; see
+THIRD-PARTY-NOTICES.md and licenses/Deck-template-fonts-OFL.txt.
+
+The PDF viewer bundles font and codec assets with their own notices under
+app-assets/app-static/pdfjs/standard_fonts/ and app-assets/app-static/pdfjs/wasm/.
+
+Third-party code, models and the licenses that apply to them (the plain-writing skill, Indra OCR, Symphonia, opus-decoder and wasm-audio-decoders) are listed in THIRD-PARTY-NOTICES.md and in src/vendor/audio/README.md.

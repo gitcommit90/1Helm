@@ -1,0 +1,445 @@
+{
+"GMAIL_SEND_EMAIL": {
+"slug": "GMAIL_SEND_EMAIL",
+"name": "Send Email",
+"description": "Sends an email via Gmail API using the authenticated user's Google profile display name. Sends immediately and is irreversible \u2014 confirm recipients, subject, body, and attachments before calling. At least one of 'to' (or 'recipient_email'), 'cc', or 'bcc' must be provided. At least one of subject or body must be provided. Requires `is_html=True` if the body contains HTML. All common file types including PNG, JPG, PDF, MP4, etc. are supported as attachments. Gmail API limits total message size to ~25 MB after base64 encoding. To reply in an existing thread, use GMAIL_REPLY_TO_THREAD instead. No scheduled send support; enforce timing externally.",
+"version": "20260915_00",
+"tags": [
+"important",
+"openWorldHint",
+"createHint"
+],
+"input_parameters": {
+"type": "object",
+"title": "SendEmailRequest",
+"properties": {
+"cc": {
+"type": "array",
+"items": {
+"type": "string"
+},
+"title": "Cc",
+"default": [],
+"examples": [
+[
+"manager@example.com",
+"teamlead@example.com"
+]
+],
+"description": "Carbon Copy (CC) recipients' email addresses. At least one of 'to'/'recipient_email', 'cc', or 'bcc' must be provided.",
+"human_parameter_name": "CC recipients' email addresses",
+"human_parameter_description": "Provide email addresses of people you want to inform about the email without them being the main recipient."
+},
+"bcc": {
+"type": "array",
+"items": {
+"type": "string"
+},
+"title": "Bcc",
+"default": [],
+"examples": [
+[
+"auditor@example.com"
+]
+],
+"description": "Blind Carbon Copy (BCC) recipients' email addresses. At least one of 'to'/'recipient_email', 'cc', or 'bcc' must be provided.",
+"human_parameter_name": "BCC recipients' email addresses",
+"human_parameter_description": "Enter email addresses of people you want to receive the email without the main recipients knowing."
+},
+"body": {
+"type": "string",
+"title": "Body",
+"examples": [
+"Hello team, let's discuss the project updates tomorrow.",
+"<h1>Welcome!</h1><p>Thank you for signing up.</p>",
+""
+],
+"description": "Email content (plain text or HTML). Either subject or body must be provided for the email to be sent. If HTML, `is_html` must be `True`.",
+"human_parameter_name": "Email content",
+"human_parameter_description": "Write the main message of your email here. It can be plain text or formatted HTML."
+},
+"is_html": {
+"type": "boolean",
+"title": "Is Html",
+"default": false,
+"description": "Set to `True` if the email body contains HTML tags.",
+"human_parameter_name": "Does the email body contain HTML?",
+"human_parameter_description": "Indicate whether the content of your email is formatted with HTML."
+},
+"subject": {
+"type": "string",
+"title": "Subject",
+"examples": [
+"Project Update Meeting",
+"Your Weekly Newsletter"
+],
+"description": "Subject line of the email. Either subject or body must be provided for the email to be sent.",
+"human_parameter_name": "Email subject line",
+"human_parameter_description": "This is the title of your email that summarizes its content."
+},
+"user_id": {
+"type": "string",
+"title": "User Id",
+"default": "me",
+"examples": [
+"user@example.com",
+"me"
+],
+"description": "User's email address; the literal 'me' refers to the authenticated user.",
+"human_parameter_name": "User ID",
+"human_parameter_description": "This is the email address of the user whose mailbox you want to access. You can use 'me' to refer to your own mailbox."
+},
+"attachment": {
+"anyOf": [
+{
+"type": "object",
+"title": "FileUploadable",
+"required": [
+"name",
+"mimetype",
+"s3key"
+],
+"properties": {
+"name": {
+"type": "string",
+"title": "Name",
+"examples": [
+"document.pdf",
+"image.jpg",
+"report.docx"
+],
+"description": "The filename that will be used when uploading the file to the destination service"
+},
+"s3key": {
+"type": "string",
+"title": "S3Key",
+"examples": [
+"47563/gmail/GET_ATTACHMENT/response/12345"
+],
+"description": "The S3 key of a publicly accessible file, typically returned from a previous download action that stored the file in S3. This key references an existing file that can be uploaded to another service."
+},
+"mimetype": {
+"type": "string",
+"title": "Mimetype",
+"examples": [
+"application/pdf",
+"image/jpeg",
+"application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+],
+"description": "The MIME type of the file"
+}
+},
+"file_uploadable": true
+},
+{
+"type": "array",
+"items": {
+"type": "object",
+"title": "FileUploadable",
+"required": [
+"name",
+"mimetype",
+"s3key"
+],
+"properties": {
+"name": {
+"type": "string",
+"title": "Name",
+"examples": [
+"document.pdf",
+"image.jpg",
+"report.docx"
+],
+"description": "The filename that will be used when uploading the file to the destination service"
+},
+"s3key": {
+"type": "string",
+"title": "S3Key",
+"examples": [
+"47563/gmail/GET_ATTACHMENT/response/12345"
+],
+"description": "The S3 key of a publicly accessible file, typically returned from a previous download action that stored the file in S3. This key references an existing file that can be uploaded to another service."
+},
+"mimetype": {
+"type": "string",
+"title": "Mimetype",
+"examples": [
+"application/pdf",
+"image/jpeg",
+"application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+],
+"description": "The MIME type of the file"
+}
+},
+"file_uploadable": true
+}
+}
+],
+"title": "Attachment",
+"description": "File(s) to attach. Accepts a single file or a list of files. IMPORTANT: mimetype MUST contain a '/' separator - single words like 'pdf' or 'new' are invalid. Gmail API limits: total message size must not exceed ~25 MB after base64 encoding. Omit or set to null for no attachment. Empty attachment objects (with all fields empty/whitespace) are treated as no attachment.",
+"human_parameter_name": "File(s) to attach",
+"human_parameter_description": "If you want to send file(s) with your email, provide them here. Can be a single file or a list of files. The mimetype must be in 'type/subtype' format (e.g., 'application/pdf' for PDFs, 'image/png' for PNG files). Total size of all attachments should be under 20 MB before encoding."
+},
+"from_email": {
+"type": "string",
+"title": "From Email",
+"examples": [
+"alias@example.com",
+"marketing@company.com"
+],
+"description": "Sender email address for the 'From' header. Provide the connected account's primary email address or a verified alias configured in Gmail's 'Send mail as' settings. When omitted, the action attempts to resolve the primary email address from the authenticated Gmail profile.",
+"human_parameter_name": "Sender email address (alias)",
+"human_parameter_description": "Specify the sender's primary email address or a verified 'Send mail as' alias. Provide this explicitly when the sender cannot be resolved from the connected Gmail account."
+},
+"recipient_email": {
+"type": "string",
+"title": "Recipient Email",
+"examples": [
+"john@doe.com",
+"me"
+],
+"description": "Primary recipient's email address. You can also use 'to' as an alias for this parameter. At least one of 'to'/'recipient_email', 'cc', or 'bcc' must be provided. Use extra_recipients if you want to send to multiple recipients. Use the special value 'me' to send to your own authenticated email address. Must be a full user@domain address; 'me' is not valid here and will fail.",
+"human_parameter_name": "Primary recipient's email address",
+"human_parameter_description": "Enter the main email address of the person you want to send the email to. Use 'me' to send to yourself."
+},
+"extra_recipients": {
+"type": "array",
+"items": {
+"type": "string"
+},
+"title": "Extra Recipients",
+"default": [],
+"examples": [
+[
+"jane.doe@example.com",
+"support@example.com"
+]
+],
+"description": "Additional 'To' recipients' email addresses (not Cc or Bcc). Should only be used if recipient_email is also provided.",
+"human_parameter_name": "Additional 'To' recipients' email addresses",
+"human_parameter_description": "List extra email addresses for other recipients you want to send the email to."
+}
+}
+},
+"toolkit": {
+"slug": "gmail"
+}
+},
+"GOOGLEDRIVE_UPLOAD_FILE": {
+"slug": "GOOGLEDRIVE_UPLOAD_FILE",
+"name": "Upload File",
+"description": "Uploads a file (max 5MB) to Google Drive, placing it in the specified folder or root if no valid folder ID is provided. Always creates a new file (never updates existing); use GOOGLEDRIVE_EDIT_FILE to update with a stable file_id. Uploaded files are private by default; configure sharing via GOOGLEDRIVE_ADD_FILE_SHARING_PREFERENCE.",
+"version": "20261001_00",
+"tags": [
+"important",
+"openWorldHint",
+"createHint"
+],
+"input_parameters": {
+"type": "object",
+"title": "UploadFileRequest",
+"required": [
+"file_to_upload"
+],
+"properties": {
+"file_to_upload": {
+"type": "object",
+"title": "FileUploadable",
+"required": [
+"name",
+"mimetype",
+"s3key"
+],
+"properties": {
+"name": {
+"type": "string",
+"title": "Name",
+"examples": [
+"document.pdf",
+"image.jpg",
+"report.docx"
+],
+"description": "The filename that will be used when uploading the file to the destination service"
+},
+"s3key": {
+"type": "string",
+"title": "S3Key",
+"examples": [
+"47563/gmail/GET_ATTACHMENT/response/12345"
+],
+"description": "The S3 key of a publicly accessible file, typically returned from a previous download action that stored the file in S3. This key references an existing file that can be uploaded to another service."
+},
+"mimetype": {
+"type": "string",
+"title": "Mimetype",
+"examples": [
+"application/pdf",
+"image/jpeg",
+"application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+],
+"description": "The MIME type of the file"
+}
+},
+"description": "File to upload to Google Drive (max 5MB). Use a clear filename and accurate MIME type, for example `application/pdf`; incorrect values can cause Drive to convert or misrender the file.",
+"file_uploadable": true,
+"additionalProperties": false,
+"human_parameter_name": "File to upload",
+"human_parameter_description": "The file to upload to Google Drive."
+},
+"folder_to_upload_to": {
+"type": "string",
+"title": "Folder To Upload To",
+"examples": [
+"1duXYCvYC5tIp5B_B1HWLq8LyDYXfMhPU"
+],
+"description": "Optional ID of the target Google Drive folder; can be obtained using 'Find Folder' or similar actions. Invalid or missing IDs silently fall back to Drive root with no error \u2014 resolve the correct folder ID first using GOOGLEDRIVE_FIND_FILE.",
+"human_parameter_name": "Target folder ID",
+"human_parameter_description": "If you want the file placed in a specific Drive folder, paste that folder's ID here. Leave it blank to upload to your My Drive (root) instead."
+}
+}
+},
+"toolkit": {
+"slug": "googledrive"
+}
+},
+"GOOGLEDRIVE_DOWNLOAD_FILE": {
+"slug": "GOOGLEDRIVE_DOWNLOAD_FILE",
+"name": "Download a file from Google Drive",
+"description": "Downloads a Drive file's content and returns it in `downloaded_file_content`. For native blob files such as PDFs, images, videos, and Office files, it returns the original bytes without conversion; leave `mime_type` unset. For Google Workspace documents, it exports the content and `mime_type` optionally selects the export format.",
+"version": "20261001_00",
+"tags": [
+"readOnlyHint",
+"idempotentHint",
+"openWorldHint",
+"important"
+],
+"input_parameters": {
+"type": "object",
+"title": "DownloadFileRequest",
+"required": [
+"fileId"
+],
+"properties": {
+"fileId": {
+"type": "string",
+"title": "File Id",
+"examples": [
+"1aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+],
+"description": "The unique identifier of the file to be downloaded from Google Drive. Must be a valid Google Drive file ID containing only alphanumeric characters, hyphens, and underscores. File paths with slashes (/) are not valid. This ID can typically be found in the file's URL in Google Drive or obtained from API calls that list files.",
+"human_parameter_name": "File ID",
+"human_parameter_description": "The unique identifier of the Google Drive file you want to download. You can copy it from the file's URL or get it from a previous search or list step. Must contain only alphanumeric characters, hyphens, and underscores."
+},
+"mime_type": {
+"enum": [
+"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+"application/vnd.oasis.opendocument.text",
+"application/rtf",
+"application/pdf",
+"text/plain",
+"application/zip",
+"application/epub+zip",
+"text/html",
+"text/markdown",
+"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+"application/vnd.oasis.opendocument.spreadsheet",
+"text/csv",
+"text/tab-separated-values",
+"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+"application/vnd.oasis.opendocument.presentation",
+"image/jpeg",
+"image/png",
+"image/svg+xml",
+"application/vnd.google-apps.script+json",
+"application/vnd.google-apps.vid"
+],
+"type": "string",
+"title": "MimeType",
+"examples": [
+"application/pdf",
+"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+"text/csv"
+],
+"description": "ONLY for Google Workspace documents (Docs, Sheets, Slides, Drawings). Specifies the export format. Has NO effect on regular files (PDFs, images, videos, Office documents, etc.) - they are always downloaded in their native format. Google Forms and Maps cannot be downloaded as they do not support exports through the Drive API. If omitted for Google Workspace files, defaults to PDF. Different Workspace types support different formats. Use application/pdf for universal compatibility.",
+"human_parameter_name": "Export Format (Google Workspace files only)",
+"human_parameter_description": "ONLY for Google Workspace files (Docs, Sheets, Slides): choose export format like PDF, DOCX, or CSV. Has NO effect on regular files (PDFs, images, etc.) which download in their native format. Different file types support different formats - use PDF for universal compatibility."
+}
+}
+},
+"toolkit": {
+"slug": "googledrive"
+}
+},
+"GMAIL_GET_ATTACHMENT": {
+"slug": "GMAIL_GET_ATTACHMENT",
+"name": "Get Gmail attachment",
+"description": "Retrieves a specific attachment by ID from a message in a user's Gmail mailbox, requiring valid message and attachment IDs. Returns the downloaded file with its MIME type and filename. Attachments exceeding ~25 MB may be exposed as Google Drive links \u2014 use GOOGLEDRIVE_DOWNLOAD_FILE when a Drive file_id is present instead.",
+"version": "20260915_00",
+"tags": [
+"important",
+"readOnlyHint",
+"openWorldHint"
+],
+"input_parameters": {
+"type": "object",
+"title": "GetAttachmentRequest",
+"required": [
+"message_id",
+"attachment_id",
+"file_name"
+],
+"properties": {
+"user_id": {
+"type": "string",
+"title": "User Id",
+"default": "me",
+"examples": [
+"me",
+"user@example.com"
+],
+"description": "User's email address ('me' for authenticated user).",
+"human_parameter_name": "User ID",
+"human_parameter_description": "The email address or identifier of the user whose mailbox you want to access. Use 'me' to access your own mailbox."
+},
+"file_name": {
+"type": "string",
+"title": "File Name",
+"examples": [
+"invoice.pdf",
+"report.docx"
+],
+"minLength": 1,
+"description": "Desired filename for the downloaded attachment. This is a required string field - do not pass null.",
+"human_parameter_name": "File Name",
+"human_parameter_description": "The name you want to give the file once it's downloaded. This helps you easily identify the attachment later."
+},
+"message_id": {
+"type": "string",
+"title": "Message Id",
+"examples": [
+"18exampleMessageId7f9"
+],
+"minLength": 1,
+"description": "Immutable ID of the message containing the attachment. This is a required string field - do not pass null. Obtain the message_id from Gmail API responses (e.g., fetchEmails, listThreads).",
+"human_parameter_name": "Message ID",
+"human_parameter_description": "The unique identifier of the email message that contains the attachment you want to retrieve."
+},
+"attachment_id": {
+"type": "string",
+"title": "Attachment Id",
+"examples": [
+"ANGjdJ8sZ7example1234",
+"A_PART0.1_18exampleAttachmentId7f9"
+],
+"minLength": 1,
+"description": "The internal Gmail attachment ID (NOT the filename). This is a system-generated token string like 'ANGjdJ8s...'. Obtain this ID from the 'attachmentId' field in the 'attachmentList' array returned by fetchEmails or fetchMessageByMessageId actions. Do NOT pass the filename (e.g., 'report.pdf'). Requires a fully hydrated message payload: call GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID with format='full' to obtain valid attachment IDs \u2014 lightweight fetch modes may omit attachmentList entirely.",
+"human_parameter_name": "Attachment ID",
+"human_parameter_description": "The unique Gmail attachment ID token (NOT the filename). This is a system-generated ID string obtained from the 'attachmentId' field in message attachment lists. First fetch the email using fetchEmails or fetchMessageByMessageId to get the attachmentId, then use it here."
+}
+}
+},
+"toolkit": {
+"slug": "gmail"
+}
+}
+}

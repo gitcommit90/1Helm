@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
+import { boundedText, BodyTooLargeError } from "../src/bounded-body.js";
+import { composioWebhook, WEBHOOK_MAX_BYTES } from "../src/ee/composio-triggers.js";
+import { textingWebhook } from "../src/ee/texting.js";
+import worker from "../src/index.js";
+
+const url = "https://example.com/webhook";
+const post = (body, headers) => new Request(url, { method: "POST", body, headers });
+assert.equal(await boundedText(post("éééé"), 8), "éééé");
+await assert.rejects(boundedText(post("éééé"), 7), BodyTooLargeError);
+await assert.rejects(boundedText(post("x", { "content-length": "1000001" }), 1_000_000), BodyTooLargeError);
+await assert.rejects(boundedText(post(new Uint8Array([0xff])), 1_000_000), TypeError);
+
+const oversized = "x".repeat(WEBHOOK_MAX_BYTES + 1);
+assert.equal((await composioWebhook(post(oversized), { COMPOSIO_WEBHOOK_SECRET: "test", DB: {} })).status, 413);
+assert.equal((await textingWebhook(post(oversized), {}, null, "test-hook")).status, 413);
+assert.equal((await worker.route(new Request("https://example.com/stripe/webhook", { method: "POST", body: oversized }), { ONEHELM_EE: "1hc", DB: {} }, {})).status, 413);
+const event = JSON.stringify({ id: "evt_example", type: "customer.created", data: { object: {} } });
+const timestamp = Math.floor(Date.now() / 1000), secret = "test-signing-secret";
+const signature = createHmac("sha256", secret).update(`${timestamp}.${event}`).digest("hex");
+const stripeEnv = { ONEHELM_EE: "1hc", STRIPE_WEBHOOK_SECRET: secret, DB: { prepare: () => ({ bind: () => ({ run: async () => ({ meta: { changes: 1 } }) }) }) } };
+const stripeReq = new Request("https://example.com/stripe/webhook", { method: "POST", body: event, headers: { "stripe-signature": `t=${timestamp},v1=${signature}` } });
+const stripeRes = await worker.route(stripeReq, stripeEnv, {});
+assert.equal(stripeRes.status, 200); assert.deepEqual(await stripeRes.json(), { ok: true });
+const rolledReq = new Request("https://example.com/stripe/webhook", { method: "POST", body: event, headers: { "stripe-signature": `t=${timestamp},v1=${signature},v1=${"0".repeat(64)}` } });
+const rolledRes = await worker.route(rolledReq, stripeEnv, {});
+assert.equal(rolledRes.status, 200, "a valid earlier v1 signature must survive a later signature from a rolled secret");
+assert.deepEqual(await rolledRes.json(), { ok: true });
+console.log("ok - unauthenticated webhook bodies stop at the streaming byte limit");

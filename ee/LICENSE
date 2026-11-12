@@ -1,0 +1,10 @@
+1Helm Cloud Features Source License
+Copyright (c) 2026 Joseph Yaksich. All rights reserved.
+
+This license applies to files in src/ee/, src/skills/ee/, and web/src/ee/, and to copies and compiled forms of those files. Other files remain under the licenses identified in the repository's root LICENSE and NOTICE unless a file says otherwise.
+
+You may read, download, and copy this source. You may modify it solely to prepare a contribution to the official 1Helm repository, and may submit that contribution to its operator under the contribution terms the operator publishes.
+
+Only the operator of the 1HC service may run, deploy, host, offer as a service, or distribute this code or a derivative of it. Anyone else needs a separate written license from the copyright holder for any of those acts. Access to the source and possession of a copy do not grant permission to use the cloud features.
+
+All rights not expressly granted are reserved. This source is provided as is, without warranty, to the extent allowed by law.

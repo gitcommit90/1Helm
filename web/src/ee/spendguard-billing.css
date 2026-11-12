@@ -1,0 +1,7 @@
+/* 1HC monthly plan meter and credit notice. */
+.susage .sgm{color:var(--ink2)}
+#sgnotice{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:12px;width:min(560px,calc(100vw - 32px));box-sizing:border-box;
+  padding:12px 12px 12px 14px;border-radius:16px;background:var(--sheet);color:var(--ink);box-shadow:0 0 0 1px var(--line2),0 10px 30px rgba(0,0,0,.12);font-size:14px;line-height:1.4}
+#sgnotice p{margin:0;flex:1;min-width:0;overflow-wrap:anywhere}
+#sgnotice .sgn-i{flex:none;color:var(--accent);display:flex}
+#sgnotice button{flex:none;height:32px;padding:0 14px;border-radius:999px;background:var(--ink);color:var(--sheet);font-weight:600;font-size:13px}
