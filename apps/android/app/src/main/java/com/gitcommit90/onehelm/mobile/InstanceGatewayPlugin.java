@@ -8,7 +8,13 @@ import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import androidx.core.content.ContextCompat;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.net.Uri;
+import android.os.Build;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -101,6 +107,39 @@ public class InstanceGatewayPlugin extends Plugin {
     @PluginMethod
     public void getRingerMode(PluginCall call) {
         JSObject result = new JSObject(); result.put("mode", ringerMode()); call.resolve(result);
+    }
+
+    // Posts a system notification on the "1helm_activity" channel, even while the app is open (Firebase hands a push to the page and shows
+    // nothing then). Only the page's "Send a test" uses it. Tapping it opens url in the app when url is on the selected server.
+    @PluginMethod
+    public void showNotification(PluginCall call) {
+        String title = call.getString("title", "1Helm"), body = call.getString("body", ""), url = call.getString("url", ""), tag = call.getString("tag", "");
+        Context context = getContext();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel("1helm_activity", "1Helm activity", NotificationManager.IMPORTANCE_HIGH);
+            channel.setDescription("Channel and resident-agent updates");
+            context.getSystemService(NotificationManager.class).createNotificationChannel(channel);
+        }
+        NotificationManagerCompat manager = NotificationManagerCompat.from(context);
+        if (!manager.areNotificationsEnabled()) { call.reject("Notifications are turned off for this app."); return; }
+        Intent open = new Intent(context, MainActivity.class).setAction(Intent.ACTION_VIEW).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        Uri link = Uri.parse(url == null ? "" : url), own = Uri.parse(String.valueOf(selectedOrigin(context)));
+        if (sameOrigin(link, own)) open.setData(link);
+        PendingIntent tap = PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        NotificationCompat.Builder b = new NotificationCompat.Builder(context, "1helm_activity")
+            .setSmallIcon(context.getApplicationInfo().icon)
+            .setContentTitle(title == null || title.isEmpty() ? "1Helm" : title)
+            .setContentText(body)
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(tap);
+        try {
+            manager.notify(tag == null || tag.isEmpty() ? null : tag, 1, b.build());
+        } catch (SecurityException e) {
+            call.reject("Notifications are turned off for this app."); return;
+        }
+        call.resolve();
     }
 
     // What Android itself says about location and the microphone. The web view forgets a page's answers on every launch and
