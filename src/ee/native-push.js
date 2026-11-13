@@ -35,7 +35,8 @@ export async function removeNativeDevice(env, tenantId, platform, token, f = fet
 // One notification to every phone of the workspace. payload is the same object Web Push gets (title, body, url, tag, kind).
 export async function pushNative(env, tenantId, payload, f = fetch) {
   const r = await relay(env, "/deliveries", "POST", { recipient_id: await recipientFor(tenantId), idempotency_key: crypto.randomUUID(),
-    title: String(payload?.title || "1Helm"), body: String(payload?.body || ""), url: String(payload?.url || ""), sound: payload?.sound !== false }, f);
+    title: String(payload?.title || "1Helm"), body: String(payload?.body || ""), url: String(payload?.url || ""), sound: payload?.sound !== false,
+    ...(payload?.tag ? { tag: String(payload.tag) } : {}) }, f);   // tag: the phone replaces the earlier notification with the same tag (the relay checks the characters)
   const d = await r.json().catch(() => ({}));
   return { ok: r.ok, delivered: Number(d.delivered || 0), devices: Number(d.devices || 0), error: d.error || "" };
 }

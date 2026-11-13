@@ -15,7 +15,7 @@ import { recordTextReply, textWaitingNotices, recordTextCard, resolveTextCard, h
 import { DurableObject } from "cloudflare:workers";
 import { enabled as eeEnabled, toolEnabled as eeToolEnabled } from "./ee/index.js";
 import { protectedRequest } from "./approval-scope.js";
-import { tolerantEnv, codeV, isResetErr, isLostErr } from "./do-stub.js";
+import { tolerantEnv, codeV, isResetErr, isLostErr, isPlatformOverload, PLATFORM_OVERLOAD_MSG } from "./do-stub.js";
 import { resumeInit, resumeMix, guardIn, JOURNALED, runIdOf } from "./resume.js";
 import { traceMix } from "./turn-trace.js";   // Langfuse turn traces: a root, a span per model step, a TOOL per tool run (no text)
 import { jobNeedsHands, actErrorNeedsHands, HANDS_ON_HIDDEN, HANDS_ON_REFUSAL, HANDS_ON_UNCERTAIN_TAIL, HANDS_ON_JOB_TAIL, HANDS_ON_ACT_TAIL, HANDS_ON_SAVED_NOTE, HANDS_ON_PIC_FOLLOWS, HANDS_ON_WIDTH, HANDS_ON_NEXT_MS, handsOnMessage, keepLatestPictures } from "./browser-handson.js";
@@ -92,7 +92,8 @@ import { APP_EVENTS_TOOL, appEventsTool, eventsReady } from "./ee/index.js";
 import { deletionMix } from "./deletion-do.js";
 import { routingArtifactKeys, dropRoutingArtifacts, agentSessionInventory, purgeAgentSession } from "./ee/index.js";
 import { residentExportMix } from "./data-export-do.js";   // Export my data: read-only pages of the channel's tables
-import { previewMix } from "./file-preview.js";   // decks and Word documents open in the file viewer as a PDF made on the computer
+import { pdfMix, pdfKind } from "./pdf-pair.js";   // an editable file keeps its PDF copy; any document, deck or spreadsheet downloads as a PDF
+import { previewMix, previewName } from "./file-preview.js";   // decks and Word documents open in the file viewer as a PDF made on the computer
 import { ocrLines, textOnScreen, textPositions, findInOcr, pagePosition, pageLine } from "./ocr-look.js";
 import { sidecarMix, lookMoondream, lookReserve } from "./sidecar.js";
 import { FILE_TEXT_TOOL } from "./file-text-tool.js";   // every file arriving is turned into text in the background (FilePrep); Send uses it
@@ -226,6 +227,10 @@ function publicTurnError(error) {
   return Object.hasOwn(messages, error?.code) ? messages[error.code] : null;
 }
 
+// Text the person sees for a failed turn: an app-owned message, or plain words for a temporary platform failure; null otherwise.
+export const visibleTurnError = (error) => publicTurnError(error) || (isPlatformOverload(error) ? PLATFORM_OVERLOAD_MSG : null);
+export { publicTurnError };
+
 const PRICE = { in: 150, cached: 30, out: 500 };   // glm-5.3-flash, nano$ per token
 export const DAY_LIMIT_ERR = "skipped: daily safety limit reached";
 export const DAY_LIMIT_REPLY = "I've paused until midnight Pacific. I've already used a lot of your balance today, more than a normal day's worth, so I stopped as a safety measure in case something was stuck in a loop. Nothing was lost, and I'll pick back up then.";
@@ -309,7 +314,7 @@ const TOOLS = () => (toolDefs ??= [
   REQUEST_SECRET_TOOL,
   SIGN_TOKEN_TOOL,
   DECK_STYLES_TOOL,
-  { type: "function", function: { name: "share_file", description: "Give the person a file from your computer: it appears as a download card under your reply in this chat and in the channel Library. Use it for anything you made for them (a document, spreadsheet, PDF, image, zip). Saving a file on your computer alone does NOT show it to them. When you change a file you already gave them, share it again: a file that is an edit of one already in the Library (the Library copy, the same path, a file you read or copied in this task, or the same name) updates that Library file in place, including a file the person uploaded (same file, same name, new version; its share link and any published page of it show the new version at the same link). Share the edit under whatever name you like: the Library file keeps its name. Don't make a copy unless they ask for one (copy: true). For a web page (.html, or a folder with index.html) meant to be opened in a browser, also offer publish_page so they can tap Publish; the card of a shared .html file offers Share file and Publish too.", parameters: { type: "object", properties: { path: { type: "string", description: "Path on your computer (relative to /workspace or absolute)" }, name: { type: "string", description: "Optional file name to show, e.g. \"October budget.xlsx\"" }, replace: { type: "string", description: "Optional: the Library file (name or id) this is a new version of, when it was saved under another path or name. Not needed when the path or name is the same" }, copy: { type: "boolean", description: "true only when the person asked for a separate copy: added as a new file next to the old one" }, restore: { type: "string", description: "Instead of sharing: put back the version of this Library file (name or id) from before your last update to it. Calling it again swaps back. path is not needed" }, original: { type: "boolean", description: "With restore: put back the file exactly as the person first uploaded it (always kept, however many edits were made)" } }, required: [] } } },
+  { type: "function", function: { name: "share_file", description: "Give the person a file from your computer: it appears as a download card under your reply in this chat and in the channel Library. Use it for anything you made for them (a document, spreadsheet, PDF, image, zip). Saving a file on your computer alone does NOT show it to them. Share the editable file (.docx, .pptx, .xlsx, .html): the Zone opens and edits those, and the Library keeps a PDF copy of each Word document, deck and spreadsheet automatically for download and attachments (attach it by the file's name with .pdf). If you also make a PDF, share both: a PDF with the same base name as an editable file from this task (or sitting next to it on your computer, written in this task) is kept together with it as one Library item, its PDF copy, and a PDF alone opens in the Zone only for the person's own marks. When you change a file you already gave them, share it again: a file that is an edit of one already in the Library (the Library copy, the same path, a file you read or copied in this task, or the same name) updates that Library file in place, including a file the person uploaded (same file, same name, new version; its share link and any published page of it show the new version at the same link). Share the edit under whatever name you like: the Library file keeps its name. Don't make a copy unless they ask for one (copy: true). For a web page (.html, or a folder with index.html) meant to be opened in a browser, also offer publish_page so they can tap Publish; the card of a shared .html file offers Share file and Publish too.", parameters: { type: "object", properties: { path: { type: "string", description: "Path on your computer (relative to /workspace or absolute)" }, name: { type: "string", description: "Optional file name to show, e.g. \"October budget.xlsx\"" }, replace: { type: "string", description: "Optional: the Library file (name or id) this is a new version of, when it was saved under another path or name. Not needed when the path or name is the same" }, copy: { type: "boolean", description: "true only when the person asked for a separate copy: added as a new file next to the old one" }, restore: { type: "string", description: "Instead of sharing: put back the version of this Library file (name or id) from before your last update to it. Calling it again swaps back. path is not needed" }, original: { type: "boolean", description: "With restore: put back the file exactly as the person first uploaded it (always kept, however many edits were made)" } }, required: [] } } },
   { type: "function", function: { name: "list_workflows", description: "List this channel's workflows and follow-ups with status and next run.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "set_workflow_status", description: "Pause, resume or complete a workflow by id.", parameters: { type: "object", properties: { id: { type: "integer" }, status: { type: "string", enum: ["active", "paused", "complete"] } }, required: ["id", "status"] } } },
   TODO_TOOL,
@@ -4025,7 +4030,7 @@ export class Resident extends DurableObject {
       // Failed outside the model loop: the card closes as failed, and a chat turn keeps a turns row so its messages stay in history.
       this.commitTurn(tc, true);
       e.failedTurn = tc.turn;
-      const publicError = publicTurnError(e), visibleError = e.payRequired ? e.message : publicError || `Something went wrong: ${e.message}`;
+      const publicError = visibleTurnError(e), visibleError = e.payRequired ? e.message : publicError || `Something went wrong: ${e.message}`;
       if (tc.appendRuntime && this._appendTurns?.has(tc.turn)) { this.closeTaskCalls(tc); this.save(tc.turn, { role: "assistant", content: visibleError }); }
       try { commitCard(this.sql, tc, tc.turn, { status: "failed" });
         if (kind === "chat") this.sql.exec("INSERT OR IGNORE INTO turns (id,at,user_text,reply,steps,tool_calls,total_ms,charge_nano,error,kind,session) VALUES (?,?,?,?,?,?,?,?,?,?,?)", tc.turn, tc.t0, String(text), tc.appendRuntime || publicError ? visibleError : e.payRequired ? e.message : "", tc.appendStats?.steps || 0, tc.appendStats?.tool_calls || 0, Date.now() - tc.t0, tc.appendStats?.charge || 0, e.payRequired ? "payment_required" : String(e.message || e).slice(0, 500), "chat", session);
@@ -4643,7 +4648,7 @@ export class Resident extends DurableObject {
         if (step === stepLimit - 1) capped = true;   // a chat turn out of steps: a short report below (after any steer is answered)
       }
     } catch (e) { if (isResetErr(e)) { tc.objectReset = true; throw e; }   // resume.js: a reset under this step isn't the turn's error
-      if (tc.abort === "hard") error = null; else if (publicTurnError(e)) { error = e.code; reply = publicTurnError(e); said.length = 0; saidMeta.length = 0; said.push(reply); } else if (e.budget) { error = null; reply = (kind === "workflow" ? savedWorkflowHardReport(this.sql, turn) : null) || pauseFallback(said.join("\n\n")); said.length = 0; said.push(reply); } else { error = e.message; if (!reply) reply = isByokError(e) ? e.message : e.privacy ? PRIVACY_EXHAUSTED : e.status === 402 ? (this.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : e.status === 429 ? DAY_LIMIT_REPLY : `Something went wrong: ${e.message}`; } }
+      if (tc.abort === "hard") error = null; else if (publicTurnError(e)) { error = e.code; reply = publicTurnError(e); said.length = 0; saidMeta.length = 0; said.push(reply); } else if (e.budget) { error = null; reply = (kind === "workflow" ? savedWorkflowHardReport(this.sql, turn) : null) || pauseFallback(said.join("\n\n")); said.length = 0; said.push(reply); } else { error = e.message; if (!reply) reply = isByokError(e) ? e.message : e.privacy ? PRIVACY_EXHAUSTED : e.status === 402 ? (this.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : e.status === 429 ? DAY_LIMIT_REPLY : isPlatformOverload(e) ? PLATFORM_OVERLOAD_MSG : `Something went wrong: ${e.message}`; } }
     }
     if (!error && tc.orchestration && !tc.orchestration.sent && !tc.orchestration.approved && !tc.orchestration.waitingInput && !tc.orchestration.nativeWork && !tc.stoppedTurn) {
       if (tc.orchestration.review) { reply = this.ack(tc, ACK_RESULT_NOT_READY); said.length=0; saidMeta.length=0; said.push(reply); }
@@ -5029,7 +5034,7 @@ export class Resident extends DurableObject {
     return `data:${f.view_key ? "image/jpeg" : f.mime};base64,${btoa(bin)}`;
   }
   fileTitle(ids) { const f = (ids || []).map((id) => this.sql.exec("SELECT name FROM files WHERE id=?", String(id)).toArray()[0]).filter(Boolean); return f.length ? `${f[0].name}${f.length > 1 ? ` + ${f.length - 1} more` : ""}` : ""; }
-  fileView(r) { return r ? { id: r.id, name: r.name, mime: r.mime, bytes: r.bytes, at: r.at, source: r.source, session: r.session, path: `files/${r.name}`, image: /^image\//.test(r.mime), version: Number(r.version || 1), tags: fileTags(r.tags) } : null; }
+  fileView(r) { return r ? { id: r.id, name: r.name, mime: r.mime, bytes: r.bytes, at: r.at, source: r.source, session: r.session, path: `files/${r.name}`, image: /^image\//.test(r.mime), version: Number(r.version || 1), tags: fileTags(r.tags), ...(this.pcShared().has(r.id) ? { pdf_copy: true } : {}) } : null; }
   uniqueName(name) {
     const taken = new Set(this.sql.exec("SELECT name FROM files WHERE deleted=0").toArray().map((x) => x.name.toLowerCase()));
     if (!taken.has(name.toLowerCase())) return name;
@@ -5091,6 +5096,7 @@ export class Resident extends DurableObject {
     }
     const path = String(a.path || "").trim().replace(/^\/workspace\//, "").replace(/^\.\//, ""); if (!path) return "error: path required";
     const name = safeName(nameWithSourceExt(a.name, path) || path.split("/").pop());
+    if (/\.pdf$/i.test(name) && !a.copy && !a.replace) { const kept = await this.pairPdf({ path, name }, ctx); if (kept) return kept; }   // pdf-pair.js: a PDF of an editable file the task gave is kept with it as its PDF copy
     let target = null;
     if (a.replace && !a.copy) { target = this.libFile(a.replace); if (!target) return `error: there's no "${a.replace}" in this channel's Library to update. Leave out replace to add it as a new file.`; }
     let why = a.replace ? "you named it with replace" : "";
@@ -5106,15 +5112,17 @@ export class Resident extends DurableObject {
       const f = this.addFileRow({ id, name, mime: mimeOf(name), bytes: r.bytes, r2key: key, source: "helper", session: ctx.session || null, turn: ctx.turn || null, synced: path === `files/${name}` ? 1 : 0, src_path: path });
       ctx.emit?.({ t: "file", file: f }); this.recordShare(f, ctx.turn);
       const pages = await this.republishPages(f, key, path, ctx);   // a page published from this path (publish_page of a folder holding it)
-      return `Shared "${f.name}" (${humanBytes(f.bytes)}). The card shows under your reply in this chat and in the Library. Don't paste its contents; one line about what it is is enough.${pages}${/\.html?$/i.test(f.name) ? " It's a web page: its card also has Publish (a live page at their own address); you can mention it, and if it loads files from its folder, publish that folder with publish_page instead." : ""}`;
+      const folded = await this.foldSharedPdf(f, ctx);   // pdf-pair.js
+      return `Shared "${f.name}" (${humanBytes(f.bytes)}). The card shows under your reply in this chat and in the Library. Don't paste its contents; one line about what it is is enough.${pages}${folded}${/\.html?$/i.test(f.name) ? " It's a web page: its card also has Publish (a live page at their own address); you can mention it, and if it loads files from its folder, publish that folder with publish_page instead." : ""}`;
     }
     const v = Number(target.version || 1) + 1, key = `t/${tenant}/files/${channel}/${target.id}.v${v}`;
     let r; try { r = await this.computer().fileToR2(path, key, MAX_UPLOAD); } catch (e) { return `error: ${e.message}`; }
     if (!r.ok) return `error: ${r.error}`;
     const lib = path === `files/${target.name}`;   // it edited the Library copy itself
     await this.putVersion(target, { key, bytes: r.bytes, src_path: lib ? target.src_path : path, synced: lib ? 1 : 0, session: ctx.session || null, turn: ctx.turn || null });
-    return await this.fileUpdated(target, { r2key: key, bytes: r.bytes, path }, ctx,
+    const upd = await this.fileUpdated(target, { r2key: key, bytes: r.bytes, path }, ctx,
       `Updated "${target.name}" in place (${humanBytes(r.bytes)}, version ${v}), because ${why}. It is the same Library file, not a copy, and the person now sees the new version everywhere this file appears, including cards shared earlier.${a.name && safeName(a.name) !== target.name ? ` It keeps its name "${target.name}".` : ""}${this.keptLine(target.id)}`);
+    return upd + await this.foldSharedPdf(target, ctx);   // pdf-pair.js
   }
   // After a file's bytes changed in place: its share links serve the new bytes, its published pages are republished, the card shows.
   async fileUpdated(f, { r2key, bytes, path }, ctx, said) {
@@ -5139,6 +5147,11 @@ export class Resident extends DurableObject {
   async appFileRead(ref) {
     const s = String(ref || "").trim(); if (!s) return { error: "which file? Give a Library file name or a /workspace path." };
     const lib = this.libFile(s);
+    if (!lib && /\.pdf$/i.test(s)) {   // pdf-pair.js: the PDF copy of an editable Library file, by the file's name with .pdf
+      const want = s.replace(/^\/workspace\/files\//, "").replace(/^files\//, "").toLowerCase(), m = this.sql.exec("SELECT * FROM files WHERE deleted=0 AND pending=0 AND hidden=0").toArray().find((r) => (pdfKind(r.name) || this.pcShared().has(r.id)) && previewName(r.name).toLowerCase() === want);
+      const c = m ? await this.filePdfCopy(m.id) : null;
+      if (c && !c.error) { const o = await this.env.WS.get(c.key); if (o && c.bytes <= APP_FILE_BUFFER_MAX) return { name: c.name, mime: "application/pdf", bytes: new Uint8Array(await o.arrayBuffer()) }; }
+    }
     if (lib) {
       if (lib.bytes > APP_FILE_BUFFER_MAX) return { error: `"${lib.name}" is ${humanBytes(lib.bytes)}; a file attached to an app action can be at most ${humanBytes(APP_FILE_BUFFER_MAX)} (it is read into memory). For an action that takes a link, pass {"file_url": "${lib.name.replace(/"/g, "'")}"} instead, which allows a file of up to 250 MB.` };
       const o = await this.env.WS.get(lib.r2key); if (!o) return { error: `"${lib.name}" is missing from storage.` };
@@ -5257,6 +5270,7 @@ export class Resident extends DurableObject {
       // has been removed. Current object sizes make a later retry idempotent.
       try {
         await this.dropPreview(r.id);   // file-preview.js
+        await this.dropPdfCopy(r.id);   // pdf-pair.js
         await this.dropSidecar?.(r.id); // sidecar.js
         await stDelete(this.env, [...new Set([r.r2key, r.view_key, r.prev_key, r.orig_key, ...this.shareKeys(r.id).map((x) => x.key)].filter(Boolean))]);   // every version a reply shared goes too
         try { this.sql.exec("DELETE FROM file_shares WHERE file_id=?", r.id); } catch {}
@@ -5694,6 +5708,7 @@ Object.assign(Resident.prototype, lnResidentMethods());
 Resident.prototype.eeDeletion = { dropNativePolls, dropPhoneFiles, routingArtifactKeys, dropRoutingArtifacts, agentSessionInventory, purgeAgentSession };
 deletionMix(Resident); residentExportMix(Resident);
 previewMix(Resident);
+pdfMix(Resident);
 fileVersionsMix(Resident);
 sidecarMix(Resident);   // sidecar.js: file_sidecars, sidecarKick/Done, the Send parts, file_text
 useMix(Resident);   // memory-use.js: HS_USE profile, arms, correction (phase 4A)

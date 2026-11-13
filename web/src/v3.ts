@@ -20,12 +20,13 @@ import { piKind, piOn, piInstall, piLabel, piSub, PI_ICON } from "./pwainstall";
 import { beeInit, beeOverview, beeSec, beeMark } from "./ee/bee";
 import { notebookBeeUnread } from "./ee/notebook-bee-unread";
 import { paintChannelDots } from "./channel-dots";
+import { channelActive } from "./channel-active";
 import { helperRunning, channelHelperRunning } from "./helper-cue";
 import { wkMdFromHtml, wkRichOk } from "./wk-rich";
 import { dpInit, dpSec, dpSheetMaybe, dpSheetOpen, dpLoc, dpShareNow, DP_ICON } from "./devperm";   // location + mic, asked once up front (its sheet's Esc, too)   // Settings → Ambient → Bee: the card and the Connect sheet (its sheet's Esc, too)
 import { beeLibInit, beeLibParts, beeLibReset, beeLibEnsure } from "./ee/bee-library";   // General's Library: the saved Bee conversations (a filter and a section)
 import { secInit, secPlus, secList, viewSwitch, secRow, secOf, moveMenu, canMove, type CS } from "./sections";   // custom sections of the task list
-import { delInit, rowMore, headDelete, channelMore, sheetRows, MORE } from "./delete";   // deleting a chat / channel / the account
+import { channelIsDeleting, delInit, rowMore, headDelete, channelMore, sheetRows, MORE } from "./delete";   // deleting a chat / channel / the account
 import { openNewChannel, createViaApi, type NewChannel } from "./newchannel";   // second, for the same reason (New channel sheet)
 import { bdqrHtml } from "./bdqr";
 import { shInit, shFiles, shCards, shEvent, shCardHtml, shFold, shFileBtn, shViewerBtns, shBadge, shLibHtml, shFileGone, shHeadBtn, shChatGone } from "./share";   // share links + published pages (its sheet's Esc, too)
@@ -37,6 +38,7 @@ import { fileUrl as fileResUrl } from "./file-url.mjs";
 import { openShotLightbox } from "./shot-lightbox";
 import { chatCodeHtml, initChatCodeCopy } from "./chat-code";
 import { initNativeDownloads } from "./native-download";
+import { initAppUpdate, openDownload } from "./app-update";   // Android app only: "a new version is ready" toast with a Download button
 import { chatMarkdown } from "./chat-markdown";
 import { settingsDestination, settingsTarget } from "./settings-links";
 import { transcriptLink, transcriptLines, transcriptText } from "./transcript";
@@ -70,7 +72,7 @@ import { mtInit } from "./ee/meetings";   // Meeting reminders for notes: "Your 
 import { streamNote } from "./clientlog";   // stream lost / re-attached lines (dev only)
 import { streamState, streamLease, streamCurrent, streamRelease, streamInvalidate, streamProgress, dropStreamedText, streamCheckDue, streamFetch, streamErrorBody, readStream, type Lease } from "./stream-recovery";
 import { daySections, msgTime } from "./chat-dates";
-import { tkInit, tkLoad, tkEvent, tkOn, tkLiveCard, tkBtn, tkWrap, tkSync, tkChip, tkMsgOf, tkCardView, tkHelperCount, tkProgress, orbState, type EventView } from "./tracker";
+import { tkInit, tkLoad, tkEvent, tkOn, tkLiveCard, tkBtn, tkWrap, tkSync, tkChip, tkMsgOf, tkCardView, tkHelperCount, tkProgress, IDLE_HELPER_LINE, orbState, type EventView } from "./tracker";
 import { dictBtn, dictInit, dictActive } from "./dictate";
 import { memoInit, memoActive, memoName } from "./voicememo";
 import { memoPill } from "./memopill";   // hold the mic button: record a voice memo
@@ -101,7 +103,7 @@ import { cmcpInit, cmcpPage, cmcpBefore, cmcpAfter, CMCP_SEC } from "./ee/custom
 import { hInit, hWatch, hFit } from "./headfit";   // the tablet/desktop task header: folds actions into ⋯ instead of running under the computer button
 import { sidebarInit, sidebarSync, sidebarReveal, sidebarCollapseButton, sidebarRestoreButton } from "./channel-sidebar";
 import { stInit, sync as stSync, headStop, rowStop, composerStop, stopTask, stopMany, stopBusy, pausedNote, SQ } from "./stop";   // Stop / Stop all
-import { nfInit, nfHtml, nfSeen, nfPerm, nfAsk, nfElsewhere } from "./notif";   // Settings → Notifications: switches, this device (Web Push), sounds
+import { nfInit, nfHtml, nfSeen, nfPerm, nfAsk, nfElsewhere, nfBeforeLogout } from "./notif";   // Settings → Notifications: switches, this device (Web Push), sounds
 import { followDrawn, followKeep, followSent } from "./chat-follow";
 import { cbHtml, cbInit, cbPaint } from "./composer-bars";
 import { igInit, igMenuHtml, igToggle, igGate, igAskFor, igHomeOff, igCardHtml, type IgWhere } from "./ee/image-gen";   // image generation: the + panel row, the bars above the composer, the image_gen card
@@ -169,10 +171,10 @@ const seed: any = BOOT ? { captured: Date.now(), channels: BOOT.channels.map((c:
 type Msg = { id: number; role: "user" | "agent"; body: string; at: number; steps: string[]; pre?: string[]; prog?: string[]; progressOmitted?: number; cards?: any[]; input_request?: InputRequest; files?: FileV[]; saved?: Saved[] };
 // Where a remember really saved, from the server (src/saved-to.js): the "Added to …" chips under the reply.
 type Saved = { to: "notebook" | "contact" | "memory" | "account"; channel?: string; sec?: string; text?: string; name?: string; fields?: string[] };
-type FileV = { version?: number; id: string; name: string; mime: string; bytes: number; at: number; source?: string; session?: string | null; image?: boolean; tags?: string[]; tx?: string };
+type FileV = { version?: number; id: string; name: string; mime: string; bytes: number; at: number; source?: string; session?: string | null; image?: boolean; tags?: string[]; tx?: string; pdf_copy?: boolean };
 type Session = { id: any; srv?: any; loaded?: boolean; loading?: boolean; loadFailAt?: number; loadFailSince?: number; loadFails?: number; loadTimer?: any; streaming?: boolean; attached?: boolean; tmp?: string; rawLine?: string; title: string; status: string; state: string; updated: number; messages: Msg[]; line?: string; unread?: boolean; fresh?: boolean; pinned?: boolean; done?: boolean };
 type Channel = { id: number; slug: string; name: string; purpose: string; memory: string[]; notes?: any[]; jobs: any[]; sessions: Session[]; cs?: CS; pinned?: number; ord?: number };
-type Art = { tx?: string; name: string; kind: "doc" | "sheet" | "pdf" | "image" | "video" | "audio" | "link" | "code"; sid: any; at: number; size: string; fresh?: boolean; fid?: string; you?: boolean; mime?: string; bytes?: number; tags?: string[]; ver?: number };
+type Art = { tx?: string; name: string; kind: "doc" | "sheet" | "pdf" | "image" | "video" | "audio" | "link" | "code"; sid: any; at: number; size: string; fresh?: boolean; fid?: string; you?: boolean; mime?: string; bytes?: number; tags?: string[]; ver?: number; pdfc?: boolean };
 
 const NAMES: Record<string, string> = { main: "General", "weather-watch": "Weather", "family-schedule": "Family", "home-finances": "Finances", "trip-planning": "Japan trip", "side-project": "Side project" };
 const NOW = Date.now(), SHIFT = NOW - (seed as any).captured;
@@ -310,6 +312,7 @@ const needsYou = (x: Session) => !x.done && x.status === "waiting";
 const rowLit = (x: Session) => !x.done && !!x.unread;
 const rowDot = (x: Session) => rowLit(x) ? `<i class="dot" title="New reply"></i>` : "";
 const chWorking = (slug: string) => { const c = channels.find(x => x.slug === slug); return !!c && channelHelperRunning(c.sessions); };
+const chActive = (slug: string) => { const c = channels.find(x => x.slug === slug); return !!c && channelActive(c.sessions); };
 const chDotKind = (slug: string) => { const c = channels.find(x => x.slug === slug); return !c || !c.sessions.some(rowLit) ? null : "New reply" as const; };
 const rowTail = (x: Session, when = true) => `<span class="tail">${rowDot(x) || (when ? `<span class="when">${ago(x.done ? doneAt(x) : x.updated)}</span>` : "")}</span>`;
 function ago(t: number) {
@@ -376,7 +379,7 @@ function railHtml(ch: Channel) {
   const nb = navButtons(`Back${scLabel("nav-back") ? `  ${scLabel("nav-back")}` : ""}`, `Forward${scLabel("nav-forward") ? `  ${scLabel("nav-forward")}` : ""}`);
   return `<div class="chs"><div class="navh">${nb[0]}<div class="brand" title="1Helm"><img src="/1helm-icon.png" alt="1Helm"></div>${nb[1]}</div>${sidebarRestoreButton()}${channels.map((c, i) => {
     const n = c.sessions.filter(rowLit).length, pipTitle = "New reply";
-    return chSep(channels, i) + `<button class="ch${c === ch ? " on" : ""}" data-ch="${c.slug}" title="${esc(c.name)}${scLabel("jump") ? `  ${scLabelN("jump", i + 1)}` : ""}">
+    return chSep(channels, i) + `<button class="ch${c === ch ? " on" : ""}${chActive(c.slug) ? " act" : ""}" data-ch="${c.slug}" title="${esc(c.name)}${scLabel("jump") ? `  ${scLabelN("jump", i + 1)}` : ""}">
       <span class="tile">${c.slug === "main" ? av(c) : mono(c)}${n ? `<i class="pip" title="${pipTitle}"></i>` : ""}${chWorking(c.slug) ? `<i class="wpip" title="Subagent working"></i>` : ""}</span><span class="lbl">${esc(c.name)}</span></button>`;
   }).join("")}<button class="ch add" title="New channel" aria-label="New channel" data-newch><span class="tile">${ic.plus}</span></button></div>
     <div class="foot">${LIVE ? pomoGlobalBtn(true) : ""}${hasFeature("connected_apps") ? `<button class="iconbtn apico" data-apps title="Apps${scLabel("apps") ? `  ${scLabel("apps")}` : ""}" aria-label="Apps">${I('<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><path d="M17.5 14v7M14 17.5h7"/>', 20)}</button>` : ""}<button class="me" data-sgo="general" title="${esc(PERSON)} · Settings" aria-label="Settings">${esc(INITIALS)}</button><button class="iconbtn" data-smenu title="Menu" aria-label="Menu" aria-haspopup="menu">${ic.menu}</button></div>`;
@@ -615,6 +618,9 @@ function fkind(name: string, mime = ""): Art["kind"] {
 const FVER = new Map<string, number>();
 const fileBase = (slug: string, id: string) => fileResUrl(LIVE!.api, slug, id);   // file-url.mjs keeps the IDs inside their path segments
 const fileUrl = (slug: string, id: string, dl = false) => { const v = FVER.get(`${slug}|${id}`), u = fileResUrl(LIVE!.api, slug, id, dl); return v ? `${u}${dl ? "&" : "?"}c=${Math.floor(v)}` : u; };
+// Download as PDF (server: GET …/files/<id>/pdf, pdf-pair.js): every Word document, deck and spreadsheet, and any file the agent shared a PDF with.
+const canPdf = (name: string, pdfc?: boolean) => !!pdfc || /\.(docx|docm|doc|odt|rtf|pptx|ppt|pps|ppsx|pptm|odp|xlsx|xlsm|xls|ods)$/i.test(name);
+const PDF_ICO = '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 15h1.5a1.5 1.5 0 0 0 0-3H9v5"/>';
 // The small picture a tile shows for an image file (server: ?thumb=1, a ~360 px WebP). It names the file's current version (FVER, else the version the
 // caller has), so the browser keeps it for a year and a changed file gets a new address. Never use it for the full viewer or a download.
 const thumbUrl = (slug: string, id: string, ver?: number) => { const v = FVER.get(`${slug}|${id}`) || ver; return `${fileBase(slug, id)}?thumb=1${v ? `&c=${v}` : ""}`; };
@@ -625,7 +631,7 @@ function noteVer(slug: string, f: { id: string; version?: number }): boolean {
   FVER.set(k, v); return was != null;
 }
 const artHref = (ch: Channel, a: Art) => a.fid ? fileUrl(ch.slug, a.fid) : `#/${ch.slug}/s/${a.sid}`;
-const toArt = (f: FileV): Art => ({ name: f.name, kind: fkind(f.name, f.mime), sid: f.session, at: f.at, size: KB(f.bytes), fid: f.id, you: f.source === "upload", mime: f.mime, bytes: f.bytes, tags: f.tags, tx: f.tx, ver: f.version });
+const toArt = (f: FileV): Art => ({ name: f.name, kind: fkind(f.name, f.mime), sid: f.session, at: f.at, size: KB(f.bytes), fid: f.id, you: f.source === "upload", mime: f.mime, bytes: f.bytes, tags: f.tags, tx: f.tx, ver: f.version, pdfc: f.pdf_copy });
 // Library files the person deleted: hidden at once, and kept hidden while the delete request runs, so a reload from the server can't bring them back.
 const FILE_DEL = new Set<string>();
 function setFiles(ch: Channel, files: FileV[]) {
@@ -659,9 +665,9 @@ type LF = Art & { ch: Channel };
 const allFiles = (): LF[] => channels.flatMap(c => lib(c).map(a => ({ ...a, ch: c }))).sort((a, b) => b.at - a.at);
 // [key, label, kinds it shows (null = any), tag it shows (files tagged in the Library API's tags[], e.g. meeting notes)]
 const TYPES: [string, string, Art["kind"][] | null, string?][] = [["all", "All", null], ["doc", "Documents", ["doc"]], ["sheet", "Spreadsheets", ["sheet"]], ["pdf", "PDFs", ["pdf"]], ["image", "Images & video", ["image", "video", "audio"]], ["link", "Links & code", ["link", "code"]], ["meeting", "Meetings", null, "meeting"], ["zone", "The Zone", null]];
-// The Zone can change a deck, a web page and a .docx; a PDF report and the other word formats only open there to read, so "The Zone" leaves them out.
-const ZSECS: [string, string][] = [["deck", "Presentations"], ["doc", "Documents"], ["page", "Websites"]];
-const zoneSec = (f: Art) => { const k = zoneKind(f); return k === "deck" || k === "page" || (k === "doc" && docEditable(f.name)) ? k : null; };
+// The Zone can change a deck, a web page, a .docx and an .xlsx or .csv; a PDF report and the other word formats only open there to read, so "The Zone" leaves them out.
+const ZSECS: [string, string][] = [["deck", "Presentations"], ["doc", "Documents"], ["sheet", "Spreadsheets"], ["page", "Websites"]];
+const zoneSec = (f: Art) => { const k = zoneKind(f); return k === "deck" || k === "page" || k === "sheet" || (k === "doc" && docEditable(f.name)) ? k : null; };
 const L = { q: "", type: "all", coll: "all", view: "list" as "list" | "grid", scope: "ch" as "ch" | "all" };
 function libFiltered() {
   const ql = L.q.trim().toLowerCase(), [, , ks, tag] = TYPES.find(t => t[0] === L.type)!;
@@ -686,7 +692,7 @@ function libFilesInner() {
       <span class="am">${one ? `${k} · ${esc(f.size)} · ${fileDate(f.at)}` : `${av(f.ch, "av xs")}${esc(f.ch.name)} · ${fileDate(f.at)}`}${LIVE ? shBadge(f.ch.slug, f.fid, f.name) : ""}</span></a>`; };
   const row = (f: LF) => { const [k, d] = KIND[f.kind], x = src(f), you = f.you ?? f.size === "You added";
     return `<a class="lrow${f.fresh ? " fresh" : ""}"${open(f)}><span class="aico k-${f.kind}">${I(d, 18)}</span>
-      <span class="lmain"><span class="lcpn-line"><span class="ln">${esc(f.name)}</span><button type="button" class="lcpn-btn" data-lcpn="${esc(f.name)}" title="Copy file name" aria-label="Copy file name">${LCPN_ICO}</button></span><span class="lsub">${LIVE ? shBadge(f.ch.slug, f.fid, f.name).trimStart() : ""}${you ? "You added it" : `${esc(who(f.ch))} made it`}${x ? ` in “${esc(x.title)}”` : ""}${f.fid ? ` · ${esc(f.size)}` : ""}</span></span>${f.fid ? `<span class="lact">${LIVE && (f.ver || 1) > 1 ? `<button class="ldel lver" data-fver="${esc(f.ch.slug)}|${esc(f.fid)}" title="Versions" aria-label="Versions of ${esc(f.name)}">${ic.vers}</button>` : ""}<button class="ldel" data-fdel="${esc(f.ch.slug)}|${esc(f.fid)}" title="Delete" aria-label="Delete ${esc(f.name)}">${ic.trash}</button></span>` : ""}
+      <span class="lmain"><span class="lcpn-line"><span class="ln">${esc(f.name)}</span><button type="button" class="lcpn-btn" data-lcpn="${esc(f.name)}" title="Copy file name" aria-label="Copy file name">${LCPN_ICO}</button></span><span class="lsub">${LIVE ? shBadge(f.ch.slug, f.fid, f.name).trimStart() : ""}${you ? "You added it" : `${esc(who(f.ch))} made it`}${x ? ` in “${esc(x.title)}”` : ""}${f.fid ? ` · ${esc(f.size)}` : ""}</span></span>${f.fid ? `<span class="lact">${LIVE && canPdf(f.name, f.pdfc) ? `<button class="ldel" data-fpdf="${esc(f.ch.slug)}|${esc(f.fid)}" title="Download as PDF" aria-label="Download ${esc(f.name)} as PDF">${I(PDF_ICO, 16)}</button>` : ""}${LIVE && (f.ver || 1) > 1 ? `<button class="ldel lver" data-fver="${esc(f.ch.slug)}|${esc(f.fid)}" title="Versions" aria-label="Versions of ${esc(f.name)}">${ic.vers}</button>` : ""}<button class="ldel" data-fdel="${esc(f.ch.slug)}|${esc(f.fid)}" title="Delete" aria-label="Delete ${esc(f.name)}">${ic.trash}</button></span>` : ""}
       <span class="ltype">${k}</span>${one ? "" : `<span class="lch">${av(f.ch, "av xs")}<span>${esc(f.ch.name)}</span></span>`}<span class="ldate">${fileDate(f.at)}</span></a>`; };
   const body = (l: LF[]) => L.view === "grid" ? `<div class="arts lgrid">${l.map(card).join("")}</div>` : `<div class="lrows${one ? " one" : ""}">${l.map(row).join("")}</div>`;
   if (zl) return ZSECS.map(([k, n]) => [n, list.filter(f => zoneSec(f) === k)] as const).filter(([, l]) => l.length).map(([n, l]) => `<h3 class="lzh">${n}</h3>${body(l)}`).join("");
@@ -1046,7 +1052,7 @@ const zoneLoad = () => zoneMod ? Promise.resolve(zoneMod) : zoneLoading ||= impo
 async function zoneStart(slug: string, id: string) {
   const ch = channels.find(c => c.slug === slug), { s } = route(); if (!LIVE || !ch || !s) return;
   let f: any = null; try { f = ((await api(`/res/${slug}/files`))?.files || []).find((x: any) => x.id === id); } catch {}
-  if (!f || !zoneKind(f)) { note(ic.clock, "Can't open that here", "The Zone opens decks, web pages, Word documents and PDF reports.", ""); return; }
+  if (!f || !zoneKind(f)) { note(ic.clock, "Can't open that here", "The Zone opens decks, web pages, Word documents, spreadsheets and PDF reports.", ""); return; }
   const m = await zoneLoad().catch(() => null); if (!m) { note(ic.clock, "Couldn't open the zone", "Check your connection and try again.", ""); return; }
   closeFile(); mState.drawer = false;
   void m.zoneOpen({ api: LIVE.api, v: String((LIVE as any).v || ""), fileUrl, who: sl => who(channels.find(c => c.slug === sl) || ch), pinKey: rqKey, pin: (k, ref) => { if (!k) return; if (ref) rqPut(k, ref); else rqClear(k); },
@@ -1091,7 +1097,7 @@ async function zoneFromLib(slug: string, id: string, sid: string) {
   for (let i = 0; i < 100; i++) { const { ch: c, s } = route(); if (c.slug === slug && s === to && (!LIVE || s.loaded) && document.getElementById("box")) break; await new Promise(r => setTimeout(r, 50)); }
   await zoneStart(slug, id);
 }
-if (LIVE) { document.addEventListener("click", e => { const z = (e.target as HTMLElement).closest<HTMLElement>("[data-zl]"); if (z && !(e.target as HTMLElement).closest("[data-fdel],[data-lcpn],[data-fver]")) { e.preventDefault(); e.stopPropagation(); const [slug, id, sid] = z.dataset.zl!.split("|"); void zoneFromLib(slug, id, sid); return; }
+if (LIVE) { document.addEventListener("click", e => { const z = (e.target as HTMLElement).closest<HTMLElement>("[data-zl]"); if (z && !(e.target as HTMLElement).closest("[data-fdel],[data-fpdf],[data-lcpn],[data-fver]")) { e.preventDefault(); e.stopPropagation(); const [slug, id, sid] = z.dataset.zl!.split("|"); void zoneFromLib(slug, id, sid); return; }
     const b = (e.target as HTMLElement).closest<HTMLElement>("[data-zone]"); if (!b) return; e.preventDefault(); e.stopPropagation(); const [slug, id] = b.dataset.zone!.split("|"); void zoneStart(slug, id); }, true);
   document.addEventListener("keydown", e => { const t = e.target as HTMLElement; if ((e.key === "Enter" || e.key === " ") && t?.matches?.("[data-zone]")) { e.preventDefault(); t.click(); } }); }
 // Versions list (versions.ts): the file's kept versions with Restore. A restore changes the file like a helper's update does: every card, the Library row and an open viewer take the new version.
@@ -1132,6 +1138,7 @@ if (LIVE) {
       return;
     }
     if (t.closest("[data-fdl]")) return;   // a Download link is a plain <a href download>: the browser downloads it, so the app never navigates
+    const pd = t.closest<HTMLElement>("[data-fpdf]"); if (pd) { e.preventDefault(); e.stopPropagation(); const [slug, id] = pd.dataset.fpdf!.split("|"), a = (LIB[slug] || []).find(x => x.fid === id); const l = document.createElement("a"); l.href = `${fileBase(slug, id)}/pdf`; l.download = (a?.name || "file").replace(/\.[a-z0-9]{1,8}$/i, "") + ".pdf"; document.body.appendChild(l); l.click(); l.remove(); return; }   // Library row: Download as PDF (the server makes it on first use, then serves it from storage)
     const vr = t.closest<HTMLElement>("[data-fver]"); if (vr) { e.preventDefault(); e.stopPropagation(); const [slug, id] = vr.dataset.fver!.split("|"); openVersions(slug, id); return; }
     const del = t.closest<HTMLElement>("[data-fdel]"); if (del) {
       e.preventDefault(); e.stopPropagation(); const [slug, id] = del.dataset.fdel!.split("|"), a = (LIB[slug] || []).find(x => x.fid === id); if (!a) return;
@@ -1167,7 +1174,7 @@ if (LIVE) {
 // audio/video play. Slide decks (.pptx…) and Word documents (.docx…) show the PDF the channel computer makes of them with
 // LibreOffice (GET …/files/<id>/preview, 1HC file-preview.js; the first open makes it, later opens are instant): a deck pages
 // slide by slide, a document scrolls like a PDF. Anything else gets a clean card with Download. ← → move through the list it was opened from.
-type FV = { slug: string; id: string; name: string; mime: string; bytes: number; at: number; sid?: any; you?: boolean; transcript?: string; tx?: string; spk?: { slug: string; task: string; n?: number } };
+type FV = { slug: string; id: string; name: string; mime: string; bytes: number; at: number; sid?: any; you?: boolean; transcript?: string; tx?: string; spk?: { slug: string; task: string; n?: number }; pdfc?: boolean };
 const FVS: { list: FV[]; i: number; zoom: number; gen: number; pdf?: any; slide?: (d: number, abs?: boolean) => boolean; transcript?: string; data?: any; speakers?: Speaker[] } = { list: [], i: 0, zoom: 1, gen: 0 };
 const fvExt = (n: string) => (n.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
 const fvKind = (f: FV) => { const e = (f.name.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase(), m = f.mime;
@@ -1182,7 +1189,7 @@ const fvKind = (f: FV) => { const e = (f.name.match(/\.([a-z0-9]+)$/i)?.[1] || "
   if (e === "csv" || e === "tsv" || m === "text/csv" || m === "text/tab-separated-values") return "csv";
   if (/^text\//.test(m) || /^(txt|json|js|ts|py|sh|css|html?|xml|svg|yaml|yml|toml|ini|log|sql|ics)$/.test(e) || m === "application/json") return "text";
   return "other"; };
-const fvOf = (slug: string, a: Art): FV => ({ slug, id: a.fid!, name: a.name, mime: a.mime || "", bytes: a.bytes || 0, at: a.at, sid: a.sid, you: a.you, tx: a.tx });
+const fvOf = (slug: string, a: Art): FV => ({ slug, id: a.fid!, name: a.name, mime: a.mime || "", bytes: a.bytes || 0, at: a.at, sid: a.sid, you: a.you, tx: a.tx, pdfc: a.pdfc });
 const fvTask = (f: FV) => { const ch = channels.find(c => c.slug === f.slug); return ch?.sessions.find(x => x.id === f.sid); };
 function csvTable(t: string, tab: boolean) {
   const rows: string[][] = []; let row: string[] = [], cell = "", q = false; const d = tab ? "\t" : ",";
@@ -1225,8 +1232,10 @@ async function fvSheet(u: string, body: HTMLElement, gen: number) {
     const names: string[] = wb.SheetNames.filter((n: string) => wb.Workbook?.Sheets?.find((s: any) => s.name === n)?.Hidden !== 1 && wb.Workbook?.Sheets?.find((s: any) => s.name === n)?.Hidden !== 2);
     if (!names.length) { body.innerHTML = `<p class="fvnone">This spreadsheet has no sheets to show.</p>`; return; }
     const show = (i: number) => {
-      body.innerHTML = `${names.length > 1 ? `<div class="xtabs" role="tablist">${names.map((n, j) => `<button role="tab" class="${j === i ? "on" : ""}" aria-selected="${j === i}" data-xtab="${j}">${esc(n)}</button>`).join("")}</div>` : ""}${xlSheetHtml(X, wb.Sheets[names[i]])}`;
+      body.innerHTML = `${names.length > 1 ? `<div class="xtabs" role="tablist">${names.map((n, j) => `<button role="tab" class="${j === i ? "on" : ""}" aria-selected="${j === i}" data-xtab="${j}" title="${esc(n)}" aria-label="${esc(n)}">${esc(n)}</button>`).join("")}</div>` : ""}${xlSheetHtml(X, wb.Sheets[names[i]])}`;
       body.querySelectorAll<HTMLElement>("[data-xtab]").forEach(b => b.onclick = e => { e.stopPropagation(); show(+b.dataset.xtab!); });
+      const tabs = body.querySelector<HTMLElement>(".xtabs"), on = tabs?.querySelector<HTMLElement>("button.on");
+      if (tabs && on) tabs.scrollLeft = Math.max(0, on.offsetLeft - (tabs.clientWidth - on.offsetWidth) / 2);
     };
     show(0);
   } catch (e: any) { if (gen === FVS.gen) body.innerHTML = `<div class="fvnonebox"><b>Couldn't show this spreadsheet</b><p>${esc(String(e?.message || e).slice(0, 160))}</p><a class="fvdl" href="${urlQuery(u, { dl: 1 })}" download>Download</a></div>`; }
@@ -1262,11 +1271,11 @@ function fvPaint() {
   w.innerHTML = `<div class="fvback" data-fvclose></div><div class="fvbox fv-${k}">
     <header class="fvhd"><span class="aico k-${fkind(f.name, f.mime)}">${I(kd, 18)}</span><span class="fvt"><b title="${esc(f.name)}">${esc(f.name)}</b><span>${kn}${f.bytes ? ` · ${KB(f.bytes)}` : ""}${x ? ` · <a href="#/${esc(f.slug)}/s/${esc(x.id)}" data-fvgo>From “${esc(x.title)}”</a>` : f.you ? " · You added it" : ""}</span></span>
       ${k === "html" && n > 1 ? `<span class="fvhn" role="group" aria-label="Files"><button class="fvb" data-fvn="-1" aria-label="Previous file" title="Previous file"${FVS.i ? "" : " disabled"}>${I('<path d="m15 18-6-6 6-6"/>', 18)}</button><span class="fvhc">${FVS.i + 1} of ${n}</span><button class="fvb" data-fvn="1" aria-label="Next file" title="Next file"${FVS.i < n - 1 ? "" : " disabled"}>${I('<path d="m9 18 6-6-6-6"/>', 18)}</button></span>` : ""}
-      ${LIVE && route().s && (k === "html" || k === "pdf" || (k === "word" && zoneKind(f))) ? `<button class="fvb" data-zone="${esc(f.slug)}|${esc(f.id)}" aria-label="Open in zone" title="Open in zone">${I('<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/><rect x="9" y="9" width="6" height="6" rx="1"/>', 18)}</button>` : ""}
+      ${LIVE && route().s && (k === "html" || k === "pdf" || (k === "word" && zoneKind(f)) || ((k === "xlsx" || k === "csv") && zoneKind(f))) ? `<button class="fvb" data-zone="${esc(f.slug)}|${esc(f.id)}" aria-label="Open in zone" title="Open in zone">${I('<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/><rect x="9" y="9" width="6" height="6" rx="1"/>', 18)}</button>` : ""}
       ${LIVE && !f.transcript && fvVer(f) > 1 ? `<button class="fvb" data-fver="${esc(f.slug)}|${esc(f.id)}" aria-label="Versions" title="Versions">${I(VERS_P, 18)}</button>` : ""}
       ${k === "html" ? `<button class="fvb" data-fvfs aria-label="Full screen" title="Full screen">${I('<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>', 18)}</button>` : ""}
       ${k === "image" || k === "pdf" || k === "word" ? `<span class="fvzoom"><button data-fvz="-1" aria-label="Zoom out">${I('<path d="M5 12h14"/>', 16)}</button><button data-fvz="0" class="fvzl" aria-label="Fit">100%</button><button data-fvz="1" aria-label="Zoom in">${I('<path d="M5 12h14"/><path d="M12 5v14"/>', 16)}</button></span>` : ""}
-      ${f.transcript ? `<button class="fvb" data-transcript-download disabled aria-label="Download transcript" title="Download transcript as text">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 18)}</button>` : `${shViewerBtns(f.slug, f.id, f.name, f.mime)}<a class="fvb" href="${fileUrl(f.slug, f.id, true)}" download aria-label="Download" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 18)}</a>`}
+      ${f.transcript ? `<button class="fvb" data-transcript-download disabled aria-label="Download transcript" title="Download transcript as text">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 18)}</button>` : `${shViewerBtns(f.slug, f.id, f.name, f.mime)}${canPdf(f.name, f.pdfc) ? `<a class="fvb" href="${fileBase(f.slug, f.id)}/pdf" download aria-label="Download as PDF" title="Download as PDF">${I(PDF_ICO, 18)}</a>` : ""}<a class="fvb" href="${fileUrl(f.slug, f.id, true)}" download aria-label="Download" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 18)}</a>`}
       <button class="fvb" data-fvclose aria-label="Close" title="Close (Esc)">${I('<path d="M18 6 6 18M6 6l12 12"/>', 18)}</button></header>
     <div class="fvbody" id="fvbody">${k === "image" ? `<img class="fvimg" src="${u}" alt="${esc(f.name)}" draggable="false">`
       : k === "video" ? `<video src="${u}" controls playsinline autoplay></video>` : k === "audio" ? `<div class="fvaud"><span class="aico k-doc">${I(kd, 28)}</span><audio src="${u}" controls autoplay></audio></div>`
@@ -1513,7 +1522,7 @@ function syncRailOrder() {
   if (cl && !(document.getElementById("chq") as HTMLInputElement | null)?.value && dom("#chlist .chr", "href") !== now.join()) cl.innerHTML = chRows("");
 }
 function repaint(ch: Channel) {
-  paintChannelDots(document, chDotKind, chWorking);   // see syncRailOrder just below
+  paintChannelDots(document, chDotKind, chWorking, chActive);   // see syncRailOrder just below
   syncRailOrder();   // any channel's task can change, so the rail / channel list dots follow every repaint
   const { s } = route(); if (route().ch !== ch) return;
   const side = document.querySelector(".sessions"); if (side) morph(side, sideList(ch, s, (document.getElementById("q") as HTMLInputElement | null)?.value ?? ""));
@@ -1712,7 +1721,7 @@ function refresh() {
   } else if (!typing) render();
   else morph($(".sessions"), sideList(ch, s, ($("#q") as HTMLInputElement)?.value ?? ""));
   clearFresh(ch);
-  paintChannelDots(document, chDotKind, chWorking);   // the rail / channel list dots follow the tasks even when only the open page was repainted above
+  paintChannelDots(document, chDotKind, chWorking, chActive);   // the rail / channel list dots follow the tasks even when only the open page was repainted above
   syncRailOrder();
   paintMobileStatus(ch, s);
   stNow();
@@ -1756,7 +1765,7 @@ function turnProgress(s: Session, ch: Channel) {
   const line = String(s.rawLine || s.srv?.line || ""), m = s.messages.findLast(m => m.role === "agent");
   let primary = "";
   if (primaryWorking(s)) primary = /writ|compos|respond/i.test(line) || m?.body.trim() ? "Writing the answer" : "Working";
-  else if (s.state === "working" && Number(s.srv?.helpers) > 0) primary = "Subagent working";
+  else if (s.state === "working" && Number(s.srv?.helpers) > 0) primary = IDLE_HELPER_LINE;
   return tkProgress(ch.slug, s.id, who(ch), primary, (s.srv?.pending_inputs || []).length > 0, orbState(line, { waiting: !!streamState(s).waiting, body: primaryWorking(s) && !!m?.body.trim() }));
 }
 const MA_PARTS = new WeakMap<Msg, Map<string, string>>();
@@ -1874,6 +1883,8 @@ document.addEventListener("click", e => {
   const nw = t.closest<HTMLElement>("[data-nwho]"); if (nw) { NT.to = nw.dataset.nwho!; NT.pick = false; paintNew(); nboxSave((document.getElementById("nbox") as HTMLTextAreaElement).value); }
   if (t.closest("[data-npick]")) { NT.pick = !NT.pick; paintNew(); }
   const tv = t.closest<HTMLElement>("[data-tview]"); if (tv) { e.preventDefault(); hideToast(); mState.drawer = false; location.hash = tv.dataset.tview!; }
+  if (t.closest("[data-apk-get]")) { e.preventDefault(); apkGone?.(); apkGone = null; hideToast(); openDownload(window); return; }
+  if (t.closest("[data-apk-x]")) { apkGone?.(); apkGone = null; }
   if (t.closest("[data-tclose]")) hideToast();
   const cl = t.closest<HTMLElement>("[data-coll]"); if (cl) { L.coll = cl.dataset.coll!; libUpdate(); }
   const sc = t.closest<HTMLElement>("[data-scope]"); if (sc && sc.dataset.scope !== L.scope) { L.scope = sc.dataset.scope as "ch" | "all"; L.coll = "all"; L.q = ""; L.type = "all"; libUpdate(true); }
@@ -1966,6 +1977,12 @@ wireCards({
 // Copy + Reply on the open task's bubbles, the pinned reply above its composer (msgreply.ts).
 initChatCodeCopy((t, b) => note(ic.clock, t, b, ""));
 if (LIVE) initNativeDownloads(LIVE.api, (t, b) => note(ic.clock, t, b, ""));   // phone apps only (iOS and Android): downloads open in the system browser sheet; elsewhere nothing changes
+// A newer APK than the installed Android app (app-update.ts): one toast that stays until dismissed, once per version. Web, iOS and Mac never ask.
+let apkGone: (() => void) | null = null;
+if (LIVE) initAppUpdate({ api: LIVE.api, win: window, store: (() => { try { return localStorage; } catch { return null; } })(),
+  show: (v, gone) => { apkGone = gone;
+    tsShow(`<span class="tok ink">${I('<path d="M12 4v11"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/>', 18)}</span><span class="tmsg"><b>New version available</b><span>1Helm ${v} is ready to download.</span></span>
+      <button class="tview" data-apk-get>Download</button><button class="tx" data-tclose data-apk-x aria-label="Dismiss">${I('<path d="M18 6 6 18M6 6l12 12"/>', 15)}</button>`, { stay: true, onSwipe: () => gone() }); } });
 maInit({ key: rqKey,
   msg: (mr, part) => { const m = route().s?.messages.find(x => x.id === mr); if (!m) return null;
     const text = part ? MA_PARTS.get(m)?.get(part) : undefined;
@@ -2015,7 +2032,7 @@ function chRows(q: string) {
   return list.map((c, i) => {
     const last = latest(c), m = last?.messages.filter(x => x.body).at(-1);
     const prev = LIVE ? (plainPreview(last?.srv?.preview || "") || c.purpose) : m ? (m.role === "user" ? "You: " : "") + plain(m.body) : c.purpose;
-    return (ql ? "" : chSep(list, i)) + `<a class="chr${c === cur ? " on" : ""}" href="#/${c.slug}" data-mch>${c.sessions.some(rowLit) ? `<i class="udot"></i>` : ""}<span class="chtile">${chTile(c)}${chWorking(c.slug) ? `<i class="wpip" title="Subagent working"></i>` : ""}</span>
+    return (ql ? "" : chSep(list, i)) + `<a class="chr${c === cur ? " on" : ""}${chActive(c.slug) ? " act" : ""}" href="#/${c.slug}" data-mch>${c.sessions.some(rowLit) ? `<i class="udot"></i>` : ""}<span class="chtile">${chTile(c)}${chWorking(c.slug) ? `<i class="wpip" title="Subagent working"></i>` : ""}</span>
       <span class="ctext"><span class="ctop"><b>${esc(c.name)}</b><span>${c === cur ? ic.check : last ? day(last.updated) : ""}</span></span><span class="cprev">${esc(prev || "")}</span></span></a>`;
   }).join("") || `<div class="mempty">Nothing matches “${esc(q)}”.</div>`;
 }
@@ -2154,7 +2171,7 @@ function sheetHtml(kind: string) {
       <div class="sgroup"><button class="srow nav" data-sgo="">${g("gear")}<span>Settings</span>${ic.chev}</button>
         ${hasFeature("billing") ? `<button class="srow nav suse" data-sgo="">${g("wallet")}<span>${esc(plan)} plan<small>${ml.pct}% of this month's AI used</small><i class="mbar"><i style="width:${ml.pct}%"></i></i></span>${ic.chev}</button>` : `<button class="srow nav suse" data-sgo="general">${g("key")}<span>Your own AI key</span>${ic.chev}</button>`}
         ${hasFeature("connected_apps") ? `<button class="srow nav" data-apps>${ic.apps}<span>Apps</span>${ic.chev}</button>` : ""}
-        <div class="srow">${g("sun")}<span>Appearance</span><span class="seg mseg" role="radiogroup" aria-label="Appearance">${[["light", "sun", "Light"], ["dark", "moon", "Dark"], ["system", "mon", "Match my device"]].map(([k, i, l]) => `<button class="${S.theme === k ? "on" : ""}" role="radio" aria-checked="${S.theme === k}" data-mtheme="${k}" aria-label="${l}">${g(i, 16)}</button>`).join("")}</span></div></div>
+        <div class="srow">${g("sun")}<span>Appearance</span>${themeSeg()}</div></div>
       <div class="sgroup"><button class="srow nav" data-sgo="help">${g("help")}<span>Help & support</span>${ic.chev}</button>
         <button class="srow nav" data-rpopen>${g("bug")}<span>Report an issue</span>${ic.chev}</button>
         ${piKind() ? `<button class="srow nav" data-pwainst>${I(PI_ICON, 20)}<span>Install 1Helm app<small>${esc(piSub(piKind(), true))}</small></span>${ic.chev}</button>` : ""}
@@ -2202,7 +2219,7 @@ document.addEventListener("click", e => {
   if (t.closest("[data-mchsw]")) openSheet("chs");
   if (t.closest("[data-mset]")) openSheet("set");
   if (t.closest("#sheet [data-mch], #sheet [data-sgo], #sheet [data-apps], #sheet [data-snote]")) closeSheet();
-  const mt = t.closest<HTMLElement>("[data-mtheme]"); if (mt) { S.theme = mt.dataset.mtheme!; try { localStorage.setItem("v3theme", S.theme); } catch {} applyTheme(); mt.parentElement!.querySelectorAll<HTMLElement>("[data-mtheme]").forEach(x => { x.classList.toggle("on", x === mt); x.setAttribute("aria-checked", String(x === mt)); }); }
+  const mt = t.closest<HTMLElement>("[data-mtheme]"); if (mt) { S.theme = mt.dataset.mtheme!; try { localStorage.setItem("v3theme", S.theme); } catch {} applyTheme(); mt.parentElement!.querySelectorAll<HTMLElement>("[data-mtheme]").forEach(x => { x.classList.toggle("on", x === mt); x.setAttribute("aria-checked", String(x === mt)); }); if (S.open) sRender(); }
   if (t.closest("[data-sclose]")) closeSheet();
   if (t.closest("[data-mdrawer]")) setDrawer(true);
   if (t.closest("[data-mclose]")) setDrawer(false);
@@ -3198,12 +3215,14 @@ document.addEventListener("click", e => {
   if (!lnCanStart()) { note(ic.check, "Live Notes", "Use a browser with microphone access, or connect your Bee in Settings.", ""); return; }
   void lnStartHere(ch.slug, s.id);
 });
+// The Light / Dark / Match my device choice: the phone account sheet and the desktop/tablet account menu both use it (click handler: data-mtheme).
+function themeSeg() { return `<span class="seg mseg" role="radiogroup" aria-label="Appearance">${[["light", "sun", "Light"], ["dark", "moon", "Dark"], ["system", "mon", "Match my device"]].map(([k, i, l]) => `<button class="${S.theme === k ? "on" : ""}" role="radio" aria-checked="${S.theme === k}" data-mtheme="${k}" aria-label="${l}">${g(i, 16)}</button>`).join("")}</span>`; }
 function openMenu() {
   let w = document.getElementById("smenuw"); if (!w) { w = document.createElement("div"); w.id = "smenuw"; document.body.appendChild(w); }
   S.menu = true;
   w.innerHTML = `<div class="smenu" role="menu"><button role="menuitem" data-sgo="shortcuts">${g("kbd")}<span>Keyboard shortcuts</span>${scLabel("shortcuts") ? `<kbd>${scLabel("shortcuts")}</kbd>` : ""}</button>
     ${hasFeature("connected_apps") ? `<button role="menuitem" data-apps>${ic.apps}<span>Apps</span>${scLabel("apps") ? `<kbd>${scLabel("apps")}</kbd>` : ""}</button>` : ""}<button role="menuitem" data-rpopen>${g("bug")}<span>Report an issue</span></button>
-    ${piKind() ? `<button role="menuitem" data-pwainst>${I(PI_ICON, 16)}<span>Install 1Helm app</span></button>` : ""}<hr><button role="menuitem" data-sgo="general">${g("gear")}<span>Settings</span>${scLabel("settings") ? `<kbd>${scLabel("settings")}</kbd>` : ""}</button></div>`;
+    ${piKind() ? `<button role="menuitem" data-pwainst>${I(PI_ICON, 16)}<span>Install 1Helm app</span></button>` : ""}<div class="smrow">${g("sun")}<span>Appearance</span>${themeSeg()}</div><hr><button role="menuitem" data-sgo="general">${g("gear")}<span>Settings</span>${scLabel("settings") ? `<kbd>${scLabel("settings")}</kbd>` : ""}</button></div>`;
   (w.querySelector("button") as HTMLElement).focus();
 }
 function closeMenu() { S.menu = false; const w = document.getElementById("smenuw"); if (w) w.innerHTML = ""; }
@@ -3260,7 +3279,7 @@ document.addEventListener("click", e => {
   const sn = t.closest<HTMLElement>("[data-snote]"); if (sn) {
     closeMenu();
     if (LIVE && sn.dataset.snote === "logout") {
-      fetch("/auth/logout", { method: "POST", credentials: "same-origin" }).then(r => {
+      nfBeforeLogout().catch(() => {}).then(() => fetch("/auth/logout", { method: "POST", credentials: "same-origin" })).then(r => {
         if (r.status !== 204) throw new Error("Logout failed");
         location.assign("/");
       }).catch(() => note(g("help", 14), "Couldn't log out", "We couldn't confirm that you were logged out. Please try again.", ""));
@@ -3454,7 +3473,11 @@ if (LIVE) delInit({ api, pinned: slug => !!channels.find(c => c.slug === slug)?.
   channelName: slug => channels.find(c => c.slug === slug)?.name ?? null,
   chatGone: (slug, sid) => { shChatGone(slug, sid); const ch = channels.find(c => c.slug === slug); if (!ch) return; const i = ch.sessions.findIndex(y => String(y.id) === sid); const open = route().s === ch.sessions[i];
     if (i >= 0) ch.sessions.splice(i, 1); if (open) location.hash = `/${slug}`; render(); },
-  channelGone: slug => { const i = channels.findIndex(c => c.slug === slug); if (i >= 0) channels.splice(i, 1); location.hash = `/${main.slug}`; render(); } });
+  channelHide: slug => { const i = channels.findIndex(c => c.slug === slug); if (i < 0) return null; const ch = channels[i], open = route().ch.slug === slug;
+    channels.splice(i, 1); if (open) location.hash = `/${main.slug}`; render();
+    return () => { if (!channels.some(c => c.slug === slug)) channels.splice(Math.min(i, channels.length), 0, ch); render(); }; },
+  channelExists: async slug => { const d = await api(`/app/boot?light=1`, undefined, { signal: AbortSignal.timeout(12000) }).catch(() => null); return d?.channels ? d.channels.some((c: any) => c.slug === slug) : null; },
+  channelGone: slug => { const i = channels.findIndex(c => c.slug === slug); if (i < 0) return; const open = route().ch.slug === slug; channels.splice(i, 1); if (open) location.hash = `/${main.slug}`; render(); } });
 // Cancel plan (cancel.ts): Settings → Usage, and the "your plan ends" banner while cancelling. Sandbox: a pretend plan.
 if (hasFeature("billing")) bcxInit({ api: LIVE ? api : null, repaint: () => sRender(), note: (t, s) => note(ic.check, t, s, "") });
 // Payment failed (pastdue.ts): read-only at once. Banner with Fix payment; composers off. Sandbox: ?pastdue.
@@ -3587,7 +3610,7 @@ if (LIVE) { shFiles((slug, fid) => { const a = (LIB[slug] || []).find(x => x.fid
 function addStartedSessions(list: any[]) {
   let added = false;
   for (const it of list) {
-    if (it.id != null && it.slug && !channels.some(x => x.slug === it.slug)) { addChannel({ id: it.id, slug: it.slug, name: it.name, purpose: it.purpose }); added = true; }
+    if (it.id != null && it.slug && !channelIsDeleting(it.slug) && !channels.some(x => x.slug === it.slug)) { addChannel({ id: it.id, slug: it.slug, name: it.name, purpose: it.purpose }); added = true; }
     const c = channels.find(x => x.slug === it.slug), v = it.session;
     const had = c?.sessions.find(y => String(y.id) === String(v?.id));
     if (had) { if (!had.streaming) applySrv(had, v); continue; }
@@ -4128,6 +4151,7 @@ if (LIVE) {
     pomoSet("*", "global", d.pomodoro_global);   // another device or the helper started / stopped it
     let changed = false, added = false;
     for (const c of d.channels) {
+      if (channelIsDeleting(c.slug)) continue;   // its delete is still running on the server
       let ch = channels.find(x => x.slug === c.slug);
       if (!ch) { ch = addChannel(c); added = true; }   // a channel made elsewhere (the helper's delegation, another tab) joins the rail
       if (c.sections) ch.cs = csOf(c.sections);   // sections added, renamed, moved or switched on another device

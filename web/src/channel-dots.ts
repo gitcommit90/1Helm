@@ -3,7 +3,7 @@
 // these dots as they were at the last full draw, so a channel could get an unread task, and a chime, and show no dot. The dots are absolutely
 // positioned, so adding or removing one never moves anything.
 export type DotKind = "New reply" | null;
-export function paintChannelDots(root: ParentNode, kindOf: (slug: string) => DotKind, workingOf: (slug: string) => boolean = () => false) {
+export function paintChannelDots(root: ParentNode, kindOf: (slug: string) => DotKind, workingOf: (slug: string) => boolean = () => false, activeOf: (slug: string) => boolean = () => false) {
   for (const b of Array.from(root.querySelectorAll<HTMLElement>("#rail .chs .ch[data-ch]"))) {
     const k = kindOf(b.dataset.ch || ""), tile = b.querySelector<HTMLElement>(".tile"), pip = b.querySelector<HTMLElement>(".pip");
     if (!tile) continue;
@@ -28,4 +28,7 @@ export function paintChannelDots(root: ParentNode, kindOf: (slug: string) => Dot
     if (!tile) continue; if (!workingOf(slug)) { w?.remove(); continue; } if (w) continue;
     const i = a.ownerDocument.createElement("i"); i.className = "wpip"; i.title = "Subagent working"; tile.appendChild(i);
   }
+  // The quiet pulse of an active channel is only a class on the chip: CSS draws it, so nothing is added to or moved in the layout.
+  for (const b of Array.from(root.querySelectorAll<HTMLElement>("#rail .chs .ch[data-ch]"))) b.classList.toggle("act", activeOf(b.dataset.ch || ""));
+  for (const a of Array.from(root.querySelectorAll<HTMLElement>("#chlist a.chr[data-mch]"))) a.classList.toggle("act", activeOf((a.getAttribute("href") || "").replace(/^#\//, "")));
 }

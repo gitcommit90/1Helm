@@ -34,6 +34,7 @@ import { voiceMemoChoice, setVoiceMemoChoice, CHOICES as VOICE_MEMO_CHOICES } fr
 import { betterDesignView, betterDesignChoice, setBetterDesign } from "./better-design.js";   // Settings: Better Design as a design source
 import { autoUseNow } from "./byok.js";   // Use my services now: choosing General's model turns it on (licensed own-key editor only)
 import { enabled as eeEnabled, customView, readCustom, saveCustom, pickerModels, statusOfRow, ownKeyKind, ownKindForStatus, ownViewFor, ownPicker, saveOwn, warmLists, readModelSettings } from "./ee/index.js";   // Settings → Advanced: Custom Model Selection (licensed; off unless ONEHELM_EE)
+import { dropSubsForSessions } from "./notify.js";   // signing a device out also cancels its notification sign-ups
 import { hsWalls, frontDoorSet } from "./walls.js";   // HS_WALLS: General's front door setting
 
 const enc = new TextEncoder();
@@ -272,6 +273,7 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
       if (!gone.length) return json({ ok: true, signed_out: 0 });
     }
     for (const r of gone) await env.DB.prepare("DELETE FROM sessions WHERE token_hash=? AND user_id=?").bind(r.token_hash, user.id).run();
+    await dropSubsForSessions(env, gone.map((r) => r.token_hash)).catch(() => 0);
     return json({ ok: true, signed_out: gone.length });
   }
   return json({ error: "not found" }, 404);

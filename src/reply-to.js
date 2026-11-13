@@ -15,12 +15,14 @@ const posInt = (x) => { const n = Number(x); return Number.isInteger(n) && n >= 
 export function zoneRef(z) {
   if (!z || typeof z !== "object") return null;
   const file = typeof z.file === "string" && /^[0-9a-f-]{36}$/i.test(z.file) ? z.file.toLowerCase() : null; if (!file) return null;
-  const kind = z.kind === "deck" || z.kind === "report" || z.kind === "doc" ? z.kind : z.kind === "page" ? "page" : null; if (!kind) return null;
+  const kind = z.kind === "deck" || z.kind === "report" || z.kind === "doc" || z.kind === "sheet" ? z.kind : z.kind === "page" ? "page" : null; if (!kind) return null;
   const slot = typeof z.slot === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(z.slot) ? z.slot : null;
   const sel = typeof z.sel === "string" && /^\d{1,4}(\/\d{1,4}){0,40}$/.test(z.sel) ? z.sel : null;
-  return { file, name: label1(z.name, 200), kind, slide: posInt(z.slide), of: posInt(z.of), slot, sel, label: label1(z.label, 60), text: label1(z.text, 400) };
+  // a spreadsheet: the sheet's name and the cell or range ("B4" or "B4:C9") that is selected
+  const range = kind === "sheet" && typeof z.range === "string" && /^[A-Z]{1,3}[1-9]\d{0,6}(:[A-Z]{1,3}[1-9]\d{0,6})?$/.test(z.range) ? z.range : null;
+  return { file, name: label1(z.name, 200), kind, slide: posInt(z.slide), of: posInt(z.of), slot, sel, label: label1(z.label, 60), text: label1(z.text, 400), ...(kind === "sheet" ? { sheet: label1(z.sheet, 64), range } : {}) };
 }
-const zoneLabel = (z) => [z.slide ? (z.kind === "doc" ? `Page ${z.slide}` : `Slide ${z.slide}`) : z.kind === "report" ? "Report" : "", z.label || z.slot || (z.sel ? "Element" : "")].filter(Boolean).join(", ") || z.name || "Selection";
+const zoneLabel = (z) => z.kind === "sheet" ? [z.sheet, z.range].filter(Boolean).join(" \u00b7 ") || z.name || "Selection" : [z.slide ? (z.kind === "doc" ? `Page ${z.slide}` : `Slide ${z.slide}`) : z.kind === "report" ? "Report" : "", z.label || z.slot || (z.sel ? "Element" : "")].filter(Boolean).join(", ") || z.name || "Selection";
 // What the app sent → a clean ref, or null when there's nothing to quote. The id is optional (a reply still streaming may not have one).
 // A selection-only message has role "zone" (its text is a short label); a reply to a bubble that also has a selection keeps the bubble's
 // role and text and carries "zone" as well.
@@ -40,6 +42,10 @@ export const replyIn = (s) => { if (!s) return null; try { return replyRef(JSON.
 
 // The sentence the model reads about a selection: what the person has selected, nothing about how to work.
 export function zoneSentence(z) {
+  if (z.kind === "sheet") {   // "cells B4:C9 of the sheet "Q3" of the spreadsheet "budget.xlsx" (Library file ...), now reading "B4 = 12; C4 = 15""
+    const what = z.range ? (z.range.includes(":") ? `cells ${z.range}` : `cell ${z.range}`) : "the sheet";
+    return `(The person has this selected in the canvas: ${what}${z.sheet ? ` of the sheet "${z.sheet}"` : ""} of the spreadsheet "${z.name}" (Library file ${z.file})${z.text ? `, now reading "${z.text}"` : ""}. Their message is about it.)`;
+  }
   const kind = z.kind === "deck" ? "deck" : z.kind === "report" ? "report" : z.kind === "doc" ? "document" : "page";
   const where = z.slide ? (kind === "report" || kind === "document" ? `page ${z.slide}${z.of ? ` of ${z.of}` : ""}` : `slide ${z.slide}${z.of ? ` of ${z.of}` : ""}`) : "";
   if (kind === "document" && z.text) return `(The person has this selected in the canvas: a paragraph${where ? ` on ${where}` : ""} of the document "${z.name}" (Library file ${z.file}), now reading "${z.text}". Their message is about it.)`;

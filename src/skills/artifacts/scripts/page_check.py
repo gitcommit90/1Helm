@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover
 
 TOL = 28            # a pixel counts as ink when any channel differs from the background by more than this
 EDGE_FRAC = 0.012   # width of the outer strip checked for cut-off content, as a share of the page's short side
+TOP_GAP = 0.05      # page 1's first ink may sit this share of the page height lower than page 2's before it fails
 SAMPLE_MAX = 900    # pages are scaled down to this long side first; plenty for these checks and fast
 
 
@@ -93,8 +94,9 @@ def check(path, kind):
             if counts[top] / box > 0.85 and box / total < 0.95:
                 adv.append(f"large flat box of one colour ({100 * counts[top] / total:.0f}% of the page): an empty image slot or a placeholder panel?")
 
+    top = float(np.argmax(diff.any(axis=1)) / h) if diff.any() else 0.0   # where the first ink row sits, as a share of page height
     digest = hashlib.sha1(a.tobytes()).hexdigest()
-    return {"file": path, "size": [full_w, full_h], "ink_pct": round(float(ink_pct), 2), "failures": fails, "advisories": adv}, digest
+    return {"file": path, "size": [full_w, full_h], "ink_pct": round(float(ink_pct), 2), "failures": fails, "advisories": adv, "top": top}, digest
 
 
 def main():
@@ -117,6 +119,9 @@ def main():
             r["advisories"].append(f"identical to page {i - 1}: a duplicated page or slide?")
         prev = d
         pages.append(r)
+    if a.kind == "doc" and len(pages) > 1 and pages[1]["top"] and pages[0]["top"] - pages[1]["top"] > TOP_GAP:   # a forehead above the title only
+        mm = (pages[0]["top"] - pages[1]["top"]) * pages[0]["size"][1] / pages[0]["size"][0] * 212   # page width ~212 mm
+        pages[0]["failures"].append(f"page 1's text starts {mm:.0f} mm below page 2's: remove the space before the title (paragraph spacing) or the larger first-page top margin")
     failures = [f"page {r['page']}: {m}" for r in pages for m in r["failures"]]
     advisories = [f"page {r['page']}: {m}" for r in pages for m in r["advisories"]]
     report = {"ok": not failures, "pages": len(pages), "failures": failures, "advisories": advisories,

@@ -48,6 +48,7 @@ material; start this file's own folder. Then build: the kind's one command does 
 When the person names a format, make that format. When they don't, pick the one that fits how they'll use it: something to
 print or send as is → PDF; something they'll edit → Word; numbers they'll work with → spreadsheet; something to present →
 deck; something to open on a phone or share as a link → web page. Ask only when the choice really changes the result.
+Fact: the Zone edits Word documents, decks and spreadsheets, and the Library gives every one of them as a PDF to download, so a Word file the person may edit (a resume, a letter, a contract) is shared as the .docx.
 
 ## Rules for every file
 
@@ -73,7 +74,7 @@ deck; something to open on a phone or share as a link → web page. Ask only whe
    file while a gate fails. Fix and re-run at most three times; if it still fails, tell them exactly what fails and ask how to
    go on (a shorter version, a different format, dropping a part).
 6. **Share it with `share_file`.** Give the finished file's path and a human file name, e.g. name "Kyoto trip plan.pdf". Saving
-   it on your computer alone shows them nothing. One line about what it is is enough; don't paste its contents.
+   it on your computer alone shows them nothing. One line about what it is is enough; don't paste its contents. The Library keeps a PDF copy of every Word document, deck and spreadsheet automatically, for download and attachments, and the Zone opens and edits the editable file (a PDF opens in the Zone for the person's own marks). If you also make a PDF of it, share both: a PDF with the same base name as an editable file from this task is kept together with it as one Library item.
 7. **Update, don't duplicate.** When they ask for a change, edit the source, rebuild, re-check, and share the same path again:
    the Library file gets a new version at the same links. Make a separate copy only when they ask for one.
 8. **Images are real.** There is no image generator. Use their own photos, or real photos from free-licensed sources,

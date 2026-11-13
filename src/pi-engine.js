@@ -16,7 +16,7 @@ import { ackNudge, workNudge, openTodoNudge, openWorkFacts } from "./ack-stall.j
 import { turnFacts } from "./ee/index.js";
 import { liveNudge, noteRan } from "./live-check.js";
 import { personWords } from "./person-asked.js";
-import { isResetErr } from "./do-stub.js";
+import { isResetErr, isPlatformOverload, PLATFORM_OVERLOAD_MSG } from "./do-stub.js";
 import { claimOutputRecovery } from "./model-limits.js";
 import { answerText, splitProgress } from "./progress-dedupe.js";
 import {spendPausesOn,pausesApply,stepAllowance} from './spend-preferences.js';
@@ -276,7 +276,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
   if (tc.objectReset || (error && isResetErr(error))) { tc.objectReset = true; throw Object.assign(new Error("Durable Object reset because its code was updated."), { objectReset: true }); }
   if (stepCapped && !steerPis.length) tc.limitWhy ||= "steps";   // out of steps (not just answering what they added): a paused card
   let reply = error ? said.join("\n\n") : answerText(splitProgress(said, saidMeta));
-  if (!reply && error) reply = isByokError(error) ? error : isComputerBusy(error) ? COMPUTER_BUSY_MSG : /out_of_credits/.test(error) ? (res.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : /daily safety limit/.test(error) ? DAY_LIMIT_REPLY : `Something went wrong: ${error}`;
+  if (!reply && error) reply = isByokError(error) ? error : isComputerBusy(error) ? COMPUTER_BUSY_MSG : /out_of_credits/.test(error) ? (res.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : /daily safety limit/.test(error) ? DAY_LIMIT_REPLY : isPlatformOverload(error) ? PLATFORM_OVERLOAD_MSG : `Something went wrong: ${error}`;
   if (kind === "chat" && steps >= limit() && !error) reply = reply || "I stopped after several steps; tell me if you want me to keep going.";
   return { reply, error, said, saidMeta, checkpoints, messagesForNotes: toOpenAI(sys, finalMsgs || [...histPi, userPi]) };
 }

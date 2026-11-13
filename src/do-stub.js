@@ -21,6 +21,15 @@ export const RESET_RE = /reset because its code was updated|Durable Object reset
 export const LOST_RE = /Network connection lost|instance is no longer active|Connection closed/i;
 export const isLostErr = (e) => !!e && LOST_RE.test(String(e?.message ?? e));
 export const isResetErr = (e) => !!e && (e.objectReset === true || RESET_RE.test(String(e?.message ?? e)));
+// Words shown to the person when Cloudflare itself (Durable Objects or D1) failed temporarily. Only the shown text changes: nothing retries or parks on it.
+export const PLATFORM_OVERLOAD_MSG = "Our servers are overloaded right now, so this didn't finish. Please try again in a few minutes.";
+const PLATFORM_OVERLOAD_RE = /internal error; reference =|D1 DB is overloaded|Durable Object[^\n]*overloaded|Network connection lost|transient issue/i;
+// True for a temporary Cloudflare platform failure. Model and provider errors (e.g. Anthropic "overloaded_error", 429, out of credits, own-key errors) are not.
+export function isPlatformOverload(e) {
+  if (!e || e.byok || e.status === 429 || e.status === 402 || e.privacy) return false;
+  const t = String(e?.message ?? e ?? "");
+  return !/^Your AI service\b|overloaded_error|rate.?limit|out_of_credits/i.test(t) && PLATFORM_OVERLOAD_RE.test(t);
+}
 export const doTransient = (e) => !!(e?.retryable || e?.overloaded || DO_TRANSIENT_RE.test(String(e?.message || e || "")));
 // The namespaces we wrap (wrangler durable_objects bindings).
 export const DO_BINDINGS = ["RESIDENT", "CHANNEL_COMPUTER", "LEDGER", "ARCHIVE", "COMPUTER", "BEE_SYNC", "LIVE_NOTES", "FILE_PREP", "NATIVE_TRANSPORT", "CLAUDE_ENGINE", "EXPORT_RUNNER"];

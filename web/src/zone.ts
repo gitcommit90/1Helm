@@ -16,11 +16,17 @@
 //  - A person can also type over text (double click, or Enter on a selected element), drop a picture on a picture box, and change size, weight, colour,
 //    alignment, opacity and the slide background in the inspector. Each change goes to POST .../files/<id>/zone-edit, which applies it to the file and
 //    saves a new version (src/zone-edit.js on the server). Undo and redo are per Zone session.
+//  - A spreadsheet (.xlsx or .csv) is a grid (zone-sheet.ts, in zone/sheet.js with SheetJS and HyperFormula): a click or a drag selects cells and pins "<sheet> \u00b7 B4:C9", a typed value or
+//    formula recalculates the workbook at once, and each change is saved through the same zone-edit route (the server writes it with ExcelJS, src/zone-sheet.js).
+//  - A Word document (.docx, .docm) opens in an editable view (zone-docedit.ts, in zone/doc.js): one white page of text a person clicks into and types in, saved about a second after typing stops
+//    as paragraph ops through the same route (src/zone-docx.js). "Print view" in the header switches to the server's PDF preview drawn as page pictures, and back. A .doc, .odt or .rtf opens in the print view only.
 import { asJs, chipLabel, deckParts, docEditable, labelFor, patchForZone, thumbDoc, zoneKind, type ZKind } from "./zone-doc";
 import { loadPdfjs } from "./pdfjs-loader";
 import { SHELL_CSS, bridgeFor, relayFor } from "./zone-bridge";
 import { annOpen, annStart, annHost, annUnhost, annClear, annPlace, annClose, annFit, annSetPencil, annOn, annCount, annHas, annEnsure, annBegin, annDone, type AnnSend, type AnnDeps, type El, type Shot } from "./ee/zone-annotate";
 import { paragraphsOf, paraAt, splitMarker, norm, type Para, type TItem } from "./zone-docpara";
+import type { SheetCtl } from "./zone-sheet";
+import type { DocCtl } from "./zone-docedit";   // the editable Word page is a file of its own too (zone/doc.js)   // the grid and its libraries are a file of their own (zone/sheet.js), fetched when a spreadsheet is opened
 
 export type ZFileRef = { slug: string; id: string; name: string; mime?: string; tags?: string[]; session?: string | null; version?: number; bytes?: number; source?: string; image?: boolean };
 export type ZDeps = {
@@ -64,15 +70,15 @@ const IC = {
   pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>', bold: '<path d="M7 5h6a3.5 3.5 0 0 1 0 7H7zM7 12h7a3.5 3.5 0 0 1 0 7H7z"/>', al: '<path d="M4 6h16M4 12h10M4 18h14"/>', ac: '<path d="M4 6h16M7 12h10M5 18h14"/>', ar: '<path d="M4 6h16M10 12h10M6 18h14"/>',
   insp: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
 };
-const KIND_IC: Record<ZKind, string> = { deck: IC.deck, page: IC.page, report: IC.report, doc: IC.report, image: IC.image };
-const KIND_WORD: Record<ZKind, string> = { deck: "Deck", page: "Web page", report: "Report", doc: "Document", image: "Image" };
+const KIND_IC: Record<ZKind, string> = { deck: IC.deck, page: IC.page, report: IC.report, doc: IC.report, image: IC.image, sheet: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16M15 4v16"/>' };
+const KIND_WORD: Record<ZKind, string> = { deck: "Deck", page: "Web page", report: "Report", doc: "Document", image: "Image", sheet: "Spreadsheet" };
 
 // ------------------------------------------------------------------------------------------------------------------------------------------------
 // State
 // ------------------------------------------------------------------------------------------------------------------------------------------------
 type Frame = { el: HTMLIFrameElement; nonce: string; ready: boolean };
 const Z = {
-  deps: null as ZDeps | null, f: null as ZFileRef | null, kind: "deck" as ZKind, sid: "" as string,
+  sheet: null as SheetCtl | null, dedit: null as DocCtl | null, dview: "print" as "edit" | "print", dv: null as { f: ZFileRef; ver: number; gen: number } | null, deps: null as ZDeps | null, f: null as ZFileRef | null, kind: "deck" as ZKind, sid: "" as string,
   text: "", cur: null as Frame | null, next: null as Frame | null, gen: 0,
   slide: 1, count: 1, sel: null as { info: Info; r: Rect | null; slide: number | null } | null, hov: null as { r: Rect; label: string } | null, drop: null as Rect | null, editing: false,
   zoom: 1, k: 1, stage: null as [number, number, number, number] | null, version: 1, hasPrev: false, undo: [] as Step[], redo: [] as Step[], saving: 0, queue: Promise.resolve() as Promise<any>, err: "",
@@ -92,7 +98,8 @@ export const zoneAnnBegin = () => annBegin();
 export const zoneAnnDone = () => annDone();
 export const zoneAnnSession = () => String(Z.sid);
 export const zoneSession = () => String(Z.sid);
-const isPdf = () => Z.kind === "report" || Z.kind === "doc";   // pages drawn by pdf.js: a PDF report, or a Word document's preview
+const editView = () => Z.kind === "doc" && Z.dview === "edit";   // a Word document as editable text
+const isPdf = () => Z.kind === "report" || (Z.kind === "doc" && Z.dview === "print");   // pages drawn by pdf.js: a PDF report, or a Word document's preview
 
 // ------------------------------------------------------------------------------------------------------------------------------------------------
 // Opening and closing
@@ -101,17 +108,18 @@ export async function zoneOpen(deps: ZDeps, f: ZFileRef, sid: string) {
   const kind = zoneKind(f); if (!kind) return;
   if (Z.mounted) zoneClose(true);
   Z.paras.clear(); Z.phov = null; Z.retry = false; Z.refresh = false; Z.fxPage = null; Z.edit = null; Z.pscroll = null; Z.pgSize.clear();
-  Object.assign(Z, { deps, f: { ...f }, kind, sid, text: "", slide: 1, count: 1, sel: null, hov: null, drop: null, editing: false, zoom: 1, k: 1, stage: null, undo: [], redo: [], saving: 0, err: "", busy: false, menu: "", drawer: false });
+  Object.assign(Z, { dview: kind === "doc" && docEditable(f.name) ? "edit" : "print", dedit: null, dv: null, deps, f: { ...f }, kind, sid, text: "", slide: 1, count: 1, sel: null, hov: null, drop: null, editing: false, zoom: 1, k: 1, stage: null, undo: [], redo: [], saving: 0, err: "", busy: false, menu: "", drawer: false });
   Z.version = Number(f.version) || 1; Z.hasPrev = false; Z.mounted = true; Z.gen++; const gen0 = Z.gen;
   await styles(); if (!Z.mounted || Z.gen !== gen0) return;
-  loadSplit(); mount(); void meta(); void load();
+  loadSplit(); mount(); void meta(); void load(); pollNewest();
   if (D().helperWorking()) setBusy(true);
 }
 export function zoneClose(quiet = false) {
   if (!Z.mounted) return;
-  Z.gen++; Z.mounted = false; annClose(); Z.deps?.sendState?.(); fxStop(true); D().pin(D().pinKey(), null);
+  clearInterval(pollT); void Z.dedit?.flush();   // an edit not yet saved goes now (the request is made before anything else is torn down)
+  Z.gen++; Z.mounted = false; annClose(); Z.sheet?.destroy(); Z.sheet = null; Z.dedit?.destroy(); Z.dedit = null; Z.dv = null; Z.deps?.sendState?.(); fxStop(true); D().pin(D().pinKey(), null);
   for (const id of ["zcanvas", "zinsp", "zdiv", "zpresent"]) document.getElementById(id)?.remove();
-  document.documentElement.classList.remove("zone-open", "zchat-off", "zinsp-open", "zchat-narrow", "zdoc-deck", "zdoc-page", "zdoc-report", "zdoc-doc", "zdoc-image"); document.documentElement.style.removeProperty("--zph");
+  document.documentElement.classList.remove("zone-open", "zchat-off", "zinsp-open", "zchat-narrow", "zdoc-deck", "zdoc-page", "zdoc-report", "zdoc-doc", "zdoc-image", "zdoc-sheet", "zdoc-dedit"); document.documentElement.style.removeProperty("--zph");
   unwatchPlaceholder(); Z.cur = Z.next = null; Z.pdf?.destroy?.(); Z.pdf = null; window.removeEventListener("message", onMessage); window.removeEventListener("keydown", onKey, true); window.removeEventListener("resize", relayout); document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("focus", onVisible);
   RO?.disconnect(); RO = null; pdfIO?.disconnect(); pdfIO = null;
   void quiet;
@@ -141,7 +149,7 @@ function styles(): Promise<void> {
   return new Promise(done => { const l = document.createElement("link"); l.id = "zone-ui-css"; l.rel = "stylesheet"; l.href = new URL(`./zone-ui.css?v=${encodeURIComponent(D().v)}`, import.meta.url).href; l.onload = l.onerror = () => done(); document.head.appendChild(l); setTimeout(done, 3000); });
 }
 function mount() {
-  const h = document.documentElement; h.classList.add("zone-open", `zdoc-${Z.kind}`); if (Z.kind === "doc") h.classList.add("zdoc-report");   // a document is laid out like a report: pages in a column, a strip of small pages
+  const h = document.documentElement; h.classList.add("zone-open", `zdoc-${Z.kind}`); if (Z.kind === "doc") h.classList.add(editView() ? "zdoc-dedit" : "zdoc-report");   // print view: laid out like a report (pages in a column, a strip of small pages); edit view: one page of text
   const c = document.createElement("section"); c.id = "zcanvas"; c.className = "zs"; c.setAttribute("aria-label", "Canvas");
   c.innerHTML = `<header class="zhd" data-zp="head"></header><div class="zcv" data-zcv><div class="zscroll" data-zscroll><div class="zpages" data-zpages></div></div>
     <div class="zovl"><div class="zhov" hidden></div><div class="zdrop" hidden><span>Drop to place the picture</span></div><div class="zsel" hidden><span class="zseltag"></span></div><div class="zfxhost" hidden></div></div>
@@ -166,6 +174,8 @@ async function load(quiet = false) {
   const gen = Z.gen, f = Z.f!; if (quiet && Z.kind === "doc") { Z.refresh = true; paintHead(); }
   try {
     if (Z.kind === "image") { loadImage(gen, quiet); return; }
+    if (Z.kind === "sheet") { await loadSheet(gen, quiet); return; }
+    if (editView()) { await loadDocEdit(gen, quiet); return; }
     if (isPdf()) { await loadPdf(gen, quiet); return; }
     const r = await fetch(D().fileUrl(f.slug, f.id), { credentials: "same-origin", cache: "no-store" });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -178,6 +188,93 @@ async function load(quiet = false) {
     Z.next?.el.remove(); el.style.visibility = "hidden"; Z.next = { el, nonce: n, ready: false }; pagesBox()?.appendChild(el); sizeFrame(el); el.srcdoc = html;
     if (!quiet) setLoad(true);
   } catch (e: any) { if (gen !== Z.gen) return; if (quiet && Z.kind === "doc" && Z.pdf) { Z.refresh = false; paintHead(); D().note("Couldn't update the pages", String(e?.message || e).replace(/^Couldn't make a preview: /, "").slice(0, 160)); return; } setLoad(false, Z.kind === "doc" ? `Couldn't open this document. ${String(e?.message || e).replace(/^Couldn't make a preview: /, "").slice(0, 160)}` : `Couldn't open this file (${String(e?.message || e).slice(0, 120)}).`); }
+}
+// A spreadsheet: the grid draws it (zone-sheet.ts). A newer version of the file (the helper's, or one that follows a change that could not be saved) is read into the same grid.
+let sheetMod: Promise<typeof import("./zone-sheet")> | null = null;
+const sheetLoad = () => sheetMod ??= import(/* @vite-ignore */ new URL(`./sheet.js?v=${encodeURIComponent(D().v)}`, import.meta.url).href).catch(e => { sheetMod = null; throw e; });
+async function loadSheet(gen: number, quiet: boolean) {
+  const f = Z.f!, host = cv(); if (!host) return;
+  const [mod, r] = await Promise.all([sheetLoad(), fetch(D().fileUrl(f.slug, f.id), { credentials: "same-origin", cache: "no-store" })]);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const buf = await r.arrayBuffer(); if (gen !== Z.gen) return;
+  if (Z.sheet) { annClear(); Z.sheet.reload(buf); setLoad(false); paintAll(); return; }
+  if (!quiet) setLoad(true);
+  const ctl = await mod.sheetOpen(host, {
+    v: D().v, name: f.name,
+    save: edits => enqueue(() => sendEdits(edits)).then(v => !!v),
+    pin: p => { const key = D().pinKey(); if (!key) return; if (!p) { D().pin(key, null); return; } D().pin(key, { id: null, role: "zone", text: p.label, mr: -1, zone: { file: f.id, name: f.name, kind: "sheet", slide: null, of: null, slot: null, sel: null, label: "", text: p.text, sheet: p.sheet, range: p.range } }); },
+    place: () => annPlace(), busy: () => Z.busy, note: (t, b) => D().note(t, b), changed: () => paintHead(),
+  }, buf);
+  if (gen !== Z.gen) { ctl.destroy(); return; }
+  Z.sheet = ctl; annHost("sheet", ctl.hostSpec()); Z.count = ctl.sheetCount(); setLoad(false); paintAll();
+}
+// A Word document as editable text (zone-docedit.ts). A newer version of the file (the helper's, or one that follows a change that could not be saved) is read into the same page.
+let docMod: Promise<typeof import("./zone-docedit")> | null = null;
+const docLoad = () => docMod ??= import(/* @vite-ignore */ new URL(`./doc.js?v=${encodeURIComponent(D().v)}`, import.meta.url).href).catch(e => { docMod = null; throw e; });
+const docClasses = () => { const h = document.documentElement; h.classList.toggle("zdoc-dedit", editView()); h.classList.toggle("zdoc-report", Z.kind === "doc" && !editView()); };
+/** Print view (the server's page pictures) or the editable text, and back. A change not yet saved goes first, so the pictures show it. */
+async function switchView(to: "edit" | "print", why = "") {
+  if (Z.kind !== "doc" || Z.dview === to || !docEditable(Z.f!.name)) return;
+  if (Z.dview === "edit") { try { await Z.dedit?.flush(); } catch { /* the page told the person */ } if (!Z.mounted) return; }
+  Z.gen++; Z.dview = to; Z.dedit?.destroy(); Z.dedit = null; Z.dv = null; cancelEdit(); Z.sel = null; Z.hov = null; Z.phov = null; dsel = null; D().pin(D().pinKey(), null);
+  Z.pdf?.destroy?.(); Z.pdf = null; Z.pdfPages = []; Z.paras.clear(); pdfIO?.disconnect(); pdfIO = null; annUnhost(); annClear(); annStart(annDeps());
+  const box = pagesBox(); if (box) box.innerHTML = ""; Z.count = 1; Z.slide = 1; docClasses(); const el = $<HTMLElement>("#zcanvas .zstrip"); if (el) el.dataset.n = "";
+  paintAll(); if (why) D().note("Opened as a print view", why); setLoad(true); void load();
+}
+async function loadDocEdit(gen: number, quiet: boolean) {
+  const f = Z.f!, host = pagesBox(); if (!host) return;
+  try {
+    const [mod, r] = await Promise.all([docLoad(), fetch(D().fileUrl(f.slug, f.id), { credentials: "same-origin", cache: "no-store" })]);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const buf = await r.arrayBuffer(); if (gen !== Z.gen) return;
+    if (Z.dedit) { annClear(); await Z.dedit.reload(buf); if (gen !== Z.gen) return; Z.refresh = false; setLoad(false); paintAll(); return; }
+    if (!quiet) setLoad(true);
+    Z.dv = { f, ver: Z.version, gen };
+    const dv = Z.dv;
+    const ctl = await mod.docOpen(host, {
+      name: f.name, save: edits => saveDocOps(dv, edits),
+      pin: p => { const key = D().pinKey(); if (!key) return; if (!p) { D().pin(key, null); return; } D().pin(key, { id: null, role: "zone", text: p.label, mr: -1, zone: { file: f.id, name: f.name, kind: "doc", slide: null, of: null, slot: null, sel: null, label: `\u00b6 ${p.para}`, text: p.text } }); },
+      place: () => annPlace(), busy: () => Z.busy, note: (t, b) => D().note(t, b), changed: () => paintHead(),
+    }, buf);
+    if (gen !== Z.gen) { ctl.destroy(); return; }
+    Z.refresh = false; Z.dedit = ctl; Z.count = 1; annHost("doc", ctl.hostSpec()); ctl.setBusy(Z.busy); setLoad(false); paintAll();
+  } catch (e: any) { Z.refresh = false; if (gen !== Z.gen) return; if (Z.dedit) { D().note("Couldn't update the page", String(e?.message || e).slice(0, 160)); return; } void switchView("print", `This document can't be edited as text here (${String(e?.message || e).slice(0, 120)}). The print view shows it.`); }
+}
+// Another device (or the helper) saved a newer version of a document or sheet that is open here: load it, and reapply the changes not saved yet (a document's paragraphs, a sheet's cells) where
+// the newest version still holds what they were changed from. What can't be kept is named in one note. The version is read before the file, so a save made on the result is never based on newer bytes.
+async function syncNewest(edits: any[] = []) {
+  const f = Z.f!, gen = Z.gen;
+  try {
+    const v = Number((await (await fetch(`${D().api}/res/${f.slug}/files/${f.id}/zone-info`, { credentials: "same-origin", cache: "no-store" })).json()).version), r = await fetch(D().fileUrl(f.slug, f.id), { credentials: "same-origin", cache: "no-store" });
+    if (!v || !r.ok) return; const buf = await r.arrayBuffer(); if (gen !== Z.gen) return;
+    Z.version = v; if (Z.dv) Z.dv.ver = v; Z.undo = []; Z.redo = [];
+    const lost = Z.dedit ? await Z.dedit.rebase(buf) : Z.sheet ? Z.sheet.rebase(buf, edits) : [];
+    if (lost.length) D().note("Changed on another device", (Z.dedit ? "\u00b6 " : "") + lost.join(", "));
+  } catch { /* the next check tries again */ }
+}
+let pollT = 0;
+const pollNewest = () => { clearInterval(pollT); pollT = window.setInterval(async () => {
+  if (!Z.mounted || !(Z.dedit || Z.sheet) || Z.busy || Z.saving || document.visibilityState !== "visible") return; const f = Z.f!, gen = Z.gen;
+  try { const j = await (await fetch(`${D().api}/res/${f.slug}/files/${f.id}/zone-info`, { credentials: "same-origin", cache: "no-store" })).json(); if (gen === Z.gen && !Z.saving && Number(j.version) > Z.version) await syncNewest(); } catch { /* offline: try again */ }
+}, 5000); };
+
+// One batch of paragraph ops from the editable page, saved as one new version of the file. The file and its version are the page's own (not the Zone's current ones), so a save that
+// starts as the Zone closes, or as another file opens, still goes to the file it belongs to.
+async function saveDocOps(dv: { f: ZFileRef; ver: number; gen: number }, edits: any[]): Promise<{ ok: boolean }> {
+  const f = dv.f; if (dv.gen === Z.gen && Z.f?.id === f.id) dv.ver = Z.version;
+  const live = () => dv.gen === Z.gen && Z.mounted; if (live()) { Z.saving++; paintHead(); }
+  try {
+    const body = JSON.stringify({ base: dv.ver, edits });
+    const r = await fetch(`${D().api}/res/${f.slug}/files/${f.id}/zone-edit`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body, keepalive: body.length < 60000 });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.file) { dv.ver = Number(j.file.version) || dv.ver + 1; if (live()) { Z.version = dv.ver; Z.hasPrev = true; if (j.file.bytes) Z.f!.bytes = j.file.bytes; } try { D().bumped?.(f.slug, j.file); } catch { /* the list poll catches up */ } return { ok: true };
+    }
+    if (!live()) return { ok: false };
+    if (r.status === 409) { void syncNewest(); return { ok: false }; }
+    D().note("Couldn't save that change", String(j.error || `Something went wrong (${r.status}).`).slice(0, 160));
+    Z.undo = []; Z.redo = []; void load(true); return { ok: false };
+  } catch (e: any) { if (live()) { D().note("Couldn't save that change", "Check your connection. Your last change was not saved."); void load(true); } return { ok: false }; }
+  finally { if (live()) { Z.saving--; paintHead(); } }
 }
 // A generated image: shown fitted, with the Pencil (zone-annotate.ts). The marks stay while the same file is loaded again.
 function loadImage(gen: number, quiet: boolean) {
@@ -196,13 +293,15 @@ function annDeps(extra: Partial<AnnDeps> = {}): AnnDeps {
     upload: (blob: Blob, name: string) => { if (!D().upload) throw new Error("Uploading isn't available here."); return D().upload!(f.slug, blob, name); } } as AnnDeps;
   if (Z.kind === "deck" || Z.kind === "page") Object.assign(d, { shot: frameShot, under: frameUnder, wheel: (dx: number, dy: number) => { if (Z.kind === "page") post("scrollBy", { dx: dx / (Z.k || 1), dy: dy / (Z.k || 1) }); } });
   else if (isPdf()) d.shot = pageShot;
+  else if (editView()) Object.assign(d, { shot: (u: number, band: any) => Z.dedit?.shot(u, band) ?? Promise.resolve(null), under: async (u: number, r: any) => Z.dedit?.under(u, r) ?? [], wheel: (dx: number, dy: number) => Z.dedit?.wheel(dx, dy) });
+  else if (Z.kind === "sheet") Object.assign(d, { shot: (u: number, band: any) => Z.sheet?.shot(u, band) ?? Promise.resolve(null), under: async (u: number, r: any) => Z.sheet?.under(u, r) ?? [], wheel: (dx: number, dy: number) => Z.sheet?.wheel(dx, dy) });
   return Object.assign(d, extra);
 }
 // A deck's slide is 1920 by 1080; a web page is as wide as its frame and as tall as its document (the bridge reports the scroll and the document's size).
 const frameSize = () => { const f = Z.cur?.el; if (!f) return { w: 0, h: 0 }; if (Z.kind === "deck") return { w: 1920, h: 1080 }; return { w: Math.max(f.offsetWidth, Z.pscroll?.w || 0), h: Math.max(f.offsetHeight, Z.pscroll?.h || 0) }; };
 const frameView = () => { const f = Z.cur?.el; if (Z.kind === "deck" || !f) return { ox: 0, oy: 0, w: 1920, h: 1080 }; return { ox: Z.pscroll?.x || 0, oy: Z.pscroll?.y || 0, w: Math.max(1, f.offsetWidth), h: Math.max(1, f.offsetHeight) }; };
 function startPencil(c: HTMLElement) {
-  annStart(annDeps());
+  annStart(annDeps());   // a spreadsheet hosts the Pencil itself once its grid is drawn (loadSheet)
   if (Z.kind !== "deck" && Z.kind !== "page") return;
   const el = document.createElement("div"); el.className = "zannl"; el.hidden = true; $(".zovl", c)!.appendChild(el);
   annHost("frame", { el, unit: () => (Z.kind === "deck" ? Z.slide : 1), size: frameSize, view: frameView });
@@ -328,16 +427,16 @@ function pinSelection() {
   D().pin(key, { id: null, role: "zone", text: label, mr: -1, zone: { file: f.id, name: f.name, kind: Z.kind, slide: s.slide, of: Z.kind === "deck" ? Z.count : null, slot: isWhole(s) ? null : s.info.t.slot || null, sel: isWhole(s) ? null : s.info.path, label: el, text: isWhole(s) ? "" : s.info.text } });
 }
 /** v3.ts calls this once a message that carried the pin was sent: the helper will change that element, so the selection is let go. */
-export function zoneSent() { if (!Z.mounted || !Z.sel) return; Z.sel = null; Z.editing = false; post("clear"); placeOverlay(); paintInsp(); paintHead(); docPaint(); }
+export function zoneSent() { if (Z.mounted && Z.kind === "sheet") { Z.sheet?.clearSel(); return; } if (Z.mounted && Z.dedit) { void Z.dedit.flush(); Z.dedit.clearSel(); return; } if (!Z.mounted || !Z.sel) return; Z.sel = null; Z.editing = false; post("clear"); placeOverlay(); paintInsp(); paintHead(); docPaint(); }
 /** The chip's own X: the selection goes with it. */
-export function zoneUnpinned() { if (!Z.mounted || !Z.sel) return; Z.sel = null; post("clear"); placeOverlay(); paintInsp(); paintHead(); docPaint(); }
+export function zoneUnpinned() { if (Z.mounted && Z.kind === "sheet") { Z.sheet?.clearSel(); return; } if (Z.mounted && Z.dedit) { Z.dedit.clearSel(); return; } if (!Z.mounted || !Z.sel) return; Z.sel = null; post("clear"); placeOverlay(); paintInsp(); paintHead(); docPaint(); }
 
 // ------------------------------------------------------------------------------------------------------------------------------------------------
 // Sizing the frame, and the overlay (hover outline, selection outline and name, drop target) drawn over it
 // ------------------------------------------------------------------------------------------------------------------------------------------------
 const pad = () => (phone() ? 8 : 28);
 function geometry() {
-  const c = cv(); if (!c) return null;
+  const c = cv(); if (!c || Z.kind === "sheet") return null;
   const W = Math.max(40, c.clientWidth - pad() * 2), H = Math.max(40, c.clientHeight - pad() * 2);
   if (Z.kind === "image") { const g = annFit(c, pad(), Z.zoom); return g ? { w: g.w, h: g.h, k: 1, s: g.s } : { w: 0, h: 0, k: 1, s: 1 }; }
   if (Z.kind === "deck") { const s = Math.min(W / 1920, H / 1080) * Z.zoom; return { w: Math.round(1920 * s), h: Math.round(1080 * s), k: 1, s }; }
@@ -410,12 +509,13 @@ function placeOverlay() {
 // ------------------------------------------------------------------------------------------------------------------------------------------------
 // Saving edits: one at a time, each one a new version of the same Library file
 // ------------------------------------------------------------------------------------------------------------------------------------------------
-async function sendEdits(edits: (Edit | DocEdit)[] | null, restore = false): Promise<boolean> {
+async function sendEdits(edits: any[] | null, restore = false): Promise<boolean> {
   const f = Z.f!, gen = Z.gen;
   const r = await fetch(`${D().api}/res/${f.slug}/files/${f.id}/zone-edit`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(restore ? { base: Z.version, restore: "previous" } : { base: Z.version, edits }) });
   const j = await r.json().catch(() => ({}));
   if (gen !== Z.gen) return false;
   if (r.ok && j.file) { Z.version = Number(j.file.version) || Z.version + 1; Z.hasPrev = true; if (j.file.bytes) Z.f!.bytes = j.file.bytes; try { D().bumped?.(Z.f!.slug, j.file); } catch { /* the list poll catches up */ } return true; }
+  if (r.status === 409 && Z.kind === "sheet" && edits) { void syncNewest(edits); return false; }
   if (r.status === 409) { D().note("The file changed", "It was changed since you opened it, so the latest version is shown. Your last change was not saved."); Z.undo = []; Z.redo = []; Z.version = Number(j.version) || Z.version; void meta(); void load(true); return false; }
   D().note("Couldn't save that change", String(j.error || `Something went wrong (${r.status}).`).slice(0, 160)); void load(true); return false;
 }
@@ -437,6 +537,8 @@ async function refreshText() {
   try { const r = await fetch(D().fileUrl(f.slug, f.id), { credentials: "same-origin", cache: "no-store" }); if (!r.ok || gen !== Z.gen || v !== Z.version) return; Z.text = await r.text(); const st = $("[data-zp=strip]"); if (st) { st.dataset.n = ""; paintStrip(); } } catch { /* the pictures stay as they were */ }
 }
 function undo() {
+  if (Z.kind === "sheet") { if (!Z.busy) Z.sheet?.undo(); return; }
+  if (editView()) { if (!Z.busy) Z.dedit?.undo(); return; }
   const st = Z.undo[Z.undo.length - 1]; if (!st || Z.busy) return;
   void enqueue(async () => {
     const ok = st.undo === "restore" ? await sendEdits(null, true) : await sendEdits([st.undo]);
@@ -444,6 +546,8 @@ function undo() {
   });
 }
 function redo() {
+  if (Z.kind === "sheet") { if (!Z.busy) Z.sheet?.redo(); return; }
+  if (editView()) { if (!Z.busy) Z.dedit?.redo(); return; }
   const st = Z.redo[Z.redo.length - 1]; if (!st || Z.busy) return;
   void enqueue(async () => {
     const ok = await sendEdits([st.edit]);
@@ -467,7 +571,8 @@ export function zoneEvent(slug: string, sid: string, ev: any) {
 }
 function setBusy(on: boolean) {
   if (Z.busy === on) return; Z.busy = on; $("#zcanvas")?.classList.toggle("busy", on);
-  if (on) { post("clear"); cancelEdit(); Z.sel = null; Z.hov = null; Z.phov = null; Z.drop = null; Z.editing = false; D().pin(D().pinKey(), null); void fxStart(); } else fxStop(false);
+  Z.dedit?.setBusy(on);
+  if (on) { Z.sheet?.clearSel(); post("clear"); cancelEdit(); Z.sel = null; Z.hov = null; Z.phov = null; Z.drop = null; Z.editing = false; D().pin(D().pinKey(), null); void fxStart(); } else fxStop(false);
   placeOverlay(); paintHead(); paintInsp(); docPaint();
 }
 // When the new version's page is ready, the effect (if there is one) dissolves into it; without the effect the new page just replaces the old one.
@@ -493,7 +598,7 @@ function visiblePage(): HTMLElement | null {
   return best;
 }
 async function fxStart() {
-  if (reduced() || Z.fx || (!Z.cur && Z.kind !== "doc") || !webgl()) return;   // no effect for people who asked for less motion, or when the browser can't draw it: the work still shows on the new version
+  if (reduced() || Z.fx || Z.dedit || (!Z.cur && Z.kind !== "doc") || !webgl()) return;   // no effect for people who asked for less motion, or when the browser can't draw it: the work still shows on the new version
   if (Z.kind === "doc") Z.fxPage = visiblePage();
   const g = Z.kind === "doc" ? (Z.fxPage?.querySelector("canvas") ? { w: Z.fxPage.clientWidth, h: Z.fxPage.clientHeight, k: 1, s: 1 } : null) : geometry(); if (!g) return; const gen = Z.gen;
   const w = Math.min(1280, g.w), png = await snap(Z.cur as Frame, w, Math.round(w * (g.h / g.w))); if (!png || gen !== Z.gen || !Z.busy) return;
@@ -576,21 +681,23 @@ function pdfPageClick(n: number) {   // a page of a report is chosen as a whole:
 function paintAll() { paintHead(); paintInsp(); paintStrip(); placeOverlay(); }
 function saveState() { return Z.refresh ? "Updating the pages" : Z.saving > 0 ? "Saving" : Z.err ? Z.err : ""; }
 function paintHead() {
-  const h = $("[data-zp=head]"); if (!h) return; const f = Z.f!, k = Z.kind, noun = k === "deck" ? "slide" : "page";
+  const h = $("[data-zp=head]"); if (!h) return; const f = Z.f!, k = Z.kind, noun = k === "deck" ? "slide" : k === "sheet" ? "sheet" : "page";
+  const ed = editView(), canU = k === "sheet" ? !!Z.sheet?.canUndo() : ed ? !!Z.dedit?.canUndo() : Z.undo.length > 0, canR = k === "sheet" ? !!Z.sheet?.canRedo() : ed ? !!Z.dedit?.canRedo() : Z.redo.length > 0;
   const ver = `v${Z.version}`, st = saveState();
-  const pencil = `<button class="zib zpencil${annOn() ? " on" : ""}" data-zact="pencil" aria-label="Pencil" aria-pressed="${annOn()}" title="Pencil: mark ${k === "image" ? "the image" : "the " + (k === "deck" ? "slide" : k === "page" ? "page" : "document")}">${svg(IC.pencil, 17)}${annCount() ? `<i>${annCount()}</i>` : ""}</button>`;
+  const pencil = `<button class="zib zpencil${annOn() ? " on" : ""}" data-zact="pencil" aria-label="Pencil" aria-pressed="${annOn()}" title="Pencil: mark ${k === "image" ? "the image" : "the " + (k === "deck" ? "slide" : k === "page" ? "page" : k === "sheet" ? "sheet" : "document")}">${svg(IC.pencil, 17)}${annCount() ? `<i>${annCount()}</i>` : ""}</button>`;
   const present = k === "deck" ? `<button class="zbtn zsec" data-zact="present">${svg(IC.play, 15, 2)}<span>Present</span></button>` : k === "page" ? `<button class="zbtn zsec" data-zact="present">${svg(IC.full, 15)}<span>Full screen</span></button>` : `<a class="zbtn zsec" href="${esc(D().fileUrl(f.slug, f.id, true))}" download>${svg(IC.down, 15)}<span>Download</span></a>`;
-  const ub = k === "report" || k === "image" ? "" : `<button class="zib zsec" data-zact="undo" aria-label="Undo" title="Undo"${Z.undo.length && !Z.busy ? "" : " disabled"}>${svg(IC.undo, 17)}</button><button class="zib zsec" data-zact="redo" aria-label="Redo" title="Redo"${Z.redo.length && !Z.busy ? "" : " disabled"}>${svg(IC.redo, 17)}</button>`;
+  const pv = k === "doc" && docEditable(f.name) ? `<button class="zbtn zsec zpview${Z.dview === "print" ? " on" : ""}" data-zact="pview" aria-pressed="${Z.dview === "print"}" title="Show the document as printed pages">Print view</button>` : "";
+  const ub = k === "report" || k === "image" ? "" : `<button class="zib zsec" data-zact="undo" aria-label="Undo" title="Undo"${canU && !Z.busy ? "" : " disabled"}>${svg(IC.undo, 17)}</button><button class="zib zsec" data-zact="redo" aria-label="Redo" title="Redo"${canR && !Z.busy ? "" : " disabled"}>${svg(IC.redo, 17)}</button>`;
   const vmenu = Z.menu === "ver" ? `<div class="zmenu" role="menu"><div class="zmv">Version ${Z.version} is open</div><button class="zmi" data-zact="restore"${Z.hasPrev ? "" : " disabled"}>${svg(IC.clock, 16)}<span>Restore the version before it</span></button></div>` : "";
   const verBtn = k === "image" ? "" : `<span class="zverw zsec"><button class="zver" data-zact="ver" aria-haspopup="menu" aria-expanded="${Z.menu === "ver"}" title="Versions of this file">${ver}</button>${vmenu}</span>`;
   const mi = (act: string, ic: string, label: string, off = false) => `<button class="zmi" data-zact="${act}"${off ? " disabled" : ""}>${svg(ic, 16, 1.9)}<span>${label}</span></button>`;
-  const more = k === "image" ? "" : `<span class="zmorew"><button class="zib" data-zact="more" aria-label="More actions" aria-expanded="${Z.menu === "more"}" title="More">${svg(IC.more, 18)}</button>${Z.menu === "more" ? `<div class="zmenu" role="menu">${k === "report" ? "" : mi("undo", IC.undo, "Undo", !Z.undo.length || Z.busy) + mi("redo", IC.redo, "Redo", !Z.redo.length || Z.busy)}${mi("ver", IC.clock, `Versions, ${ver}`)}${mi("present", k === "deck" ? IC.play : k === "page" ? IC.full : IC.down, k === "deck" ? "Present" : k === "page" ? "Full screen" : "Download")}</div>` : ""}</span>`;
-  const inspBtn = k !== "report" && k !== "image" ? `<button class="zib zinspb${Z.drawer ? " on" : ""}" data-zact="insp" aria-label="Inspector" aria-expanded="${Z.drawer}" title="Inspector">${svg(IC.insp, 17)}</button>` : "";
+  const more = k === "image" ? "" : `<span class="zmorew"><button class="zib" data-zact="more" aria-label="More actions" aria-expanded="${Z.menu === "more"}" title="More">${svg(IC.more, 18)}</button>${Z.menu === "more" ? `<div class="zmenu" role="menu">${k === "report" ? "" : mi("undo", IC.undo, "Undo", !canU || Z.busy) + mi("redo", IC.redo, "Redo", !canR || Z.busy)}${k === "doc" && docEditable(f.name) ? mi("pview", IC.report, Z.dview === "print" ? "Edit view" : "Print view") : ""}${mi("ver", IC.clock, `Versions, ${ver}`)}${mi("present", k === "deck" ? IC.play : k === "page" ? IC.full : IC.down, k === "deck" ? "Present" : k === "page" ? "Full screen" : "Download")}</div>` : ""}</span>`;
+  const inspBtn = k !== "report" && k !== "image" && k !== "sheet" ? `<button class="zib zinspb${Z.drawer ? " on" : ""}" data-zact="insp" aria-label="Inspector" aria-expanded="${Z.drawer}" title="Inspector">${svg(IC.insp, 17)}</button>` : "";
   const chatBtn = `<button class="zib zchatb" data-zact="chat" aria-label="Show the chat" title="Show the chat">${svg(IC.chat, 17)}</button>`;
-  const zoom = `<span class="zzoomw"><button class="zib sm" data-zact="zoom-" aria-label="Zoom out" title="Zoom out"${Z.zoom <= 0.5 ? " disabled" : ""}>${svg(IC.minus, 13, 2)}</button><button class="zzoom" data-zact="zoom0" data-zzoom title="Fit the canvas">${Math.round((geometry()?.s || 1) * 100)}%</button><button class="zib sm" data-zact="zoom+" aria-label="Zoom in" title="Zoom in"${Z.zoom >= 2 ? " disabled" : ""}>${svg(IC.plus, 13, 2)}</button></span>`;
+  const zoom = k === "sheet" || ed ? "" : `<span class="zzoomw"><button class="zib sm" data-zact="zoom-" aria-label="Zoom out" title="Zoom out"${Z.zoom <= 0.5 ? " disabled" : ""}>${svg(IC.minus, 13, 2)}</button><button class="zzoom" data-zact="zoom0" data-zzoom title="Fit the canvas">${Math.round((geometry()?.s || 1) * 100)}%</button><button class="zib sm" data-zact="zoom+" aria-label="Zoom in" title="Zoom in"${Z.zoom >= 2 ? " disabled" : ""}>${svg(IC.plus, 13, 2)}</button></span>`;
   h.innerHTML = `${Z.chatOff && !phone() ? chatBtn : ""}<button class="zback" data-zact="back" title="Back to the task (Esc)" aria-label="Back to the task">${svg(IC.back, 18, 2)}<span>Task</span></button>
     <span class="zfile"><span class="zfi">${svg(KIND_IC[k], 16)}</span><b title="${esc(f.name)}">${esc(f.name)}</b><span class="zkind">${KIND_WORD[k]}${k !== "page" && Z.count > 1 ? ` · ${Z.count} ${noun}s` : ""}</span></span><span class="grow"></span>
-    <span class="zsave" role="status" aria-live="polite">${esc(st)}</span>${pencil}${zoom}${verBtn}${ub}${present}${inspBtn}${more}<button class="zbtn pri" data-sh="share|${esc(f.slug)}|${esc(f.id)}"${D().shareAttrs(f)}>${svg(IC.share, 15, 2)}<span>Share</span></button>`;
+    <span class="zsave" role="status" aria-live="polite">${esc(st)}</span>${pencil}${zoom}${verBtn}${pv}${ub}${present}${inspBtn}${more}<button class="zbtn pri" data-sh="share|${esc(f.slug)}|${esc(f.id)}"${D().shareAttrs(f)}>${svg(IC.share, 15, 2)}<span>Share</span></button>`;
 }
 const hexOk = (c: string) => /^#[0-9a-f]{6}$/i.test(c);
 function paintInsp() {
@@ -598,12 +705,13 @@ function paintInsp() {
   const close = `<button type="button" class="zib sm zinspx" data-zact="insp" aria-label="Close the inspector">${svg(IC.x, 14, 2)}</button>`;
   const row = (l: string, inner: string) => `<div class="zir"><span class="zil">${l}</span><span class="zic">${inner}</span></div>`;
   const dis = Z.busy ? " disabled" : "";
+  if (editView()) { el.innerHTML = ""; return; }
   if (k === "doc") {
     const t = s && !isWhole(s) ? s.info.text : "", can = docEditable(f.name);
     el.innerHTML = `${close}<div class="zih"><b>${s ? `Page ${s.slide}` : "Document"}</b><span>${Z.count} ${Z.count === 1 ? "page" : "pages"}</span></div>
       ${t ? `<div class="zig"><p class="zquote">${esc(t.length > 280 ? t.slice(0, 279) + "…" : t)}</p>${can ? `<button class="zwide" data-zact="edit"${dis}>${svg('<path d="M4 20h4L19 9l-4-4L4 16z"/>', 16)}<span>Edit text</span></button>` : ""}</div>` : ""}`; return;
   }
-  if (k === "image") { el.innerHTML = ""; return; }
+  if (k === "image" || k === "sheet") { el.innerHTML = ""; return; }
   if (k === "report") { el.innerHTML = `${close}<div class="zih"><b>${s ? `Page ${s.slide}` : "Report"}</b><span>${Z.count} ${Z.count === 1 ? "page" : "pages"}</span></div>`; return; }
   if (!s || isWhole(s)) {
     const bg = Z.cur ? slideBg() : "";
@@ -632,7 +740,7 @@ const slideBg = () => Z.bg;
 function fitStrip() { /* the strip scrolls sideways; nothing to fit */ }
 function paintStrip() {
   const el = $("[data-zp=strip]"); if (!el) return; const k = Z.kind;
-  if (k === "page" || k === "image" || Z.count < 2) { el.innerHTML = ""; el.hidden = true; return; }
+  if (k === "page" || k === "image" || k === "sheet" || editView() || Z.count < 2) { el.innerHTML = ""; el.hidden = true; return; }
   el.hidden = false;
   const prev = el.scrollLeft, n = Z.count, items: string[] = [];
   for (let i = 1; i <= n; i++) items.push(`<button class="zth${i === Z.slide ? " on" : ""}" data-zth="${i}" aria-label="${k === "deck" ? "Slide" : "Page"} ${i}"${i === Z.slide ? ' aria-current="true"' : ""}><span class="zthi" data-zthi="${i}"></span><i>${i}</i></button>`);
@@ -667,6 +775,7 @@ function wire(c: HTMLElement, insp: HTMLElement) {
       case "back": D().leave(); break;
       case "retry": Z.retry = true; setLoad(true); void load(); break;
       case "undo": undo(); break; case "redo": redo(); break;
+      case "pview": void switchView(Z.dview === "edit" ? "print" : "edit"); break;
       case "more": case "ver": Z.menu = Z.menu === a ? "" : (a as "more" | "ver"); paintHead(); break;
       case "restore": Z.menu = ""; paintHead(); restorePrevious(); break;
       case "present": present(); break;
@@ -719,6 +828,7 @@ function onKey(e: KeyboardEvent) {
     if (document.getElementById("zpresent")) return;
     if (Z.menu) { Z.menu = ""; paintHead(); e.preventDefault(); return; }
     if (annOn()) { annSetPencil(false); e.preventDefault(); return; }
+    if (Z.kind === "sheet" && Z.sheet?.clearSel()) { e.preventDefault(); return; }
     if (Z.sel) { setSel(null); e.preventDefault(); return; }
     e.preventDefault(); D().leave(); return;
   }

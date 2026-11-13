@@ -4,16 +4,17 @@
 // data-slot (and which one of that slot, n), or "sel", the 0-based index among ELEMENT children at each level from the slide root (or from <body>
 // of a plain page). The in-frame script (zone-bridge.ts) builds these values, so a selection and an edit always name the same element.
 
-export type ZKind = "deck" | "page" | "report" | "doc" | "image";
+export type ZKind = "deck" | "page" | "report" | "doc" | "image" | "sheet";
 export type ZFile = { name?: string; mime?: string; tags?: string[]; source?: string; image?: boolean };
 
-/** deck: an HTML deck (the Library tag "deck", set when share_file gives the files make_deck.sh built); page: any other .html; report: a PDF; doc: a Word document (shown through the server's PDF preview of it). */
+/** sheet: an .xlsx or .csv workbook (a grid that recalculates; zone-sheet.ts). deck: an HTML deck (the Library tag "deck", set when share_file gives the files make_deck.sh built); page: any other .html; report: a PDF; doc: a Word document (shown through the server's PDF preview of it). */
 export function zoneKind(f: ZFile | null | undefined): ZKind | null {
   const n = f?.name || "";
   if ((f?.source === "image_gen" || f?.tags?.includes("image_gen")) && (f.image || /^image\/(png|jpeg|webp|gif)$/.test(f.mime || "") || /\.(png|jpe?g|webp|gif)$/i.test(n))) return "image";   // a generated picture: marks with the Pencil (zone-annotate.ts)
   if (/\.html?$/i.test(n)) return f?.tags?.includes("deck") ? "deck" : "page";
   if (/\.(docx|docm|doc|odt|rtf)$/i.test(n)) return "doc";
   if (/\.pdf$/i.test(n) || f?.mime === "application/pdf") return "report";
+  if (/\.(xlsx|csv)$/i.test(n)) return "sheet";
   return null;
 }
 

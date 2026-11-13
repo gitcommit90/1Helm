@@ -174,3 +174,75 @@ html.zone-open body:not(.pc-on) .tk-on.tk-open .tk-feed{transform:none;visibilit
 html.zone-open body:not(.pc-on) .tk-on .tk-scrim{display:block}
 :root[data-theme=dark].zone-open body:not(.pc-on) .tk-on .tk-feed{box-shadow:-18px 0 44px rgba(0,0,0,.45)}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]).zone-open body:not(.pc-on) .tk-on .tk-feed{box-shadow:-18px 0 44px rgba(0,0,0,.45)}}
+
+/* a spreadsheet (zone-sheet.ts): the bar above the grid, the grid, and the sheet tabs below it */
+html.zdoc-sheet .zscroll,html.zdoc-sheet .zstrip{display:none}
+.zxw{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--sheet);color:var(--ink);font:13px/1.2 var(--sans);z-index:1}
+.zsbar{display:flex;align-items:center;gap:0;flex:none;height:34px;border-bottom:1px solid var(--line);min-width:0}
+.zsref{flex:none;min-width:76px;max-width:50%;padding:0 12px;font-weight:600;font-size:12.5px;color:var(--ink2);border-right:1px solid var(--line);height:100%;display:flex;align-items:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.zsfx{flex:1;min-width:0;padding:0 12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}.zsfx.f{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+.zsro{flex:none;margin:0;padding:7px 12px;font-size:12.5px;color:var(--ink2);background:var(--hover);border-bottom:1px solid var(--line)}
+.zsbody{position:relative;flex:1;min-height:0}
+.zsscroll{position:absolute;inset:0;overflow:auto;overscroll-behavior:contain;outline:0;-webkit-user-select:none;user-select:none;background:var(--sheet)}
+.zsin{position:relative;min-width:100%}
+.zscolh{position:sticky;top:0;height:24px;z-index:5;background:var(--hover);border-bottom:1px solid var(--line2)}
+.zsfrz{position:sticky;top:24px;height:24px;z-index:4;background:var(--sheet);border-bottom:1px solid var(--line2)}
+.zsrowh{position:sticky;left:0;width:0;height:0;z-index:3;overflow:visible}
+.zscells{position:relative;width:0;height:0;z-index:1}
+.zscorner{position:sticky;left:0;width:46px;height:24px;z-index:6;background:var(--hover);border-right:1px solid var(--line2);float:left}
+.zch,.zrh,.zsr1h{position:absolute;color:var(--mute);font-size:11.5px;text-align:center;line-height:23px;height:24px;background:var(--hover);border-right:1px solid var(--line);overflow:hidden;white-space:nowrap}
+.zch{top:0}.zrh{left:0;width:46px;border-right:1px solid var(--line2);border-bottom:1px solid var(--line)}
+.zsr1h{position:sticky;left:0;top:0;width:46px;z-index:2;float:left;border-right:1px solid var(--line2);border-bottom:1px solid var(--line)}
+.zch.on,.zrh.on,.zsr1h.on{background:color-mix(in srgb,var(--zsel) 16%,var(--hover));color:var(--ink)}
+.zc{position:absolute;padding:0 6px;line-height:23px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--sheet)}
+.zc.zcr{text-align:right}.zc.zce{color:#b42318}.zc.zcf{color:#1c1b19}
+.zc.zcs{background-image:linear-gradient(color-mix(in srgb,var(--zsel) 14%,transparent),color-mix(in srgb,var(--zsel) 14%,transparent));box-shadow:inset 0 var(--t,0) 0 0 var(--zsel),inset 0 calc(var(--b,0px) * -1) 0 0 var(--zsel),inset var(--l,0) 0 0 0 var(--zsel),inset calc(var(--r,0px) * -1) 0 0 0 var(--zsel)}
+.zc.zcT{--t:2px}.zc.zcB{--b:2px}.zc.zcL{--l:2px}.zc.zcR{--r:2px}
+.zc.zca{background-image:none;box-shadow:inset 0 0 0 2px var(--zsel)}
+.zsann{position:absolute;left:0;top:0;pointer-events:none;z-index:7}
+.zsann .zann-layer{border-radius:0}
+.zsedit{position:absolute;z-index:8;box-sizing:border-box;border:0;outline:2px solid var(--zsel);outline-offset:-2px;background:var(--sheet);color:var(--ink);font:inherit;padding:0 6px;margin:0;border-radius:0}
+.zsmore{flex:none;margin:0;padding:6px 12px;font-size:12px;color:var(--mute);border-top:1px solid var(--line)}
+.zstabs{flex:none;padding:8px 10px;border-top:1px solid var(--line);max-width:100%}
+#zcanvas .zstabs button{background:var(--hover);color:var(--ink2);font-size:13px}
+@media (hover:hover) and (pointer:fine){#zcanvas .zstabs button:hover{background:var(--line)}}
+#zcanvas .zstabs button.on{background:var(--ink);color:var(--sheet);font-weight:600}
+/* a spreadsheet has no inspector: the canvas takes its column */
+html.zone-open.zdoc-sheet{--zinspw:0px}
+html.zone-open.zdoc-sheet #zinsp,html.zone-open.zdoc-sheet .zinspb{display:none}
+html.zone-open.zdoc-sheet body,html.zone-open.zdoc-sheet body.pc-on{grid-template-columns:var(--zchatw) minmax(0,1fr)}
+html.zone-open.zdoc-sheet.zchat-off body,html.zone-open.zdoc-sheet.zchat-off body.pc-on{grid-template-columns:minmax(0,1fr)}
+@media (max-width:599px),(max-height:499px){
+  html.zone-open.zdoc-sheet .zcv{height:42dvh}
+  html.zone-open.zdoc-sheet .zcv .zxw{border-radius:inherit}
+}
+@media (max-height:499px){
+  html.zone-open.zdoc-sheet .zcv{height:60dvh}
+  .zsbar{height:28px}.zstabs{padding:4px 8px}
+  #zcanvas .zstabs button,#zcanvas .xtabs.zstabs button{height:28px;min-height:28px;line-height:28px;font-size:12.5px;padding-top:0;padding-bottom:0}
+}
+
+/* a Word document in the editable view (zone-docedit.ts, zone/doc.js): one white page of text, no inspector, no strip of pages */
+html.zdoc-dedit .zstrip{display:none}
+html.zone-open.zdoc-dedit{--zinspw:0px}
+html.zone-open.zdoc-dedit #zinsp,html.zone-open.zdoc-dedit .zinspb{display:none}
+html.zone-open.zdoc-dedit body,html.zone-open.zdoc-dedit body.pc-on{grid-template-columns:var(--zchatw) minmax(0,1fr)}
+html.zone-open.zdoc-dedit.zchat-off body,html.zone-open.zdoc-dedit.zchat-off body.pc-on{grid-template-columns:minmax(0,1fr)}
+html.zdoc-dedit .zpages{justify-content:flex-start;width:100%;min-width:0}
+.zpview.on{background:var(--hover)}
+.zddw{position:relative;flex:none;box-sizing:border-box;width:min(var(--zdw,816px),100%);min-height:min(1056px,100%);padding:var(--zdmt,96px) var(--zdmr,96px) var(--zdmb,96px) var(--zdml,96px);background:#fff;color:#1c1b19;box-shadow:var(--zpg);border-radius:3px;font:15px/1.4 var(--sans)}
+.zdd{outline:0;min-height:1.4em;caret-color:#1c1b19;overflow-wrap:break-word;white-space:pre-wrap;tab-size:8;-webkit-user-select:text;user-select:text}
+.zdd:focus-visible{outline:0}
+.zdd ::selection{background:color-mix(in srgb,#2563eb 28%,transparent)}
+.zdp{margin:0 0 8px;min-height:1.2em;position:relative}
+.zdp.zdl::before{content:attr(data-m);display:inline-block;min-width:var(--zdh,1.6em);text-indent:0;white-space:nowrap}
+.zdprot{cursor:default}.zdprot img{max-width:100%;height:auto;vertical-align:middle}
+.zdt{width:100%;border-collapse:collapse;table-layout:fixed;margin:0 0 8px}
+.zdt td{border:1px solid #cfcdc6;padding:4px 6px;vertical-align:top;overflow-wrap:anywhere}
+.zdt td>.zdp:last-child{margin-bottom:0}
+@media (max-width:599px),(max-height:499px){
+  html.zone-open.zdoc-dedit .zcv{height:46dvh}
+  html.zone-open.zdoc-dedit .zpages{padding:8px}
+  .zddw{--zdml:18px!important;--zdmr:18px!important;--zdmt:20px!important;--zdmb:20px!important;font-size:14px}
+}
+@media (max-height:499px){html.zone-open.zdoc-dedit .zcv{height:62dvh}}

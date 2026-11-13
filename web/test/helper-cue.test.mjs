@@ -19,7 +19,7 @@ assert.match(v3, /const astate = \(x: Session\) => x\.state === "working" \|\| \
 assert.match(v3, /const chWorking = .*channelHelperRunning\(c\.sessions\)/);
 assert.match(v3, /const rowLit = \(x: Session\) => !x\.done && !!x\.unread;/, 'only an unseen reply lights the unread dot');
 assert.equal((v3.match(/class="wpip"/g) || []).length, 2, 'rail tile and phone channel row both render the mark');
-assert.equal((v3.match(/paintChannelDots\(document, chDotKind, chWorking\)/g) || []).length, 2, 'every repaint repaints the mark');
+assert.equal((v3.match(/paintChannelDots\(document, chDotKind, chWorking, chActive\)/g) || []).length, 2, 'every repaint repaints the mark');
 const css = fs.readFileSync(new URL('../src/v3.css', import.meta.url), 'utf8');
 assert.match(css, /\.wpip\{position:absolute;bottom:3px;/, 'the mark sits at the lower corner, the unread dot at the upper one');
 assert.match(css, /prefers-reduced-motion:reduce\)\{\.wpip\{animation:none/);
@@ -28,7 +28,7 @@ assert.match(css, /prefers-reduced-motion:reduce\)\{\.wpip\{animation:none/);
   class El {constructor(c, a = {}) {this.className = c; this.attrs = a; this.children = []; this.parent = null; this.title = ''; this.dataset = {}; for (const [k, v] of Object.entries(a)) if (k.startsWith('data-')) this.dataset[k.slice(5)] = v;}
     get firstChild() {return this.children[0] ?? null;} get ownerDocument() {return {createElement: () => new El('')};}
     appendChild(c) {c.parent = this; this.children.push(c); return c;} insertBefore(c) {c.parent = this; this.children.unshift(c); return c;}
-    remove() {this.parent.children = this.parent.children.filter(x => x !== this);} getAttribute(k) {return this.attrs[k] ?? null;} has(c) {return this.className.split(' ').includes(c);}
+    remove() {this.parent.children = this.parent.children.filter(x => x !== this);} getAttribute(k) {return this.attrs[k] ?? null;} get classList(){const e=this;return{toggle:(c,on)=>{const s=new Set(e.className.split(' ').filter(Boolean));on?s.add(c):s.delete(c);e.className=[...s].join(' ');}}} has(c) {return this.className.split(' ').includes(c);}
     querySelector(s) {return this.querySelectorAll(s)[0] ?? null;}
     querySelectorAll(sel) {const out = [], m = (c, s) => s === '.tile' ? c.has('tile') : s === '.chtile' ? c.has('chtile') : s === '.pip' ? c.has('pip') : s === '.wpip' ? c.has('wpip') : s === ':scope > .udot' ? c.has('udot') && c.parent === this : s === '#rail .chs .ch[data-ch]' ? c.has('ch') && 'data-ch' in c.attrs : s === '#chlist a.chr[data-mch]' ? c.has('chr') : false;
       const walk = e => {for (const c of e.children) {if (m(c, sel)) out.push(c); walk(c);}}; walk(this); return out;}}

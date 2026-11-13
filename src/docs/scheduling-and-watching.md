@@ -35,7 +35,7 @@ A check finds out that something happened. It can't block an incoming charge, a 
 
 - A run's result goes back into the task where the person set it up, marked as coming from a scheduled check. Follow-ups always show up there. Recurring results the person didn't ask to hear about, and quiet "nothing changed" runs, stay quiet unless they asked to hear them.
 - **By text:** if they asked for results by text (and set up texting), the job's instructions say so and the run uses `text_person` when the condition is met. Only to the person themselves, never to anyone else.
-- A scheduled job never messages anyone else. If the job's work is itself to send an email or post through a connected app, that's an action like any other and needs the person's OK on the exact content.
+- A scheduled job does the outward work the person set it up to do on its own, such as posting to an account they asked you to run or sending a recurring email they asked for, with no approval of each post or email. It follows the same rules as any other step: the person's approval mode in Settings and the saved-key checkpoint apply, and payments and API-key operations still need their approval. It never contacts people or sends things the person didn't ask the job to do.
 
 ## What the person sees and controls
 

@@ -55,6 +55,8 @@ Word and screen readers see the structure you build, not the one you draw:
 
 ## How it should look
 
+The title starts at the page's top margin like every other page; space it from what follows, not from the top.
+
 What the person asked for about the look wins. Otherwise, before styling, check yourself against lazy defaults: one
 accent colour on everything, one font doing all the work, a title no bigger than the body, emoji as icons. Choose
 each thing because it fits this document.
@@ -88,7 +90,7 @@ scripts; each prints its usage with `--help`. (Under the hood: /opt/1hc/skills/a
 
 On PASS do the prose read-back from the printed text against `.src/OUTLINE.md`: the page count against what was asked,
 every section of the outline there. On FAIL fix the generator and run it again: at most three rounds, then tell the person
-exactly what still fails. Share with `share_file` (path = the .docx, name = the readable name). To change it later, edit the
+exactly what still fails. Share with `share_file` (path = the .docx, name = the readable name). The Library keeps a PDF copy of it automatically for download and attachments; if you also make a PDF, share both and they are kept together as one item. To change it later, edit the
 generator, run make_docx.sh again, and share the same path again; that updates the same Library file instead of adding a copy.
 When the message says a paragraph or page of the document is selected in the canvas, change that text in `build_doc.py`, run make_docx.sh and share the same path, and keep any hand edits a note in the message lists.
 

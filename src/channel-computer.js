@@ -719,7 +719,8 @@ export class ChannelComputer extends DurableObject {
     return this.sleepState();
   }
   presenceMs() { return Number(this.get("presence_ms") || PRESENCE_MS); }
-  humanUntil() { return Math.max(Number(this.get("human_at") || 0) + this.presenceMs(), Number(this.get("hold_until") || 0)); }
+  // Watching alone (an open pane, its connect and its pointer pings) never counts: only a person who has taken control keeps it awake.
+  humanUntil() { const ctl = this.get("lease") && Number(this.get("lease_until") || 0) > Date.now(); return Math.max(ctl ? Number(this.get("human_at") || 0) + this.presenceMs() : 0, Number(this.get("hold_until") || 0)); }
   // Never wakes the computer. sleeps_in_ms: when it will sleep if nothing else happens (null = the helper is mid-command).
   // Typical cold wake for this computer: median of recent wakes, plus the restart gap if it only just stopped.
   wakeEst() {

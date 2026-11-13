@@ -105,6 +105,11 @@ kbd{font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--faint);b
 .ch.on .wpip{background:var(--chip);box-shadow:0 0 0 2px var(--chip)}
 .chtile{position:relative}.chtile .wpip{bottom:0;right:0}
 @keyframes wpip{to{transform:rotate(360deg)}}
+/* Active channel: while any task in the channel shows the working checkbox, the chip breathes a soft accent halo (slow, low contrast, no layout change). Not the unread dot (.pip) and not the helper mark (.wpip). */
+.ch.act .tile::after,.chr.act .chtile::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 38%,transparent),0 0 10px 1px color-mix(in srgb,var(--accent) 30%,transparent);opacity:.12;animation:actpulse 2.8s cubic-bezier(.45,0,.55,1) infinite}
+.chr.act .chtile::after{border-radius:13px}
+@keyframes actpulse{50%{opacity:.85}}
+@media (prefers-reduced-motion:reduce){.ch.act .tile::after,.chr.act .chtile::after{animation:none;opacity:.35;box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 38%,transparent)}}
 @media (prefers-reduced-motion:reduce){.wpip{animation:none;border-style:solid;opacity:.6}}
 .ch.add .tile{width:40px;height:40px;border-radius:14px;border:1.5px dashed var(--line2);color:var(--faint)}@media (hover:hover) and (pointer:fine){.ch.add:hover .tile{color:var(--ink2);border-color:var(--faint)}}
 .foot{display:flex;flex-direction:column;align-items:center;gap:12px}
@@ -486,6 +491,16 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .hpin{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:999px;font-size:13px;font-weight:400;color:var(--mute)}
 @media (hover:hover) and (pointer:fine){.hpin:hover{background:var(--abub);color:var(--ink)}}.hpin.on{color:var(--ink2);background:var(--abub)}.hpin.on svg{fill:currentColor}
 @media (hover:none){.pin{opacity:.55}.pin.on{opacity:1}}
+/* Sidebar task rows: titles fade at the edge, and the pin and more buttons take no width until hover or focus, then sit over the row's right end. */
+.sess .t{text-overflow:clip;-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 24px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 24px),transparent)}
+@media (hover:hover) and (pointer:fine){
+  .sess{position:relative}
+  .sess .pin:not(.on),.sess .rmore{position:absolute;top:50%;margin:-13px 0 0;z-index:1}
+  .sess .rmore{right:8px}.sess .pin:not(.on){right:36px}
+  .sess:hover::after,.sess:focus-within::after{content:"";position:absolute;right:0;top:0;bottom:0;width:90px;border-radius:0 14px 14px 0;background:linear-gradient(to right,transparent,var(--hover) 32px);pointer-events:none}
+  .sess.on:hover::after,.sess.on:focus-within::after{background:linear-gradient(to right,transparent,var(--chip) 32px)}
+  .sess:focus-within .pin,.sess:focus-within .rmore{opacity:1}
+}
 @media (max-width:599px),(max-height:499px){
   .dsub{display:flex;align-items:center;gap:6px;padding:14px 16px 6px;font-size:14px;font-weight:600;color:var(--faint)}.dsub svg{width:13px;height:13px}
   .ds .pin{width:34px;height:34px;margin-right:-8px}
@@ -1532,7 +1547,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
    it wins over the per-component heights above. */
 .sa,.gu-b,.gu-chip,.dlgb,.pcbtn,.gtabs button,.xtabs button,.apdok,.citag,.cxpbtn,.apdact .apdbtn[data-adadd]{height:auto;white-space:normal;overflow-wrap:anywhere;line-height:1.25;padding-top:6px;padding-bottom:6px}
 .sa{min-height:32px}.cxsrow .sa{height:auto;min-height:28px}.gu-b{min-height:44px}.gu-chip{min-height:38px}.iv-chips .gu-chip{height:auto;min-height:42px}.pcbtn{min-height:40px}
-.gtabs button{min-height:38px}.xtabs button{min-height:32px}.apdok{min-height:36px}.citag{min-height:26px;max-width:100%;padding-top:3px;padding-bottom:3px}.cxpbtn{min-height:36px}.apdact .apdbtn[data-adadd]{min-height:44px}
+.gtabs button{min-height:38px}.xtabs button{min-height:32px}.xtabs{overflow-y:hidden;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}.xtabs button{flex:none;height:32px;padding-top:0;padding-bottom:0;line-height:32px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px;overflow-wrap:normal}.apdok{min-height:36px}.citag{min-height:26px;max-width:100%;padding-top:3px;padding-bottom:3px}.cxpbtn{min-height:36px}.apdact .apdbtn[data-adadd]{min-height:44px}
 .apdok span,.pl-q-c .gu-chip,.tk-chip b,.sr .stag,.piw .sfh .stag,.citag,.tk-pback span{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
 .shead .txtbtn{height:auto;min-height:36px;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.2}
 .gu-plan .gu-btns{flex-wrap:wrap}.gu-plan .gu-btns .gu-b{white-space:normal}
@@ -1836,3 +1851,4 @@ html{-webkit-tap-highlight-color:transparent}
     .wkbacts{flex-wrap:wrap}.wkbacts .sa,.wkbacts .wkbok{flex:1 1 calc(50% - 6px)}
   }
 }
+.smenu .smrow{display:flex;align-items:center;gap:12px;height:42px;padding:0 6px 0 12px;font-size:14.5px;color:var(--ink)}.smenu .smrow>svg{color:var(--ink2)}.smenu .smrow .seg{flex:none;padding:2px;gap:0}.smenu .seg button{width:32px;height:28px;padding:0;gap:0;color:var(--mute)}.smenu .seg button svg{color:inherit}.smenu .seg button.on{color:var(--ink)}@media (hover:hover) and (pointer:fine){.smenu .seg button:hover{background:none;color:var(--ink)}.smenu .seg button.on:hover{background:var(--abub)}}.smenu .seg button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}

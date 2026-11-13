@@ -5,12 +5,13 @@ import { UsageLedger } from "./usage-ledger.js";
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { backupControl, isBackupPath } from "./backup-control.js";
 import { enabled as eeEnabled, features as eeFeatures, routeEnabled as eeRouteEnabled } from "./ee/index.js";
+import { appUpdateApi } from "./app-update.js";
 import { TOPUP_CENTS, issueConfirm, checkConfirm, savedCard } from "./topup.js";
-import { tolerantEnv, DO_TRANSIENT_RE, RPC_SKEW_RE, rpcSkew, codeV, isResetErr } from "./do-stub.js";
+import { tolerantEnv, DO_TRANSIENT_RE, RPC_SKEW_RE, rpcSkew, codeV, isResetErr, isPlatformOverload, PLATFORM_OVERLOAD_MSG } from "./do-stub.js";
 import { opsRoute, viewAsGate, viewAsToken } from "./internal-shim.js";
 import { ambientSettingsRoute, dailyBillingFlag, deciderModel, modelSettingsEnv } from "./ee/index.js";
 import { SW_RE, swResponse } from "./pwa.js";   // Web Push service worker (notify.js)
-import { notifApi } from "./notify.js";
+import { notifApi, sessionHashes, dropSubsForSessions } from "./notify.js";
 import { meetingsApi, meetingsCron } from "./ee/index.js";   // Meeting reminders for notes (Google Calendar / Outlook → "Take notes?")
 import { reportApi, reportsPage, reportShot } from "./reports.js";
 import { MANIFEST_RE, PWA_ICON_RE, manifestResponse, pwaHead, iconName, DEV_ICON_V } from "./pwa.js";
@@ -841,6 +842,8 @@ export default {
       }
 
       if (p === "/auth/logout" && req.method === "POST") {
+        // Device sign-ups made under this session go with it, so this browser or phone stops getting notifications for the workspace.
+        try { await dropSubsForSessions(env, await sessionHashes(req)); } catch (e) { console.log("logout: push sign-ups", String(e?.message || e).slice(0, 100)); }
         // A failed revoke must not look like a logout: the browser keeps its cookie and is told to try again.
         try { await endSession(env, req); }
         catch { return json({ error: "We couldn't log you out. Please try again." }, 503); }
@@ -1236,6 +1239,7 @@ export default {
           if (ad) { try { return json(await appDetail(env, t.id, ad[1])); } catch (e) { if (!e.status) console.log("app detail", ad[1], e.message); return json({ error: e.status ? e.message : "Couldn't load this app right now. Try again in a minute." }, e.status || 502); } } }
         // Settings → Advanced → Custom MCP connections (custom-mcp.js): opt-in, per workspace; every route is scoped to this signed-in owner's workspace.
         { const cm = await customMcpRoute(req, env, { tenantId: t.id, userId: user.id, slug: t.slug, origin }, sub, { denyWrite: () => (access.mode === "read_only" ? payRequired(access) : null), look: !!viewAsToken(req) }); if (cm) return cm; }
+        if (sub === "/api/app-update/android") return appUpdateApi(req, sub);   // newest Android app version for the in-app update prompt (src/app-update.js)
         if (sub === "/api/clientlog") return clientLog(req, env, t);   // dev-only diagnostics (src/clientlog.js)
         // Settings → Notifications (src/notify.js) and Help & support → Report an issue (src/reports.js).
         if (sub === "/api/notif" || sub.startsWith("/api/notif/")) { const nr = await notifApi(req, env, t, sub, url); if (nr) return nr; }
@@ -1741,7 +1745,7 @@ export default {
           return downloadLinkApi(req, env, t, user, sub, { json, look: !!viewAsToken(req), channelOf: async (c) => chans.find((x) => slugOf(x) === c) || null,
             fileRowOf: async (ch, id) => (/^[0-9a-f-]{36}$/.test(id) ? await env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:${slugOf(ch)}`)).fileRow(id) : null) });
         }
-        const fm = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/files(?:\/([0-9a-f-]{36})(?:\/(view|delete|preview|zone-edit|zone-info|versions|restore|transcript(?:\/speakers)?))?)?$/);
+        const fm = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/files(?:\/([0-9a-f-]{36})(?:\/(view|delete|preview|pdf|zone-edit|zone-info|versions|restore|transcript(?:\/speakers)?))?)?$/);
         if (fm) {
           const chans = await archive(env, t.id).channels(), slugOf = (c) => c.slug || c.name, ch = chans.find((c) => slugOf(c) === fm[1]);
           if (!ch) return json({ error: "no such channel" }, 404);
@@ -1779,6 +1783,13 @@ export default {
             const o = await env.WS.get(d.key, inm ? { onlyIf: { etagDoesNotMatch: inm.replace(/^W\//, "").replace(/"/g, "") } } : {}); if (!o) { await skewRetry(env, () => R.dropPreview(fm[2])); return json({ error: "The preview went missing; open the file again to remake it." }, 404); }
             if (!("body" in o) || !o.body) return new Response(null, { status: 304, headers: { ...hd, etag: o.httpEtag } });
             return new Response(o.body, { headers: { ...hd, etag: o.httpEtag, "content-length": String(o.size) } });
+          }
+          // pdf-pair.js: Download as PDF for a Word document, deck or spreadsheet: the PDF the agent shared with it when it is for this version, else one made on the computer (kept per version).
+          if (fm[3] === "pdf" && req.method === "GET") {
+            const d = await skewRetry(env, () => R.filePdfCopy(fm[2], { make: !viewAsToken(req) && access.mode !== "read_only" }));
+            if (d.error) return json({ error: d.error }, d.status || 500);
+            const o = await env.WS.get(d.key); if (!o?.body) { await skewRetry(env, () => R.dropPdfCopy(fm[2])); await skewRetry(env, () => R.dropPreview(fm[2])); return json({ error: "The PDF went missing; download it again to remake it." }, 404); }
+            return new Response(o.body, { headers: { ...servedHeaders("application/pdf", previewFileName(d.name), true), "content-length": String(o.size) } });
           }
           if (req.method !== "POST") return json({ error: "method" }, 405);
           if (access.mode === "read_only") return payRequired(access);
@@ -2065,7 +2076,7 @@ export const transientError = (e) => !!(e?.retryable || e?.overloaded || DO_TRAN
 export function apiError(e) {
   const retryable = transientError(e), msg = String(e?.message || e || "error").slice(0, 300);
   // a deploy reset: plain words, never the platform's "Durable Object reset…" text (the turn itself carries on, resume.js)
-  return new Response(JSON.stringify({ error: rpcSkew(e) ? "1Helm was just updated and this part hasn't caught up yet. Try again in a moment." : isResetErr(e) ? "1Helm was just updated mid-request. Send it again in a moment." : retryable ? `The helper was restarted mid-request (${msg}). Send it again.` : `Something went wrong: ${msg}`, retryable }),
+  return new Response(JSON.stringify({ error: rpcSkew(e) ? "1Helm was just updated and this part hasn't caught up yet. Try again in a moment." : isResetErr(e) ? "1Helm was just updated mid-request. Send it again in a moment." : retryable && isPlatformOverload(e) ? PLATFORM_OVERLOAD_MSG : retryable ? `The helper was restarted mid-request (${msg}). Send it again.` : `Something went wrong: ${msg}`, retryable }),
     { status: retryable ? 503 : 500, headers: { "content-type": "application/json", "cache-control": "no-store", ...(retryable ? { "retry-after": "5" } : {}) } });
 }
 

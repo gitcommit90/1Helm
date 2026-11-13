@@ -21,6 +21,7 @@ const CANNED = [
   /^I stopped after several steps; tell me if you want me to keep going\.$/,
   /^Stopped at the limit without a report\.$/,
   /^Something went wrong: /,
+  /^Our servers are overloaded right now, so this didn't finish\./,
 ];
 const FALLBACK_TAIL = /\n*This is taking longer than usual, so I paused here\. Nothing was lost\. Want me to keep going\?\s*$/;
 export const isStatusNotice = (reply) => { const t = norm(reply); return !!t && CANNED.some((re) => re.test(t)); };

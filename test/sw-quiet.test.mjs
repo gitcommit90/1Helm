@@ -27,7 +27,7 @@ const runSw = async (wins, payload) => {
   const clients = wins.map((w) => ({ ...w, postMessage: (m) => { posted.push(m); } }));
   const self = { registration: reg, clients: { matchAll: async () => clients, claim: async () => {} }, addEventListener: (k, f) => { handlers[k] = f; }, Notification: { permission: "granted" } };
   const caches = { open: async () => ({ put: async (k, r) => store.set(k, await r.json()) }) };
-  const fetch = async () => new Response(null, { status: 204 });
+  const fetch = async (u) => /api\/notif\/session/.test(String(u)) ? Response.json({ ok: true }) : new Response(null, { status: 204 });   // the worker checks it still has a session before it shows a push
   new Function("self", "caches", "fetch", "Notification", "Response", SW_JS)(self, caches, fetch, self.Notification, Response);
   let wait; handlers.push({ data: { json: () => payload }, waitUntil: (p) => { wait = p; } });
   await wait; return { shown, posted, rec: store.get("https://example.com/w/ck1/nf-last") };

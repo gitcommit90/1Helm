@@ -21,6 +21,41 @@ const json = (b, s = 200) => new Response(JSON.stringify(b), { status: s, header
 // Use the same endpoint check at registration and immediately before a send.
 export { okEndpoint };
 
+// ---- devices: every row of push_subs is one device signed up for this workspace ----
+// "desktop:<id>" is the 1Helm Mac app. It shows its own notifications from the page (nothing can be pushed to it), so its row only
+// makes the Mac app visible in Settings and is never sent to. Web Push rows are browsers; "native:" rows are the phone apps.
+export const isDesktop = (s) => String(s?.endpoint || "").startsWith("desktop:");
+const DESKTOP_ID = /^[A-Za-z0-9-]{16,64}$/;
+const sha = async (s) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+// The hashes (sessions.token_hash) of the session cookies on a request. Several can be present (old cookie paths).
+export async function sessionHashes(req) {
+  const toks = [...new Set((req.headers.get("cookie") || "").split(";").map((v) => v.trim().match(/^hc_session=([a-f0-9]+)/)?.[1]).filter(Boolean))];
+  return Promise.all(toks.map(sha));
+}
+// Delete the device sign-ups made under these sessions (logout, or "sign out" of another device). A phone is also removed at the relay.
+// Rows with no session link (made before migration 0084) are left alone. Returns how many rows went.
+export async function dropSubsForSessions(env, hashes, tenantId = null) {
+  let n = 0;
+  for (const h of hashes || []) {
+    const rows = (await env.DB.prepare(`SELECT * FROM push_subs WHERE session_hash=?${tenantId ? " AND tenant_id=?" : ""}`).bind(...(tenantId ? [h, tenantId] : [h])).all().catch(() => ({ results: [] }))).results || [];
+    for (const s of rows) {
+      if (isNative(s) && nativeReady(env)) await removeNativeDevice(env, s.tenant_id, s.p256dh, s.auth).catch(() => {});
+      await env.DB.prepare("DELETE FROM push_subs WHERE id=?").bind(s.id).run().catch(() => {}); n++;
+    }
+  }
+  return n;
+}
+const kindOf = (s) => (isNative(s) ? "phone" : isDesktop(s) ? "desktop" : "browser");
+// What Settings lists for one row. Older rows have no label: they get a name from the push service's host (the browser behind it).
+export function deviceView(s, thisEndpoint = "") {
+  const kind = kindOf(s);
+  const host = (() => { try { return new URL(s.endpoint).hostname; } catch { return ""; } })();
+  const generic = kind === "phone" ? (s.p256dh === "android" ? "Android app" : "iPhone app") : kind === "desktop" ? "Mac app"
+    : /mozilla/.test(host) ? "Firefox" : /apple/.test(host) ? "Safari" : /notify\.windows/.test(host) ? "Edge" : /googleapis/.test(host) ? "Chrome or another Chromium browser" : "A browser";
+  return { id: s.id, kind, name: String(s.label || "").trim() || generic, created_at: Number(s.created_at) || null,
+    last_at: Number(s.last_ok_at) || null, seen_at: Number(s.seen_at) || null, this_device: !!thisEndpoint && s.endpoint === thisEndpoint };
+}
+
 export async function getPrefs(env, tenantId) {
   let r = null; try { r = await env.DB.prepare("SELECT * FROM notif_prefs WHERE tenant_id=?").bind(tenantId).first(); } catch {}
   const out = { ...DEFAULT_PREFS }; if (r) for (const k of PREF_KEYS) out[k] = r[k] == null ? DEFAULT_PREFS[k] : Number(r[k]) === 1;
@@ -52,7 +87,7 @@ export async function pushAll(env, tenantId, payload, { endpoint = null, urgency
   if (payload && typeof payload === "object") payload = { ...payload, ...(payload.title != null ? { title: plainLine(payload.title, 120) } : {}), ...(payload.body != null ? { body: plainLine(payload.body, 140) } : {}) };
   let all = [];
   try { all = (await env.DB.prepare(`SELECT * FROM push_subs WHERE tenant_id=?${endpoint ? " AND endpoint=?" : ""}`).bind(...(endpoint ? [tenantId, endpoint] : [tenantId])).all()).results || []; } catch { return { sent: 0, devices: 0 }; }
-  const phones = nativeReady(env) ? all.filter(isNative) : [], subs = vapidReady(env) ? all.filter((s) => !isNative(s)) : [];
+  const phones = nativeReady(env) ? all.filter(isNative) : [], subs = vapidReady(env) ? all.filter((s) => !isNative(s) && !isDesktop(s)) : [];
   if (!phones.length && !subs.length && !vapidReady(env)) return { sent: 0, devices: 0, reason: "no_vapid" };
   let sent = 0; const now = Date.now(), res = [];
   if (phones.length) {
@@ -89,7 +124,14 @@ export async function notifyTask(R, session, kind, { why = "", reply = "", noTex
   if (!env?.DB || !tenant || (kind !== "needs" && kind !== "finished")) return { skipped: "bad" };
   const key = String(session || "_");
   stateTable(R);
-  if (R.sql.exec("SELECT kind FROM notif_state WHERE session=?", key).toArray()[0]?.kind === kind) return { skipped: "same_state" };
+  const prev = R.sql.exec("SELECT kind, at FROM notif_state WHERE session=?", key).toArray()[0];
+  if (prev?.kind === kind) {
+    // A finished push the person never opened stands until they open the task; a later finished turn adds nothing.
+    const seenAt = Number((session ? R.session?.(session) : null)?.seen_at || 0);
+    if (kind !== "finished" || force || seenAt <= Number(prev.at || 0)) return { skipped: "same_state" };
+  }
+  // The person is watching this turn in the app: they saw it finish, so no push, and nothing is owed for it.
+  if (kind === "finished" && watched && !force) { R.sql.exec("DELETE FROM notif_state WHERE session=? AND kind='finished'", key); return { skipped: "watched" }; }
   R.sql.exec("INSERT INTO notif_state (session,kind,at) VALUES (?,?,?) ON CONFLICT(session) DO UPDATE SET kind=excluded.kind, at=excluded.at", key, kind, Date.now());
   const prefs = await getPrefs(env, tenant);
   if (!prefs[kind] && !force) return { skipped: "off" };   // force: a turn that started from a text, so the person is reachable only by text and the settings for background notices do not apply
@@ -131,7 +173,8 @@ export async function notifyEventsSkipped(R, workflow, limit) {
   return { push: await pushAll(env, tenant, payload).catch((e) => ({ error: e.message })) };
 }
 // A new turn started in the task (the person answered, or it was started again): the next state change notifies again.
-export function notifyReset(R, session) { try { stateTable(R); R.sql.exec("DELETE FROM notif_state WHERE session=?", String(session || "_")); } catch {} }
+// A "finished" state stays (see the top of the file), so only a "needs" state is cleared here.
+export function notifyReset(R, session) { try { stateTable(R); R.sql.exec("DELETE FROM notif_state WHERE session=? AND kind<>'finished'", String(session || "_")); } catch {} }
 function stateTable(R) { if (R._notifTable) return; R.sql.exec("CREATE TABLE IF NOT EXISTS notif_state (session TEXT PRIMARY KEY, kind TEXT NOT NULL, at INTEGER NOT NULL)"); R._notifTable = true; }
 // Whether a permission card may go by text (textApproval): "A task needs you" and "also by text" both on.
 export async function textAllowed(env, tenantId) { const p = await getPrefs(env, tenantId); return p.needs && p.needs_text; }
@@ -151,9 +194,9 @@ export async function notifApi(req, env, t, sub, url) {
     if (!okEndpoint(ep) || !/^[A-Za-z0-9_-]{80,100}$/.test(p256dh) || !/^[A-Za-z0-9_-]{16,32}$/.test(auth)) return json({ error: "That isn't a push subscription this app can use." }, 400);
     const label = String(body.label || "").slice(0, 80);
     // An endpoint belongs to one browser profile: re-subscribing (or another workspace on the same browser) moves it here.
-    await env.DB.prepare(`INSERT INTO push_subs (id,tenant_id,endpoint,p256dh,auth,label,created_at) VALUES (?,?,?,?,?,?,?)
-      ON CONFLICT(endpoint) DO UPDATE SET tenant_id=excluded.tenant_id, p256dh=excluded.p256dh, auth=excluded.auth, label=excluded.label, fails=0`)
-      .bind(crypto.randomUUID(), t.id, ep, p256dh, auth, label, Date.now()).run();
+    await env.DB.prepare(`INSERT INTO push_subs (id,tenant_id,endpoint,p256dh,auth,label,created_at,session_hash) VALUES (?,?,?,?,?,?,?,?)
+      ON CONFLICT(endpoint) DO UPDATE SET tenant_id=excluded.tenant_id, p256dh=excluded.p256dh, auth=excluded.auth, label=excluded.label, session_hash=excluded.session_hash, fails=0`)
+      .bind(crypto.randomUUID(), t.id, ep, p256dh, auth, label, Date.now(), (await sessionHashes(req))[0] || null).run();
     return json({ ok: true });
   }
   // The 1Helm phone app signs this phone up with the token its system gave it (Apple or Google); the relay stores it for delivery.
@@ -162,9 +205,9 @@ export async function notifApi(req, env, t, sub, url) {
     if (!okNative(platform, token)) return json({ error: "This phone couldn't be signed up for notifications." }, 400);
     if (!nativeReady(env)) return json({ error: "Phone notifications aren't available right now." }, 503);
     let ep; try { ep = await addNativeDevice(env, t.id, platform, token); } catch (e) { return json({ error: "Couldn't reach the notification service. Try again in a minute." }, 502); }
-    await env.DB.prepare(`INSERT INTO push_subs (id,tenant_id,endpoint,p256dh,auth,label,created_at) VALUES (?,?,?,?,?,?,?)
-      ON CONFLICT(endpoint) DO UPDATE SET tenant_id=excluded.tenant_id, p256dh=excluded.p256dh, auth=excluded.auth, label=excluded.label, fails=0`)
-      .bind(crypto.randomUUID(), t.id, ep, platform, token, String(body.label || "").slice(0, 80), Date.now()).run();
+    await env.DB.prepare(`INSERT INTO push_subs (id,tenant_id,endpoint,p256dh,auth,label,created_at,session_hash) VALUES (?,?,?,?,?,?,?,?)
+      ON CONFLICT(endpoint) DO UPDATE SET tenant_id=excluded.tenant_id, p256dh=excluded.p256dh, auth=excluded.auth, label=excluded.label, session_hash=excluded.session_hash, fails=0`)
+      .bind(crypto.randomUUID(), t.id, ep, platform, token, String(body.label || "").slice(0, 80), Date.now(), (await sessionHashes(req))[0] || null).run();
     return json({ ok: true, endpoint: ep });
   }
   if (sub === "/api/notif/app/off" && req.method === "POST") {
@@ -174,15 +217,48 @@ export async function notifApi(req, env, t, sub, url) {
     await env.DB.prepare("DELETE FROM push_subs WHERE tenant_id=? AND endpoint=?").bind(t.id, await nativeEndpoint(platform, token)).run();
     return json({ ok: true });
   }
+  // The service worker asks this before it shows a push: 200 with { ok: true } means this browser still holds a session for this workspace.
+  // (Any other answer, such as a sign-in redirect or 401, means it doesn't: pwa.js drops the push and cancels the sign-up.)
+  if (sub === "/api/notif/session" && req.method === "GET") return json({ ok: true });
+  // Settings → Notifications: every device signed up for this workspace. ?endpoint= marks the caller's own device ("This device").
+  if (sub === "/api/notif/devices" && req.method === "GET") {
+    const ep = url.searchParams.get("endpoint") || "";
+    const rows = (await env.DB.prepare("SELECT * FROM push_subs WHERE tenant_id=? ORDER BY created_at DESC LIMIT 100").bind(t.id).all().catch(() => ({ results: [] }))).results || [];
+    return json({ devices: rows.map((s) => deviceView(s, ep)) });
+  }
+  // Remove one device by id (any device of this workspace, from any device). A phone is also removed at the push relay.
+  if (sub === "/api/notif/device/remove" && req.method === "POST") {
+    const id = String(body.id || "");
+    const s = await env.DB.prepare("SELECT * FROM push_subs WHERE id=? AND tenant_id=?").bind(id, t.id).first().catch(() => null);
+    if (!s) return json({ ok: true, removed: 0 });
+    if (isNative(s) && nativeReady(env)) await removeNativeDevice(env, t.id, s.p256dh, s.auth);
+    await env.DB.prepare("DELETE FROM push_subs WHERE id=? AND tenant_id=?").bind(s.id, t.id).run();
+    return json({ ok: true, removed: 1 });
+  }
+  // The Mac app lists itself (nothing is pushed to it) and says it's still there each time it starts. id: random, kept by the app.
+  if (sub === "/api/notif/desktop" && req.method === "POST") {
+    const id = String(body.id || ""); if (!DESKTOP_ID.test(id)) return json({ error: "Bad device id." }, 400);
+    const at = Date.now();
+    await env.DB.prepare(`INSERT INTO push_subs (id,tenant_id,endpoint,p256dh,auth,label,created_at,session_hash,seen_at) VALUES (?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(endpoint) DO UPDATE SET tenant_id=excluded.tenant_id, label=excluded.label, session_hash=excluded.session_hash, seen_at=excluded.seen_at`)
+      .bind(crypto.randomUUID(), t.id, `desktop:${id}`, "desktop", "desktop", "Mac app", at, (await sessionHashes(req))[0] || null, at).run();
+    return json({ ok: true, endpoint: `desktop:${id}` });
+  }
+  if (sub === "/api/notif/desktop/off" && req.method === "POST") {
+    await env.DB.prepare("DELETE FROM push_subs WHERE tenant_id=? AND endpoint=?").bind(t.id, `desktop:${String(body.id || "")}`).run();
+    return json({ ok: true });
+  }
   if (sub === "/api/notif/unsub" && req.method === "POST") {
     await env.DB.prepare("DELETE FROM push_subs WHERE tenant_id=? AND endpoint=?").bind(t.id, String(body.endpoint || "")).run();
     return json({ ok: true });
   }
   // A test always shows as a system notification, even with the app focused, under its own tag (pwa.js), so repeats aren't merged.
+  // Its url ends in ?notif_test=<time>: the Android app sees that in a push that arrives while it is open and posts the notification itself.
   if (sub === "/api/notif/test" && req.method === "POST") {
     const ep = String(body.endpoint || "");
     if (!ep) return json({ error: "Turn on notifications on this device first." }, 400);
-    const r = await pushAll(env, t.id, { kind: "test", test: true, title: "Notifications are on", body: `This is how ${t.helper_name || "your helper"} will reach you on this device.`, url: appUrl(env, t.slug), tag: `test-${Date.now()}` }, { endpoint: ep });
+    const at = Date.now();
+    const r = await pushAll(env, t.id, { kind: "test", test: true, title: "Notifications are on", body: `This is how ${t.helper_name || "your helper"} will reach you on this device.`, url: `${appUrl(env, t.slug)}?notif_test=${at}`, tag: `test-${at}` }, { endpoint: ep });
     if (!r.devices) return json({ error: "This device isn't signed up for notifications. Turn it off and on again." }, 404);
     return json({ ok: r.sent > 0, ...r });
   }

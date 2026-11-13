@@ -71,7 +71,7 @@ test('a delivered deck .html is tagged deck and a plain .html is not', async () 
   for (const f of [hp, pp]) computer.files.set(f.replace('/workspace/', ''), computer.files.get(f));
   await R.shareFile({ path: 'workspace/q3-review/q3-review.html' }, ctx); await R.shareDeckFiles({ path: 'workspace/q3-review/q3-review.html' }, ctx);
   const rows = sql.exec("SELECT name, tags FROM files WHERE deleted=0 ORDER BY name").toArray();
-  assert.deepEqual(rows.map((r) => [r.name, JSON.parse(r.tags || '[]')]), [['q3-review.html', ['deck']], ['q3-review.pdf', []]]);
+  assert.deepEqual(rows.map((r) => [r.name, JSON.parse(r.tags || '[]')]), [['q3-review.html', ['deck']]], 'the deck PDF is kept as the deck\'s PDF copy (pdf-pair.js), not a second Library item');
   assert.ok(seen.some((e) => e.t === 'file' && e.file.name === 'q3-review.html' && e.file.tags.includes('deck')), 'the card is re-sent with the tag');
   computer.files.set('files/page.html', enc('<html>' + 'plain page'.repeat(30)));
   await R.shareFile({ path: 'files/page.html' }, ctx); await R.shareDeckFiles({ path: 'files/page.html' }, ctx);

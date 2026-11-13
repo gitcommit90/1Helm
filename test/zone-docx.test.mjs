@@ -169,6 +169,16 @@ let DID;
   await countsRight("after document edits");
   ok("route: a document edit stores a new version (old kept as previous), the record and the helper line, makes the preview, and restore-previous brings the earlier bytes back");
 }
+{   // the editable view's ops by paragraph index go through the same route: one new version for the batch, no preview made on every save, up to 400 ops
+  const D2 = await upload("Zed.docx", DOCX), before = jobs.length, r = await ZE("main", D2, { base: 1, edits: [{ op: "runs", p: 0, runs: [{ t: "Jordan Zed" }] }, { op: "insert", after: 0, runs: [{ t: "New line" }] }] });
+  assert.equal(r.status, 200, await r.clone().text()); const b = await r.json(); assert.equal(b.file.version, 2); assert.equal(b.applied, 2);
+  const nx = await xmlOf(bytesOf(D2)); assert.equal(texts(nx)[0], "Jordan Zed"); assert.equal(texts(nx)[1], "New line");
+  await new Promise((r2) => setTimeout(r2, 50)); assert.ok(!jobs.slice(before).some((j) => /preview/.test(j.out)), "an editable-view save does not make the page pictures; the print view does when it is opened");
+  assert.equal((await ZE("main", D2, { base: 2, edits: Array.from({ length: 401 }, () => ({ op: "delete", p: 0 })) })).status, 400, "more than 400 ops is refused");
+  assert.equal((await ZE("main", D2, { base: 2, edits: Array.from({ length: 21 }, () => ({ op: "text", was: "x", text: "y" })) })).status, 400, "more than 20 text-match edits is still refused");
+  assert.equal((await ZE("main", D2, { base: 2, edits: [{ op: "runs", p: 99, runs: [] }] })).status, 422, "a paragraph that is not there is refused"); assert.equal(rowOf(D2).version, 2, "and nothing is stored");
+  ok("route: paragraph ops make one new version, skip the preview, and keep their limits");
+}
 {   // refusals
   const base = rowOf(DID).version;
   const e = (edits, ch = "main", id = DID, b = base) => ZE(ch, id, { base: b, edits });

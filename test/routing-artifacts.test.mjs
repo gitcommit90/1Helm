@@ -19,7 +19,7 @@ const objects=new Map(),read=async b=>typeof b==='string'?new TextEncoder().enco
 const WS={async put(k,b){const bytes=await read(b);objects.set(k,bytes);return{size:bytes.length};},async get(k){const bytes=objects.get(k);return bytes?{size:bytes.length,arrayBuffer:async()=>bytes.slice().buffer,text:async()=>new TextDecoder().decode(bytes),body:new Response(bytes).body}:null;},async head(k){return objects.has(k)?{size:objects.get(k).length}:null;},async delete(ks){for(const k of [].concat(ks))objects.delete(k);}};
 let channel='main',sidecars=0;const emitted=[],reserves=[],settled=[];
 const R={sql,env:{DB,WS,MODEL_SETTINGS:seedSettings(),COMPUTER:{idFromName:n=>n,get:()=>({prepJob:async({op,pages})=>({pages:pages.map(page=>({page,md:'OCR page '+page})),ms:1000})})}},get(k){return{tenant:'test-tenant',channel}[k];},ledger(){return{reserve:async(id,n)=>{reserves.push(id);return{ok:true};},settle:async(id,n)=>{settled.push([id,n]);}};},ctx:{waitUntil(){}},sidecarKick(){sidecars++;},async republishPages(){return'';},...fileVersionsMethods};
-for(const method of ['libFile','fileView','fileUpdated','uniqueName'])R[method]=Resident.prototype[method];R.fvInit();initRoutingArtifacts(sql);
+for(const method of ['libFile','fileView','fileUpdated','uniqueName'])R[method]=Resident.prototype[method];R.pcShared=()=>new Set();R.fvInit();initRoutingArtifacts(sql);
 const h={id:1,session:'task-a',round:1,status:'awaiting_review',dynamic_routing:1};sql.exec('INSERT INTO helpers VALUES(?,?,?,?,?)',1,h.session,1,1,h.status);
 const tc={session:h.session,turn:'review-a',routingReviewHelper:1,emit:e=>emitted.push(e)};
 const body=Array.from({length:250},(_,i)=>`line ${i+1}`).join('\n');

@@ -350,12 +350,15 @@ export const turnHelpers = (k: string) => { const id = turnCardId(k);
 export const progressStatus = (h: HelperView, question = false) => h.status === "waiting_input" ? (h.input_kind === "browser" ? "Waiting on you in the browser" : h.input_kind === "purchase_wait" ? "Waiting on you to approve in Link" : question ? "Needs your answer" : "Subagent working") : h.status === "awaiting_review" ? "Ready for review" : "Subagent working";
 // Nothing of the newest turn is running and the Primary is idle, but an older turn's helper still runs: the row shows that helper, so a running
 // helper is never invisible in its own task. While the Primary works, or when the helper only waits, the older helper stays out of the row.
-export const rowHelper = (k: string, primary: string) => turnHelpers(k)[0] || (primary ? undefined : ss(k).helpers.find(h => h.status === "running" && !ss(k).hoff));
+// "Subagent working" is the Primary's idle label while a helper runs, so it counts as idle here.
+export const IDLE_HELPER_LINE = "Subagent working";
+export const rowHelper = (k: string, primary: string) => turnHelpers(k)[0] || (primary && primary !== IDLE_HELPER_LINE ? undefined : ss(k).helpers.find(h => h.status === "running" && !ss(k).hoff));
 export function tkProgress(slug: string, sid: any, name: string, primary: string, question = false, state: ActivityState = "solving") {
   const h = rowHelper(key(slug, sid), primary);
   if (!h && !primary) return `<div class="turn-progress" role="status"></div>`;
   // With no helper in the row, a click opens the turn's own card (the same card the Activity feed and the finished-turn chip open).
-  const cid = h ? "" : turnCardId(key(slug, sid));
+  // The idle label with no known running helper links nowhere, never to a finished turn's card.
+  const cid = h || primary === IDLE_HELPER_LINE ? "" : turnCardId(key(slug, sid));
   const open = h ? ` data-tkhelper="${esc(String(h.id))}" tabindex="0" aria-label="${esc(h.name || "Subagent")}. ${progressStatus(h, question)}. Open task"`
     : cid ? ` data-tkcard="${esc(cid)}" tabindex="0" aria-label="Open task card"` : "";
   return `<div class="turn-progress" role="${cid ? "button" : "status"}"${open}><span class="tp-orb">${h ? helperMark(h, !!primary, orbState(progressStatus(h))) : orb(state)}</span><span class="tp-text"><b>${esc((h ? h.name : "") || name)}</b><span>${esc(h ? progressStatus(h) : primary)}</span></span></div>`;

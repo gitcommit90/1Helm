@@ -18,6 +18,10 @@ export type DelDeps = {
   channelName: (slug: string) => string | null;
   chatGone: (slug: string, sid: string) => void;
   channelGone: (slug: string) => void;
+  /** Take a channel out of the rail, sidebar and switcher at once (moving off it if it was open). Returns a function that puts it back where it was. */
+  channelHide?: (slug: string) => (() => void) | null;
+  /** After a request with no answer: does the server still list this channel as live? true = there and not marked deleted, false = gone or hidden, null = couldn't tell. Ignores the deleting set. */
+  channelExists?: (slug: string) => Promise<boolean | null>;
   closeSheet?: () => void;
   /** Stop (stop.ts): a working chat's ⋯ menu offers "Stop" first */
   working?: (slug: string, sid: string) => boolean;
@@ -95,18 +99,41 @@ export async function deleteChat(slug: string, sid: string) {
     D.note("Chat deleted", r.kept?.length ? `Kept ${r.kept.length === 1 ? `“${r.kept[0]}”` : `${r.kept.length} files`}: also used in another chat.` : c.title);
   } catch { chatDeletions.set(key, { slug, sid, title: c.title, phase: "failed" }); deletionFeedback(); }
 }
+// Channels whose delete is still running. The app's refresh and poll skip them, so a channel list read before the server hid the channel can't bring it back.
+const channelsDeleting = new Set<string>();
+export const channelIsDeleting = (slug: string) => channelsDeleting.has(slug);
 export async function deleteChannel(slug: string) {
-  if (!D || slug === "main") return; const name = D.channelName(slug); if (!name) return;
+  if (!D || slug === "main" || channelsDeleting.has(slug)) return; const name = D.channelName(slug); if (!name) return;
   const ok = await ask({ title: `Delete ${name}?`, body: "The channel and everything in it is permanently deleted: its chats, files, Notebook, scheduled jobs, its computer, and what it remembers. This can't be undone.",
     type: { match: name, label: `Type “${name}” to confirm` }, confirm: "Delete channel", danger: true });
   if (!ok) return;
   D.closeSheet?.();
-  try {
-    const r = await D.api(`/channels/${slug}/delete`, { confirm: name });
-    if (r?.error) throw new Error(r.error);
-    D.channelGone(slug); D.note("Channel deleted", `${name} and everything in it are gone.`);
-  } catch { await tell({ title: "Couldn't finish deleting the channel", body: "It's already hidden, and deleting keeps going on its own in the next few minutes." }); }
+  // The server takes about ten seconds to wipe everything, so the channel leaves the screen now and the request finishes in the background.
+  channelsDeleting.add(slug);
+  const restore = D.channelHide?.(slug) ?? null;
+  const keep = (ms: number) => setTimeout(() => channelsDeleting.delete(slug), ms);
+  const putBack = () => { channelsDeleting.delete(slug); if (restore) restore(); else D.channelGone(slug); D.note("Couldn't delete the channel", `${name} is back. Check your connection and try again.`); };
+  const started = () => { keep(5 * 60000); void tell({ title: "Couldn't finish deleting the channel", body: "It's already hidden, and deleting keeps going on its own in the next few minutes." }); };
+  let r: any;
+  try { r = await D.api(`/channels/${slug}/delete`, { confirm: name }); }
+  catch (e: any) {
+    const st = Number(/^HTTP (\d{3})/.exec(String(e?.message))?.[1] || 0);
+    if (st) { if (refusedBeforeHiding(st)) return putBack(); if (st === 404) { D.channelGone(slug); keep(20000); return; } return started(); }
+    // No answer at all: the request may or may not have reached the server, so ask it.
+    const there = D.channelExists ? await D.channelExists(slug).catch(() => null) : null;
+    if (there === true) return putBack();
+    keep(there === false ? 20000 : 5 * 60000); if (there === null) void tell({ title: "Couldn't confirm the channel is deleted", body: "It's hidden, and if the delete didn't start, the channel comes back next time you open the app." });
+    return;
+  }
+  if (r?.error) {
+    if (REFUSED.has(String(r.error))) { if (r.error === "no such channel") { D.channelGone(slug); keep(20000); return; } return putBack(); }
+    return started();
+  }
+  D.channelGone(slug); keep(20000);   // a list read before the delete finished can still arrive; the slug is free to reuse after that
 }
+// What the delete route answers when it did nothing (src/deletion.js): a wrong typed name, General, or no such channel. Any 4xx status other than 404 is a refusal too (sign-in, origin, rate limit).
+const REFUSED = new Set(["confirmation_required", "General can't be deleted.", "no such channel"]);
+const refusedBeforeHiding = (status: number) => status >= 400 && status < 500 && status !== 404;
 export async function deleteAccount() {
   if (!D) return;
   const ok = await ask({ title: "Delete your account?", body: "Everything is permanently deleted: every channel and chat, your files, Notebook and memory, contacts, saved logins and keys, connected apps and texting. Your plan is canceled now. This can't be undone.",

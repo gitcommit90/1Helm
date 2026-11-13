@@ -130,7 +130,7 @@ version, two pages instead of one, dropping a part). Never share while a gate fa
 ## Share
 
 `share_file` with path `/workspace/workspace/<slug>/<slug>.pdf` and a readable name ("Kyoto trip plan.pdf"). One line about
-what it is is enough.
+what it is is enough. When the same document also exists as an editable file from this task (.docx, .pptx, .xlsx, .html), share both: the PDF is kept with that file as its PDF copy, one Library item, and the Zone opens the editable file.
 
 ## Revising a PDF you made
 

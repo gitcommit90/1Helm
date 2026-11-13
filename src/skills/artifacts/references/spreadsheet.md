@@ -112,6 +112,6 @@ python3 /opt/1hc/skills/artifacts/scripts/readback.py <slug>.xlsx
 A clean recalc proves the formulas evaluate, not that they are right. Before building out a whole grid, spot-check
 two or three formulas against values you can work out by hand.
 
-Then follow `read_skill("artifacts", "testing")` and share the file with `share_file` (path = the .xlsx, name = the
+Then follow `read_skill("artifacts", "testing")` and share the file with `share_file` (the Library keeps a PDF copy of it automatically for download and attachments) (path = the .xlsx, name = the
 readable file name). Changing it later: rebuild from the generator, run the gates, and share the same path again,
 which updates the same Library file.

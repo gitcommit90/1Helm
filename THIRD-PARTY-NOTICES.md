@@ -251,3 +251,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Spreadsheets in the Zone (HyperFormula, ExcelJS, SheetJS)
+
+The Zone opens .xlsx and .csv files as a grid that recalculates formulas as the person types.
+
+- HyperFormula 3.5.0 (formula engine, runs in the browser, in the Zone's own lazily loaded file). License: GPL-3.0-only, with the license key "gpl-v3". Copyright (c) HANDSONCODE sp. z o. o. Source: https://github.com/handsontable/hyperformula. GPL-3.0 and 1Helm's AGPL-3.0 are compatible under section 13 of each license, so the spreadsheet code is part of the AGPL-3.0 core and is not under `ee/`.
+- ExcelJS 4.4.0 (saves a person's cell edits into the .xlsx, runs in the Worker in `src/zone-sheet.js`). License: MIT, Copyright (c) 2014-2019 Guyon Roche. Source: https://github.com/exceljs/exceljs.
+- SheetJS Community Edition 0.20.3 (reads workbooks in the browser). License: Apache-2.0. Source: https://cdn.sheetjs.com/.

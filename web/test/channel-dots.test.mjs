@@ -9,6 +9,7 @@ class El{constructor(cls,attrs={}){this.className=cls;this.attrs=attrs;this.chil
  insertBefore(c,ref){c.parent=this;this.children.splice(this.children.indexOf(ref)>=0?this.children.indexOf(ref):this.children.length,0,c);return c}
  remove(){this.parent.children=this.parent.children.filter(x=>x!==this)}
  getAttribute(k){return this.attrs[k]??null}
+ get classList(){const e=this;return{toggle:(c,on)=>{const s=new Set(e.className.split(' ').filter(Boolean));on?s.add(c):s.delete(c);e.className=[...s].join(' ');}}}
  has(c){return this.className.split(' ').includes(c)}
  querySelector(sel){return this.querySelectorAll(sel)[0]??null}
  querySelectorAll(sel){
@@ -31,8 +32,8 @@ state={tcinfra:null,llms:null,quiet:null};paintChannelDots(root,s=>state[s]??nul
 for(const x of [a,b,c])assert.equal(pips(x.children[0]),0,'read tasks clear every dot');for(const r of [ra,rb,rc])assert.equal(udots(r),0);
 // The wiring in v3.ts: refresh() and repaint() both call it, with the rule the rows use.
 import fs from 'node:fs';const v3=fs.readFileSync(new URL('../src/v3.ts', import.meta.url),'utf8');
-assert.match(v3,/function repaint\(ch: Channel\) \{\s*paintChannelDots\(document, chDotKind, chWorking\)/,'every repaint paints the channel dots');
-assert.match(v3,/clearFresh\(ch\);\s*paintChannelDots\(document, chDotKind, chWorking\)/,'refresh paints the channel dots on every branch');
+assert.match(v3,/function repaint\(ch: Channel\) \{\s*paintChannelDots\(document, chDotKind, chWorking, chActive\)/,'every repaint paints the channel dots');
+assert.match(v3,/clearFresh\(ch\);\s*paintChannelDots\(document, chDotKind, chWorking, chActive\)/,'refresh paints the channel dots on every branch');
 assert.match(v3,/const chDotKind = .*rowLit/,'the channel dot reads the same rule as the task row dot');
 assert.match(v3,/const rowLit = \(x: Session\) => !x\.done && !!x\.unread;/,'only an unseen reply lights a dot');
 assert.doesNotMatch(v3,/Needs you"|"Needs you/,'no Needs you dot kind or title');

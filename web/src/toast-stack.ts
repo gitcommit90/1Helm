@@ -7,7 +7,7 @@
 // stylesheet as custom properties. The look is in toast-stack.css (classes prefixed bdts-). The toast's content, buttons and timing
 // belong to the callers (toast() and note() in v3.ts); this file only places them.
 
-type Item = { el: HTMLElement; inner: HTMLElement; timer: number; leaving: boolean; at: number; drag?: boolean };
+type Item = { el: HTMLElement; inner: HTMLElement; timer: number; leaving: boolean; at: number; drag?: boolean; stay?: boolean; onSwipe?: () => void };
 
 const SHOW_MS = 5000;     // how long a toast stays, as before
 const AFTER_HOVER_MS = 2500; // what each toast gets once the pointer leaves, as before
@@ -123,7 +123,7 @@ function sync() {
   place();
   const open = isOpen();
   for (const it of items) {
-    if (it.leaving || it.drag) continue;
+    if (it.leaving || it.drag || it.stay) continue;   // a staying toast leaves only when it is dismissed
     if (open) { clearTimeout(it.timer); it.timer = 0; waited.add(it); continue; }
     if (!it.timer) it.timer = window.setTimeout(() => leave(it), waited.has(it) ? AFTER_HOVER_MS : SHOW_MS);
   }
@@ -149,13 +149,14 @@ function leave(it: Item) {
 const ro = new ResizeObserver(() => place());
 
 /** Adds a toast in front of the others. `html` is the toast's content, exactly as the callers build it. */
-export function tsShow(html: string) {
+/** `stay`: no timer, the toast stays until it is dismissed (a button, tsHide or a swipe, which also runs `onSwipe`). */
+export function tsShow(html: string, opts: { stay?: boolean; onSwipe?: () => void } = {}) {
   const host = mount();
   const el = document.createElement("div"); el.className = "bdts-t"; el.setAttribute("data-new", "");
   const inner = document.createElement("div"); inner.className = "bdts-in"; inner.innerHTML = html;
   el.appendChild(inner); host.appendChild(el);
-  const it: Item = { el, inner, timer: 0, leaving: false, at: 0 };
-  swipeable(el, () => leave(it), () => el.hasAttribute("data-front") || isOpen(),
+  const it: Item = { el, inner, timer: 0, leaving: false, at: 0, stay: !!opts.stay, onSwipe: opts.onSwipe };
+  swipeable(el, () => { try { it.onSwipe?.(); } catch { /* the swipe still dismisses */ } leave(it); }, () => el.hasAttribute("data-front") || isOpen(),
     on => { it.drag = on; if (on) { clearTimeout(it.timer); it.timer = 0; } else sync(); });
   items.unshift(it); ro.observe(inner);
   const staying = live();

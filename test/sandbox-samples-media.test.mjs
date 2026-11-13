@@ -183,6 +183,7 @@ test("golden answers: well formed, only on jobs with a checkable answer, and eac
   for (const s of samples) {
     if (["embed_files", "mem_embed"].includes(s.job)) assert.equal(s.golden, undefined, `${s.job} has no golden: a vector has no right value`);
     else if (s.job === "speaker_labels") assert.equal(s.golden, undefined, "speaker_labels has no golden: the sample file has one voice and the turns are shown as they are");
+    else if (s.job.startsWith("call_")) assert.equal(s.golden, undefined, `${s.job} has no golden`);
     else if (s.job === "image_gen") assert.equal(s.golden, undefined, "image_gen has no golden: a picture has no right value");
     else checkGoldenShape(s.job, s.golden);
   }

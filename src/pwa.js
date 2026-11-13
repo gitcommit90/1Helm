@@ -57,17 +57,42 @@ export function swQuiet(wins, d) {
 export const SW_JS = `const swQuiet = ${swQuiet.toString()};
 const NF_CACHE = "1helm-nf", NF_KEY = () => self.registration.scope + "nf-last";
 const nfLog = (body) => fetch(self.registration.scope + "api/clientlog", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sw: "push", ...body }) }).catch(() => {});
+// Does this browser still hold a session for this workspace? One small same-origin GET: 200 with { ok: true } means yes. Any other
+// definite answer (401, 403, 404, a sign-in redirect, a page that isn't the JSON) means no. A network error, a timeout, a 429 or a
+// 5xx proves nothing, so those count as "yes" and the notification shows (a push for the person must never be lost to a bad moment).
+const signedOut = async () => {
+  const ac = typeof AbortController === "function" ? new AbortController() : null, to = ac ? setTimeout(() => ac.abort(), 5000) : 0;
+  try {
+    const r = await fetch(self.registration.scope + "api/notif/session", { credentials: "same-origin", cache: "no-store", redirect: "manual", headers: { accept: "application/json" }, signal: ac ? ac.signal : undefined });
+    if (r.type === "opaqueredirect" || (r.status >= 300 && r.status < 400)) return true;
+    if (r.status === 0 || r.status === 429 || r.status >= 500) return false;
+    if (r.status !== 200) return true;
+    const j = await r.json().catch(() => null); return !(j && j.ok === true);
+  } catch { return false; } finally { if (to) clearTimeout(to); }
+};
+// This browser is not signed in to the workspace any more: cancel its push sign-up (the push service then answers the server's next
+// push with 410 and the server deletes the row). Chrome insists that every push ends in a visible notification (userVisibleOnly), and
+// shows its own "updated in the background" notice if none is shown, so one is posted with no sound and closed at once.
+const dropSignup = async (rec) => {
+  rec.dropped = true;
+  try { const s = await self.registration.pushManager.getSubscription(); if (s) await s.unsubscribe(); } catch (x) { rec.err = "unsubscribe failed: " + (x && x.message || x); }
+  try {
+    await self.registration.showNotification("1Helm", { tag: "signed-out", silent: true, body: "" });
+    for (const n of await self.registration.getNotifications({ tag: "signed-out" })) n.close();
+  } catch {}
+};
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener("push", (e) => {
   e.waitUntil((async () => {
-    const rec = { at: Date.now(), kind: "", test: false, shown: false, quiet: false, listed: null, perm: "", err: "" };
+    const rec = { at: Date.now(), kind: "", test: false, shown: false, quiet: false, dropped: false, listed: null, perm: "", err: "" };
     try { rec.perm = self.Notification ? Notification.permission : ""; } catch {}
     let d = {}; try { d = e.data ? e.data.json() : {}; } catch (x) { rec.err = "unreadable payload: " + (x && x.message || x); try { d = { title: "1Helm", body: e.data ? e.data.text() : "" }; } catch { d = {}; } }
     rec.kind = String(d.kind || ""); rec.test = !!d.test;
     let wins = []; try { wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true }); } catch {}
     try {
-      if (swQuiet(wins, d)) { rec.quiet = true; for (const w of wins) w.postMessage({ t: "push", d }); }
+      if (await signedOut()) await dropSignup(rec);
+      else if (swQuiet(wins, d)) { rec.quiet = true; for (const w of wins) w.postMessage({ t: "push", d }); }
       else {
         const tag = d.test ? "test-" + rec.at : (d.tag ? String(d.tag) : "");
         const opts = { body: d.body || "", icon: "/1helm-icon-192.png", badge: "/1helm-icon-64.png", data: { url: d.url || "" } };

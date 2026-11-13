@@ -11,6 +11,7 @@ const ok = (n) => console.log("  ok", n);
 
 const d1 = new DatabaseSync(":memory:");
 d1.exec(readFileSync(new URL("../db/migrations/0018_027_notif_reports.sql", import.meta.url), "utf8"));
+d1.exec(readFileSync(new URL("../db/migrations/0084_push_devices.sql", import.meta.url), "utf8"));
 d1.exec("CREATE TABLE IF NOT EXISTS texting (tenant_id TEXT PRIMARY KEY, status TEXT)");
 const DB = { prepare: (q) => { const st = d1.prepare(q); let a = []; const o = { bind: (...x) => { a = x; return o; }, first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => { const r = st.run(...a); return { meta: { changes: r.changes } }; } }; return o; } };
 const calls = [];
@@ -53,6 +54,13 @@ const r = await pushAll(env, "t1", { kind: "finished", title: "Finished: trip", 
 const del = calls.filter((c) => c.url.endsWith("/deliveries"));
 assert.equal(del.length, 1); assert.equal(del[0].body.recipient_id, await recipientFor("t1")); assert.equal(del[0].body.title, "Finished: trip"); assert.equal(del[0].body.url, "https://app.example.test/w/ck1/app");
 assert.ok(del[0].body.idempotency_key); assert.equal(r.devices, 2); assert.equal(r.sent, 1);
+assert.ok(!("tag" in del[0].body), "no tag in the payload means no tag field is sent");
+calls.length = 0;
+await pushAll(env, "t1", { kind: "finished", title: "Finished: a", body: "Done.", url: "https://app.example.test/w/ck1/app", tag: "task-s1" });
+await pushAll(env, "t1", { kind: "finished", title: "Finished: b", body: "Done.", url: "https://app.example.test/w/ck1/app", tag: "task-s1" });
+const tagged = calls.filter((c) => c.url.endsWith("/deliveries"));
+assert.equal(tagged.length, 2); assert.equal(tagged[0].body.tag, "task-s1"); assert.equal(tagged[1].body.tag, "task-s1");
+assert.notEqual(tagged[0].body.idempotency_key, tagged[1].body.idempotency_key, "idempotency_key stays random while the tag repeats");
 calls.length = 0;
 const tr = await api(env, t1, "/api/notif/test", { endpoint: a.body.endpoint });
 assert.equal(tr.status, 200); assert.equal(calls.filter((c) => c.url.endsWith("/deliveries")).length, 1);

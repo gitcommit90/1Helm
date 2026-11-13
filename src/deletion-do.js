@@ -12,6 +12,7 @@
 // Mixed in from resident.js (deletionMix) and index.js (archiveDeletionMix, wipeMix) / channel-computer.js (computerDeletionMix).
 
 import { stDelete } from "./storage.js";
+import { pdfCopyKeys, dropPdfCopyRows } from "./pdf-pair.js";   // the PDF copies kept with editable files
 import { previewKeys, dropPreviewRows } from "./file-preview.js";   // the file viewer's hidden PDF previews go with their files
 import { sidecarKeys, dropSidecarRows } from "./sidecar-rows.js";   // and so do their text sidecars
 import { hsWriters, DOC, convDocOf } from "./hindsight-writers.js";   // HS_WRITERS: the documents a chat, a file or a note has in the channel's bank
@@ -140,7 +141,7 @@ export const residentDeletion = {
     if (tid && gone.length && this.env.DB) for (const c of chunks(gone.map((f) => f.id), 50)) { try { const r = await this.env.DB.prepare(`DELETE FROM share_links WHERE tenant_id=? AND file_id IN (${ph(c)})`).bind(tid, ...c).run(); counts.share_links = (counts.share_links || 0) + Number(r?.meta?.changes || 0); } catch (e) { if (!/no such table/.test(e.message)) throw e; } }
     if (tid && gone.length && this.env.DB) for (const c of chunks(gone.map((f) => f.id), 50)) { try { await this.env.DB.prepare(`DELETE FROM app_file_links WHERE tenant_id=? AND file_id IN (${ph(c)})`).bind(tid, ...c).run(); } catch {} }   // temporary links for apps (app-file-links.js); the table may not exist yet
     delIn(sql, "file_shares", "file_id", gone.map((f) => f.id)); counts.files = delIn(sql, "files", "id", gone.map((f) => f.id));
-    dropPreviewRows(sql, gone.map((f) => f.id)); dropSidecarRows(sql, gone.map((f) => f.id));
+    dropPreviewRows(sql, gone.map((f) => f.id)); dropPdfCopyRows(sql, gone.map((f) => f.id)); dropSidecarRows(sql, gone.map((f) => f.id));
     counts.shots = delIn(sql, "shots", "id", shots.map((s) => s.id));
     // 4. Memory derived from it: the ledger rows (its messages, tool results, notes, summaries) and their search index.
     const memIds = has(sql, "mem_rows") ? sql.exec("SELECT id FROM mem_rows WHERE session=? OR id LIKE ?", sid, `s:${sid}:%`).toArray().map((r) => r.id) : [];
@@ -234,7 +235,7 @@ export const residentDeletion = {
     this.inputs?.clear?.();
     const counts = {};
     for (const t of ["sessions", "turns", "msgs", "cards", "card_events", "files", "file_shares", "shots", "todos", "reactions", "later", "helpers", "approvals", "grants", "workflows", "outbox", "mem_rows", "mem_segments", "plans", "plan_origin", "connect_offers", "chat_interviews", "secret_requests", "user_questions", "user_input_receipts", "pomodoro", "pomodoro_offers"]) counts[t] = count(sql, t);
-    const keys = [...sql.exec("SELECT r2key, view_key FROM files").toArray().flatMap((f) => [f.r2key, f.view_key]), ...sql.exec("SELECT r2key FROM shots").toArray().map((s) => s.r2key), ...previewKeys(sql), ...sidecarKeys(sql), ...this.eeDeletion.routingArtifactKeys(sql)];
+    const keys = [...sql.exec("SELECT r2key, view_key FROM files").toArray().flatMap((f) => [f.r2key, f.view_key]), ...sql.exec("SELECT r2key FROM shots").toArray().map((s) => s.r2key), ...previewKeys(sql), ...pdfCopyKeys(sql), ...sidecarKeys(sql), ...this.eeDeletion.routingArtifactKeys(sql)];
     counts.r2_objects = await r2DeleteKeys(this.env, keys);
     await wipeStorage(this, "channel deleted");
     return counts;

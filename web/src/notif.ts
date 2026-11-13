@@ -18,6 +18,7 @@ import { soundOk, silentInit } from "./silent";
 
 type Prefs = { needs: boolean; finished: boolean; sound: boolean; needs_text: boolean; meetings: boolean };
 type Live = { api: string; slug: string } | null;
+type Dev = { id: string; kind: "browser" | "phone" | "desktop"; name: string; created_at: number | null; last_at: number | null; seen_at: number | null; this_device: boolean };
 type PushRec = { at: number; kind: string; test: boolean; shown: boolean; quiet: boolean; listed: boolean | null; perm: string; err: string };
 type Deps = {
   live: Live;
@@ -31,8 +32,8 @@ type Deps = {
   blocked?: () => boolean;                                    // another permission sheet is open (devperm.ts): wait for it
 };
 let D: Deps | null = null;
-const P: { prefs: Prefs; loaded: boolean; key: string | null; app: boolean; texting: boolean; dev: "off" | "on" | "busy" | "test"; ep: string; why: string; err: string; hasSub: boolean; devices: number; last: PushRec | null; testAt: number } =
-  { prefs: { needs: true, finished: true, sound: true, needs_text: true, meetings: true }, loaded: false, key: null, app: false, texting: false, dev: "off", ep: "", why: "", err: "", hasSub: false, devices: 0, last: null, testAt: 0 };
+const P: { prefs: Prefs; loaded: boolean; key: string | null; app: boolean; texting: boolean; dev: "off" | "on" | "busy" | "test"; ep: string; why: string; err: string; hasSub: boolean; devices: number; last: PushRec | null; testAt: number; list: Dev[]; rm: string } =
+  { prefs: { needs: true, finished: true, sound: true, needs_text: true, meetings: true }, loaded: false, key: null, app: false, texting: false, dev: "off", ep: "", why: "", err: "", hasSub: false, devices: 0, last: null, testAt: 0, list: [], rm: "" };
 // "This device" switched off by hand in Settings: then a granted permission without a subscription is on purpose (no self-heal).
 const OFF = "1hc.nf.off";
 const lsGet = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -72,10 +73,29 @@ function appListen() {
   // While 1Helm is open the phone doesn't show it: the app does, as one of its own notes (and the soft sound).
   // A push for the task on screen shows nothing (the person is already looking at it), the same rule as the web and Mac paths.
   N.addListener("pushNotificationReceived", (n: any) => {
+    // The test is the one push that always shows as a system notification, even while the app is open (Android: the app's own plugin posts it).
+    if (D && appTestPush(n?.data) && postTestNotification(n)) { appTestAt = 0; return; }
     if (!D || pushOnScreen(n?.data)) return;
     const title = String(n?.title || "1Helm"), kind = n?.data?.kind === "finished" || (n?.data?.kind !== "needs" && /^Finished:/.test(title)) ? "finished" : "needs";
     D.note(title, String(n?.body || "")); nfChime(kind);
   });
+}
+// The test push says so in its url (?notif_test=<time>, set by 1HC /api/notif/test). If the phone service doesn't pass the url along, a push with no
+// task or link that arrives within a minute of pressing Send a test on this phone counts as the test. Nothing here reads the wording.
+const TESTMARK = /[?&]notif_test=\d+/;
+let appTestAt = 0;
+export function appTestPush(d: any, now = Date.now()): boolean {
+  const url = String(d?.url || "");
+  if (TESTMARK.test(url)) return true;
+  return appTestAt > 0 && now - appTestAt < 60000 && !url && !d?.session;
+}
+// Android only, and only when this app has the method (1.6.7 and newer). Older apps keep the in-app note.
+function postTestNotification(n: any): boolean {
+  const C = (window as any).Capacitor, g = appPlatform() === "android" ? C?.Plugins?.InstanceGateway : null;
+  if (!g || typeof g.showNotification !== "function") return false;
+  const title = String(n?.title || "1Helm"), body = String(n?.body || ""), url = String(n?.data?.url || "");
+  Promise.resolve(g.showNotification({ title, body, url, tag: `test-${Date.now()}` })).catch(() => { D?.note(title, body); nfChime("needs"); });   // an older app answers "not implemented"
+  return true;
 }
 // register() answers with the phone's address through the "registration" event (or "registrationError").
 function appToken(): Promise<string | null> {
@@ -119,7 +139,11 @@ async function appOff() {
 // The app adds "1HelmDesktop" to its user agent and keeps this page running with its window closed (no background throttling).
 // On/off is per Mac (localStorage); the notifications come from this page, so nothing is signed up on the server.
 const inDesktop = () => /\b1HelmDesktop\b/.test(navigator.userAgent) && "Notification" in window;
-const DESK = "1hc.nf.desktop";
+const DESK = "1hc.nf.desktop", DESKID = "1hc.nf.desktop.id";
+// The Mac app lists itself on the server (a row that is never pushed to) so Settings can show it next to the browsers, and so it can be removed.
+const deskId = () => { let id = lsGet(DESKID); if (!id) { id = (crypto.randomUUID?.() || `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}-mac`); lsSet(DESKID, id); } return id; };
+const deskEp = () => `desktop:${deskId()}`;
+const deskRegister = () => (D?.live && !D.look ? call("/notif/desktop", { id: deskId() }).catch(() => null) : Promise.resolve(null));
 async function deskOn(quiet = false) {
   if (!D) return;
   P.dev = "busy"; P.err = ""; D.repaint();
@@ -127,9 +151,13 @@ async function deskOn(quiet = false) {
   lsSet(OFF, null);
   if (perm !== "granted") { P.dev = "off"; P.why = deskWhy() || "Notifications weren't allowed, so nothing changed."; D.repaint(); return; }
   lsSet(DESK, "1"); P.dev = "on"; P.hasSub = true; P.why = ""; D.repaint();
+  void deskRegister().then(loadDevices);
   if (!quiet) D.note("Notifications are on for this Mac", "Tap Send a test to see one.");
 }
-function deskOff() { lsSet(DESK, null); lsSet(OFF, "1"); P.dev = "off"; P.hasSub = false; P.testAt = 0; D?.repaint(); }
+function deskOff() {
+  lsSet(DESK, null); lsSet(OFF, "1"); P.dev = "off"; P.hasSub = false; P.testAt = 0; D?.repaint();
+  if (D?.live && !D.look) void call("/notif/desktop/off", { id: deskId() }).catch(() => null).then(loadDevices);
+}
 const deskWhy = () => Notification.permission === "denied" ? "Notifications are off for 1Helm. Open System Settings → Notifications → 1Helm and turn on Allow notifications, then come back." : "";
 function deskShow(title: string, body: string, url: string, tag: string) {
   try {
@@ -188,7 +216,7 @@ async function deviceOn(quiet = false) {
     sub ||= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(want) });
     const r = await call("/notif/sub", { sub: sub.toJSON(), label: deviceLabel() });
     if (r.error) throw new Error(r.error);
-    P.ep = sub.endpoint; P.dev = "on"; P.hasSub = true; D.repaint();
+    P.ep = sub.endpoint; P.dev = "on"; P.hasSub = true; D.repaint(); void loadDevices();
     if (!quiet) D.note("Notifications are on for this device", "Tap Send a test to see one.");
   } catch (e: any) { P.dev = "off"; P.err = e?.message || "Something went wrong."; D.repaint(); if (!quiet) D.note("Couldn't turn on notifications", P.err, true); }
 }
@@ -200,7 +228,7 @@ async function deviceOff() {
   const sub = await currentSub(), ep = sub?.endpoint || P.ep;
   try { await sub?.unsubscribe(); } catch {}
   if (ep) await call("/notif/unsub", { endpoint: ep }).catch(() => null);
-  P.ep = ""; P.dev = "off"; P.hasSub = false; P.testAt = 0; lsSet(OFF, "1"); D.repaint();
+  P.ep = ""; P.dev = "off"; P.hasSub = false; P.testAt = 0; lsSet(OFF, "1"); D.repaint(); void loadDevices();
 }
 async function deviceTest() {
   if (!D?.live) {   // sandbox: pretend it went out and came back shown, so the help under This device can be seen
@@ -210,8 +238,10 @@ async function deviceTest() {
   if (P.dev !== "on") return;
   if (inDesktop()) { deskShow("Notifications are on", `This is how ${D.helper()} will reach you on this Mac.`, "", `test-${Date.now()}`); D.note("Test sent", "It shows in the top-right corner of your screen."); return; }
   P.dev = "test"; D.repaint();
+  if (inApp()) appTestAt = Date.now();
   const r = await call("/notif/test", { endpoint: P.ep }).catch(() => ({ error: "Check your connection and try again." }));
   P.dev = "on"; D.repaint();
+  if (r.error || !r.ok) appTestAt = 0;
   if (r.error) D.note("Couldn't send a test", r.error, true);
   else if (!r.ok) D.note("The test didn't go through", "Your browser's push service said no. Turn this device off and on again.", true);
   else {
@@ -253,9 +283,50 @@ function diagHtml(): string {
   else if (L && L.test && L.shown && P.dev === "on") help = "Didn't see the last test?";
   return `<div class="nfdiag" data-nfdiag><span>Permission: <b>${permT}</b></span><span>This device signed up: <b>${P.hasSub && P.dev !== "off" || !D?.live && P.dev === "on" ? "yes" : "no"}</b></span><span>Last one received: <b>${esc(lastT)}</b></span>${say ? `<p>${esc(say)}</p>` : ""}${help ? `<p class="nfhelp" data-nfhelp><b>${esc(help)}</b> ${esc(sysWhere())}</p>` : ""}</div>`;
 }
+// ---------- every device signed up for this workspace ----------
+// The server lists them (1HC src/notify.js, GET /notif/devices): phone apps, the Mac app and browsers, each with a plain name, when it signed up
+// and when the last notification was delivered. A browser you no longer use keeps getting notifications until it is removed here (or logs out).
+const myEp = () => inDesktop() ? (lsGet(DESK) === "1" ? deskEp() : "") : inApp() ? (appPerm === "granted" ? lsGet(APPEP) || "" : "") : P.ep;
+async function loadDevices() {
+  if (!D?.live) return;
+  const ep = myEp(), d = await call(`/notif/devices${ep ? `?endpoint=${encodeURIComponent(ep)}` : ""}`).catch(() => null);
+  if (d && Array.isArray(d.devices)) { P.list = d.devices; D.repaint(); }
+}
+async function removeDevice(id: string) {
+  if (!D || P.rm) return;
+  const x = P.list.find((v) => v.id === id); if (!x) return;
+  if (!D.live) { P.list = P.list.filter((v) => v.id !== id); D.repaint(); return; }   // sandbox: pretend
+  if (x.this_device) { await deviceOff(); await loadDevices(); return; }   // this device also cancels its own browser sign-up
+  P.rm = id; D.repaint();
+  const r = await call("/notif/device/remove", { id }).catch(() => ({ error: "Check your connection and try again." }));
+  P.rm = "";
+  if (r?.error) { D.repaint(); D.note("Couldn't remove it", r.error, true); return; }
+  P.list = P.list.filter((v) => v.id !== id); D.repaint(); D.note("Removed", `${x.name} won't get notifications from ${D.helper()} any more.`);
+  void loadDevices();
+}
+/** Before the web app logs out: this browser cancels its notification sign-up (its own push subscription, and the server's row), so it stops
+ *  getting this workspace's notifications. The phone apps are removed by the server together with the session. Never blocks the logout for long. */
+export async function nfBeforeLogout(): Promise<void> {
+  if (!D?.live || D.look || inApp()) return;
+  const work = (async () => {
+    if (inDesktop()) { await call("/notif/desktop/off", { id: deskId() }).catch(() => null); return; }
+    const sub = await currentSub(), ep = sub?.endpoint || P.ep;
+    if (ep) await call("/notif/unsub", { endpoint: ep }).catch(() => null);
+    try { await sub?.unsubscribe(); } catch { /* the server row is already gone */ }
+  })();
+  await Promise.race([work, new Promise((z) => setTimeout(z, 4000))]);
+}
 // Loads the switches and this device's state (Settings opened on Notifications, and once at start for the sound switch).
 export async function nfLoad(force = false) {
-  if (!D?.live) { P.loaded = true; return; }
+  if (!D?.live) {
+    P.loaded = true;
+    if (!P.list.length) { const d = Date.now(), day = 864e5; P.list = [   // sandbox: sample rows so the list can be seen
+      { id: "s1", kind: "desktop", name: "Mac app", created_at: d - 40 * day, last_at: null, seen_at: d - 3600e3, this_device: true },
+      { id: "s2", kind: "browser", name: "Chrome on Mac", created_at: d - 90 * day, last_at: d - 2 * day, seen_at: null, this_device: false },
+      { id: "s3", kind: "phone", name: "Android app", created_at: d - 12 * day, last_at: d - 600e3, seen_at: null, this_device: false },
+      { id: "s4", kind: "browser", name: "Chrome or another Chromium browser", created_at: null, last_at: null, seen_at: null, this_device: false }]; }
+    return;
+  }
   if (P.loaded && !force) return;
   if (inApp()) { appListen(); await appPermNow(); }
   const native = inApp() || inDesktop();
@@ -264,10 +335,11 @@ export async function nfLoad(force = false) {
   if (!d || d.error) return;
   await readLast(); P.hasSub = !!(ep && d.push?.this_device); P.devices = Number(d.push?.devices || 0);
   P.prefs = d.prefs; P.key = d.push?.key || null; P.app = !!d.push?.app; P.texting = !!d.texting; P.loaded = true;
-  if (inDesktop()) { P.hasSub = lsGet(DESK) === "1" && Notification.permission === "granted"; if (P.dev !== "busy") P.dev = P.hasSub ? "on" : "off"; }
+  if (inDesktop()) { P.hasSub = lsGet(DESK) === "1" && Notification.permission === "granted"; if (P.dev !== "busy") P.dev = P.hasSub ? "on" : "off"; if (P.hasSub) await deskRegister(); }
   else if (P.dev !== "busy" && P.dev !== "test") { P.dev = ep && d.push?.this_device ? "on" : "off"; P.ep = ep && d.push?.this_device ? ep : ""; }
   P.why = P.dev === "on" ? "" : deviceWhy();
   D.repaint();
+  void loadDevices();
   heal();
   autoAsk();
 }
@@ -328,10 +400,24 @@ export function nfHtml(): string {
     <h3>This device</h3>
     <div class="sc nfdev">${row("", "Notifications on this device", devSub, devRight)}
       ${P.dev === "on" || P.dev === "test" ? `<div class="sfoot nffoot"><button type="button" class="sa" data-nftest${P.dev === "test" ? " disabled" : ""}>${P.dev === "test" ? "Sending…" : "Send a test"}</button>${any ? "" : `<span class="nfhint">Both switches above are off, so only tests come through.</span>`}</div>` : ""}${diagHtml()}</div>
+    ${devicesHtml()}
     ${D.texting ? `<h3>By text</h3>
     <div class="sc">${P.texting || !D.live ? row("", "Also text me when a task needs you", "Only when you're not watching that task in the app", sw("needs_text", p.needs && p.needs_text, "Also text me when a task needs you", !p.needs))
       : row("", "Also text me when a task needs you", "Set up Texting first, then switch this on.", `<button type="button" class="sa blue" data-sgo="texting">Set up</button>`)}</div>` : ""}
     <p class="sfine">In the app, tasks that need you always get a dot. Notifications on this device show unless you're looking at that very task.</p>`;
+}
+const acWhen = (t: number) => { const d = Math.floor((Date.now() - t) / 864e5); return d < 1 ? "today" : d < 2 ? "yesterday" : new Date(t).toLocaleDateString([], { month: "short", day: "numeric" }); };
+function devicesHtml(): string {
+  if (!D || !P.list.length) return "";
+  const rows = P.list.map((x) => {
+    const bits = [x.created_at ? `Signed up ${acWhen(x.created_at)}` : "",
+      x.kind === "desktop" ? (x.seen_at ? `Last opened ${when(x.seen_at)}` : "") : x.last_at ? `Last notification ${when(x.last_at)}` : "No notification delivered yet"].filter(Boolean);
+    const right = `<button type="button" class="sa mute" data-nfrm="${esc(x.id)}"${P.rm ? " disabled" : ""}>${P.rm === x.id ? "Removing…" : "Remove"}</button>`;
+    return D!.srow("", `${esc(x.name)}${x.this_device ? `<em class="stag acthis">This device</em>` : ""}`, esc(bits.join(" · ")), right, " data-nfdevrow");
+  }).join("");
+  const mac = P.list.some((x) => x.kind === "desktop") && P.list.some((x) => x.kind === "browser" && / on Mac/.test(x.name));
+  return `<h3>Devices signed up${P.list.length > 1 ? ` <span class="h3n">${P.list.length}</span>` : ""}</h3><div class="sc">${rows}</div>
+    <p class="sfine">Each device here gets a notification when a task needs you or finishes. Remove one you don't use any more.${mac ? " The Mac app and a browser on a Mac are both listed, so a Mac that has both can show each notification twice. Remove the browser if you only use the Mac app." : ""}</p>`;
 }
 async function toggle(k: keyof Prefs | "device") {
   if (!D) return;
@@ -395,12 +481,13 @@ export function nfInit(deps: Deps) {
   document.addEventListener("click", (e) => {
     const t = e.target as HTMLElement, b = t.closest<HTMLElement>("[data-nf]");
     if (b) { e.preventDefault(); if (!(b as HTMLButtonElement).disabled) toggle(b.dataset.nf as any); return; }
-    if (t.closest("[data-nftest]")) { e.preventDefault(); deviceTest(); }
+    if (t.closest("[data-nftest]")) { e.preventDefault(); deviceTest(); return; }
+    const rm = t.closest<HTMLElement>("[data-nfrm]"); if (rm) { e.preventDefault(); if (!(rm as HTMLButtonElement).disabled) void removeDevice(rm.dataset.nfrm!); }
   });
   // Browsers only let a page play sound after a tap or key: get the audio ready on the first one.
   const wake = () => { audio(); removeEventListener("pointerdown", wake, true); removeEventListener("keydown", wake, true); };
   addEventListener("pointerdown", wake, true); addEventListener("keydown", wake, true);
-  if (!D.live) return;
+  if (!D.live) { void nfLoad(); return; }
   nfLoad();
   // From the service worker: "which task is on screen?", a push for the task you're looking at (chime), what a push did
 // (diagnostics), or a tapped notification (open that task here).

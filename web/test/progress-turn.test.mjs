@@ -40,4 +40,17 @@ assert.equal(waiting('purchase_wait', false), 'Waiting on you to approve in Link
 assert.equal(waiting('login', false), 'Subagent working'); assert.equal(waiting('purchase', true) === 'Needs your answer', true);
 assert.equal(waiting(null, false), 'Subagent working'); assert.equal(waiting(null, true), 'Needs your answer');
 console.log('PASS progress turn: the row shows only the current turn\'s helper; an older open helper stays out of it');
+// Newest turn finished, an older turn's helper still runs, Primary idle ("Subagent working"): the row opens that helper, never the finished card.
+T.tkEvent('s', '2', {t: 'card_open', card: card('old', 100, 'complete')});
+T.tkEvent('s', '2', helper(5, 'Compare linked phone', 'running', 'old'));
+T.tkEvent('s', '2', {t: 'card_open', card: card('new', 200, 'complete')});
+const idle = T.IDLE_HELPER_LINE, row2 = p => T.tkProgress('s', '2', 'Skipper', p);
+r = row2(idle); assert.match(r, /data-tkhelper="5"/); assert.match(r, /Compare linked phone/); assert.doesNotMatch(r, /data-tkcard/);
+assert.equal((r.match(/<span class="tp-orb">/g) || []).length, 1);
+// Primary working: the older helper stays out.
+r = row2('Working'); assert.doesNotMatch(r, /data-tkhelper|Compare linked phone/);
+// Helper not known on the client yet: no link to the finished card.
+r = T.tkProgress('s', '3', 'Skipper', idle); assert.doesNotMatch(r, /data-tkcard|data-tkhelper/);
+T.tkEvent('s', '3', {t: 'card_open', card: card('fin', 200, 'complete')});
+r = T.tkProgress('s', '3', 'Skipper', idle); assert.doesNotMatch(r, /data-tkcard|data-tkhelper/);
 process.exit(0);

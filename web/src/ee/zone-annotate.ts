@@ -29,7 +29,7 @@ export type AnnDeps = {
   note: (title: string, sub: string) => void;
   busy: () => boolean;   // the helper is changing the file: no marks now
   early?: boolean;   // the screenshot of a unit is taken when its first mark is made (a deck: the slide may be gone by the time of the send)
-  shot?: (unit: number, band: { y: number; h: number } | null) => Promise<Shot | null>;
+  shot?: (unit: number, band: { y: number; h: number; x?: number; w?: number } | null) => Promise<Shot | null>;
   under?: (unit: number, r: { x: number; y: number; w: number; h: number }) => Promise<El[]>;   // the elements under a point or a box (an HTML file)
   wheel?: (dx: number, dy: number) => void;   // the wheel over a web page while the Pencil is on: scroll the page
 };
@@ -155,7 +155,7 @@ function makeMark(h: Host, kind: "point" | "box", x: number, y: number, w: numbe
 }
 function addMark(h: Host, kind: "point" | "box", x: number, y: number, w: number, hh: number) {
   const unit = h.spec.unit();
-  if (!A.marks.some(m => m.unit === unit) && new Set(A.marks.map(m => m.unit)).size >= MAX_UNITS) { A.d?.note(`That's the most ${A.d.kind === "deck" ? "slides" : "pages"}`, `Send these marks, then mark more.`); return; }
+  if (!A.marks.some(m => m.unit === unit) && new Set(A.marks.map(m => m.unit)).size >= MAX_UNITS) { A.d?.note(`That's the most ${A.d.kind === "deck" ? "slides" : A.d.kind === "sheet" ? "sheets" : "pages"}`, `Send these marks, then mark more.`); return; }
   push(makeMark(h, kind, x, y, w, hh));
 }
 function push(m: Mark, keepEl = false) {
@@ -325,14 +325,18 @@ async function pieces(marks: Mark[], shots: Map<number, Promise<Shot | null>>, d
     try {
       if (A.img) shot = { canvas: A.img as any, x: 0, y: 0, w: A.nw, h: A.nh };
       else if (shots.has(unit)) shot = await shots.get(unit)!;
-      else if (d.kind === "page") {   // the band of the page that holds the marks, at least one screen tall
+      else if (d.kind === "page" || d.kind === "sheet") {   // the band of the page (or the part of a sheet) that holds the marks, at least one screen tall
         const host = [...A.hosts.values()][0], vh = host ? viewOf(host).h : sh, y0 = Math.max(0, Math.min(...ms.map(m => m.y)) - 60), y1 = Math.min(sh, Math.max(...ms.map(m => m.y + m.h)) + 60);
         let top = y0, hgt = Math.max(y1 - y0, Math.min(vh, sh)); if (hgt > vh * 3) hgt = vh * 3; if (top + hgt > sh) top = Math.max(0, sh - hgt);
-        shot = await d.shot!(unit, { y: top, h: hgt });
+        if (d.kind === "sheet") {   // a sheet is wide as well as tall: the same rule across
+          const vw = host ? viewOf(host).w : sw, x0 = Math.max(0, Math.min(...ms.map(m => m.x)) - 60), x1 = Math.min(sw, Math.max(...ms.map(m => m.x + m.w)) + 60);
+          let left = x0, wid = Math.max(x1 - x0, Math.min(vw, sw)); if (wid > vw * 3) wid = vw * 3; if (left + wid > sw) left = Math.max(0, sw - wid);
+          shot = await d.shot!(unit, { y: top, h: hgt, x: left, w: wid });
+        } else shot = await d.shot!(unit, { y: top, h: hgt });
       } else shot = await d.shot!(unit, null);
     } catch { shot = null; }
     if (shot) region = { x: shot.x, y: shot.y, w: shot.w, h: shot.h };
-    else if (d.kind === "page") { const y0 = Math.max(0, Math.min(...ms.map(m => m.y)) - 60), y1 = Math.min(sh, Math.max(...ms.map(m => m.y + m.h)) + 60); region = { x: 0, y: y0, w: sw, h: Math.max(60, y1 - y0) }; }
+    else if (d.kind === "page" || d.kind === "sheet") { const y0 = Math.max(0, Math.min(...ms.map(m => m.y)) - 60), y1 = Math.min(sh, Math.max(...ms.map(m => m.y + m.h)) + 60), x0 = d.kind === "sheet" ? Math.max(0, Math.min(...ms.map(m => m.x)) - 60) : 0, x1 = d.kind === "sheet" ? Math.min(sw, Math.max(...ms.map(m => m.x + m.w)) + 60) : sw; region = { x: x0, y: y0, w: Math.max(60, x1 - x0), h: Math.max(60, y1 - y0) }; }
     out.push({ unit, shot, region, marks: ms });
   }
   return out;

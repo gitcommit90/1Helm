@@ -418,7 +418,7 @@ const pump = async (r, guard = 40) => { let n = 0; while (r.alarmAt() != null &&
   const realPut = WS.put;
   WS.put = async (key, ...a) => { if (/\/state-\d+$/.test(key) && ++injected % 5 === 0) throw new Error("injected: the state write failed"); return realPut(key, ...a); };
   WS.resumeMultipartUpload = (key, uid) => { const u = realUp(key, uid), cp = u.complete; u.complete = async (...a) => { const o = await cp(...a); if (++completions === 1) throw new Error("injected: a crash right after the first zip was completed"); return o; }; return u; };
-  try { for (; runs < 3000 && !done; runs++) { const q = await X.runExport(env, id, { budgetMs: 30, now: () => b0 + (kk += 1), mem: PAR, ...SPLIT }); if (q.done) done = q; else if (q.error) errs++; else if (q.paused) pauses++; } }
+  try { for (; runs < 3000 && !done; runs++) { const q = await X.runExport(env, id, { budgetMs: 40, now: () => b0 + (kk += 1), mem: PAR, ...SPLIT }); if (q.done) done = q; else if (q.error) errs++; else if (q.paused) pauses++; } }
   finally { WS.resumeMultipartUpload = realUp; WS.put = realPut; }
   assert.ok(done && done.parts === base.n, JSON.stringify(done)); assert.ok(errs >= 2 && pauses > 5, `${errs} errors, ${pauses} pauses`);
   for (let k = 1; k <= base.n; k++) { const g = normZip(k === 1 ? `exports/${T2}/${id}.zip` : `exports/${T2}/${id}-part${k}.zip`, `c${k}.zip`); assert.deepEqual(Object.keys(g), Object.keys(base[k])); for (const e of Object.keys(g)) assert.equal(g[e], base[k][e], `part ${k}: ${e}`); }

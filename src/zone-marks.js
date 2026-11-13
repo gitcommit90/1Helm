@@ -9,7 +9,7 @@
 const clip = (s, n) => String(s ?? "").slice(0, n);
 const one = (s, n) => clip(String(s ?? "").replace(/\s+/g, " ").trim().replace(/"/g, "'"), n);
 const finite = (v, lim = 1e7) => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= lim;
-const KINDS = ["image", "deck", "page", "report", "doc"];
+const KINDS = ["image", "deck", "page", "report", "doc", "sheet"];
 const r1 = (v) => Math.round(v * 10) / 10, r2 = (v) => Math.round(v * 100) / 100;
 
 // One element the bridge named. → clean object or null.
@@ -66,7 +66,7 @@ export function marksStored(a) {
 }
 
 // ---- the plain lines the helper reads ----
-const unitWord = (kind) => (kind === "deck" ? "slide" : kind === "report" || kind === "doc" ? "page" : "");
+const unitWord = (kind) => (kind === "deck" ? "slide" : kind === "sheet" ? "sheet" : kind === "report" || kind === "doc" ? "page" : "");
 const num = (v) => String(Math.round(Number(v) * 10) / 10).replace(/\.0$/, "");
 const pn = (v) => String(Math.round(Number(v) * 100) / 100);
 // Where one mark is: kind, slide or page, the pixels and the percent. e.g. "a point on slide 2 at x 640, y 312 (33.3% across, 28.9% down)".
@@ -81,7 +81,7 @@ function elPhrase(e) {
   const at = e.slot ? ` (data-slot "${e.slot}"${e.n ? `, number ${e.n + 1}` : ""})` : e.sel ? ` (path ${e.sel})` : "";
   return `${what}${at}${e.text ? `, reading "${e.text}"` : ""}`;
 }
-const spaceWord = { deck: "a slide is 1920 by 1080", page: "a web page's own pixels, from its top left corner", report: "a PDF page's own points (72 to an inch)", doc: "a page's own points (72 to an inch)", image: "the picture's own pixels" };
+const spaceWord = { deck: "a slide is 1920 by 1080", page: "a web page's own pixels, from its top left corner", report: "a PDF page's own points (72 to an inch)", doc: "a page's own points (72 to an inch)", image: "the picture's own pixels", sheet: "the sheet's own pixels from its top left corner, at 100% zoom (the cells under each mark are named)" };
 // The whole note for a send of marks on a Zone file. src: the Library file row (id, name); marked: the screenshot's row.
 export function marksNote(an, src, marked) {
   const z = an.zone || {}, kind = z.kind || "page", of = z.of && unitWord(kind) ? `, ${z.of} ${unitWord(kind)}s` : "";

@@ -4,7 +4,8 @@
 // same Library file and keeps a small record of the edits so the helper knows before it rebuilds the deck from its .src folder.
 import { extOf } from "./files.js";
 import { stPut, stDelete } from "./storage.js";
-import { applyDocxEdits, isDocx, DOCX_MAX } from "./zone-docx.js";
+import { applyDocxEdits, isDocx, DOCX_MAX, OPS_MAX } from "./zone-docx.js";
+import { applySheetEdits, isSheet, SHEET_MAX } from "./zone-sheet.js";
 
 export class ZoneError extends Error { constructor(status, message) { super(message); this.status = status; } }
 const bad = (m, status = 400) => { throw new ZoneError(status, m); };
@@ -255,8 +256,9 @@ export function zoneEditsLine(R, fileId) {
   const r = readRecord(R, fileId); if (!r || !r.edits.length) return "";
   let row; try { row = R.sql.exec("SELECT version,name FROM files WHERE id=? AND deleted=0", String(fileId)).toArray()[0]; } catch { return ""; }
   if (!row || Number(row.version || 1) !== Number(r.v)) return "";
-  const what = r.doc ? "document" : r.deck ? "deck" : "page", parts = [];
+  const what = r.sheet ? "spreadsheet" : r.doc ? "document" : r.deck ? "deck" : "page", parts = [];
   for (const e of r.edits.slice(-30)) {
+    if (e.sheetEdit) { parts.push(`cell ${q1(e.ref)} of the sheet "${q1(clip(e.sheet, 40))}" ${e.was ? `("${q1(clip(e.was, 60))}") ` : ""}is now "${q1(clip(e.now, 120))}"`); continue; }
     const where = e.doc ? `a paragraph${e.slide ? ` on page ${e.slide}` : ""}` : `${e.slide ? `slide ${e.slide} ` : ""}${e.slot || (e.sel ? `element ${e.sel}` : e.op === "bg" ? "background" : "page")}`;
     parts.push(e.op === "text" ? `${where} "${q1(clip(e.was, 80))}" is now "${q1(clip(e.now, 120))}"` : e.op === "image" ? `${where} has a new picture` : e.op === "bg" ? `${where} is now ${q1(e.now)}` : `${where} style ${q1(e.now)}`);
   }
@@ -278,15 +280,18 @@ export async function zoneEditFile(R, fileId, base, body) {
   if (Number(base) !== cur) return fail(409, "The file changed since you opened it.", { version: cur });
   if (body?.restore != null) return zoneRestore(R, row, body.restore);
   const edits = body?.edits;
-  if (!Array.isArray(edits) || edits.length < 1 || edits.length > 20) return fail(400, "Send between 1 and 20 edits.");
   const docx = isDocx(row.name);
-  if (!docx && !["html", "htm"].includes(extOf(row.name))) return fail(400, "Only a page, a deck (.html) or a Word document (.docx) can be edited here.");
+  if (!Array.isArray(edits) || edits.length < 1 || edits.length > (docx ? OPS_MAX : 20) || (docx && edits.filter((e) => e?.op === "text").length > 20)) return fail(400, `Send between 1 and ${docx ? OPS_MAX : 20} edits.`);
+  const sheet = isSheet(row.name);
+  if (!docx && !sheet && !["html", "htm"].includes(extOf(row.name))) return fail(400, "Only a page, a deck (.html), a Word document (.docx) or a spreadsheet (.xlsx, .csv) can be edited here.");
   let out;
   try {
     if (docx && Number(row.bytes) > DOCX_MAX) return fail(413, "That document is too big to edit here.");
+    if (sheet && Number(row.bytes) > SHEET_MAX) return fail(413, "That spreadsheet is too big to edit here.");
     const o = await R.env.WS.get(row.r2key); if (!o) return fail(404, `"${row.name}" is missing from storage.`);
     const buf = new Uint8Array(await o.arrayBuffer());
     if (docx) { const d = await applyDocxEdits(buf, edits); out = { bytes: d.bytes, recs: d.recs, deck: false, doc: true }; }
+    else if (sheet) { const d = await applySheetEdits(buf, row.name, edits); out = { bytes: d.bytes, recs: d.recs, deck: false, doc: true, sheet: true }; }
     else out = applyEdits(new TextDecoder().decode(buf), edits);
   } catch (e) { if (e instanceof ZoneError) return fail(e.status, e.message); throw e; }
   const bytes = out.doc ? out.bytes : new TextEncoder().encode(out.text), v = cur + 1, tenant = R.get("tenant"), channel = R.get("channel"), key = `t/${tenant}/files/${channel}/${row.id}.v${v}`;
@@ -296,9 +301,9 @@ export async function zoneEditFile(R, fileId, base, body) {
   if (!now || Number(now.version || 1) !== cur) { await stDelete(R.env, [{ key, size: bytes.length }]).catch(() => {}); return fail(409, "The file changed since you opened it.", { version: now ? Number(now.version || 1) : null }); }
   await R.putVersion(now, { key, bytes: bytes.length, synced: 0 });
   const old = readRecord(R, id), keep = old && Number(old.v) === cur ? old.edits : [];
-  R.put(KEY(id), JSON.stringify({ v, deck: out.deck, ...(out.doc ? { doc: true } : {}), at: Date.now(), edits: [...keep, ...out.recs].slice(-30) }));
+  R.put(KEY(id), JSON.stringify({ v, deck: out.deck, ...(out.sheet ? { sheet: true } : out.doc ? { doc: true } : {}), at: Date.now(), edits: [...keep, ...out.recs].slice(-30) }));
   await R.fileUpdated(now, { r2key: key, bytes: bytes.length, path: null }, {}, "");
-  if (out.doc) { try { const pv = R.filePreview(id).catch(() => {}); R.ctx?.waitUntil?.(pv); } catch {} }   // the page pictures of the new version are made now, so the canvas finds them ready
+  if (out.doc && !out.sheet && edits.some((e) => e?.op === "text")) { try { const pv = R.filePreview(id).catch(() => {}); R.ctx?.waitUntil?.(pv); } catch {} }   // a retyped paragraph (the print view's way) makes the page pictures of the new version now, so the canvas finds them ready; the editable view saves often, and the print view makes its pictures when it is opened
   try {   // a running computer gets the bytes now (appFileSave does the same); else the next file sync does
     if (R.env.CHANNEL_COMPUTER) { const C = R.computer(); if ((await C.sleepState())?.running) { const x = await C.putFile(`files/${row.name}`, key); if (x?.ok) R.sql.exec("UPDATE files SET synced=1 WHERE id=?", id); } }
   } catch (e) { console.log("zone edit to computer", String(e?.message || e).slice(0, 120)); }
