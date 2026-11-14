@@ -40,8 +40,8 @@ export const hasCopies = (sql) => sql.exec("SELECT 1 FROM sqlite_master WHERE ty
 const q = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
 
 export const residentPdf = {
-  pcRow(id) { this.sql.exec(TABLE); return this.sql.exec("SELECT * FROM file_pdf_copies WHERE file_id=?", String(id)).toArray()[0] || null; },
-  pcShared() { if (!this._pcIds) { this.sql.exec(TABLE); this._pcIds = new Set(this.sql.exec("SELECT file_id FROM file_pdf_copies WHERE origin='shared'").toArray().map((r) => r.file_id)); } return this._pcIds; },
+  pcRow(id) { if (!hasCopies(this.sql)) return null; return this.sql.exec("SELECT * FROM file_pdf_copies WHERE file_id=?", String(id)).toArray()[0] || null; },
+  pcShared() { if (!this._pcIds) { this._pcIds = new Set(hasCopies(this.sql) ? this.sql.exec("SELECT file_id FROM file_pdf_copies WHERE origin='shared'").toArray().map((r) => r.file_id) : []); } return this._pcIds; },
   async pcDrop(row) { if (!row) return; this.sql.exec("DELETE FROM file_pdf_copies WHERE file_id=?", row.file_id); this._pcIds = null; try { await stDelete(this.env, [{ key: row.key, size: row.bytes ?? null }]); } catch (e) { console.log("pdf copy", e.message); } },
   // The file is gone (deleteFile): its PDF copy goes with it.
   async dropPdfCopy(id) { try { if (!hasCopies(this.sql)) return; await this.pcDrop(this.pcRow(id)); } catch (e) { console.log("drop pdf copy", e.message); } },
@@ -72,7 +72,7 @@ export const residentPdf = {
     let r; try { r = await this.computer().officeToPdf(f.r2key, key, extOf(f.name)); } catch (e) { return { error: `Couldn't make a PDF: the computer couldn't start (${String(e?.message || e).slice(0, 120)})`, status: 503 }; }
     if (!r.ok) return { error: r.storage_full ? "Your storage is full, so there's no room for a PDF." : `Couldn't make a PDF: ${r.error}`, status: r.storage_full ? 507 : 422 };
     if (!(await this.fileRow(f.id))) { try { await stDelete(this.env, [{ key, size: r.bytes }]); } catch {} return { error: "No such file.", status: 404 }; }
-    this.sql.exec("INSERT INTO file_pdf_copies (file_id, src_key, key, bytes, name, origin, at) VALUES (?,?,?,?,?,'made',?) ON CONFLICT(file_id) DO UPDATE SET src_key=excluded.src_key, key=excluded.key, bytes=excluded.bytes, name=excluded.name, origin='made', at=excluded.at", f.id, f.r2key, key, r.bytes, previewName(f.name), Date.now());
+    this.sql.exec(TABLE); this.sql.exec("INSERT INTO file_pdf_copies (file_id, src_key, key, bytes, name, origin, at) VALUES (?,?,?,?,?,'made',?) ON CONFLICT(file_id) DO UPDATE SET src_key=excluded.src_key, key=excluded.key, bytes=excluded.bytes, name=excluded.name, origin='made', at=excluded.at", f.id, f.r2key, key, r.bytes, previewName(f.name), Date.now());
     this._pcIds = null;
     if (old && old.key !== key) { try { await stDelete(this.env, [{ key: old.key, size: old.bytes ?? null }]); } catch (e) { console.log("old pdf copy", e.message); } }
     return { key, bytes: r.bytes };
@@ -114,7 +114,7 @@ export const residentPdf = {
   },
   async setSharedCopy(src, { key, bytes, name }) {
     const old = this.pcRow(src.id);
-    this.sql.exec("INSERT INTO file_pdf_copies (file_id, src_key, key, bytes, name, origin, at) VALUES (?,?,?,?,?,'shared',?) ON CONFLICT(file_id) DO UPDATE SET src_key=excluded.src_key, key=excluded.key, bytes=excluded.bytes, name=excluded.name, origin='shared', at=excluded.at", src.id, src.r2key, key, bytes, name || previewName(src.name), Date.now());
+    this.sql.exec(TABLE); this.sql.exec("INSERT INTO file_pdf_copies (file_id, src_key, key, bytes, name, origin, at) VALUES (?,?,?,?,?,'shared',?) ON CONFLICT(file_id) DO UPDATE SET src_key=excluded.src_key, key=excluded.key, bytes=excluded.bytes, name=excluded.name, origin='shared', at=excluded.at", src.id, src.r2key, key, bytes, name || previewName(src.name), Date.now());
     this._pcIds = null;
     if (old && old.key !== key) { try { await stDelete(this.env, [{ key: old.key, size: old.bytes ?? null }]); } catch (e) { console.log("old pdf copy", e.message); } }
   },
