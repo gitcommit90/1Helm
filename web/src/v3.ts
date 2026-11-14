@@ -634,11 +634,14 @@ const artHref = (ch: Channel, a: Art) => a.fid ? fileUrl(ch.slug, a.fid) : `#/${
 const toArt = (f: FileV): Art => ({ name: f.name, kind: fkind(f.name, f.mime), sid: f.session, at: f.at, size: KB(f.bytes), fid: f.id, you: f.source === "upload", mime: f.mime, bytes: f.bytes, tags: f.tags, tx: f.tx, ver: f.version, pdfc: f.pdf_copy });
 // Library files the person deleted: hidden at once, and kept hidden while the delete request runs, so a reload from the server can't bring them back.
 const FILE_DEL = new Set<string>();
+// A list fetched before an upload finished can land after the upload's row was added; keep rows added in the last 30 s so it can't drop them.
+const FILE_NEW = new Map<string, number>();
 function setFiles(ch: Channel, files: FileV[]) {
   if (FILE_DEL.size) files = files.filter(f => !FILE_DEL.has(f.id));
+  const keep = (LIB[ch.slug] || []).filter(a => Date.now() - (FILE_NEW.get(a.fid!) || 0) < 3e4 && !files.some(f => f.id === a.fid));
   const was = LIB[ch.slug] || [], sig = (l: Art[]) => l.map(a => a.fid).sort().join(",");
   const bumped = files.filter(f => noteVer(ch.slug, f));
-  const next = files.map(toArt); next.forEach(a => { if (was.length && !was.some(w => w.fid === a.fid)) a.fresh = true; });
+  const next = [...files.map(toArt), ...keep]; next.forEach(a => { if (was.length && !was.some(w => w.fid === a.fid)) a.fresh = true; });
   const changed = sig(was) !== sig(next) || bumped.length > 0; LIB[ch.slug] = next;
   if (bumped.length) fileBumped(ch.slug, bumped, true);   // found by the list poll: another tab, a helper with no open stream, a reload
   return changed;
@@ -830,7 +833,7 @@ async function upload(key: string | null, slug: string, list: File[]) {
       if (u.gone) { api(`/res/${slug}/files/${f.id}/delete`, {}).catch(() => {}); return; }   // removed while the server was finishing
       if (f.image) { const j = await smallJpeg(file); if (j) await fetch(`${fileBase(slug, f.id)}/view`, { method: "POST", credentials: "same-origin", headers: { "content-type": "image/jpeg" }, body: j }).catch(() => {}); }
       if (u.gone) { api(`/res/${slug}/files/${f.id}/delete`, {}).catch(() => {}); return; }
-      noteVer(slug, f); u.f = f; u.pct = 100; done.push(f); if (!key) (LIB[slug] ??= []).unshift({ ...toArt(f), fresh: true });
+      noteVer(slug, f); u.f = f; u.pct = 100; done.push(f); if (!key) FILE_NEW.set(f.id, Date.now()), (LIB[slug] ??= []).unshift({ ...toArt(f), fresh: true });
     } catch (e: any) { if (u.gone) return; u.err = e.message; }
     if (key) upPaint(key); else { refresh(); trayPaint(); }   // each file swaps from its upload row to the real row as soon as it's in
   }));

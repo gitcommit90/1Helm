@@ -1,3 +1,17 @@
+# Source update: 2026-11-14 (spreadsheets and Word documents in the Zone, PDF copies, notification devices)
+
+## Zone, files and notifications
+
+The Worker source is reconciled from `def1138e8ab659519e501169e5fe5d4f5aa68549` to `4d6624251b51bd012f0f6028dd01acf0cb6aa8dd`. The web source is reconciled from `0519f93318a3d657dc999cb7a6a76be027ce4209` to `656934ed784c741f75f9bfb20b90e5569f253c1d`. Spreadsheets (.xlsx and .csv) open in the Zone as a grid that recalculates formulas, and cell edits are saved by `src/zone-sheet.js` with ExcelJS. Word documents edit in the Zone like a normal document. A PDF that the helper shares with its editable file is kept as that file's PDF copy (`src/pdf-pair.js`), and every document, deck and spreadsheet can be downloaded as a PDF. Settings lists every device signed up for notifications with a Remove button, and signing out cancels that device's sign-up (migration `0084_push_devices.sql`). The Android app shows a note when a newer version is out, a finished task sends one push until it is opened, an open watch pane no longer keeps the computer awake, and a temporary Cloudflare failure shows a plain message. A file that has just finished uploading stays in the Library when an older list refresh arrives.
+
+HyperFormula (GPL-3.0-only) and ExcelJS (MIT) are new dependencies, listed in `THIRD-PARTY-NOTICES.md`. The spreadsheet code is part of the AGPL-3.0 core. The Android app is version 1.6.7 in `apps/`. The web bundle is rebuilt from the public source, and `zone/sheet.js` and `zone/doc.js` are new files in it.
+
+## Not in the public source
+
+The private release, operations and website files, the dev checks, and the push relay service are not part of this source. Phone calling was removed before it reached the public source.
+
+Run `npm run test:core`, `npm run test:sync`, `npm run test:runtime`, `npm run test:web`, `npm run check:migrations`, `npm run build` and a Worker dry run with the example configuration. Synthetic local checks do not establish live provider, container or device behavior in another operator's environment. Follow [upgrade instructions](upgrade.md) and apply the new D1 migration before deploying.
+
 # Source update: 2026-10-21 (memory on Mem0, turn traces, gateway log tags)
 
 ## Memory runs in the Worker
