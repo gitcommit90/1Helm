@@ -10,7 +10,7 @@ const CHROME_MAC='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
 const MACAPP=CHROME_MAC+' 1HelmDesktop/1.6.6';
 const NOW=Date.now(), DAY=864e5;
 const LIST=[
-  {id:'d1',kind:'desktop',name:'Mac app',created_at:NOW-40*DAY,last_at:null,seen_at:NOW-3600e3,this_device:false},
+  {id:'d1',kind:'desktop',name:'Mac app',created_at:NOW-40*DAY,last_at:null,seen_at:NOW-1000,this_device:false},
   {id:'b1',kind:'browser',name:'Chrome on Mac',created_at:NOW-90*DAY,last_at:NOW-2*DAY,seen_at:null,this_device:false},
   {id:'p1',kind:'phone',name:'Android app',created_at:NOW-12*DAY,last_at:null,seen_at:null,this_device:false}];
 async function scenario({ua,list=LIST,store={},unsubbed}){
