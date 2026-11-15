@@ -1,3 +1,17 @@
+# Source update: 2026-11-15 (computer save after the reply, stopped to-do lists, resumed turns, Tailscale approval in phone apps)
+
+## Turns and phone apps
+
+The Worker source is reconciled from `0305620325b541f7525a33bd37d295490f119747` to `445578526dfe6a673ecbabd5d9e06a44fe95469d`. The web source is reconciled from `b01a2a7fde1c9d88d5a8895ec60f59bdfab6dd21` to `90a8b3c059dd4aff92593f737657f522bb540fd7`. When a turn used the computer, the end-of-turn save now runs in the background after the turn row is stored, so the turn no longer holds its task queue while the upload runs and keeps its row if the object restarts meanwhile. A to-do list that was last updated before a task was stopped no longer counts as unfinished work to resume. A turn that is already resuming keeps its due time when the object restarts, instead of the time being pushed back each time. In the phone apps, Connect Tailscale opens the approval page in the system browser and no longer opens a blank window first.
+
+`test/turn-save.test.mjs` covers the first three changes and is part of `npm run test:runtime`. The web bundle in `app-assets/app-static` is rebuilt from the public source and `APP_V` is 368.
+
+## Not in the public source
+
+The private release, operations and website files, the dev and browser image tests, the public-sync tooling and the deployment configuration are not part of this source.
+
+Run `npm run test:core`, `npm run test:sync`, `npm run test:runtime`, `npm run test:web`, `npm run check:migrations`, `npm run build` and a Worker dry run with the example configuration. Synthetic local checks do not establish live provider, container or device behavior in another operator's environment.
+
 # Source update: 2026-11-15 (own AI service retries, browser time limits, faster memory search, math in replies)
 
 ## Own AI services, browser and memory

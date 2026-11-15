@@ -253,11 +253,13 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
       // An unfinished write/exec: the old instance may still be finishing that call; give it a moment to land before we look.
       const open = this.sql.exec("SELECT cls FROM turn_effects WHERE card=? AND status='started'", r.card).toArray();
       const delay = open.some((x) => x.cls === "write" || x.cls === "once") ? Number(this.env.RESUME_WRITE_DELAY_MS ?? 20e3) : Number(this.env.RESUME_DELAY_MS ?? 1000);
-      this.sql.exec("UPDATE turn_runs SET status='resuming', resume_at=? WHERE card=?", now + delay, r.card);
+      // A row already resuming keeps its due time: recomputing it in every constructor pushes it out again when the object is evicted before the delay passes.
+      const due = r.status === "resuming" && r.resume_at ? r.resume_at : now + delay;
+      this.sql.exec("UPDATE turn_runs SET status='resuming', resume_at=? WHERE card=?", due, r.card);
       this.sql.exec("UPDATE cards SET status='resuming' WHERE id=?", r.card);
-      keep.add(r.card); wake = Math.min(wake ?? Infinity, now + delay);
+      keep.add(r.card); wake = Math.min(wake ?? Infinity, due);
       if (r.kind === "chat") {
-        (this._resuming ||= new Set()).add(r.session); if (!at.has(r.session)) at.set(r.session, now + delay);
+        (this._resuming ||= new Set()).add(r.session); if (!at.has(r.session)) at.set(r.session, due);
         // New messages that arrive while it's resuming join this card (steers), never a second turn beside it.
         if (r.session && !this.inputs.has(r.session)) this.inputs.set(r.session, this.pendOf(r.card, r.session));
       }

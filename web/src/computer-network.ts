@@ -1,4 +1,5 @@
 import { copyText } from "./clipboard";
+import { nativePlatform, openOutside } from "./native-shell";
 // Native computer connections. State comes from the trusted network controller;
 // this UI never derives membership from a login URL or an approval decision.
 export const NETWORK_SEC = "computer-network";
@@ -278,8 +279,9 @@ export function networkClick(target: HTMLElement) {
     // the trusted API supplies a validated login URL. GET/repaint never opens tabs.
     if (op === "tailscale_connect") {
       disconnectResult = null;
-      try { approvalWindow = typeof window.open === "function" ? window.open("about:blank", "_blank") : null; if (approvalWindow) { approvalWindow.opener = null; approvalWindow.document.title = "Opening Tailscale approval"; approvalWindow.document.body.textContent = "Preparing Tailscale approval for your 1HC computer…"; } } catch { approvalWindow = null; }
-      popupBlocked = !approvalWindow;
+      // A phone app's web view hands window.open to the system browser and keeps the blank document itself, so only browsers pre-open a window.
+      try { approvalWindow = !nativePlatform() && typeof window.open === "function" ? window.open("about:blank", "_blank") : null; if (approvalWindow) { approvalWindow.opener = null; approvalWindow.document.title = "Opening Tailscale approval"; approvalWindow.document.body.style.cssText = "margin:0;padding:32px;font:16px/1.5 system-ui,sans-serif;color:#222;background:#f4f3ef"; approvalWindow.document.body.textContent = "Preparing Tailscale approval for your 1HC computer…"; const w = approvalWindow; w.setTimeout(() => w.close(), 60000); } } catch { approvalWindow = null; }
+      popupBlocked = !approvalWindow && !nativePlatform();
     }
     D.render(); let directTailnet = false, reconcile = false;
     try {
@@ -290,7 +292,8 @@ export function networkClick(target: HTMLElement) {
       if (op === "tailscale_connect" && r?.state && N.value) {
         N.value = { ...N.value, tailscale: r }; directTailnet = true;
         const url = r.state === "awaiting_user_approval" ? loginUrl(r.login_url) : "";
-        if (url && approvalWindow && !approvalWindow.closed) { approvalWindow.location.replace(url); approvalWindow = null; }
+        if (url && nativePlatform()) openOutside(url);
+        else if (url && approvalWindow && !approvalWindow.closed) { approvalWindow.location.replace(url); approvalWindow = null; }
         else { approvalWindow?.close(); approvalWindow = null; }
       }
     }

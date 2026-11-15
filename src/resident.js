@@ -4804,8 +4804,6 @@ export class Resident extends DurableObject {
     { const sk = this.byokSkipNote(tc); if (sk) notes = notes ? `${notes}\n${sk}` : sk; }   // own AI key: what was skipped for credits
     drainModelUsage(tc, stats);   // optional post-completion notes may have paid usage before failing
     if (tc.extraCharge) { stats.charge += tc.extraCharge; tc.extraCharge = 0; }   // browser_task's own Ledger charges (already settled)
-    // A computer that was started must stay saved: end-of-turn save (the computer sleeps on its own after 60 s idle).
-    if (stats.computer_used) { try { await this.computer().save("turn"); } catch {} }
     tc.route = null;
     this.sql.exec("INSERT INTO turns (id,at,user_text,reply,steps,tool_calls,computer_used,computer_wait_ms,model_ms,total_ms,in_tok,cached_tok,out_tok,charge_nano,error,kind,workflow_id,trace,notes,ctx,checkpoints,step_in,engine,session,models,cache_write_tok,service) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", turn, t0, text, this.scrubKeys(reply), stats.steps, stats.tool_calls, stats.computer_used, stats.computer_wait_ms, stats.model_ms, Date.now() - t0, stats.in, stats.cached, stats.out, stats.charge, error, kind, opts.workflow_id ?? null, this.scrubKeys(diagnosticTrace(trace, tc.progressOmitted)), this.scrubKeys(notes), ctxMode, checkpoints, JSON.stringify(stepIn), engine, tc.session, JSON.stringify(stats.models), stats.cache_write, tc.service ?? null);
     // Stopped by the person or ended by an error: the reply carries none of what it found, so its lookups are kept as "unfinished work" (worklog.js).
@@ -4816,6 +4814,9 @@ export class Resident extends DurableObject {
     if (tc.stoppedTurn && tc.stoppedBy) this.sql.exec("UPDATE turns SET stop_by=? WHERE id=?", tc.stoppedBy, turn);
     if (att.length) this.sql.exec("UPDATE turns SET files=? WHERE id=?", JSON.stringify(att.map((f) => f.id)), turn);
     if (RS) this.sql.exec("UPDATE turns SET resumes=? WHERE id=?", RS.resumes || 1, turn);
+    // A computer that was started must stay saved (it sleeps on its own after 60 s idle). The turn row is already stored and the upload can take minutes,
+    // so it runs in the background: the turn neither holds its session queue nor loses its row if the object resets meanwhile. save.sh holds a lock, so it still runs one at a time.
+    if (stats.computer_used) this.ctx.waitUntil?.((async () => this.computer().save("turn"))().catch(() => {}));
     if (kind === "chat") this.tsTouch(tc.session);   // task search: this task's keyword rows follow (nothing happens before the first search)
     // Memory: the finished turn is appended to the task's Hindsight document for the day (hindsight-writers.js, HS_WRITERS).
     const fullText = stripInjectedMemory(kind === "chat" ? this.cardUserText(turn, text) : text);   // the first message plus what was added while it worked; memory 1Helm added to the turn is never retained (memory-block.js)

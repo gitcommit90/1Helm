@@ -79,7 +79,12 @@ const WAITING_TOOLS = new Set(["ask_user", "request_input", "interview", "send_p
 export function openWorkFacts(sql, { session, turn, since = 0 } = {}) {
   const all = (q, ...a) => { try { return sql.exec(q, ...a).toArray(); } catch { return []; } };
   const sid = String(session ?? "");
-  let items = []; try { items = JSON.parse(all("SELECT items FROM todos WHERE session=?", sid)[0]?.items || "[]"); } catch {}
+  let items = []; try {
+    const t = all("SELECT items, updated FROM todos WHERE session=?", sid)[0];
+    // A list last touched before the person stopped work in this session belongs to that stopped work, so it is not unfinished work to resume.
+    const stoppedAt = all("SELECT MAX(closed) c FROM cards WHERE session=? AND status='stopped'", sid)[0]?.c;
+    if (t && !(stoppedAt && t.updated < stoppedAt)) items = JSON.parse(t.items || "[]");
+  } catch {}
   const open = items.filter((x) => x && x.status !== "done");
   const running = [
     ...all("SELECT id FROM browser_jobs WHERE session=? AND status IN ('queued','running','stopping')", sid).map((r) => ({ kind: "browser job", id: r.id })),
