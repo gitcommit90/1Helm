@@ -1,0 +1,27 @@
+// node test/channel-active.test.mjs: a channel pulses while any task shows the working checkbox; the unread dot rule is untouched.
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {build} from 'esbuild';
+const load = async (entry, platform = 'neutral') => { const r = await build({entryPoints: [entry], bundle: true, write: false, format: 'esm', platform, logLevel: 'error'}); return import('data:text/javascript;base64,' + Buffer.from(r.outputFiles[0].contents).toString('base64')); };
+const {taskActive, channelActive} = await load('src/channel-active.ts');
+assert.equal(taskActive({state: 'working'}), true, 'Primary works');
+assert.equal(taskActive({state: 'idle', status: 'resolved', srv: {helpers: 1}}), true, 'helper runs after the reply');
+assert.equal(taskActive({state: 'idle', status: 'waiting', srv: {helpers: 1}}), false, 'waiting on the person');
+assert.equal(taskActive({state: 'working', done: true}), false, 'checked off');
+assert.equal(taskActive({state: 'idle', status: 'open'}), false, 'idle');
+assert.equal(channelActive([{state: 'idle'}, {state: 'working'}]), true);
+assert.equal(channelActive([{state: 'idle'}, {state: 'complete', done: true}]), false);
+assert.equal(channelActive([]), false);
+const {paintChannelDots} = await load('src/channel-dots.ts', 'browser');
+const mk = (cls, attrs = {}) => { const set = new Set(cls.split(' ')); return {attrs, dataset: {ch: attrs['data-ch']}, children: [], classList: {toggle: (c, on) => on ? set.add(c) : set.delete(c), has: c => set.has(c)}, getAttribute: k => attrs[k] ?? null, querySelector: () => null, querySelectorAll: () => []}; };
+const a = mk('ch', {'data-ch': 'one'}), b = mk('ch', {'data-ch': 'two'}), r = mk('chr', {href: '#/one'});
+const root = {querySelectorAll: sel => sel.startsWith('#rail') ? [a, b] : [r]};
+paintChannelDots(root, () => null, () => false, s => s === 'one');
+assert.equal(a.classList.has('act'), true); assert.equal(b.classList.has('act'), false); assert.equal(r.classList.has('act'), true, 'phone list row');
+paintChannelDots(root, () => null, () => false, () => false);
+assert.equal(a.classList.has('act'), false, 'clears when the work ends');
+const v3 = fs.readFileSync('src/v3.ts', 'utf8');
+assert.match(v3, /const rowLit = \(x: Session\) => !x\.done && !!x\.unread;/, 'unread dot rule unchanged');
+assert.equal((v3.match(/paintChannelDots\(document, chDotKind, chWorking, chActive\)/g) || []).length, 2);
+assert.match(fs.readFileSync('src/v3.css', 'utf8'), /prefers-reduced-motion:reduce\)\{\.ch\.act \.tile::after/);
+console.log('channel-active ok');

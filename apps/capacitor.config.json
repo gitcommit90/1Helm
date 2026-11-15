@@ -1,0 +1,58 @@
+{
+  "appId": "com.gitcommit90.onehelm.mobile",
+  "appName": "1Helm",
+  "webDir": "mobile-gateway",
+  "loggingBehavior": "none",
+  "backgroundColor": "#f3f2ef",
+  "zoomEnabled": false,
+  "appendUserAgent": " 1HelmMobile",
+  "server": {
+    "hostname": "localhost",
+    "iosScheme": "capacitor",
+    "androidScheme": "https",
+    "cleartext": false,
+    "errorPath": "error.html"
+  },
+  "ios": {
+    "contentInset": "never",
+    "preferredContentMode": "mobile",
+    "allowsLinkPreview": false,
+    "webContentsDebuggingEnabled": false,
+    "buildOptions": {
+      "signingStyle": "automatic",
+      "exportMethod": "app-store-connect"
+    }
+  },
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false,
+    "minWebViewVersion": 83,
+    "useLegacyBridge": false,
+    "buildOptions": {
+      "releaseType": "APK",
+      "signingType": "apksigner"
+    }
+  },
+  "plugins": {
+    "Keyboard": {
+      "resize": "native",
+      "resizeOnFullScreen": true
+    },
+    "SplashScreen": {
+      "launchShowDuration": 600,
+      "launchAutoHide": true,
+      "launchFadeOutDuration": 180,
+      "showSpinner": false,
+      "androidScaleType": "CENTER_INSIDE",
+      "layoutName": "launch_screen"
+    },
+    "StatusBar": {
+      "overlaysWebView": false,
+      "style": "LIGHT",
+      "backgroundColor": "#f3f2ef"
+    },
+    "PushNotifications": {
+      "presentationOptions": []
+    }
+  }
+}

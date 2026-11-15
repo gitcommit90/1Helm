@@ -1,0 +1,10 @@
+--- direct.go
++++ direct.go
+@@ -376,6 +376,7 @@
+ 		clock:             opts.Clock,
+ 		logf:              opts.Logf,
+ 		persist:           opts.Persist.View(),
++		tryingNewKey:      opts.Persist.PrivateNodeKey,
+ 		authKey:           opts.AuthKey,
+ 		debugFlags:        opts.DebugFlags,
+ 		netMon:            netMon,

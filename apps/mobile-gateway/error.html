@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="color-scheme" content="light dark"><title>1Helm</title>
+  <style>@font-face{font-family:"Instrument Sans";src:url("fonts/instrument-sans.woff2") format("woff2");font-weight:400 700;font-display:swap}@font-face{font-family:"Instrument Serif";src:url("fonts/instrument-serif.woff2") format("woff2");font-weight:400;font-display:swap}:root{--page:#f3f2ef;--sheet:#fff;--ink:#1c1b19;--mute:#77746c;--line:#e7e5e0;--line2:#d9d6cf;--bad:#b42318;font-family:"Instrument Sans",-apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:var(--ink);background:var(--page)}@media(prefers-color-scheme:dark){:root{--page:#121212;--sheet:#1b1b1c;--ink:#f1f0ee;--mute:#96938c;--line:#2a2a2c;--line2:#38383b;--bad:#ff6b6b}}*{box-sizing:border-box}body{min-height:100dvh;margin:0;padding:max(2rem,env(safe-area-inset-top)) 1.25rem max(2rem,env(safe-area-inset-bottom));display:grid;place-items:center;text-align:center}main{width:min(100%,24rem);padding:1.5rem;border:1px solid var(--line);border-radius:1rem;background:var(--sheet)}h1{margin:.2rem 0;font:400 2rem/1.1 "Instrument Serif","Iowan Old Style",Georgia,serif;letter-spacing:-.015em}p{color:var(--mute);line-height:1.55}button{width:100%;min-height:3rem;margin-top:.6rem;border:0;border-radius:.65rem;background:var(--ink);color:var(--sheet);font:inherit;font-weight:600;cursor:pointer}.secondary{border:1px solid var(--line2);background:transparent;color:inherit}button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}#status{min-height:1.25rem;margin-top:.65rem;color:var(--mute);font-size:.78rem;line-height:1.4}[hidden]{display:none}</style>
+</head>
+<body><main><h1>Can't connect right now</h1><p>Check your internet connection and try again.</p><button id="retry" type="button">Try again</button><button class="secondary" id="change" type="button">Start over</button><div id="status" role="status" aria-live="polite"></div></main><script src="capacitor.js"></script><script>
+(function () {
+  // This page is shown by the app when the selected server cannot be reached. It does not rely on window.Capacitor, which is
+  // missing here on Android: the app gives this page a small native interface (HelmNative on Android, the helmNative message
+  // handler on iOS), and the checks below only use the browser.
+  var statusEl = document.getElementById("status"), retryBtn = document.getElementById("retry"), changeBtn = document.getElementById("change");
+  var busy = false, leaving = false;
+  var say = function (text) { statusEl.textContent = text || ""; };
+  var native = window.HelmNative;
+  var hasIos = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.helmNative);
+  var guard = function (fn, fallback) { try { return fn(); } catch (error) { return fallback; } };
+
+  requestAnimationFrame(function () { requestAnimationFrame(function () {
+    var splash = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.SplashScreen;
+    if (splash) splash.hide({ fadeOutDuration: 180 }).catch(function () {});
+  }); });
+
+  var serverOrigin = function () {
+    var fromNative = guard(function () { return native && native.origin ? String(native.origin() || "") : ""; }, "");
+    return fromNative || String(window.__helmServer || "");
+  };
+  var send = function (action) {
+    if (native && native[action]) return guard(function () { native[action](); return true; }, false);
+    if (hasIos) return guard(function () { window.webkit.messageHandlers.helmNative.postMessage({ action: action }); return true; }, false);
+    return false;
+  };
+
+  // Any HTTP answer from the server counts as reachable (the request is opaque because this page has another origin).
+  var reachable = function (origin) {
+    var controller = typeof AbortController === "function" ? new AbortController() : null;
+    var timer = setTimeout(function () { if (controller) controller.abort(); }, 6000);
+    return fetch(origin + "/", { mode: "no-cors", cache: "no-store", signal: controller ? controller.signal : undefined })
+      .then(function () { return true; }, function () { return false; })
+      .then(function (ok) { clearTimeout(timer); return ok; });
+  };
+
+  var openServer = function (origin) {
+    leaving = true;
+    guard(function () { sessionStorage.setItem("helmOpenAt", String(Date.now())); }, null);
+    if (!send("retry")) location.replace(origin + "/");
+    // If the app is still on this page a few seconds later, the load failed again and checking can resume.
+    setTimeout(function () { leaving = false; busy = false; retryBtn.disabled = false; }, 6000);
+  };
+
+  var manualWaiting = false;
+  var attempt = function (manual) {
+    if (leaving) return;
+    if (manual) { manualWaiting = true; retryBtn.disabled = true; say("Trying to connect..."); }
+    if (busy) return;
+    var origin = serverOrigin();
+    if (!origin) { startOver(); return; }
+    // A server that answers but fails to load must not make this page open it over and over.
+    var last = guard(function () { return Number(sessionStorage.getItem("helmOpenAt")) || 0; }, 0);
+    if (!manualWaiting && Date.now() - last < 10000) return;
+    busy = true;
+    reachable(origin).then(function (ok) {
+      busy = false;
+      if (ok) { manualWaiting = false; say("Connecting..."); openServer(origin); return; }
+      retryBtn.disabled = false;
+      // A background check never clears the message that a tap on Try again left.
+      if (manualWaiting) say("Still can't connect. This page keeps checking and opens 1Helm when you're back online.");
+      manualWaiting = false;
+    });
+  };
+
+  var startOver = function () {
+    if (send("startOver")) return;
+    var plugin = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.InstanceGateway;
+    if (plugin && plugin.clearServer) {
+      Promise.resolve().then(function () { return plugin.clearServer(); }).catch(function () { say("Close the app and open it again."); });
+      return;
+    }
+    say("Close the app and open it again.");
+  };
+
+  retryBtn.addEventListener("click", function () { attempt(true); });
+  changeBtn.addEventListener("click", startOver);
+  // The Dev app always opens its own server, so it has nothing to start over to.
+  if (guard(function () { return native && native.canStartOver && !native.canStartOver(); }, false)) changeBtn.hidden = true;
+
+  window.addEventListener("online", function () { attempt(false); });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) attempt(false); });
+  setInterval(function () { if (!document.hidden) attempt(false); }, 5000);
+  setTimeout(function () { attempt(false); }, 1500);
+})();
+</script></body>
+</html>

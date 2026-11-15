@@ -1,0 +1,37 @@
+
+
+</div><!-- /slide-deck -->
+
+<script>
+const slides = document.querySelectorAll('.slide');
+let current = 0;
+const total = slides.length;
+
+function showSlide(idx) {
+  slides[current].classList.remove('active');
+  current = Math.max(0, Math.min(idx, total - 1));
+  slides[current].classList.add('active');
+  /* slide change handler */
+}
+function nextSlide() { showSlide(current + 1); }
+function prevSlide() { showSlide(current - 1); }
+function firstSlide() { showSlide(0); }
+function lastSlide() { showSlide(total - 1); }
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); nextSlide(); }
+  else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); prevSlide(); }
+  else if (e.key === 'Home') { e.preventDefault(); firstSlide(); }
+  else if (e.key === 'End') { e.preventDefault(); lastSlide(); }
+});
+
+let touchStartY = 0;
+document.addEventListener('touchstart', e => { touchStartY = e.changedTouches[0].screenY; });
+document.addEventListener('touchend', e => {
+  const touchEndY = e.changedTouches[0].screenY;
+  if (touchStartY - touchEndY > 50) nextSlide();
+  else if (touchEndY - touchStartY > 50) prevSlide();
+});
+</script>
+</body>
+</html>

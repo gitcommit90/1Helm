@@ -1,0 +1,16 @@
+/* Bars stacked above the composer, under the pinned reply (composer-bars.ts). Same look and place as .rqin in msgreply.css. */
+.cbars{max-width:760px;margin:0 auto}
+.cbars:empty{display:none}
+.cbin{display:flex;align-items:center;gap:8px;margin:0 6px 8px;padding:6px 6px 6px 10px;min-height:46px;background:var(--sheet);border:1px solid var(--line);border-radius:16px;box-shadow:var(--lift);animation:mapop .14s ease-out}
+.cbico{flex:none;display:grid;place-items:center;width:22px;height:22px;color:var(--accent)}
+.cbtx{flex:1;min-width:0;font-size:14px;line-height:1.35;font-weight:600;color:var(--ink2);overflow-wrap:anywhere}
+.cbbtns{flex:none;display:flex;align-items:center;gap:6px}
+.cbb{flex:none;height:32px;padding:0 12px;border:1px solid var(--line2);border-radius:999px;background:var(--sheet);color:var(--ink);font:inherit;font-size:13.5px;font-weight:550;cursor:pointer}
+@media (hover:hover) and (pointer:fine){.cbb:hover{background:var(--hover)}}
+.cbb.pri{background:var(--ink);border-color:var(--ink);color:var(--sheet)}
+@media (hover:hover) and (pointer:fine){.cbb.pri:hover{opacity:.9;background:var(--ink)}}
+.cbb:focus-visible,.cbx:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.cbx{flex:none;display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:50%;background:none;color:var(--mute);cursor:pointer}
+@media (hover:hover) and (pointer:fine){.cbx:hover{background:var(--hover);color:var(--ink)}}
+@media (max-width:599px),(max-height:499px){.cbin{margin:0 2px 6px;flex-wrap:wrap;row-gap:6px}.cbx{width:40px;height:40px}.cbb{height:36px}.cbtx{flex:1 1 140px}}
+@media (prefers-reduced-motion:reduce){.cbin{animation:none}}

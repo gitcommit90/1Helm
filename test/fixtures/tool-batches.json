@@ -1,0 +1,662 @@
+{
+ "note": "Synthetic replay: the first 60 calls of a looping step that kept re-reading the same four files (about 1,200 calls in the original step).",
+ "loop": [
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read business-setup skill\", \"slug\": \"business-setup\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read artifacts skill\", \"slug\": \"artifacts\"}"
+  },
+  {
+   "name": "search_files",
+   "args": "{\"step_title\": \"Found menu content in launch files\", \"pattern\": \"menu|pricing|walk|package\", \"path\": \"/workspace/files/\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read marketing kit for menu details\", \"path\": \"/workspace/files/marketing-kit.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read service agreement for pricing details\", \"path\": \"/workspace/files/service-agreement.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read launch plan for context\", \"path\": \"/workspace/files/launch-plan.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read existing site homepage\", \"path\": \"/workspace/files/index.html\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read homepage copy from marketing kit\", \"path\": \"/workspace/files/marketing-kit.md\"}"
+  },
+  {
+   "name": "run_command",
+   "args": "{\"step_title\": \"List launch files in workspace\", \"command\": \"ls -la /workspace/files/\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read launch plan for pricing context\", \"path\": \"/workspace/files/launch-plan.md\"}"
+  },
+  {
+   "name": "run_command",
+   "args": "{\"step_title\": \"List workspace files\", \"command\": \"ls -la /workspace/files/\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read service agreement for menu details\", \"path\": \"/workspace/files/service-agreement.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read index.html for existing site structure\", \"path\": \"/workspace/files/index.html\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read marketing kit for menu details\", \"path\": \"/workspace/files/marketing-kit.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read launch plan for service details\", \"path\": \"/workspace/files/launch-plan.md\"}"
+  },
+  {
+   "name": "search_files",
+   "args": "{\"step_title\": \"Search files for menu and pricing info\", \"path\": \"/workspace/files/\", \"pattern\": \"menu|pricing|\\\\\\\\$28|\\\\\\\\$45|\\\\\\\\$60|\\\\\\\\$199\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read marketing kit for menu content\", \"path\": \"/workspace/files/marketing-kit.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read launch plan for service details\", \"path\": \"/workspace/files/launch-plan.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read service agreement for pricing details\", \"path\": \"/workspace/files/service-agreement.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read current homepage for integration\", \"path\": \"/workspace/files/index.html\"}"
+  },
+  {
+   "name": "search_files",
+   "args": "{\"step_title\": \"Find menu and pricing details in launch files\", \"path\": \"/workspace/files/\", \"pattern\": \"menu|pricing|walk|package\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read launch plan for service details\", \"path\": \"/workspace/files/launch-plan.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read service agreement for pricing details\", \"path\": \"/workspace/files/service-agreement.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read marketing kit for menu and services\", \"path\": \"/workspace/files/marketing-kit.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read homepage HTML for chatbot integration\", \"path\": \"/workspace/files/index.html\"}"
+  },
+  {
+   "name": "search_files",
+   "args": "{\"step_title\": \"Find menu and pricing details in launch files\", \"path\": \"/workspace/files/\", \"pattern\": \"\\\\\\\\$28|\\\\\\\\$45|\\\\\\\\$60|\\\\\\\\$199|menu|services|pricing\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read launch plan for service details\", \"path\": \"/workspace/files/launch-plan.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read service agreement for pricing details\", \"path\": \"/workspace/files/service-agreement.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read marketing kit for menu details\", \"path\": \"/workspace/files/marketing-kit.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read index.html for existing site\", \"path\": \"/workspace/files/index.html\"}"
+  },
+  {
+   "name": "search_files",
+   "args": "{\"step_title\": \"Find menu and pricing content in launch files\", \"path\": \"/workspace/files/\", \"pattern\": \"\\\\\\\\$28|\\\\\\\\$45|\\\\\\\\$60|\\\\\\\\$199|menu|services|pricing|walks\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read launch plan for service details\", \"path\": \"/workspace/files/launch-plan.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read service agreement for pricing details\", \"path\": \"/workspace/files/service-agreement.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read marketing kit for menu and pricing details\", \"path\": \"/workspace/files/marketing-kit.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read existing homepage for chatbot integration\", \"path\": \"/workspace/files/index.html\"}"
+  },
+  {
+   "name": "search_files",
+   "args": "{\"step_title\": \"Find menu and pricing content in launch files\", \"path\": \"/workspace/files/\", \"pattern\": \"\\\\\\\\$28|\\\\\\\\$45|\\\\\\\\$60|\\\\\\\\$199|menu|pricing|walk|package\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read launch plan for service details\", \"path\": \"/workspace/files/launch-plan.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read service agreement for pricing details\", \"path\": \"/workspace/files/service-agreement.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read marketing kit for menu content\", \"path\": \"/workspace/files/marketing-kit.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read existing homepage for integration\", \"path\": \"/workspace/files/index.html\"}"
+  },
+  {
+   "name": "search_files",
+   "args": "{\"step_title\": \"Find menu and pricing content in launch files\", \"path\": \"/workspace/files/\", \"pattern\": \"\\\\\\\\$28|\\\\\\\\$45|\\\\\\\\$60|\\\\\\\\$199|menu|walk|package|pricing\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read launch plan for service details\", \"path\": \"/workspace/files/launch-plan.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read service agreement for pricing details\", \"path\": \"/workspace/files/service-agreement.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read marketing kit for menu and service details\", \"path\": \"/workspace/files/marketing-kit.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read existing site homepage for chatbot integration\", \"path\": \"/workspace/files/index.html\"}"
+  },
+  {
+   "name": "search_files",
+   "args": "{\"step_title\": \"Find menu and pricing content in launch files\", \"path\": \"/workspace/files/\", \"pattern\": \"\\\\\\\\$28|\\\\\\\\$45|\\\\\\\\$60|\\\\\\\\$199|menu|pricing|walk|package\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read launch plan for service details\", \"path\": \"/workspace/files/launch-plan.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read service agreement for pricing details\", \"path\": \"/workspace/files/service-agreement.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read marketing kit for menu and service details\", \"path\": \"/workspace/files/marketing-kit.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read existing homepage for integration point\", \"path\": \"/workspace/files/index.html\"}"
+  },
+  {
+   "name": "search_files",
+   "args": "{\"step_title\": \"Find menu and pricing details in launch files\", \"path\": \"/workspace/files/\", \"pattern\": \"\\\\\\\\$28|\\\\\\\\$45|\\\\\\\\$60|\\\\\\\\$199|menu|pricing|walk\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read launch plan for menu context\", \"path\": \"/workspace/files/launch-plan.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read service agreement for menu details\", \"path\": \"/workspace/files/service-agreement.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read marketing kit for menu and pricing\", \"path\": \"/workspace/files/marketing-kit.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read existing site homepage for integration\", \"path\": \"/workspace/files/index.html\"}"
+  },
+  {
+   "name": "search_files",
+   "args": "{\"step_title\": \"Find menu and pricing details in launch files\", \"path\": \"/workspace/files/\", \"pattern\": \"menu|pricing|walk|package|\\\\\\\\$28|\\\\\\\\$45|\\\\\\\\$60|\\\\\\\\$199\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read launch plan for service details\", \"path\": \"/workspace/files/launch-plan.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read service agreement for pricing details\", \"path\": \"/workspace/files/service-agreement.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read marketing kit for menu and pricing\", \"path\": \"/workspace/files/marketing-kit.md\"}"
+  },
+  {
+   "name": "read_file",
+   "args": "{\"step_title\": \"Read existing homepage for integration\", \"path\": \"/workspace/files/index.html\"}"
+  }
+ ],
+ "normal": [
+  [
+   {
+    "name": "search_files",
+    "args": "{\"step_title\": \"Looked for the site and menu files\", \"path\": \"/workspace\", \"pattern\": \"menu\"}"
+   },
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"Listed workspace files\", \"command\": \"ls -la /workspace /workspace/files /workspace/workspace 2>/dev/null\"}"
+   }
+  ],
+  [
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"Listed files in the workspace\", \"command\": \"ls -la /workspace /workspace/files /workspace/workspace 2>/dev/null\"}"
+   },
+   {
+    "name": "search_files",
+    "args": "{\"step_title\": \"Searched files for menu content\", \"path\": \"/workspace\", \"pattern\": \"menu\"}"
+   }
+  ],
+  [
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"Listed channel files\", \"command\": \"ls -la /workspace/files /workspace/workspace 2>/dev/null | head -60\"}"
+   },
+   {
+    "name": "recall_memory",
+    "args": "{\"step_title\": \"Recalled site and menu details\", \"query\": \"menu website restaurant chatbot site\"}"
+   },
+   {
+    "name": "read_context",
+    "args": "{\"section\": \"keys\", \"step_title\": \"Checked saved API keys\"}"
+   }
+  ],
+  [
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"Listed files in the workspace\", \"command\": \"ls -la /workspace /workspace/files /workspace/workspace 2>/dev/null\"}"
+   },
+   {
+    "name": "read_skill",
+    "args": "{\"step_title\": \"Read the business-setup skill\", \"slug\": \"business-setup\"}"
+   }
+  ],
+  [
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"Listed files in this channel's workspace\", \"command\": \"ls -la /workspace /workspace/files /workspace/workspace 2>/dev/null\"}"
+   },
+   {
+    "name": "read_context",
+    "args": "{\"step_title\": \"Checked available saved API keys\", \"section\": \"keys\"}"
+   }
+  ],
+  [
+   {
+    "name": "search_files",
+    "args": "{\"step_title\": \"Listed launch files in the channel\", \"path\": \"/workspace\", \"pattern\": \"*\"}"
+   },
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"Listed workspace files\", \"command\": \"ls -la /workspace /workspace/files /workspace/workspace 2>/dev/null\"}"
+   }
+  ],
+  [
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"Listed channel files\", \"command\": \"ls -la /workspace /workspace/files /workspace/workspace 2>/dev/null\"}"
+   },
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"Listed workspace files\", \"command\": \"find /workspace -maxdepth 3 -type f | head -50\"}"
+   }
+  ],
+  [
+   {
+    "name": "search_files",
+    "args": "{\"step_title\": \"Listed channel files\", \"pattern\": \".*\", \"path\": \"/workspace/files/\"}"
+   },
+   {
+    "name": "read_skill",
+    "args": "{\"slug\": \"artifacts\", \"step_title\": \"Read the artifacts skill\"}"
+   }
+  ],
+  [
+   {
+    "name": "recall_memory",
+    "args": "{\"step_title\": \"Looked up memory for a website and its menu\", \"query\": \"website menu restaurant food site\"}"
+   },
+   {
+    "name": "search_files",
+    "args": "{\"step_title\": \"Searched channel files for menu content\", \"pattern\": \"menu\", \"path\": \"/workspace\"}"
+   },
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"Listed workspace files\", \"command\": \"ls -la /workspace /workspace/files /workspace/workspace 2>/dev/null | head -60\"}"
+   },
+   {
+    "name": "read_skill",
+    "args": "{\"step_title\": \"Read the business-setup skill\", \"slug\": \"business-setup\"}"
+   }
+  ],
+  [
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"List files in this channel's workspace\", \"command\": \"ls -la /workspace/files /workspace/workspace 2>/dev/null\"}"
+   },
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"Find site files on the computer\", \"command\": \"find /workspace -maxdepth 3 -type f \\\\( -name \\\"*.html\\\" -o -name \\\"*.md\\\" \\\\) | head -50\"}"
+   }
+  ],
+  [
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"Listed channel files\", \"command\": \"ls -la /workspace/files /workspace/workspace 2>/dev/null; echo ---; find /workspace -maxdepth 3 -name \\\"*.md\\\" -o -maxdepth 3 -name \\\"*.html\\\" | head -50\"}"
+   },
+   {
+    "name": "recall_memory",
+    "args": "{\"step_title\": \"Checked memory for site and menu\", \"query\": \"website menu restaurant site built for Chk\"}"
+   }
+  ],
+  [
+   {
+    "name": "run_command",
+    "args": "{\"step_title\": \"Listed channel files\", \"command\": \"ls -la /workspace/files /workspace/workspace 2>/dev/null; echo ---; ls -la /workspace\"}"
+   },
+   {
+    "name": "read_skill",
+    "args": "{\"step_title\": \"Read business-setup skill\", \"slug\": \"business-setup\"}"
+   }
+  ]
+ ],
+ "lowdiv": [
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read business-setup skill\", \"slug\": \"business-setup\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read artifacts skill\", \"slug\": \"artifacts\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read self-awareness skill\", \"slug\": \"self-awareness\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read wide-research skill\", \"slug\": \"wide-research\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read travel-planning skill\", \"slug\": \"travel-planning\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read shopping skill\", \"slug\": \"shopping\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read image-search skill\", \"slug\": \"image-search\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read photo-library skill\", \"slug\": \"photo-library\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill-creator skill\", \"slug\": \"skill-creator\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read native-network skill\", \"slug\": \"native-network\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read forget skill\", \"slug\": \"forget\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read gmail skill\", \"slug\": \"gmail\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read google-calendar skill\", \"slug\": \"google-calendar\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read google-drive skill\", \"slug\": \"google-drive\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read booking skill\", \"slug\": \"booking\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read events skill\", \"slug\": \"events\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read flight-status skill\", \"slug\": \"flight-status\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read finance skill\", \"slug\": \"finance\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read places-search skill\", \"slug\": \"places-search\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read artifacts skill for web pages\", \"slug\": \"artifacts\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read self-awareness skill\", \"slug\": \"self-awareness\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"skill-creator\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"self-awareness\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"artifacts\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"business-setup\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"travel-planning\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"wide-research\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"shopping\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"forget\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"skill-creator\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"native-network\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"gmail\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"google-calendar\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"google-drive\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"booking\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"events\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"flight-status\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"finance\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"places-search\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"image-search\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"photo-library\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"self-awareness\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"artifacts\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"business-setup\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"skill-creator\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"forget\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"travel-planning\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"wide-research\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"shopping\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"native-network\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"gmail\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"google-calendar\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"google-drive\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"booking\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"events\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"flight-status\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"finance\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"places-search\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"image-search\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"photo-library\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"self-awareness\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"artifacts\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"business-setup\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"skill-creator\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"forget\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"travel-planning\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"wide-research\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"shopping\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"native-network\"}"
+  },
+  {
+   "name": "read_skill",
+   "args": "{\"step_title\": \"Read skill list\", \"slug\": \"gmail\"}"
+  }
+ ],
+ "note2": "Synthetic replay: the first 70 calls of a second looping step, 64 read_skill calls of which about 19 are different, no call 8 times."
+}

@@ -1,0 +1,63 @@
+{
+  // Copy to wrangler.jsonc and fill the REPLACE values before deploying.
+  // The setup command will do that when used from a fresh public clone.
+  "name": "onehelm",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // Memory (src/mem0.js, npm mem0ai) imports every storage and model provider package that Mem0 supports. The ones 1Helm never uses resolve to one stub so the Worker bundles.
+  "alias": {
+    "better-sqlite3": "./src/mem0-stub.js", "@azure/identity": "./src/mem0-stub.js", "@azure/search-documents": "./src/mem0-stub.js", "cassandra-driver": "./src/mem0-stub.js",
+    "chromadb": "./src/mem0-stub.js", "cloudflare": "./src/mem0-stub.js", "cohere-ai": "./src/mem0-stub.js", "@elastic/elasticsearch": "./src/mem0-stub.js", "fastembed": "./src/mem0-stub.js",
+    "@google-cloud/aiplatform": "./src/mem0-stub.js", "groq-sdk": "./src/mem0-stub.js", "@huggingface/transformers": "./src/mem0-stub.js", "iovalkey": "./src/mem0-stub.js",
+    "@langchain/core/documents": "./src/mem0-stub.js", "@langchain/core/messages": "./src/mem0-stub.js", "@mochow/mochow-sdk-node": "./src/mem0-stub.js", "mongodb": "./src/mem0-stub.js",
+    "mysql2/promise": "./src/mem0-stub.js", "ollama": "./src/mem0-stub.js", "@opensearch-project/opensearch": "./src/mem0-stub.js", "oracledb": "./src/mem0-stub.js", "pg": "./src/mem0-stub.js",
+    "@pinecone-database/pinecone": "./src/mem0-stub.js", "@qdrant/js-client-rest": "./src/mem0-stub.js", "redis": "./src/mem0-stub.js", "@supabase/supabase-js": "./src/mem0-stub.js", "@turbopuffer/turbopuffer": "./src/mem0-stub.js",
+    "@upstash/vector": "./src/mem0-stub.js", "weaviate-client": "./src/mem0-stub.js", "zeroentropy": "./src/mem0-stub.js"
+  },
+  "workers_dev": true,
+  "rules": [{ "type": "Text", "globs": ["**/*.md", "**/skills/*/scripts/*"], "fallthrough": true }],
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "onehelm",
+    "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+    "migrations_dir": "db/migrations"
+  }],
+  "r2_buckets": [{ "binding": "WS", "bucket_name": "REPLACE_WITH_YOUR_R2_BUCKET_NAME" }],
+  "durable_objects": { "bindings": [
+    { "name": "NATIVE_TRANSPORT", "class_name": "NativeTransport" },
+    { "name": "RESIDENT", "class_name": "Resident" },
+    { "name": "CHANNEL_COMPUTER", "class_name": "ChannelComputer" },
+    { "name": "LEDGER", "class_name": "UsageLedger" },
+    { "name": "ARCHIVE", "class_name": "Archive" },
+    { "name": "COMPUTER", "class_name": "Computer" },
+    { "name": "FILE_PREP", "class_name": "FilePrep" },
+    { "name": "EXPORT_RUNNER", "class_name": "ExportRunner" }
+  ] },
+  "migrations": [{ "tag": "selfhost-v1", "new_sqlite_classes": ["Resident", "ChannelComputer", "UsageLedger", "Archive", "Computer", "FilePrep"] },
+    { "tag": "selfhost-native-transport-v1", "new_sqlite_classes": ["NativeTransport"] },
+    { "tag": "export-runner-v1", "new_sqlite_classes": ["ExportRunner"] }],
+  "containers": [
+    { "class_name": "NativeTransport", "image": "./native-transport/Dockerfile", "instance_type": "basic", "max_instances": 5 },
+    { "class_name": "ChannelComputer", "image": "./image/Dockerfile", "instance_type": "standard-3", "max_instances": 5 },
+    { "class_name": "Computer", "image": "docker.io/library/node:22-bookworm", "instance_type": "basic", "max_instances": 2 }
+  ],
+  "ai": { "binding": "AI" },
+  "browser": { "binding": "BROWSER" },
+  "images": { "binding": "IMAGES" },
+  "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["REPLACE_WITH_YOUR_VERIFIED_SENDER_EMAIL"] }],
+  "assets": { "directory": "./app-assets", "binding": "ASSETS", "run_worker_first": true },
+  "vars": {
+    "ENV_NAME": "selfhost",
+    "TEST_MODE": "0",
+    "NATIVE_NETWORK": "on",
+    "MEM0_TELEMETRY": "false",
+    "CONTEXT_LAYOUT": "v2",
+    "APP_HOST": "REPLACE_WITH_YOUR_WORKERS_DEV_HOST",
+    "GATEWAY_HOST": "REPLACE_WITH_YOUR_WORKERS_DEV_HOST",
+    "EMAIL_FROM": "REPLACE_WITH_YOUR_VERIFIED_SENDER_EMAIL",
+    "SELFHOST_STORAGE_GB": "100",
+    "SENTINEL_DEFAULT": "on"
+  },
+  "triggers": { "crons": ["*/5 * * * *", "17 * * * *"] }
+}

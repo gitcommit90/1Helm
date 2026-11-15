@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+globalThis.window={addEventListener(){}};
+globalThis.document={addEventListener(){}};
+const {outputFiles}=await build({entryPoints:['src/progress-slot.ts'],bundle:true,write:false,format:'esm',platform:'neutral',logLevel:'error'});
+const {progressSlot,progressWorked,progressSnapshot,progressReset}=await import('data:text/javascript;base64,'+Buffer.from(outputFiles[0].contents).toString('base64'));
+const r={body:'First research note.'};
+assert.equal(progressWorked(r),true);assert.equal(progressSlot(r,true).text,'First research note.');
+r.body=' \n';assert.equal(progressSlot(r,true).text,'First research note.');
+r.body='Second distinctive note.';progressWorked(r);assert.equal(progressSlot(r,true).text,'Second distinctive note.');
+assert.equal(progressSlot(r,true).part,'progress-1');
+r.body='Which option? [Guide](https://example.com)';progressWorked(r);
+assert.equal(progressSlot(r,true).text,r.pre[0]);assert.equal(progressSlot(r,true).mode,'stream');
+r.body='Current answer';assert.equal(progressSlot(r,true).text,r.pre[0]+'\n\nCurrent answer');
+const state={body:'',pre:[],prog:['Old note','New note'],held_progress:'New note'};
+assert.equal(progressSnapshot(r,state),true);assert.equal(progressSlot(r,true).text,'New note');
+assert.notEqual(r.prog,state.prog);state.prog.push('External mutation');assert.deepEqual(r.prog,['Old note','New note']);
+const invalid=[null,{}, {...state,body:1},{...state,pre:[{}]},{...state,prog:'no'}, {...state,held_progress:'Unknown note'}];
+for(const bad of invalid){const before=JSON.stringify(r);assert.equal(progressSnapshot(r,bad),false);assert.equal(JSON.stringify(r),before);}
+assert.equal(progressSnapshot(r,{body:'Answer in progress',pre:[],prog:['Old note','New note'],held_progress:'New note'}),true);
+assert.equal(progressSlot(r,true).text,'Answer in progress');assert.equal(progressSlot(r,true).mode,'stream');
+assert.equal(progressSnapshot(r,{body:'',pre:['Unknown resumed journal text'],prog:[],held_progress:''}),true);
+assert.equal(progressSlot(r,true).text,'Unknown resumed journal text');
+progressReset(r);assert.equal(progressSlot(r,false).text,'Unknown resumed journal text');
+assert.equal(progressSnapshot(r,{body:'Final',pre:[],prog:[],held_progress:'',progress_omitted:123}),true);assert.equal(r.progressOmitted,123);
+assert.equal(progressSnapshot(r,{body:'Legacy',pre:[],prog:[],held_progress:''}),true);assert.equal(r.progressOmitted,undefined);
+console.log('PASS progress slot: current-note provenance, whitespace, actionable preamble, snapshot replacement/copy, malformed fallback and conservative resumed text');

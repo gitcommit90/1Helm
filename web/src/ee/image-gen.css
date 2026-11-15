@@ -1,0 +1,25 @@
+/* Image generation: the + panel row and the image_gen card in the chat (image-gen.ts). */
+.igmk{flex:none;display:flex;align-items:center;gap:10px;width:calc(100% - 16px);margin:0 8px 6px;padding:9px 10px;border:1px solid var(--line);border-radius:12px;background:var(--sheet);color:var(--ink);font:inherit;font-size:14px;font-weight:550;text-align:left;cursor:pointer}
+@media (hover:hover) and (pointer:fine){.igmk:hover{background:var(--hover)}}
+.igmk.on{border-color:var(--accent)}
+.igmk:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.igmi{display:grid;place-items:center;width:22px;height:22px;flex:none;color:var(--accent)}
+.msgs .igcard{display:flex;flex-wrap:wrap;gap:8px;max-width:100%;margin-top:8px}
+.igcard .ig-slot{--igw:min(220px,calc((100vw - 48px) / 2));--igc:51px;position:relative;flex:none;width:var(--igw);height:var(--igw);max-width:100%;transition:height .35s ease}
+.igcard.n1 .ig-slot{--igw:min(280px,calc(100vw - 48px))}
+.igcard .ig-slot[data-igs=done]{height:calc(var(--igw) + var(--igc))}
+.igcard .ig-real{position:absolute;left:0;top:0;width:100%;height:calc(var(--igw) + var(--igc))}
+.igcard .ig-real .chat-tile{width:100%;height:100%;margin:0}
+.igcard .ig-real{transition:opacity .2s ease}
+.igcard .ig-real .chat-tile-preview{background:var(--hover)}
+.igcard .ig-real .chat-tile-preview img{animation:igin .6s ease-out}
+.igcard .ig-fx{position:absolute;left:0;top:0;width:100%;height:var(--igw);z-index:1;border-radius:14px;overflow:hidden;opacity:0;transition:opacity .6s ease;pointer-events:none}
+.igcard .ig-fx.on{opacity:1}
+.igcard .ig-fx.on ~ .ig-real{opacity:0}   /* the tile appears (quickly, under the fading noise layer) only once the reveal has finished */
+.igcard .ig-slot[data-igs=working]::before,.igcard .ig-slot[data-igs=failed]::before{content:"";position:absolute;left:0;top:0;width:100%;height:var(--igw);border-radius:14px;background:var(--hover)}
+.igcard .ig-slot[data-igs=working]::before{animation:igpulse 1.8s ease-in-out infinite}
+.igcard .ig-slot[data-igs=failed]::before{background:none;border:1px dashed var(--line2)}
+.igcard .ig-slot[data-igs=failed]::after{content:"";position:absolute;left:50%;top:calc(var(--igw) / 2);width:28px;height:28px;margin:-14px 0 0 -14px;opacity:.55;background:no-repeat center/contain url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2396938c' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='3'/%3E%3Cpath d='M3 3l18 18'/%3E%3C/svg%3E")}
+@keyframes igpulse{0%,100%{opacity:1}50%{opacity:.6}}
+@keyframes igin{from{opacity:0}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.igcard .ig-slot,.igcard .ig-fx,.igcard .ig-real{transition:none}.igcard .ig-slot[data-igs=working]::before,.igcard .ig-real .chat-tile-preview img{animation:none}}

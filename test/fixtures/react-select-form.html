@@ -1,0 +1,21 @@
+<!doctype html><html><body>
+<!-- Shaped like the Greenhouse application form: a React-Select combobox. The input stays empty and the choice shows in a sibling element. -->
+<label id="school-label" for="school">School</label>
+<div class="select__control" id="ctl-school">
+  <div class="select__value-container">
+    <div class="select__single-value" id="school-value">Western Governors University</div>
+    <div class="select__input-container"><input id="school" role="combobox" aria-controls="school-list" aria-expanded="false" value="" data-1hc="e41"></div>
+  </div>
+  <div class="select__indicators"><button type="button" aria-label="Toggle flyout" data-1hc="e42"></button></div>
+</div>
+<!-- a second field with nothing chosen: shows only a placeholder -->
+<div class="select__control" id="ctl-degree">
+  <div class="select__value-container">
+    <div class="select__placeholder">Select...</div>
+    <div class="select__input-container"><input id="degree" role="combobox" value="" data-1hc="e51"></div>
+  </div>
+</div>
+<!-- a third field: the choice is shown by a native-looking marked option in an open list -->
+<div id="ctl-state"><input id="state" role="combobox" aria-controls="state-list" value="" data-1hc="e61">
+  <ul id="state-list" role="listbox"><li role="option" aria-selected="true">Texas</li><li role="option" aria-selected="false">Utah</li></ul></div>
+</body></html>

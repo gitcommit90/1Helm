@@ -1,0 +1,118 @@
+@import "./logo.css";
+@import "./plan-card.css";
+/* Cards in chat (generative UI): the approved genui look, ported from src/genui.css. Shared by the app
+   (v3.css) and the inside-Messages card page (card.css); both define the color tokens. Markup: src/genui-render.ts. */
+.gu-reply{width:100%;max-width:min(560px,100%);min-width:0;position:relative}.gu-stack{display:flex;flex-direction:column;gap:10px;min-width:0}
+/* Nothing in a card is ever wider than the column: every child may shrink (min-width:0) and long text breaks anywhere. Content that needs width scrolls in its own box. */
+.gu-stack>*{min-width:0;max-width:100%}
+.gu-in{animation:gin .25s ease both}@keyframes gin{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.gu-say{background:var(--abub);border-radius:22px;padding:12px 18px;max-width:92%;align-self:flex-start;line-height:1.45;overflow-wrap:anywhere}.gu-say p{margin:0}.gu-say p+p{margin-top:.55em}.gu-say b{font-weight:600}
+.gu-tip{display:flex;gap:9px;align-items:flex-start;font-size:13.5px;color:var(--mute);padding:0 6px}.gu-tip svg{flex:none;margin-top:2px}.gu-tip b{color:var(--ink2)}.gu-tip span{min-width:0;overflow-wrap:anywhere}
+.gu-say a,.gu-tip a,.gu-ot a,.gu-mb a,.gu-rows a,.gu-big a,.gu-fm a,.gu-meter a{color:var(--accent);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere}
+.gu-opts{display:flex;flex-direction:column;gap:8px;min-width:0}
+.gu-opt{display:flex;flex-wrap:wrap;align-items:center;gap:14px;width:100%;min-width:0;max-width:100%;text-align:left;padding:14px 16px;border-radius:18px;background:var(--sheet);box-shadow:0 0 0 1px var(--line2);transition:box-shadow .12s,transform .12s}
+@media (hover:hover) and (pointer:fine){.gu-opt:hover{box-shadow:0 0 0 1px var(--ink2)}}.gu-opt:active{transform:scale(.99)}.gu-opt.on{box-shadow:0 0 0 2px var(--ink)}
+.gu-rad{flex:none;width:20px;height:20px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--line2)}.gu-opt.on .gu-rad{box-shadow:inset 0 0 0 6px var(--ink)}
+.gu-ot{flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}.gu-ot b{font-weight:650;min-width:0;overflow-wrap:anywhere}.gu-ot>span{flex-basis:100%;min-width:0;font-size:13px;color:var(--mute);overflow-wrap:anywhere}.gu-ot>span:empty{display:none}
+.gu-ot em{font-style:normal;font-size:11.5px;font-weight:650;color:var(--mute);background:var(--hover);padding:1px 8px;border-radius:999px}.gu-ot em.best{background:color-mix(in srgb,var(--live) 14%,transparent);color:var(--live)}
+.gu-pr{font-size:19px;font-weight:700;letter-spacing:-.01em;font-variant-numeric:tabular-nums;white-space:nowrap;max-width:100%}
+/* A long price (more than 14 characters, class set in genui-render.ts) drops under the title, lined up with the title text, and wraps. */
+.gu-pr.long{flex:1 0 100%;margin-top:-6px;padding-left:34px;font-size:15px;line-height:1.3;text-align:left;white-space:normal;overflow-wrap:anywhere}
+.gu-btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}
+.gu-b{max-width:100%;overflow-wrap:anywhere;min-height:44px;padding:0 20px;border-radius:999px;font-weight:600;font-size:15px;transition:transform .12s,opacity .12s,background .12s}.gu-b:active{transform:scale(.97)}
+.gu-b.primary{background:var(--ink);color:var(--sheet);width:auto;height:auto;margin:0;font-size:15px}/* (v3.css phone sheets style a bare .primary full-width) */@media (hover:hover) and (pointer:fine){.gu-b.primary:hover{opacity:.9}}.gu-b.secondary{box-shadow:inset 0 0 0 1px var(--line2);background:var(--sheet)}@media (hover:hover) and (pointer:fine){.gu-b.secondary:hover{box-shadow:inset 0 0 0 1px var(--ink2)}}
+.gu-b.ghost{color:var(--mute)}@media (hover:hover) and (pointer:fine){.gu-b.ghost:hover{background:var(--hover);color:var(--ink)}}
+.gu-b[disabled]{opacity:.35;pointer-events:none}.gu-b.picked{opacity:1;background:var(--live);color:#fff;box-shadow:none}
+.locked .gu-opt,.locked .gu-chip,.locked .gu-step button,.locked input{pointer-events:none}.locked .gu-opt:not(.on),.locked .gu-form .gu-field,.locked .gu-form .gu-row{opacity:.55}
+.gu-form{min-width:0;background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:6px 18px 16px;display:flex;flex-direction:column}
+.gu-row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:56px;border-bottom:1px solid var(--line);font-weight:550}.gu-row>span:first-child{min-width:0;overflow-wrap:anywhere}
+.gu-step{display:inline-flex;align-items:center;gap:4px;flex:none}.gu-step b{min-width:28px;text-align:center;font-size:17px;font-variant-numeric:tabular-nums}
+.gu-step button{width:36px;height:36px;border-radius:50%;background:var(--hover);font-size:19px;line-height:1;color:var(--ink2)}@media (hover:hover) and (pointer:fine){.gu-step button:hover{background:var(--line2)}}
+.gu-field{display:flex;flex-direction:column;gap:8px;padding:14px 0;border-bottom:1px solid var(--line)}.gu-field>span{font-weight:550;min-width:0;overflow-wrap:anywhere}
+.gu-field input{width:100%;min-width:0;height:46px;border-radius:14px;border:1px solid var(--line2);padding:0 14px;background:var(--sheet);color:var(--ink);outline:0;font:inherit;font-size:16px}.gu-field input:focus{border-color:var(--ink2)}
+.gu-form .gu-field:last-of-type{border-bottom:0}.gu-form .gu-btns{margin-top:6px}
+.gu-chips{display:flex;flex-wrap:wrap;gap:7px}.gu-chip{max-width:100%;overflow-wrap:anywhere;min-height:38px;height:auto;padding:0 14px;border-radius:999px;box-shadow:inset 0 0 0 1px var(--line2);font-size:14.5px;font-weight:550}
+@media (hover:hover) and (pointer:fine){.gu-chip:hover{box-shadow:inset 0 0 0 1px var(--ink2)}}.gu-chip.on{background:var(--ink);color:var(--sheet);box-shadow:none}
+.gu-big{background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:16px 18px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
+.gu-big{min-width:0;overflow-wrap:anywhere}.gu-big b{min-width:0;max-width:100%;font-size:34px;font-weight:700;letter-spacing:-.03em;font-variant-numeric:tabular-nums}.gu-big span{color:var(--mute)}.gu-big em{flex-basis:100%;font-style:normal;font-weight:600;color:var(--warn);font-size:14px}
+.gu-bars{min-width:0;display:flex;align-items:flex-end;gap:10px;height:150px;padding:14px 16px 10px;background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2)}
+.gu-bar{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:5px;min-width:0}
+.gu-bar i{display:block;transition:height .35s cubic-bezier(.2,.8,.2,1);width:100%;max-width:38px;border-radius:8px 8px 3px 3px;background:var(--line2);animation:grow .5s cubic-bezier(.2,.8,.2,1) both;transform-origin:bottom}
+.gu-bar em{font-style:normal;font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}.gu-bar span{font-size:12px;color:var(--mute);max-width:100%;text-align:center;overflow-wrap:anywhere}
+.gu-bar.hot i{background:var(--warn)}.gu-bar.hot em{color:var(--warn);font-weight:700}.gu-bar.hot span{color:var(--ink);font-weight:600}
+@keyframes grow{from{transform:scaleY(0)}to{transform:none}}
+.gu-rows{background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:4px 18px}
+.gu-rows div{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}.gu-rows div:last-child{border-bottom:0}.gu-rows span{color:var(--ink2)}.gu-rows b{font-variant-numeric:tabular-nums;font-weight:650;white-space:nowrap}
+/* a long value wraps inside the card (it ran past the card's edge on tablets); the label keeps up to 45% */
+.gu-rows span{flex:0 1 auto;min-width:0;max-width:45%;overflow-wrap:break-word}.gu-rows b{flex:1 1 0;min-width:0;text-align:right;white-space:normal;overflow-wrap:anywhere}
+.gu-mail{background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);overflow:hidden}
+.gu-mh{display:flex;gap:12px;padding:10px 18px;border-bottom:1px solid var(--line);font-size:14px}.gu-mh span{color:var(--faint);width:58px;flex:none}.gu-mh b{font-weight:600;min-width:0;overflow-wrap:anywhere}
+.gu-mb{padding:14px 18px 16px;overflow-wrap:anywhere}.gu-mb p{margin:0 0 .7em}.gu-mb p:last-child{margin:0}
+.gu-file{display:flex;gap:16px;align-items:center;background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:12px}
+.gu-thumb{flex:none;width:118px;aspect-ratio:8.5/11;border-radius:10px;background:var(--hover);display:grid;place-items:center;overflow:hidden;color:var(--ink2)}
+.gu-thumb img{width:100%;height:100%;object-fit:cover}.gu-thumb .aico{margin:0;width:56px;height:56px;border-radius:16px;background:var(--sheet)}
+a.gu-thumb{transition:transform .12s}@media (hover:hover) and (pointer:fine){a.gu-thumb:hover{transform:scale(1.02)}}
+.gu-fm{display:flex;flex-direction:column;gap:3px;min-width:0}.gu-fm b{font-weight:650;overflow-wrap:anywhere}.gu-fm>span{font-size:13px;color:var(--mute)}.gu-fm>span:empty{display:none}
+.gu-links{display:flex;gap:14px;margin-top:6px}.gu-links a{font-weight:600;font-size:14px;color:var(--accent);cursor:pointer;text-decoration:none}@media (hover:hover) and (pointer:fine){.gu-links a:hover{text-decoration:underline}}
+.gu-meter{min-width:0;background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:16px 18px}
+.gu-mt{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px}.gu-mt b{min-width:0;overflow-wrap:anywhere}.gu-mt span{color:var(--warn);font-weight:650;white-space:nowrap}
+.gu-track{height:12px;border-radius:99px;background:var(--hover);overflow:hidden}.gu-track i{display:block;transition:width .5s cubic-bezier(.2,.8,.2,1);height:100%;border-radius:99px;background:var(--warn);animation:wide .8s cubic-bezier(.2,.8,.2,1) both;transform-origin:left}
+@keyframes wide{from{transform:scaleX(0)}to{transform:none}}
+.gu-meter small{display:block;overflow-wrap:anywhere;margin-top:9px;color:var(--mute);font-size:13px}
+/* System cards (permission, Link, browser): made by 1HC itself, never by the model (markup: src/approval-card.ts, v3.ts cardHtml).
+   Same surface, radius, type and buttons as the cards above. */
+.gu-sys{width:100%;max-width:560px;background:var(--sheet);border-radius:20px;box-shadow:0 0 0 1px var(--line2);padding:16px 18px;display:flex;flex-direction:column;gap:6px}
+.gu-sh{display:flex;align-items:center;gap:10px;min-width:0}.gu-sh b{font-weight:650;line-height:1.3;min-width:0;overflow-wrap:anywhere}
+.gu-si{flex:none;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:var(--hover);color:var(--ink2)}.gu-si svg{display:block}
+.gu-sl{margin:0;color:var(--ink2);overflow-wrap:anywhere}.gu-sl b{font-weight:600;color:var(--ink)}
+.gu-sys>.gu-btns,.gu-sys>.gu-pdone,.gu-sys>.gu-pconf,.gu-sys>.gu-pgone{margin-top:8px}
+.gu-sys .gu-b{max-width:100%;overflow-wrap:anywhere;line-height:1.25;padding-top:6px;padding-bottom:6px}
+.gu-b.busy{opacity:1}.gu-bspin{display:inline-block;width:13px;height:13px;margin:0 8px -1px 0;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:gspin .8s linear infinite}
+@keyframes gspin{to{transform:rotate(360deg)}}
+.gu-pconf{padding:12px 14px;border-radius:16px;background:var(--hover)}.gu-pconf p{margin:0 0 10px;overflow-wrap:anywhere}.gu-pconf p b{font-weight:650}.gu-pconf .gu-btns{margin:0}
+.gu-pdone{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}.gu-pdone .gu-b{display:inline-flex;align-items:center;cursor:default}.gu-pdone>span:not(.gu-b){color:var(--mute);font-size:14px}
+.gu-b.nope{background:var(--hover);color:var(--ink2)}
+.gu-apraw{margin:2px 0 0;font-size:12px;color:var(--mute);overflow-wrap:anywhere}
+.gu-pgone{display:flex;gap:9px;align-items:flex-start;color:var(--mute);font-size:14px}.gu-pgone svg{flex:none;margin-top:2px}
+.gu-perr{margin:2px 0 0;color:var(--warn);font-size:14px;font-weight:550;overflow-wrap:anywhere}
+.gu-perm.locked .gu-sl{color:var(--mute)}.gu-perm.locked .gu-sl b{color:var(--ink2)}
+/* Confirm cards (1HC confirm.js): the exact action, its lines, the message body, a warning note. Long values wrap; the body scrolls. */
+.gu-cf{margin:4px 0 0;display:grid;gap:4px;font-size:14px;min-width:0}.gu-cf>div{display:grid;grid-template-columns:minmax(64px,max-content) minmax(0,1fr);gap:10px;min-width:0}
+.gu-cf dt{color:var(--mute)}.gu-cf dd{margin:0;color:var(--ink);overflow-wrap:anywhere;min-width:0}
+.gu-cfbody{margin-top:4px;padding:10px 12px;border-radius:12px;background:var(--hover);white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;line-height:1.45;max-height:220px;overflow:auto}
+.gu-cfnote{margin:4px 0 0;display:flex;gap:7px;align-items:flex-start;font-size:14px;color:var(--warn)}.gu-cfnote svg{flex:none;margin-top:2px}
+.gu-confirm.locked .gu-cf dd,.gu-confirm.locked .gu-cfbody{color:var(--ink2)}
+.gu-ssh-verify{margin-top:8px;padding:12px;border-radius:12px;background:var(--hover);font-size:14px;line-height:1.5;min-width:0}.gu-ssh-verify p{margin:8px 0 0;overflow-wrap:anywhere}.gu-ssh-copy{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;min-width:0}.gu-ssh-copy code{min-width:0;flex:1 1 180px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace;color:var(--ink)}.gu-ssh-copy .gu-b{flex:none;min-height:32px;min-width:32px;padding:7px;display:inline-flex;align-items:center;justify-content:center}.gu-ssh-copy-status{flex-basis:100%;font-size:12px;color:var(--mute);overflow-wrap:anywhere}.gu-ssh-copy-status:not(.is-error){position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.gu-ssh-copy-status:empty{display:none}.gu-ssh-verify .gu-ssh-copy{margin-top:8px;padding:10px;border:1px solid var(--line2);border-radius:8px;background:var(--sheet)}
+@media(max-width:480px){.gu-ssh .gu-cf>div{grid-template-columns:minmax(0,1fr);gap:2px}.gu-ssh .gu-cf{gap:8px}.gu-ssh .gu-cfnote span{min-width:0;overflow-wrap:anywhere}}
+.gu-ssh-verify summary{font-weight:600;cursor:pointer}.gu-ssh-verify summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.gu-ssh-receipt{padding:12px 16px;gap:5px}.gu-ssh-receipt>.gu-pdone,.gu-ssh-receipt>.gu-pgone{margin-top:0}.gu-ssh-record{font-size:13px;min-width:0;color:var(--mute)}.gu-ssh-record summary{cursor:pointer}.gu-ssh-record summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.gu-ssh-record[open] .gu-cf{margin-top:8px}.gu-ssh-receipt .gu-sl{font-size:13px}
+.gu-ssh-receipt .gu-pgone span{min-width:0;overflow-wrap:anywhere}
+.gu-ssh .gu-ssh-trustnote{font-size:14px;line-height:1.5;color:var(--mute);overflow-wrap:anywhere}
+.m.agent .gu-reply+.gu-reply,.m.agent .gu-reply+.bubble{margin-top:8px}
+@media (max-width:599px),(max-height:499px){
+  .gu-reply{max-width:100%}.gu-say{font-size:16.5px}
+  .gu-bars{gap:6px;padding:12px 10px 8px}.gu-thumb{width:96px}
+}
+@media (prefers-reduced-motion:reduce){.gu-in,.gu-bar i,.gu-track i,.gu-bspin{animation:none}}
+
+/* Cards the person never answered fold into a one-line "Skipped" row (genui-render.ts). No transition on first paint, so history loads folded. */
+.gu-skiph{display:flex;align-items:center;gap:8px;max-height:0;opacity:0;overflow:hidden;visibility:hidden;margin:0;padding:0 14px;border-radius:999px;background:var(--hover);color:var(--mute);font-size:14px;text-align:left;max-width:100%;
+  transition:max-height .3s ease .25s,opacity .25s ease .3s,margin .3s ease .25s,padding .3s ease .25s,visibility 0s .6s}
+.gu-skiph span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.gu-skiph svg{flex:none;transition:transform .2s}
+.gu-skip .gu-skiph{max-height:40px;opacity:1;visibility:visible;padding:9px 14px}.gu-skip.open .gu-skiph{margin-bottom:8px}.gu-skip.open .gu-skiph svg{transform:rotate(180deg)}@media (hover:hover) and (pointer:fine){.gu-skiph:hover{color:var(--ink2)}}
+.gu-skipb{display:grid;grid-template-rows:1fr;grid-template-columns:minmax(0,1fr)}.gu-skipi{min-height:0;min-width:0}
+.gu-skip .gu-skipi{overflow:hidden}
+.gu-skip:not(.open) .gu-skipb{grid-template-rows:0fr;opacity:0;visibility:hidden;transition:grid-template-rows .45s cubic-bezier(.4,0,.2,1) .12s,opacity .3s ease .12s,visibility 0s .57s}
+.gu-skip.open .gu-skipb{transition:grid-template-rows .3s ease,opacity .2s ease}
+.gu-dust{position:absolute;left:0;top:0;width:100%;height:0;pointer-events:none;z-index:2}.gu-dust i{position:absolute;border-radius:50%;background:var(--mute);opacity:0}
+@media(prefers-reduced-motion:reduce){.gu-skiph,.gu-skipb,.gu-skip:not(.open) .gu-skipb,.gu-skip.open .gu-skipb{transition-duration:.12s;transition-delay:0s}}
+/* Folded permission cards (approval-card.ts): a settled card older than 15 minutes is one line that opens to the full card. */
+.gu-apfold{max-width:100%;min-width:0}
+.gu-apfold-b{display:flex;align-items:center;gap:10px;width:100%;min-width:0;min-height:40px;padding:8px 14px;border:1px solid var(--line,var(--hover));border-radius:14px;background:transparent;color:var(--mute);font:inherit;font-size:14px;text-align:left;cursor:pointer}
+@media (hover:hover) and (pointer:fine){.gu-apfold-b:hover{background:var(--hover)}}.gu-apfold-b:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.gu-apfold-t{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink2)}
+.gu-apfold-o{flex:none;color:var(--mute);white-space:nowrap}
+.gu-apfold-c{flex:none;transition:transform .15s}.gu-apfold.open .gu-apfold-c{transform:rotate(180deg)}
+.gu-apfold-full{margin-top:8px}.gu-apfold-full[hidden]{display:none}
+@media(max-width:480px){.gu-apfold-b{flex-wrap:wrap;gap:2px 8px}.gu-apfold-t{flex:1 1 100%;white-space:normal;overflow-wrap:anywhere}.gu-apfold-o{flex:1 1 auto}.gu-apfold-c{margin-left:auto}}
+@media(prefers-reduced-motion:reduce){.gu-apfold-c{transition:none}}

@@ -1,0 +1,162 @@
+--- a/dist/oss/index.js
++++ b/dist/oss/index.js
+@@ -18027,37 +18027,9 @@
+     const searchStartMs = Date.now();
+     const queryLemmatized = lemmatizeForBm25(query);
+     const queryEntities = extractEntities(query);
+-    const queryEmbedding = await this.embedder.embed(query, "search");
+-    const internalLimit = Math.max(topK * 4, 60);
+-    const semanticResults = await this.vectorStore.search(
+-      queryEmbedding,
+-      internalLimit,
+-      effectiveFilters
+-    );
+-    let keywordResults = null;
+-    if (typeof this.vectorStore.keywordSearch === "function") {
+-      try {
+-        keywordResults = (_a2 = await this.vectorStore.keywordSearch(
+-          queryLemmatized,
+-          internalLimit,
+-          effectiveFilters
+-        )) != null ? _a2 : null;
+-      } catch (e) {
+-        keywordResults = null;
+-      }
+-    }
+-    const bm25Scores = {};
+-    if (keywordResults) {
+-      const [midpoint, steepness] = getBm25Params(query, queryLemmatized);
+-      for (const mem of keywordResults) {
+-        const memId = String(mem.id);
+-        const rawScore = (_b2 = mem.score) != null ? _b2 : 0;
+-        if (rawScore > 0) {
+-          bm25Scores[memId] = normalizeBm25(rawScore, midpoint, steepness);
+-        }
+-      }
+-    }
+     const entityBoosts = {};
++    // 1HC patch: the entity boost does not need the query embedding, so it starts now and runs beside it.
++    const entityP = (async () => {
+     if (queryEntities.length > 0) {
+       try {
+         const seen = /* @__PURE__ */ new Set();
+@@ -18125,6 +18097,38 @@
+         console.warn("Entity boost computation failed:", e);
+       }
+     }
++    })();
++    const queryEmbedding = await this.embedder.embed(query, "search");
++    const internalLimit = Math.max(topK * 4, 60);
++    const semanticResults = await this.vectorStore.search(
++      queryEmbedding,
++      internalLimit,
++      effectiveFilters
++    );
++    let keywordResults = null;
++    if (typeof this.vectorStore.keywordSearch === "function") {
++      try {
++        keywordResults = (_a2 = await this.vectorStore.keywordSearch(
++          queryLemmatized,
++          internalLimit,
++          effectiveFilters
++        )) != null ? _a2 : null;
++      } catch (e) {
++        keywordResults = null;
++      }
++    }
++    const bm25Scores = {};
++    if (keywordResults) {
++      const [midpoint, steepness] = getBm25Params(query, queryLemmatized);
++      for (const mem of keywordResults) {
++        const memId = String(mem.id);
++        const rawScore = (_b2 = mem.score) != null ? _b2 : 0;
++        if (rawScore > 0) {
++          bm25Scores[memId] = normalizeBm25(rawScore, midpoint, steepness);
++        }
++      }
++    }
++    await entityP;
+     const candidates = semanticResults.filter((mem) => showExpired || !payloadIsExpired(mem.payload)).map((mem) => {
+       var _a3;
+       return {
+--- a/dist/oss/index.mjs
++++ b/dist/oss/index.mjs
+@@ -17933,37 +17933,9 @@
+     const searchStartMs = Date.now();
+     const queryLemmatized = lemmatizeForBm25(query);
+     const queryEntities = extractEntities(query);
+-    const queryEmbedding = await this.embedder.embed(query, "search");
+-    const internalLimit = Math.max(topK * 4, 60);
+-    const semanticResults = await this.vectorStore.search(
+-      queryEmbedding,
+-      internalLimit,
+-      effectiveFilters
+-    );
+-    let keywordResults = null;
+-    if (typeof this.vectorStore.keywordSearch === "function") {
+-      try {
+-        keywordResults = (_a2 = await this.vectorStore.keywordSearch(
+-          queryLemmatized,
+-          internalLimit,
+-          effectiveFilters
+-        )) != null ? _a2 : null;
+-      } catch (e) {
+-        keywordResults = null;
+-      }
+-    }
+-    const bm25Scores = {};
+-    if (keywordResults) {
+-      const [midpoint, steepness] = getBm25Params(query, queryLemmatized);
+-      for (const mem of keywordResults) {
+-        const memId = String(mem.id);
+-        const rawScore = (_b2 = mem.score) != null ? _b2 : 0;
+-        if (rawScore > 0) {
+-          bm25Scores[memId] = normalizeBm25(rawScore, midpoint, steepness);
+-        }
+-      }
+-    }
+     const entityBoosts = {};
++    // 1HC patch: the entity boost does not need the query embedding, so it starts now and runs beside it.
++    const entityP = (async () => {
+     if (queryEntities.length > 0) {
+       try {
+         const seen = /* @__PURE__ */ new Set();
+@@ -18031,6 +18003,38 @@
+         console.warn("Entity boost computation failed:", e);
+       }
+     }
++    })();
++    const queryEmbedding = await this.embedder.embed(query, "search");
++    const internalLimit = Math.max(topK * 4, 60);
++    const semanticResults = await this.vectorStore.search(
++      queryEmbedding,
++      internalLimit,
++      effectiveFilters
++    );
++    let keywordResults = null;
++    if (typeof this.vectorStore.keywordSearch === "function") {
++      try {
++        keywordResults = (_a2 = await this.vectorStore.keywordSearch(
++          queryLemmatized,
++          internalLimit,
++          effectiveFilters
++        )) != null ? _a2 : null;
++      } catch (e) {
++        keywordResults = null;
++      }
++    }
++    const bm25Scores = {};
++    if (keywordResults) {
++      const [midpoint, steepness] = getBm25Params(query, queryLemmatized);
++      for (const mem of keywordResults) {
++        const memId = String(mem.id);
++        const rawScore = (_b2 = mem.score) != null ? _b2 : 0;
++        if (rawScore > 0) {
++          bm25Scores[memId] = normalizeBm25(rawScore, midpoint, steepness);
++        }
++      }
++    }
++    await entityP;
+     const candidates = semanticResults.filter((mem) => showExpired || !payloadIsExpired(mem.payload)).map((mem) => {
+       var _a3;
+       return {
