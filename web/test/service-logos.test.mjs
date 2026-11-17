@@ -25,13 +25,13 @@ const officialCg = (html) => { const b = cgBtn(html); assert.ok(b, "the Continue
   assert.ok(!b.includes("/logo/chatgpt.com"), "the ChatGPT button does not use logo.dev"); };
 
 let html = await page("?byokplan");
-assert.deepStrictEqual(urls(html).sort(), ["/logo/claude.ai", "/logo/opencode.ai", "/logo/openrouter.ai"].sort(), "the Claude, OpenCode and OpenRouter add buttons ask for their logo.dev logos");
+assert.deepStrictEqual(urls(html).sort(), ["/logo/claude.ai", "/logo/opencode.ai", "/logo/openrouter.ai", "/logo/vercel.com"].sort(), "the Claude, OpenCode, OpenRouter and Vercel add buttons ask for their logo.dev logos");
 officialCg(html);
 assert.ok(!/img\.logo\.dev|token=pk_/.test(html), "the app never asks logo.dev itself and never holds a key");
 ok("add buttons: ChatGPT uses the official OpenAI asset, OpenCode and OpenRouter use /logo/<domain>");
 
 html = await page("?byokthree");
-assert.deepStrictEqual(urls(html).sort(), ["/logo/chatgpt.com", "/logo/claude.ai", "/logo/openai.com", "/logo/opencode.ai", "/logo/openrouter.ai"].sort(), "connected rows: ChatGPT, OpenCode, and api.openai.com as openai.com; the add buttons left are Claude and OpenRouter");
+assert.deepStrictEqual(urls(html).sort(), ["/logo/chatgpt.com", "/logo/claude.ai", "/logo/openai.com", "/logo/opencode.ai", "/logo/openrouter.ai", "/logo/vercel.com"].sort(), "connected rows: ChatGPT, OpenCode, and api.openai.com as openai.com; the add buttons left are Claude, OpenRouter and Vercel");
 ok("connected rows ask for each service's own domain (an address shows its registrable domain)");
 
 const { serviceDomain } = await import(pathToFileURL(lout).href);

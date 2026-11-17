@@ -1,0 +1,191 @@
+{
+ "data": [
+  {
+   "id": "alibaba/qwen-3-32b",
+   "object": "model",
+   "created": 1755815280,
+   "released": 1745798400,
+   "owned_by": "alibaba",
+   "name": "Qwen 3 32B",
+   "description": "Qwen3-32B is a world-class model with comparable quality to DeepSeek R1 while outperforming GPT-4.1 and Claude Sonnet 3.7. It excels in code-gen, tool-calling, and advanced reasoning, making it an exceptional model for a wide range of production use cases.",
+   "context_window": 128000,
+   "max_tokens": 8192,
+   "type": "language",
+   "zdr": "some",
+   "no_training": "all",
+   "tags": [
+    "reasoning",
+    "tool-use",
+    "structured-output",
+    "open-weights"
+   ],
+   "supported_specifications": [
+    "v2",
+    "v3",
+    "v4"
+   ],
+   "modalities": {
+    "input": [
+     "text"
+    ],
+    "output": [
+     "text"
+    ]
+   },
+   "supported_parameters": [
+    "max_tokens",
+    "temperature",
+    "stop",
+    "tools",
+    "tool_choice",
+    "reasoning",
+    "include_reasoning",
+    "response_format",
+    "structured_outputs"
+   ],
+   "temperature": true,
+   "reasoning_options": [
+    {
+     "type": "toggle"
+    },
+    {
+     "type": "effort",
+     "values": [
+      "none",
+      "low",
+      "medium",
+      "high"
+     ]
+    }
+   ],
+   "knowledge": "2025-04",
+   "pricing": {
+    "input": "0.00000015",
+    "output": "0.0000006",
+    "varies_by_provider": true
+   }
+  },
+  {
+   "id": "bfl/flux-2-flex",
+   "object": "model",
+   "created": 1755815280,
+   "released": 1764028800,
+   "owned_by": "bfl",
+   "name": "FLUX.2 [flex]",
+   "description": "FLUX.2 is a completely new base model trained for visual intelligence, not just pixel generation, setting a new standard for both image generation and image editing. With FLUX.2 models you can expect the highest quality, higher resolutions (up to 4MP), and new capabilities like multi-ref images. FLUX.2 [flex] supports customizable image generation and editing with adjustable steps and guidance. It's better at typography and text rendering. It supports up to 10 reference images (up to 14 MP total input).\nThis provider gives the option to change the moderation level for inputs and outputs. The control is under safety tolerance and is by default 2 on a range from 0 (more strict) through 6 (more permissive).",
+   "context_window": 0,
+   "max_tokens": 0,
+   "type": "image",
+   "zdr": "none",
+   "no_training": "none",
+   "tags": [
+    "image-generation"
+   ],
+   "supported_specifications": [
+    "v2",
+    "v3",
+    "v4"
+   ],
+   "modalities": {
+    "input": [
+     "text"
+    ],
+    "output": [
+     "image"
+    ]
+   },
+   "pricing": {}
+  },
+  {
+   "id": "alibaba/qwen3-embedding-0.6b",
+   "object": "model",
+   "created": 1755815280,
+   "released": 1763078400,
+   "owned_by": "alibaba",
+   "name": "Qwen3 Embedding 0.6B",
+   "description": "The Qwen3 Embedding model series is the latest proprietary model of the Qwen family, specifically designed for text embedding and ranking tasks. Building upon the dense foundational models of the Qwen3 series, it provides a comprehensive range of text embeddings and reranking models in various sizes (0.6B, 4B, and 8B).",
+   "context_window": 32768,
+   "max_tokens": 32768,
+   "type": "embedding",
+   "zdr": "none",
+   "no_training": "all",
+   "tags": [
+    "open-weights"
+   ],
+   "supported_specifications": [
+    "v2",
+    "v3",
+    "v4"
+   ],
+   "modalities": {
+    "input": [
+     "text"
+    ],
+    "output": [
+     "text"
+    ]
+   },
+   "pricing": {
+    "input": "0.00000001"
+   }
+  },
+  {
+   "id": "elorian/glimpse",
+   "object": "model",
+   "created": 1755815280,
+   "released": 1792108800,
+   "owned_by": "elorian",
+   "name": "Glimpse",
+   "description": "Glimpse is Elorian's visual reasoning model for image and video understanding, with a 220,000-token context window. It tracks objects across motion and viewpoints, interprets spatial relationships, and reasons about physical cause and effect. Designed for scientific chart analysis, video captioning, robotics planning, and visual counting, it combines multimodal understanding with an agent trained to use code and visual inspection tools.",
+   "context_window": 220000,
+   "max_tokens": 4096,
+   "type": "language",
+   "zdr": "none",
+   "no_training": "none",
+   "tags": [
+    "implicit-caching",
+    "reasoning",
+    "video-input",
+    "vision"
+   ],
+   "supported_specifications": [
+    "v2",
+    "v3",
+    "v4"
+   ],
+   "modalities": {
+    "input": [
+     "text",
+     "image",
+     "video"
+    ],
+    "output": [
+     "text"
+    ]
+   },
+   "supported_parameters": [
+    "max_tokens",
+    "temperature",
+    "stop",
+    "reasoning",
+    "include_reasoning"
+   ],
+   "temperature": true,
+   "reasoning_options": [
+    {
+     "type": "effort",
+     "values": [
+      "low",
+      "medium",
+      "xhigh"
+     ]
+    }
+   ],
+   "pricing": {
+    "input": "0.0000006",
+    "output": "0.000003",
+    "input_cache_read": "0.00000006"
+   }
+  }
+ ]
+}

@@ -8,17 +8,17 @@
 // Existing accounts need no action. The first time anything reads their connections (ensureUpgrade), the one saved key of the old byok row, and a saved ChatGPT sign-in, become connections,
 // and the saved main model, fast model and reasoning levels become the own-key Custom Model Selection setting (General's first model, Background jobs). byok_multi marks it done. The old row is only copied from, never changed.
 import { sealSecret, openSecret } from "../sentinel.js";
-import { checkBase, ByokError, byokModelsJson, redact, TEST_FAIL, TEST_FAIL_CG_SIGNIN, withKey, withChatgpt, withClaudeCode } from "../byok.js";
+import { TP_BASE, checkBase, ByokError, byokModelsJson, redact, TEST_FAIL, TEST_FAIL_CG_SIGNIN, withKey, withChatgpt, withClaudeCode } from "../byok.js";
 import { OR_SOURCE, OR_BASE, orPending, orForget } from "../byok-openrouter.js";
 import { CG_SOURCE, CG_BASE, cgRow, cgDdl, cgForget } from "./byok-chatgpt.js";
 import { OC_SOURCE, OC_BASE, OC_AGENT, ocPlan, ocBase, ocSession } from "./byok-opencode.js";
 import { CC_ID, CC_LABEL, ccForget, ccTest } from "./byok-claudecode.js";
 import { forgetLists } from "./byok-custom.js";
 
-export const KINDS = ["plain", "openrouter", "chatgpt", "opencode", "claudecode"];
+export const KINDS = ["plain", "openrouter", "chatgpt", "opencode", "claudecode", "tokenpass"];
 export const MAX_PLAIN = 12;
-export const LABELS = { openrouter: "OpenRouter", chatgpt: "ChatGPT", opencode: "OpenCode", claudecode: CC_LABEL };
-export const CONN_ID_RE = /^(openrouter|chatgpt|opencode|claudecode|p_[a-z0-9]{3,12})$/;
+export const LABELS = { openrouter: "OpenRouter", chatgpt: "ChatGPT", opencode: "OpenCode", claudecode: CC_LABEL, tokenpass: "Vercel Token Pass" };
+export const CONN_ID_RE = /^(openrouter|chatgpt|opencode|claudecode|tokenpass|p_[a-z0-9]{3,12})$/;
 const now = () => Date.now();
 
 export const DDL = [
@@ -149,7 +149,7 @@ export async function addPlain(env, tid, f) {
 export async function addSealed(env, tid, kind, key, plan = "go") {
   await connDdl(env);
   const old = await rowOf(env, tid, kind);
-  await put(env, tid, { id: kind, kind, oc_plan: plan, base_url: kind === "openrouter" ? OR_BASE : ocBase(plan), key_sealed: await sealSecret(env, key), key_last4: key.slice(-4), created_at: old ? Number(old.created_at) : undefined });
+  await put(env, tid, { id: kind, kind, oc_plan: plan, base_url: kind === "openrouter" ? OR_BASE : kind === "tokenpass" ? TP_BASE : ocBase(plan), key_sealed: await sealSecret(env, key), key_last4: key.slice(-4), created_at: old ? Number(old.created_at) : undefined });
   return { id: kind };
 }
 // A key that Sign in with OpenRouter made (byok_or_key) becomes the OpenRouter connection at once, since there are no models to pick first.

@@ -1365,7 +1365,7 @@ export class Resident extends DurableObject {
     const lastTry = tc?.finalAttempt || null;   // callModel's last attempt after repeated loops: next model in the plan, short output cap
     const requestMaxOut = lastTry?.capOut && Number.isFinite(lastTry.capOut) ? (Number.isFinite(savedOut) ? Math.min(savedOut, lastTry.capOut) : lastTry.capOut) : savedOut;
     const holdOutNanoNow = choreOnPlan ? await plannedHoldNano(this.env, "handoff").catch(() => 0) : frozen ? holdOutNano({ catalog: { [frozen.requestedModel]: frozen.catalog } }, frozen.requestedModel, savedOut) : await plannedChatHoldNano(this.env, chatCategory).catch(() => 0);
-    let backgroundFormat = tc?.appendRuntime && noTools ? (tc.taskProfile.catalog.tool_choice.includes("none") ? { tool_choice: "none" } : {}) : noTools && messages.at(-1)?.role === "user" && String(messages.at(-1)?.content).startsWith(HANDOFF_PREFIX) ? { response_format: structuredFormat("handoff_notes", HANDOFF_SCHEMA) } : {};
+    let backgroundFormat = tc?.appendRuntime && noTools ? (await this.noneToolChoiceOk({ taskAffinity: true }, tc) ? { tool_choice: "none" } : {}) : noTools && messages.at(-1)?.role === "user" && String(messages.at(-1)?.content).startsWith(HANDOFF_PREFIX) ? { response_format: structuredFormat("handoff_notes", HANDOFF_SCHEMA) } : {};
     const estIn = estTokens(messages);
     // Own AI key (byok.js): their endpoint and models, nothing reserved or charged for the call (their provider bills them).
     let byok = choreOnPlan ? null : this.env.BYOK || null, viaOR = !byok && (!!tc?.taskProfile || useOpenRouter(this.env));

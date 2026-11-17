@@ -125,14 +125,16 @@ function setChan(slug: string) {
   CH.chan = slug; CH.own = false; hydrated = false; lastJson = ""; Object.assign(M, { fetched: false, at: 0, loaded: false, err: "", open: null, draft: {} }); repaint();
 }
 function hydrate() { if (hydrated || M.loaded) return; hydrated = true; const v = cacheGet(); if (v) { try { adopt(v, true); lastJson = JSON.stringify(v); } catch { M.loaded = false; } } }
+let saves = 0, saved = 0;   // saves in flight or queued, and saves finished: a read that began before the latest save finished may hold the older copy
 async function load(force = false, restore = false) {   // restore: a refused save put the unsaved choice on screen, so the saved answer is drawn again even if it is the one already held
   if (!D || M.loading) return;
   hydrate();
   if (M.fetched && !force && Date.now() - M.at < 15000) return;
-  M.loading = true; M.at = Date.now(); let changed = false, again = false; const sc = scope;
+  M.loading = true; M.at = Date.now(); let changed = false, again = false; const sc = scope, sv = saved;
   try {
     const v = await call(`account/custom-models${CH.chan ? `?channel=${encodeURIComponent(CH.chan)}` : ""}`), j = JSON.stringify(v);
     if (sc !== scope) return;   // the other page opened while this answer was on its way
+    if (!restore && (saves || sv !== saved)) { M.fetched = false; return; }   // a save started or ended meanwhile: this copy may be older than the screen, so the next draw reads again
     if ((v.channel || "") !== CH.chan) { again = true; return; }   // another channel was chosen meanwhile: ask again for that one
     if (restore || j !== lastJson) { if (force || !Object.keys(M.draft).length) { adopt(v); changed = true; } }
     if (M.err) { M.err = ""; changed = true; }
@@ -145,12 +147,13 @@ async function load(force = false, restore = false) {   // restore: a refused sa
 const scoped = (path: string) => (scope === "services" ? (path.includes("?") ? path.replace("?", "?scope=services&") : `${path}?scope=services`) : path);
 const call = (path: string, init?: { method?: string; body?: any }) => (D?.api || demoApi)(scoped(path), init);
 function save(body: any, after?: () => void) {
+  saves++;
   queue = queue.then(async () => {
     M.busy = true; M.err = "";
     const sc = scope;
     try { const v = await call("account/custom-models", { method: "POST", body: CH.chan && body.per_channel === undefined ? { ...body, channel: CH.chan } : body }); if (sc === scope && (v.channel || "") === CH.chan) { adopt(v); after?.(); D?.saved?.(); } }
     catch (e: any) { const why = e?.message || "Couldn't save that. Try again in a minute."; for (let i = 0; M.loading && i < 40; i++) await new Promise(r => setTimeout(r, 100)); await load(true, true).catch(() => {}); M.err = why; }   // the reload puts the saved choice back, and the reason stays on screen
-    finally { M.busy = false; repaint(); }
+    finally { M.busy = false; saves--; saved++; repaint(); }
   });
   return queue;
 }

@@ -75,6 +75,8 @@ async function taskChat(env, body, route, meta, signal, fetchImpl = globalThis.f
         const auth = await authorizeTaskProfile(env, profile, meta?.tenant, body);
         const frozenSettings = { ...env.MODEL_SETTINGS, catalog: { ...env.MODEL_SETTINGS?.catalog, [profile.requestedModel]: profile.catalog } };
         const payload = taskPayload(profile, body, { level: isCloudflareModel(profile.requestedModel) ? null : auth.level, settings: frozenSettings, capOut: route.capOut });
+        // The retry after a transient failure asks OpenRouter's flex endpoints of the same model (never the first attempt); only OpenRouter models get the field.
+        if (attempt && !isCloudflareModel(profile.requestedModel)) payload.service_tier = "flex";
         const r = isCloudflareModel(profile.requestedModel)
           ? await cloudflareChat(env, payload, { ...meta, job: CHAT_JOB, session: payload.session_id, _privacy: auth.level }, signal, profile.catalog)
           : await orFetch(env, payload, { ...meta, job: CHAT_JOB, session: payload.session_id, _privacy: auth.level }, { "x-openrouter-metadata": "enabled" }, signal, fetchImpl);
@@ -104,7 +106,7 @@ async function taskChat(env, body, route, meta, signal, fetchImpl = globalThis.f
     }
   }
   if (last?.privacy) throw last;
-  throw Object.assign(new TaskAffinityBlocked("The configured task models are unavailable right now. Retry shortly; your conversation is saved.", "model-unavailable"), { orStatus: last?.orStatus || 503 });
+  throw Object.assign(new TaskAffinityBlocked("The configured task models are unavailable right now. Retry shortly; your conversation is saved.", "model-unavailable"), { orStatus: last?.orStatus || 503, ...(last?.taskAffinity ? { code: last.reason } : {}) });   // a non-transient block of the last model shows in the turn trace as its code
 }
 
 // Two mode (the main chat's routing policy, route2.js): one model per attempt, no OpenRouter `models` list (so nothing outside

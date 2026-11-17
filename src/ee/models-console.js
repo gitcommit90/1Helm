@@ -4,7 +4,7 @@
 // The page itself is app-assets/app-static/models-console.js (browser) and models-console-core.js (shared with this file), plus models-console.css.
 import { modelSettingsView, saveModelSettings, restoreModelSettings, readModelSettings, unlistedModels, aliasesOfSaved } from "./model-settings.js";
 import { modelCatalog, listedKinds, withEndpointLimits } from "./model-catalog.js";
-import { SEED_FACTS, jobFieldDefaults } from "./model-seed.js";
+import { SEED_FACTS, TOKENPASS_MODELS, jobFieldDefaults } from "./model-seed.js";
 import { modelDashboard } from "./model-dashboard.js";
 import { JOB_IDS } from "./model-jobs.js";
 import { LIMIT_GROUPS, LIMIT_DEFS, limitValues } from "../limits.js";
@@ -88,6 +88,7 @@ export async function consoleState(view, env) {
     environment: view.environment, dynamicRouting: view.dynamicRouting, revision: view.revision, stale: !!view.stale, history: (view.history || []).map((x) => ({ ...x, changes: history[x.revision] || null })),
     config: view.config, defaults: Object.fromEntries(JOB_IDS.map((id) => [id, jobFieldDefaults(id)])),
     jobs: dash.jobs, groups: dash.groups, served: await servedView(env, since),
+    tokenpass_start: TOKENPASS_MODELS,
     limits: { groups: LIMIT_GROUPS, defs: LIMIT_DEFS, values: limitValues(view.config) },
     choices: view.options.choices, outside: outsideModels(env), unlisted: [],
   };

@@ -417,13 +417,16 @@ async function byokChatOnce(cfg, body, { fast = false, signal = null, fetchImpl 
 
 // The models the person's endpoint serves: GET <base>/models with their key, under the same rules as every other call (HTTPS only, no redirects, a timeout, a size cap, the key never
 // echoed). Returns the parsed JSON, or throws ByokError.
+// Vercel Token Pass: the AI Gateway address and the models its credit covers (the saved list on the Models page, passed to byokModelsJson as `covered`). Any AI Gateway key draws the credit for these automatically.
+export const TP_BASE = "https://ai-gateway.vercel.sh/v1";
 export const MODELS_MS = 15e3, MAX_MODELS_BYTES = 4 << 20;
-export async function byokModelsJson(cfg, { fetchImpl = globalThis.fetch, signal = null } = {}) {
+export async function byokModelsJson(cfg, { fetchImpl = globalThis.fetch, signal = null, covered = null } = {}) {
   if (!cfg || cfg.missing || typeof cfg.key !== "string") throw new ByokError(missingText(cfg));
   if (cfg.provider === CC_SOURCE) return ccModelsJson();   // a fixed list: the names the Claude Code command takes
   if (cfg.chatgptHandle) return chatgptModelsJson(cfg, { fetchImpl, signal });
   if (cfg.provider === OC_SOURCE) return opencodeModelsJson(cfg, { fetchImpl, signal });
   const chk = checkBase(cfg.base); if (!chk.ok) throw fail(cfg, chk.error.replace(/\.$/, ""));
+  const tp = cfg.kind === "tokenpass";   // the public list needs no key, and a key limited to Token Pass is refused on it
   const u = new URL(chk.base); u.pathname = `${u.pathname.replace(/\/+$/, "")}/models`;
   const ac = new AbortController(), onAbort = () => ac.abort(signal?.reason);
   if (signal) { if (signal.aborted) ac.abort(signal.reason); else signal.addEventListener("abort", onAbort, { once: true }); }
@@ -431,12 +434,13 @@ export async function byokModelsJson(cfg, { fetchImpl = globalThis.fetch, signal
   try {
     let r;
     try {
-      r = await fetchImpl(u.href, { method: "GET", redirect: "manual", signal: ac.signal, headers: { ...(cfg.key ? { authorization: `Bearer ${cfg.key}` } : {}), accept: "application/json", "user-agent": "1Helm" } });
+      r = await fetchImpl(u.href, { method: "GET", redirect: "manual", signal: ac.signal, headers: { ...(cfg.key && !tp ? { authorization: `Bearer ${cfg.key}` } : {}), accept: "application/json", "user-agent": "1Helm" } });
     } catch (e) { throw fail(cfg, ac.signal.aborted ? `no model list within ${Math.round(MODELS_MS / 1000)} seconds` : `couldn't connect${e?.message ? `: ${redact(e.message, cfg.key, 100)}` : ""}`); }
     if (r.type === "opaqueredirect" || (r.status >= 300 && r.status < 400)) { r.body?.cancel?.().catch?.(() => {}); throw fail(cfg, `error ${r.status || 302}: it redirected to another address; use the final address`, r.status || 302); }
     if (!r.ok) { const { detail } = await errorDetail(cfg, r); throw fail(cfg, `error ${r.status}${detail ? `: ${detail}` : ""}`, r.status); }
     const text = await readCapped(cfg, r.body, MAX_MODELS_BYTES, "model list");
-    try { return JSON.parse(text); } catch { throw fail(cfg, "the model list wasn't JSON"); }
+    let j; try { j = JSON.parse(text); } catch { throw fail(cfg, "the model list wasn't JSON"); }
+    return tp ? { data: (Array.isArray(j?.data) ? j.data : []).filter((m) => !covered || covered.includes(m?.id)) } : j;
   } finally { clearTimeout(timer); if (signal) signal.removeEventListener("abort", onAbort); }
 }
 
@@ -702,7 +706,7 @@ async function chooseMode(env, t, d, mode, has) {
 // mode, switch-now, switch-preview, chatgpt/finish (the pasted address), chatgpt/forget and openrouter/forget (nothing is waiting any more; they answer the same state).
 export async function byokApi(req, env, t, sub, { json, fetchImpl = globalThis.fetch, waitUntil = null, ...d } = {}) {
   if (!eeEnabled(env)) return singleKeyApi(req, env, t, sub, { json, fetchImpl });   // core: one saved key
-  if (!/^\/api\/byok(\/(connections|opencode|opencode-plan|test|remove|mode|switch-now|switch-preview|openrouter\/forget|chatgpt\/(finish|forget|welcomed|invite-dismiss)|claudecode\/(start|finish|warm)|usage))?$/.test(sub)) return null;
+  if (!/^\/api\/byok(\/(connections|opencode|tokenpass|opencode-plan|test|remove|mode|switch-now|switch-preview|openrouter\/forget|chatgpt\/(finish|forget|welcomed|invite-dismiss)|claudecode\/(start|finish|warm)|usage))?$/.test(sub)) return null;
   const onPlan = t.plan === BYOK_PLAN;
   await orDdl(env); await cgDdl(env); await connDdl(env);
   await adoptPending(env, t.id);   // a key Sign in with OpenRouter just made becomes the OpenRouter connection
@@ -802,6 +806,13 @@ export async function byokApi(req, env, t, sub, { json, fetchImpl = globalThis.f
     if (!test.ok) return json({ error: test.checks.reach.error, field: "key", test }, 400);
     await addSealed(env, t.id, "opencode", key, plan); await saveTest(env, t.id, "opencode", test);
     return json({ ok: true, id: "opencode", ...(await stateOf(env, t, d)) });
+  }
+  // Vercel Token Pass: an AI Gateway key pasted here, the address is fixed. Not checked: the model list is public, and Vercel has no key check that works for a key limited to Token Pass.
+  if (sub === "/api/byok/tokenpass") {
+    const key = String(b.key ?? "").trim();
+    if (!key || !CONN_KEY_RE.test(key)) return json({ error: "Paste an AI Gateway API key from Vercel. It is one line.", field: "key" }, 400);
+    await addSealed(env, t.id, "tokenpass", key);
+    return json({ ok: true, id: "tokenpass", ...(await stateOf(env, t, d)) });
   }
   // Any service with an OpenAI-compatible API: its address and key. Tested before it is kept.
   if (sub === "/api/byok/connections") {

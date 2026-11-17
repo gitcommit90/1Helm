@@ -59,12 +59,14 @@ const isHtml = (name: string, mime = "") => /\.html?$/i.test(name) || /text\/htm
 const pageName = (s: string) => { let n = String(s || "").replace(/\.(html?)$/i, "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, ""); return n.length < 2 ? (n ? `page-${n}` : "page") : n; };
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 
-export function shInit(d: Deps) { D = d; bdqrInit(); shLoad(); }
-let LOADED_AT = 0;
+export function shInit(d: Deps) { D = d; bdqrInit(); shLoad(); document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && Date.now() - LOADED_AT > 20000) void shLoad(); }); }
+let LOADED_AT = 0, FAILS = 0;
 export async function shLoad() {
   LOADED_AT = Date.now();
   if (!D) return;
-  try { const r = await D.api("/share"); if (r && !r.error) { SH.base = r.base || SH.base; SH.links = r.links || []; SH.pages = r.pages || []; SH.chats = r.chats || []; SH.loaded = true; D.repaint(); } } catch {}
+  try { const r = await D.api("/share"); if (r && !r.error) { SH.base = r.base || SH.base; SH.links = r.links || []; SH.pages = r.pages || []; SH.chats = r.chats || []; SH.loaded = true; FAILS = 0; D.repaint(); } } catch {}
+  LOADED_AT = Date.now();
+  if (!SH.loaded && FAILS++ < 3) setTimeout(() => D?.repaint(), 5000);   // a Library on screen draws again, and that draw loads the list (shLibHtml)
 }
 export const shLinkOf = (fid: string) => SH.links.find((l) => l.file_id === fid);
 /** The published page made from this Library file: published from it (file:<ch>:<id>), from an earlier copy with the same name,
@@ -115,6 +117,7 @@ export const shHeadBtn = (slug: string, sid: string, phone = false) => { const o
 /** Top of the Library: published pages, then shared files (one channel, or every channel). */
 export function shLibHtml(slug: string | null) {
   const pages = SH.pages.filter((p) => !slug || p.channel === slug), links = SH.links.filter((l) => !slug || l.channel === slug), chats = SH.chats.filter((c) => !slug || c.channel === slug);
+  if (!SH.loaded && Date.now() - LOADED_AT > 4000) void shLoad();   // the first load failed: try again, and the Library redraws when it arrives
   if (!pages.length && !links.length && !chats.length) return "";
   if (pages.length && Date.now() - LOADED_AT > 20000) void shLoad();   // the saved-entry counts change while the page is open elsewhere
   const row = (icon: string, title: string, sub: string, url: string, actions: string) => `<div class="shrow"><span class="shico">${I(icon, 18)}</span><span class="shmain"><b>${esc(title)}</b><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(short(url))}</a>${sub ? `<span>${esc(sub)}</span>` : ""}</span>

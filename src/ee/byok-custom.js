@@ -59,11 +59,15 @@ export function recordOfListed(m) {
   if (!id || !MODEL_RE.test(id)) return null;
   if (m && typeof m === "object" && Array.isArray(m.supported_parameters) && !m.supported_parameters.includes("tools")) return null;
   if (m && typeof m === "object" && m.tools === false) return null;   // OpenCode's list says so
+  if (m && typeof m === "object" && typeof m.type === "string" && m.type !== "language") return null;   // image, embedding and video entries
+  if (m && typeof m === "object" && Array.isArray(m.tags) && !m.tags.includes("tool-use")) return null;
   const o = m && typeof m === "object" ? m : {};
   const listed = o.supported_reasoning_efforts ?? o.reasoning_efforts ?? o.capabilities?.reasoning_efforts;
   let efforts = Array.isArray(listed) ? [...new Set(listed.filter((x) => typeof x === "string" && KNOWN_EFFORTS.includes(x)))] : [];
   if (!efforts.length && Array.isArray(o.supported_parameters) && o.supported_parameters.includes("reasoning_effort")) efforts = ["low", "medium", "high"];
-  const pricing = o.pricing && perMillion(o.pricing.prompt) != null && perMillion(o.pricing.completion) != null ? { prompt: perMillion(o.pricing.prompt), completion: perMillion(o.pricing.completion) } : null;
+  if (!efforts.length && Array.isArray(o.reasoning_options)) efforts = [...new Set(o.reasoning_options.filter((r) => r?.type === "effort" && Array.isArray(r.values)).flatMap((r) => r.values).filter((x) => KNOWN_EFFORTS.includes(x)))];
+  const pIn = o.pricing && perMillion(o.pricing.prompt ?? o.pricing.input), pOut = o.pricing && perMillion(o.pricing.completion ?? o.pricing.output);
+  const pricing = pIn != null && pOut != null ? { prompt: pIn, completion: pOut } : null;
   return { id, name: typeof o.name === "string" && o.name && o.name !== id ? o.name.slice(0, 120) : id, source: "BYOK", eligible: true, kinds: ["chat"], efforts, default_effort: efforts.includes("medium") ? "medium" : efforts[0] || null,
     levels: [], pricing, context_length: positive(o.context_length ?? o.context_window ?? o.max_model_len ?? o.max_context_length), ...(typeof o.family === "string" && o.family ? { family: o.family.slice(0, 60) } : {}), ...(typeof o.note === "string" && o.note ? { note: o.note.slice(0, 80) } : {}) };
 }
@@ -108,7 +112,7 @@ export async function forgetLists(env, tenantId, connId = null) {
 function readService(cfg, tenantId, k, { fetchImpl, env, now }) {
   let p = INFLIGHT.get(k); if (p) return p;
   p = (async () => {
-    const list = listedRecords(await byokModelsJson(cfg, { fetchImpl }));
+    const list = listedRecords(await byokModelsJson(cfg, { fetchImpl, covered: cfg.kind === "tokenpass" ? (await modelSettingsEnv(env)).MODEL_SETTINGS.tokenpass_models : null }));
     if (LISTS.size > 200) LISTS.clear();
     LISTS.set(k, { at: now, list }); await sharedWrite(env, tenantId, cfg, list, now);
     return list;

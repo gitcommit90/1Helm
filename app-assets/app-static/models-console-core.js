@@ -197,6 +197,7 @@ export function applyEdit(config, edit) {
   switch (edit.t) {
     case "field": (cat || job)[edit.field] = edit.value; return cfg;
     case "limit": { const cur = { ...(cfg.limits || {}) }; if (edit.value === null) delete cur[edit.limitKey]; else cur[edit.limitKey] = edit.value; cfg.limits = cur; return cfg; }
+    case "tokenpass": cfg.tokenpass_models = edit.value; return cfg;
     case "effort": if (cat) chainOf()[edit.idx].effort = edit.value; else { const arr = entriesOfJob(job); arr[edit.idx].effort = edit.value; cfg.jobs[edit.id] = packJob(job, arr); } return cfg;
     case "entry": {
       if (cat) { chainOf()[edit.idx] = edit.entry; return cfg; }
@@ -234,6 +235,7 @@ export function saveBody(config, revision) {
   const out = { version: config.version, jobs: config.jobs };
   if (config.version === 3) out.routing = config.routing;
   if (config.limits) out.limits = config.limits;
+  if (config.tokenpass_models) out.tokenpass_models = config.tokenpass_models;
   return { revision, config: out };
 }
 // ---------------------------------------------------------------- picker rules (which models a slot may take)
@@ -392,7 +394,9 @@ export function limitsView(state, ui, V) {
       return h`<div class="lr" role="group" aria-label="${d.label}"><div class="ln"><b>${d.label}</b><span class="mut" title="${d.description}">${d.description}</span></div><span class="lv-in"><input class="inp r box" ${ro ? "disabled" : ""} data-lim="${d.key}" data-k="lim.${d.key}" inputmode="decimal" value="${vals[d.key]}" aria-label="${d.label}, ${d.unit}"><span class="mut2 unit">${d.unit}</span></span><span class="sn">${sideNote(num(d.default), changed && !ro, `data-act="limreset" data-key="${esc(d.key)}"`)}</span></div>`;
     })}</section>`;
   });
-  return h`<div class="page narrow">${tables}</div>`;
+  const tp = state.config?.tokenpass_models || [], tpChanged = tp.join() !== state.tokenpass_start.join();
+  const tokenpass = V.viewingLive ? "" : h`<section class="card"><header><h2>Vercel Token Pass</h2></header><div class="lr" role="group" aria-label="Covered models"><div class="ln"><b>Covered models</b></div><span class="lv-in"><input class="inp box" ${ro ? "disabled" : ""} data-tp="1" value="${esc(tp.join(", "))}" aria-label="Vercel Token Pass covered models"></span><span class="sn">${sideNote(null, esc(state.tokenpass_start.join(", ")), tpChanged && !ro, 'data-act="tpreset"')}</span></div></section>`;
+  return h`<div class="page narrow">${tables}${tokenpass}</div>`;
 }
 export function readonlyView(state) {
   return h`<div class="page narrow">${(state.outside || []).map((g) => h`<section class="card ro"><header><h2>${g.title}</h2></header>${g.items.map((i) => h`<div class="lr"><b>${i.label}</b><span class="mono ell">${i.model}${i.source ? badge(i.source) : ""}</span><span class="mut">${i.detail || ""}</span></div>`)}</section>`)}</div>`;

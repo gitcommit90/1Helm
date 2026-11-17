@@ -68,4 +68,12 @@ assert.ok(!/data-cmpick="general\|0"[^>]*aria-label="First choice model for Gene
 p.m.bykAfter(); assert.deepStrictEqual(scrolled.map((o) => o.block), ["start"], "scrolled to Models once");
 p.m.bykAfter(); assert.strictEqual(scrolled.length, 1, "only once per connect");
 ok("first service connects: Models appears with an empty Choose a model slot and the panel scrolls to it, once");
+// The Vercel Token Pass button opens a key form with numbered steps and the terms block. The generic Vercel gateway button is gone.
+p = await page("?byoksaved");
+assert.doesNotMatch(p.html(), /data-bykvgw/, "no generic Vercel AI Gateway button");
+assert.match(p.html(), /data-bykvtp/); assert.ok(p.html().includes("/logo/vercel.com"), "the button shows Vercel's logo");
+for (const f of clicks) f({ target: { closest: (q) => (q === "[data-bykvtp]" ? {} : null) }, preventDefault() {} });
+h = p.html();
+assert.ok(h.includes(`href="${p.m.TP_KEYS}" target="_blank" rel="noopener noreferrer"`) && h.includes('id="byk-ock"') && h.includes("data-bykack") && !h.includes('id="byk-base"'), "the steps link opens Vercel in a new tab, then a key field and the terms, no address field");
+ok("Vercel Token Pass button opens the key form");
 console.log("ai services panel: all passed");

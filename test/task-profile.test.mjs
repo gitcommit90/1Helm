@@ -102,7 +102,7 @@ fetches = []; calls = 0;
 globalThis.fetch = async (_u, init) => { calls++; fetches.push(JSON.parse(init.body)); return calls === 1 ? new Response("unavailable", { status: 503 }) : response(); };
 await openRouterChat(env, { messages }, "s", tc.route, { tenant: "tenant-a" });
 assert.equal(calls, 2); assert(fetches.every((p) => p.model === MUSE_C));
-assert.deepEqual(fetches[0], fetches[1], "same-model retry preserves exact payload/cache identity");
+assert.deepEqual({ ...fetches[0], service_tier: "flex" }, fetches[1], "same-model retry keeps the exact payload and cache identity and only adds the flex tier");
 // The recorded warm host (recordTaskServed above: meta) is the only order entry; the full eligible list is never sent
 assert(fetches.every((p) => p.provider.order === undefined && p.provider.only === undefined && p.provider.allow_fallbacks === true));
 calls = 0;

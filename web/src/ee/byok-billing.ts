@@ -28,9 +28,10 @@ export const BYK_ZDR_FULL = "On your current plan this applies only while your k
 export const FALLBACK_NOTE = "Using your own AI key (1Helm credits used up)";
 export const BYK_ZDR_OPTS = "Zero data retention: while your key is in use, what the AI reads goes to your provider under their terms, and 1Helm's guarantee covers only the parts we run. With Use my services now, that's from your next message; with the backup, only after your 1Helm credits run out; with the switch, from the day it happens.";
 export const OC_CONSOLE = "https://opencode.ai/console/account";
+export const TP_KEYS = "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys%3FshowCreateKeyModal";
 type Check = { ok: boolean; error?: string; ms?: number; models?: number };
 type Test = { ok: boolean; checks: { reach?: Check }; ms?: number; at?: number };
-type Kind = "plain" | "openrouter" | "chatgpt" | "opencode" | "claudecode";
+type Kind = "plain" | "openrouter" | "chatgpt" | "opencode" | "claudecode" | "tokenpass";
 type Conn = { id: string; kind: Kind; plan?: "go" | "payg"; label: string; host: string; last4: string; email?: string; plan_name?: string; signin_again?: boolean; added_at: number | null; tested_at: number | null; test: Test | null };
 type Mode = "" | "now" | "fallback" | "switch";
 type UsageWin = { id: string; label: string; used: number; resets_at: number | null };
@@ -52,7 +53,7 @@ type Deps = {
   cgStart: string | null;                                     // /w/<slug>/byok/chatgpt/start, opened in a new tab (null: demo mode)
 };
 let D: Deps | null = null;
-type Step = "" | "plain" | "opencode" | "chatgpt" | "claudecode";
+type Step = "" | "plain" | "opencode" | "tokenpass" | "chatgpt" | "claudecode";
 const CC: { s: "" | "loading" | "ready" | "failed"; url: string; n: number } = { s: "", url: "", n: 0 };   // the Continue with Claude step: waiting for Anthropic's address, ready to open, or failed
 const B: { st: St | null; loading: boolean; err: string; field: string; busy: "" | "plan" | "test" | "add" | "del" | "or" | "cg" | "cc"; busyId: string; step: Step; f: { base: string; label: string; ock: string; plan: string; ack: boolean; cgurl: string; cccode: string; cred: string }; key: string; eye: boolean;
   at: number; last: string; orErr: string; reveal: boolean; ch: { busy: "" | Mode | "undo" | "now"; err: string; storage: boolean } } =
@@ -99,6 +100,7 @@ const MOCK_CONNS: Record<string, Conn> = {
   chatgpt: { id: "chatgpt", kind: "chatgpt", label: "ChatGPT", host: "", last4: "", email: "sam@example.com", added_at: Date.now() - day, tested_at: Date.now() - day, test: { ok: true, at: Date.now() - day, checks: { reach: { ok: true, ms: 1180, models: 6 } } } },
   opencode: { id: "opencode", kind: "opencode", plan: "go", label: "OpenCode", host: "", last4: "9f3b", added_at: Date.now() - 2 * day, tested_at: Date.now() - 2 * day, test: { ok: true, at: Date.now() - 2 * day, checks: { reach: { ok: true, ms: 420 } } } },
   claudecode: { id: "claudecode", kind: "claudecode", label: "Claude Code", host: "", last4: "", email: "sam@example.com", plan_name: "Max", added_at: Date.now() - day, tested_at: Date.now() - day, test: { ok: true, at: Date.now() - day, checks: { reach: { ok: true, ms: 300 } } } },
+  tokenpass: { id: "tokenpass", kind: "tokenpass", label: "Vercel Token Pass", host: "", last4: "c3d9", added_at: Date.now() - day, tested_at: null, test: null },
   openrouter: { id: "openrouter", kind: "openrouter", label: "OpenRouter", host: "", last4: "4c1d", added_at: Date.now() - 5 * day, tested_at: null, test: null },
 };
 const CG_SAMPLE: CgSum = QP.has("byokcgzero") ? { total: 0, peak: 0, days: 0, window: 30 } : { total: 1_240_000, peak: 486_000, days: 11, window: 30 };
@@ -119,7 +121,7 @@ if (QP.has("byokusagecached")) mockSt.usage = mockUsage(mockSt.connections.map(c
 let mockWelcomed = false;
 const STORAGE_MSG = "You're using 128 GB, and Bring your own key includes 100 GB. Delete files you don't need, or add 1 block of extra storage first.";
 async function mock(path: string, body?: any): Promise<any> {
-  await new Promise(z => setTimeout(z, path.endsWith("/test") || path.endsWith("/opencode") || path.endsWith("/connections") ? 700 : 250));
+  await new Promise(z => setTimeout(z, path.endsWith("/test") || path.endsWith("/opencode") || path.endsWith("/tokenpass") || path.endsWith("/connections") ? 700 : 250));
   const add = (c: Conn) => { mockSt = { ...mockSt, connections: [...mockSt.connections.filter(x => x.id !== c.id), c] }; };
   if (path === "/byok") {   // sandbox: the server turns Use my services now on when General's model is chosen and no option is chosen
     const chosen = !!(globalThis as any).__cmLast?.categories?.[0]?.chain?.length;
@@ -142,6 +144,11 @@ async function mock(path: string, body?: any): Promise<any> {
     if (!String(body?.key || "").trim()) return { error: "Paste the key from your OpenCode console. It is one line.", field: "key" };
     if (/bad|wrong/.test(String(body.key))) return { error: "OpenCode didn't accept that key. Copy it again from your OpenCode console, then try again (https://opencode.ai/console/account).", field: "key" };
     add({ ...MOCK_CONNS.opencode, plan: body?.plan === "payg" ? "payg" : "go", last4: String(body.key).slice(-4) }); return { ok: true, id: "opencode", ...mockSt };
+  }
+  if (path === "/byok/tokenpass") {
+    if (body?.ack !== true) return { error: "Read the note about your provider and tick the box to connect.", field: "ack" };
+    if (!String(body?.key || "").trim()) return { error: "Paste an AI Gateway API key from Vercel. It is one line.", field: "key" };
+    add({ ...MOCK_CONNS.tokenpass, last4: String(body.key).slice(-4) }); return { ok: true, id: "tokenpass", ...mockSt };
   }
   if (path === "/byok/connections") {
     const base = String(body?.base || "").trim(), host = hostOf(base);
@@ -170,7 +177,9 @@ let sbCredits = "$5.00";   // sandbox only: what the usage card says in credits 
 /** Sandbox only (no 1HC): the pretend account is on the Bring your own key plan, so the usage card can say so. */
 export const bykSbOn = () => !D?.api && !!B.st?.on_plan;
 export const bykSbCredits = () => sbCredits;
-const call = (path: string, body?: any) => (D?.api || mock)(path, body);
+// Writes in flight (pend) and finished (done): a /byok read that began before the latest write finished may hold the older copy, so bykLoad drops it.
+let pend = 0, done = 0;
+const call = (path: string, body?: any) => { const f = D?.api || mock; if (body === undefined || path === "/byok/usage") return f(path, body); pend++; return Promise.resolve(f(path, body)).finally(() => { pend--; done++; }); };
 // Plain words for what a connect or sign-in step can answer. The server sends a message (and a code for billing stops); a bare code like out_of_credits, a status number or an engine error never reaches the page.
 export const BYK_CREDITS_MSG = "Continue with Claude runs on 1Helm's computer, which is paid from credits you add, at cost plus 15%. Add credits to go on. Your Claude plan pays for the AI itself.";
 export const BYK_DAY_MSG = "The daily safety limit was reached, so Continue with Claude is paused until midnight Pacific. Nothing was lost.";
@@ -212,8 +221,9 @@ export function bykLoad(force = false) {
   if (B.loading) return;
   hydrate();
   if (B.st && !force && Date.now() - B.at < 15000) return;
-  B.loading = true; B.at = Date.now(); let changed = false;
+  B.loading = true; B.at = Date.now(); let changed = false; const dn = done;
   call("/byok").then(d => {
+    if (pend || dn !== done) { B.at = 0; return; }
     if (d && !d.error) {
       const j = JSON.stringify(d);
       if (j !== B.last || !B.st) { const n = stOf(d); B.st = B.st ? { ...n, usage: newerUsage(B.st.usage, n.usage), chatgpt: { ...n.chatgpt, summary: n.chatgpt.summary ?? B.st.chatgpt.summary } } : n; B.last = j; changed = true; try { const k = ckey(); if (k) localStorage.setItem(k, j); } catch {} }
@@ -269,13 +279,13 @@ export function bykUsageNote(): string {
 
 // ---- the page ----
 const field = (id: string, label: string, val: string, ph: string, hint = "", attrs = "") => `<label class="sf${B.field === id ? " bykbad" : ""}"><span>${label}</span><input id="byk-${id}" data-bykf="${id}" value="${esc(val)}" placeholder="${esc(ph)}" autocomplete="off" autocapitalize="none" spellcheck="false"${attrs}>${hint ? `<em class="bykhint">${hint}</em>` : ""}${B.field === id && B.err ? `<em class="bykerr" role="alert">${esc(B.err)}</em>` : ""}</label>`;
-const keyField = (id: "key" | "ock", ph: string) => `<label class="sf${B.field === "key" ? " bykbad" : ""}"><span>Key</span><span class="spw"><input id="byk-${id}" data-bykf="${id}" type="${B.eye ? "text" : "password"}" placeholder="${esc(ph)}" autocomplete="new-password" autocapitalize="none" spellcheck="false"><button type="button" class="seye${B.eye ? " on" : ""}" data-bykeye aria-label="Show key">${D!.icon("eye", 17)}</button></span>${B.field === "key" && B.err ? `<em class="bykerr" role="alert">${esc(B.err)}</em>` : ""}</label>`;
+const keyField = (id: "key" | "ock", ph: string, hint = "") => `<label class="sf${B.field === "key" ? " bykbad" : ""}"><span>Key</span><span class="spw"><input id="byk-${id}" data-bykf="${id}" type="${B.eye ? "text" : "password"}" placeholder="${esc(ph)}" autocomplete="new-password" autocapitalize="none" spellcheck="false"><button type="button" class="seye${B.eye ? " on" : ""}" data-bykeye aria-label="Show key">${D!.icon("eye", 17)}</button></span>${hint ? `<em class="bykhint">${hint}</em>` : ""}${B.field === "key" && B.err ? `<em class="bykerr" role="alert">${esc(B.err)}</em>` : ""}</label>`;
 function testHtml(t: Test | null): string {
   if (!t) return "";
   const c = t.checks.reach;
   return `<div class="byktest small ${t.ok ? "pass" : "fail"}" role="status"><div class="byktt">${t.ok ? "Connection works" : "Connection test didn't pass"}${t.at ? `<i>${ago(t.at)}</i>` : ""}</div>${!t.ok && c?.error ? `<span class="bykwhy">${esc(c.error)}</span>` : ""}</div>`;
 }
-const KIND_NAME: Record<Kind, string> = { plain: "", openrouter: "Signed in with OpenRouter", chatgpt: "Signed in with ChatGPT", opencode: "OpenCode key", claudecode: "Runs Claude Code with your Claude plan" };
+const KIND_NAME: Record<Kind, string> = { plain: "", openrouter: "Signed in with OpenRouter", chatgpt: "Signed in with ChatGPT", opencode: "OpenCode key", tokenpass: "AI Gateway key", claudecode: "Runs Claude Code with your Claude plan" };
 const subOf = (c: Conn) => {
   const who = c.kind === "opencode" ? (c.plan === "payg" ? "OpenCode pay as you go" : "OpenCode Go plan") : c.kind === "chatgpt" ? (c.signin_again ? "Sign-in ended" : c.email ? `Signed in as ${esc(c.email)}` : "Signed in") : c.kind === "claudecode" ? (c.signin_again ? "Sign-in ended" : c.email ? `Runs Claude Code with your Claude plan · ${esc(c.email)}${c.plan_name ? ` (${esc(c.plan_name)})` : ""}` : KIND_NAME.claudecode) : c.kind === "plain" ? esc(c.host) : KIND_NAME[c.kind];
   const key = c.last4 ? ` · <span class="bykmask">••••${esc(c.last4)}</span>` : "";
@@ -399,6 +409,7 @@ function addButtons(): string {
   return `${offer}<div class="sc bykadd"><div class="bykaddrow">${!has("openrouter") ? `<button type="button" class="sprim bykorbtn" data-bykor${off}>${logoChip(serviceDomain("openrouter"), 20)}Sign in with OpenRouter</button>` : ""}
     ${!has("claudecode") ? `<button type="button" class="bykaddb" data-bykcc${off}>${logoChip(serviceDomain("claudecode"), 20)}Continue with Claude</button>` : ""}
     ${!has("opencode") ? `<button type="button" class="bykaddb" data-bykoc${off}>${logoChip(serviceDomain("opencode"), 20)}Use OpenCode</button>` : ""}
+    ${!has("tokenpass") ? `<button type="button" class="bykaddb" data-bykvtp${off}>${logoChip(serviceDomain("tokenpass"), 20)}Vercel Token Pass</button>` : ""}
     <button type="button" class="bykaddb" data-bykplain${off}>Add an OpenAI-compatible service</button></div></div>`;
 }
 const warn = () => `<div class="bykwarn${B.field === "ack" ? " bykbad" : ""}">${D!.icon("help", 16)}<div><p>${esc(BYK_WARN)}</p>${B.st?.full ? `<p class="bykterms">${esc(BYK_ZDR_FULL)}</p>` : ""}<p class="bykterms">${esc(BYK_TERMS)}</p>
@@ -421,6 +432,19 @@ function ocForm(): string {
     ${keyField("ock", "Paste your OpenCode key")}
     ${warn()}${B.err && !B.field ? `<p class="bykerr" role="alert">${esc(B.err)}</p>` : ""}${btns("Connect", "Checking and connecting…")}</form>`;
 }
+// Vercel Token Pass: an AI Gateway API key made in Vercel and pasted here.
+function tpForm(): string {
+  return `<form class="sc sform" id="bykf" novalidate data-unsaved="byok"><div class="sfh">${svcHead("tokenpass", D!.icon("spark"))}<b>Vercel Token Pass</b></div>
+    <p class="sfine bykcgsteps">1Helm uses your Vercel Token Pass through an AI Gateway API key. Make the key in Vercel, then paste it here. Token Pass covers Kimi, GLM and DeepSeek models.</p>
+    <ol class="bykcgsteps bykol">
+      <li>Open <a href="${TP_KEYS}" target="_blank" rel="noopener noreferrer">AI Gateway API keys</a> in Vercel and pick the team that has Token Pass.</li>
+      <li>Name the key. To keep all use inside your pass, turn on Restrict to Token Pass only under Advanced Configuration.</li>
+      <li>Click Create, then copy the key.</li>
+      <li>Paste the key below.</li>
+    </ol>
+    ${keyField("ock", "Paste your AI Gateway key")}
+    ${warn()}${B.err && !B.field ? `<p class="bykerr" role="alert">${esc(B.err)}</p>` : ""}${btns("Connect", "Connecting…")}</form>`;
+}
 function stepForm(): string {
   if (B.step === "plain") return `<form class="sc sform" id="bykf" novalidate data-unsaved="byok"><div class="sfh">${D!.icon("spark")}<b>Add an OpenAI-compatible service</b></div>
     ${field("base", "Service address", B.f.base, "https://api.openai.com/v1", "The address that ends before /chat/completions.", ' inputmode="url"')}
@@ -428,6 +452,7 @@ function stepForm(): string {
     ${field("label", "Name (optional)", B.f.label, "The address is used when empty")}
     ${warn()}${B.err && !B.field ? `<p class="bykerr" role="alert">${esc(B.err)}</p>` : ""}${btns("Connect", "Testing and connecting…")}</form>`;
   if (B.step === "opencode") return ocForm();
+  if (B.step === "tokenpass") return tpForm();
   if (B.step === "claudecode") {
     const st = CC.s === "ready"
       ? `<p class="sfine bykcgsteps">1Helm runs Claude Code with your Claude plan. Open Claude, sign in there and allow it, then copy the code Claude shows and paste it here.</p>
@@ -489,9 +514,10 @@ export const bykBusy = () => !!B.busy;
 export function bykDiscard() { closeStep(); }
 // After every Settings paint: the typed key goes back into its field (it's never written into the HTML).
 export function bykAfter() { if (B.reveal) { B.reveal = false; document.querySelector("[data-cmown]")?.scrollIntoView({ block: "start", behavior: "smooth" }); }
-  const k = document.getElementById(B.step === "opencode" ? "byok-ock" : "byok-key") as HTMLInputElement | null, v = B.step === "opencode" ? B.f.ock : B.key; if (k && v && k.value !== v) k.value = v; }
+  const k = document.getElementById(ockStep() ? "byok-ock" : "byok-key") as HTMLInputElement | null, v = ockStep() ? B.f.ock : B.key; if (k && v && k.value !== v) k.value = v; }
+const ockStep = () => B.step === "opencode" || B.step === "tokenpass";   // the steps that paste a key into the ock field
 function closeStep() { CC.s = ""; CC.url = ""; CC.n++; B.step = ""; B.err = B.field = ""; B.key = ""; B.eye = false; B.f = { base: "", label: "", ock: "", plan: "go", ack: false, cgurl: "", cccode: "" }; }
-function openStep(s: Step) { closeStep(); B.step = s; B.orErr = ""; D?.repaint(); setTimeout(() => (document.getElementById(s === "plain" ? "byok-base" : s === "opencode" ? "byok-ock" : s === "claudecode" ? "byok-cccode" : "byok-cgurl") as HTMLInputElement | null)?.focus(), 60); }
+function openStep(s: Step, preset: Partial<typeof B.f> = {}) { closeStep(); B.f = { ...B.f, ...preset }; B.step = s; B.orErr = ""; D?.repaint(); setTimeout(() => (document.getElementById(s === "plain" ? "byok-base" : s === "opencode" || s === "tokenpass" ? "byok-ock" : s === "claudecode" ? "byok-cccode" : "byok-cgurl") as HTMLInputElement | null)?.focus(), 60); }
 
 // ---- the requests ----
 function applyState(d: any) { if ("on_plan" in d) { B.st = stOf(d); bykUsageLoad(); } }
@@ -511,10 +537,10 @@ function afterAdd(name: string) {
 function add() {
   if (B.busy) return;
   if (!B.f.ack) { B.err = "Read the note about your provider and tick the box to connect."; B.field = "ack"; D?.repaint(); return; }
-  const oc = B.step === "opencode";
+  const oc = B.step === "opencode", tp = B.step === "tokenpass";
   B.busy = "add"; B.err = B.field = ""; D?.repaint();
-  call(oc ? "/byok/opencode" : "/byok/connections", oc ? { key: B.f.ock.trim(), plan: B.f.plan === "payg" ? "payg" : "go", ack: true } : { base: B.f.base.trim(), key: B.key.trim(), label: B.f.label.trim(), ack: true }).then(d => {
-    if (d.ok) { applyState(d); const name = oc ? "OpenCode" : B.st?.connections.find(c => c.id === d.id)?.label || "Service"; closeStep(); afterAdd(name); }
+  call(tp ? "/byok/tokenpass" : oc ? "/byok/opencode" : "/byok/connections", tp ? { key: B.f.ock.trim(), ack: true } : oc ? { key: B.f.ock.trim(), plan: B.f.plan === "payg" ? "payg" : "go", ack: true } : { base: B.f.base.trim(), key: B.key.trim(), label: B.f.label.trim(), ack: true }).then(d => {
+    if (d.ok) { applyState(d); const name = tp ? "Vercel Token Pass" : oc ? "OpenCode" : B.st?.connections.find(c => c.id === d.id)?.label || "Service"; closeStep(); afterAdd(name); }
     else { B.err = say(d.error, "Couldn't connect. Try again in a minute.", d.code); B.field = d.field || ""; if (d.test?.checks?.reach?.error) B.err += ` ${d.test.checks.reach.error}`; }
   }).catch(() => { B.err = "Couldn't connect. Check your internet and try again."; }).finally(() => { B.busy = ""; D?.repaint(); });
 }
@@ -689,9 +715,10 @@ export function bykInit(d: Deps) {
     if (t.closest("[data-bykcc]")) { e.preventDefault(); ccSignIn(); return; }
     if (t.closest("[data-bykor]")) { e.preventDefault(); orSignIn(); return; }
     if (t.closest("[data-bykoc]")) { e.preventDefault(); ocOpen(); return; }
+    if (t.closest("[data-bykvtp]")) { e.preventDefault(); openStep("tokenpass"); return; }
     if (t.closest("[data-bykplain]")) { e.preventDefault(); openStep("plain"); return; }
     if (t.closest("[data-bykretry]")) { B.err = ""; bykLoad(true); D?.repaint(); return; }
-    if (t.closest("[data-bykeye]")) { B.eye = !B.eye; const i = document.getElementById(B.step === "opencode" ? "byk-ock" : "byk-key") as HTMLInputElement | null; if (i) i.type = B.eye ? "text" : "password"; t.closest("[data-bykeye]")!.classList.toggle("on", B.eye); return; }
+    if (t.closest("[data-bykeye]")) { B.eye = !B.eye; const i = document.getElementById(ockStep() ? "byk-ock" : "byk-key") as HTMLInputElement | null; if (i) i.type = B.eye ? "text" : "password"; t.closest("[data-bykeye]")!.classList.toggle("on", B.eye); return; }
   }, true);
   document.addEventListener("input", e => {
     const t = e.target as HTMLInputElement, k = t.dataset?.bykf; if (!k) return;

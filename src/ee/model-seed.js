@@ -60,6 +60,8 @@ export const optionalJobDefault = (id, jobs = null) => id === "image_gen" ? { jo
 
 // The third zero-data-retention model of a General list, used only when an older saved version (without categories) is converted to routing categories.
 export const ROUTING_ZDR_THIRD_MODEL = DEEPSEEK;
+// The models Vercel Token Pass covers: the starting value of the saved "tokenpass_models" setting (a saved copy without it reads as this list).
+export const TOKENPASS_MODELS = ["moonshotai/kimi-k3", "moonshotai/kimi-k3.1-pro", "zai/glm-5.3", "zai/glm-5.3-flash", "deepseek/deepseek-v4.1-flash"];
 
 const LEVELS = ["unrestricted", "no_training", "zdr"];
 // OpenRouter /api/v1/models reasoning levels. "none" is offered only when reasoning is optional.

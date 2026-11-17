@@ -27,7 +27,7 @@ import { wkMdFromHtml, wkRichOk } from "./wk-rich";
 import { dpInit, dpSec, dpSheetMaybe, dpSheetOpen, dpLoc, dpShareNow, DP_ICON } from "./devperm";   // location + mic, asked once up front (its sheet's Esc, too)   // Settings → Ambient → Bee: the card and the Connect sheet (its sheet's Esc, too)
 import { beeLibInit, beeLibParts, beeLibReset, beeLibEnsure } from "./ee/bee-library";   // General's Library: the saved Bee conversations (a filter and a section)
 import { secInit, secPlus, secList, viewSwitch, secRow, secOf, moveMenu, canMove, type CS } from "./sections";   // custom sections of the task list
-import { channelIsDeleting, delInit, rowMore, headDelete, channelMore, sheetRows, MORE } from "./delete";   // deleting a chat / channel / the account
+import { channelIsDeleting, chatIsDeleting, delInit, rowMore, headDelete, channelMore, sheetRows, MORE } from "./delete";   // deleting a chat / channel / the account
 import { openNewChannel, createViaApi, type NewChannel } from "./newchannel";   // second, for the same reason (New channel sheet)
 import { bdqrHtml } from "./bdqr";
 import { shInit, shFiles, shCards, shEvent, shCardHtml, shFold, shFileBtn, shViewerBtns, shBadge, shLibHtml, shFileGone, shHeadBtn, shChatGone } from "./share";   // share links + published pages (its sheet's Esc, too)
@@ -994,7 +994,7 @@ document.addEventListener("input", e => { const t = e.target as HTMLInputElement
   window.addEventListener("resize", () => { if (PK.open) pkPlace(); });
   window.addEventListener("hashchange", () => pkClose(false));
   // camera-pane.ts hands a photo to upload(): the same path as the file picker, paste and drop.
-  camInit({ phone, attach: (key, files) => upload(key, upSlug(key), files), pick: (key, accept, multiple, capture) => { pickFiles(l => upload(key, upSlug(key), l), accept, multiple, capture); },
+  camInit({ attach: (key, files) => upload(key, upSlug(key), files), pick: (key, accept, multiple, capture) => { pickFiles(l => upload(key, upSlug(key), l), accept, multiple, capture); },
     library: (key, btn) => pkOpen(key, btn), note: (title, sub, action) => note(I('<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3.5"/>', 16), title, sub, action) });
 }
 // An agent suggestion the person ignored (still waiting, and they have since sent another message) folds into the same "Skipped" row
@@ -3424,14 +3424,29 @@ function liveLine(x: Session) {
   p = p.replace(/\s*\d+[.)]$/, "").replace(/:$/, "");
   return p ? (p.length > 110 ? p.slice(0, 108).replace(/\s+\S*$/, "") + "…" : p) : "Ready for you";
 }
+// A read (GET) answered 503 with retry-after or retryable (the account's object is restarting) waits that long, at most 5 s, and tries again, 3 tries in all.
+// A write is never repeated here: it may have landed.
+// Writes to a task or to the sections count while pending (PEND) and once done (MUT). A list read that began before the latest write finished may hold the older copy,
+// so the poll drops such an answer instead of drawing it over the newer local state.
+const LIST_WRITE = /^\/res\/[^/]+\/(sessions\/|sections)/; let MUT = 0, PEND = 0;
 async function api(path: string, body?: any, options?: { signal?: AbortSignal }) {
-  const r = await fetch(`${LIVE!.api}${path}`, { method: body === undefined ? "GET" : "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), ...(options?.signal ? { signal: options.signal } : {}) });
+  const w = body !== undefined && LIST_WRITE.test(path); if (w) PEND++;
+  try { return await apiReq(path, body, options); } finally { if (w) { PEND--; MUT++; } }
+}
+async function apiReq(path: string, body?: any, options?: { signal?: AbortSignal }) {
+  let r: Response;
+  for (let n = 1; ; n++) {
+    r = await fetch(`${LIVE!.api}${path}`, { method: body === undefined ? "GET" : "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), ...(options?.signal ? { signal: options.signal } : {}) });
+    if (r.status !== 503 || body !== undefined || n >= 3 || !(r.headers.get("retry-after") || (await r.clone().json().catch(() => null))?.retryable)) break;
+    await new Promise(z => setTimeout(z, Math.min(Number(r.headers.get("retry-after")) || 1, 5) * 1000));
+  }
   if (!r.ok && r.headers.get("content-type")?.includes("json") !== true) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
 function livePatch(ch: Channel, x: Session, b: any) {
   if (!LIVE || !x.srv) return;
-  api(`/res/${ch.slug}/sessions/${x.id}`, b).then(v => { if (!v.error) { const u = x.unread; applySrv(x, v); if (b.seen) x.unread = false; else x.unread = u && !b.done; repaint(ch); } }).catch(() => {});
+  const n = (x as any).pseq = ((x as any).pseq || 0) + 1;   // only the newest write of a task is drawn: an older answer would undo the newer change for a moment
+  api(`/res/${ch.slug}/sessions/${x.id}`, b).then(v => { if (n === (x as any).pseq && !v.error) { const u = x.unread; applySrv(x, v); if (b.seen) x.unread = false; else x.unread = u && !b.done; repaint(ch); } }).catch(() => {});
 }
 // Collapse runs of the same step ("working on its computer" ×6).
 function toSteps(lines: string[]) {
@@ -3463,8 +3478,10 @@ if (LIVE) delInit({ api, pinned: slug => !!channels.find(c => c.slug === slug)?.
   working: (slug, sid) => { const x = channels.find(c => c.slug === slug)?.sessions.find(y => String(y.id) === sid); return !!x && stWorking(x); }, stop: (slug, sid) => void stopTask(slug, sid),
   chat: (slug, sid) => { const x = channels.find(c => c.slug === slug)?.sessions.find(y => String(y.id) === sid); return x ? { title: x.title, jobs: Number(x.srv?.jobs || 0) } : null; },
   channelName: slug => channels.find(c => c.slug === slug)?.name ?? null,
-  chatGone: (slug, sid) => { shChatGone(slug, sid); const ch = channels.find(c => c.slug === slug); if (!ch) return; const i = ch.sessions.findIndex(y => String(y.id) === sid); const open = route().s === ch.sessions[i];
-    if (i >= 0) ch.sessions.splice(i, 1); if (open) location.hash = `/${slug}`; render(); },
+  chatHide: (slug, sid) => { const ch = channels.find(c => c.slug === slug), i = ch ? ch.sessions.findIndex(y => String(y.id) === sid) : -1; if (!ch || i < 0) return () => {};
+    const x = ch.sessions[i], open = route().s === x; ch.sessions.splice(i, 1); if (open) location.hash = `/${slug}`; render();
+    return () => { if (!ch.sessions.includes(x)) ch.sessions.splice(Math.min(i, ch.sessions.length), 0, x); render(); }; },
+  chatGone: (slug, sid) => shChatGone(slug, sid),
   channelHide: slug => { const i = channels.findIndex(c => c.slug === slug); if (i < 0) return null; const ch = channels[i], open = route().ch.slug === slug;
     channels.splice(i, 1); if (open) location.hash = `/${main.slug}`; render();
     return () => { if (!channels.some(c => c.slug === slug)) channels.splice(Math.min(i, channels.length), 0, ch); render(); }; },
@@ -3679,7 +3696,7 @@ async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
       // A worker-only task has no Primary reply to resume. Other working tasks
       // without a live turn were interrupted by an update and should reattach.
       const r: Msg = { id: nextId++, role: "agent", body: "", at: Date.now(), steps: [] }; msgs.push(r);
-      s.messages = msgs; s.state = "working"; s.rawLine = d.session.line || UPDATED_LINE; liveAttach(ch, s, r);
+      s.messages = msgs; s.state = "working"; s.rawLine = d.session.line || ""; liveAttach(ch, s, r);
     } else if (!s.streaming) s.messages = msgs;
     planBriefs(s.messages, d.origin || null); planAttach(ch.slug, s.messages, d.plans || []);
     const last = [...s.messages].reverse().find(m => m.role === "agent");
@@ -3899,7 +3916,7 @@ async function streamTurnOwned(ch: Channel, s: Session, text: string, reply: Msg
   if (joined || !r2) { if (r2) live.delete(r2); return; }
   if (!gotDone) {
     // The stream broke before the reply. A deploy restarts the helper (and the network can drop): never claim it's "still on it".
-    // Find the turn again (attach, with backoff up to ~90 s): still running → keep streaming; picking up after an update → say so; ended → reload.
+    // Find the turn again (attach, with backoff until GIVE_UP_MS of failed tries): still running → keep streaming; picking up after an update → say so; ended → reload.
     const how = s.srv ? await reattach(ch, s, r2, lost || "closed", lease) : "gave_up";
     if (!streamCurrent(lease)) return;
     live.delete(r2);
@@ -3914,33 +3931,38 @@ async function streamTurnOwned(ch: Channel, s: Session, text: string, reply: Msg
 // A server from before the 10-08 fix could end a stream with "Something went wrong: Durable Object reset because its code was updated"
 // when an update reset it mid-turn, while the new one carried the turn on. That's never the answer: the app re-attaches instead.
 const OLD_RESET = /reset because its code was updated|Durable Object reset/i;
-const UPDATED_LINE = "picking up where it left off (1Helm was just updated)";   // shown as "<helper> is …"
+let GIVE_UP_MS = 30e3, STUCK_MS = 300e3;   // failed tries in a row / any time without a snapshot
 const pause = (ms: number) => new Promise(z => setTimeout(z, ms));
-// A reply stream that broke: attach to the task's live turn again, 1, 2, 4, 8, 15 … s apart, for about 90 s.
+// A reply stream that broke: attach to the task's live turn again, 1, 2, 4, 8, 15 … s apart, until GIVE_UP_MS of failed tries have added up. A try the server answered (ok response: resuming, heartbeats) adds nothing to that, but
+// STUCK_MS without a snapshot ends the wait anyway.
+// The bubble keeps its normal working look meanwhile; failure text is written only after "gave_up". Time the page spent frozen or in the background
+// counts for at most 20 s a step, so a phone that slept mid-recovery doesn't use the whole allowance at once.
 //   "done" = the turn finished while attached (its "done" event was handled) · "idle" = nothing runs any more (reload to see how it
 //   ended) · "gave_up" = no answer in time. Every try is a fresh request, so a deploy in between is just one more wait.
 async function reattach(ch: Channel, s: Session, reply: Msg, why: string, lease: Lease): Promise<"done" | "idle" | "gave_up"> {
-  const t0 = Date.now(), api = LIVE?.api; let wait = 1000, tries = 0, saw = false;
+  const t0 = Date.now(), api = LIVE?.api; let wait = 1000, tries = 0, saw = false, bad = 0, stuck = 0, prev = t0, lastFail = true;
   streamNote(api, { e: "stream_lost", why: why.slice(0, 120), sid: String(s.id) });
-  s.streaming = true; s.state = "working"; s.rawLine = "reconnecting"; paintTask(ch, s);
-  while (Date.now() - t0 < 90e3) {
+  s.streaming = true; s.state = "working"; paintTask(ch, s);
+  while (bad < GIVE_UP_MS && stuck < STUCK_MS) {
     await pause(wait); wait = Math.min(wait * 2, 15e3); tries++;
+    const now = Date.now(), step = Math.min(now - prev, 20e3); prev = now; stuck += step; if (lastFail) bad += step; lastFail = true;   // the step just ended belongs to the previous try
     if (!streamCurrent(lease)) return "gave_up";
     let ended: "" | "done" | "idle" = "", resuming = false;
     try {
-      const r = await streamFetch(`${api}/res/${ch.slug}/sessions/${s.id}/attach`, { credentials: "same-origin" }, lease, t0 + 90e3, 30000); // server may await journal recovery for 25s
+      const r = await streamFetch(`${api}/res/${ch.slug}/sessions/${s.id}/attach`, { credentials: "same-origin" }, lease, Infinity, 30000); // server may await journal recovery for 25s
       if (!r.ok || !r.body) continue;
+      lastFail = false;
       let attached = false;
       await readStream(r, ev => {
         if (ev.t === "idle") { ended = "idle"; return true; }
-        if (ev.t === "resuming") { resuming = true; s.rawLine = UPDATED_LINE; paintTask(ch, s); if (!saw) { saw = true; streamNote(api, { e: "resuming", sid: String(s.id), ms: Date.now() - t0 }); } return; }
+        if (ev.t === "resuming") { resuming = true; if (!saw) { saw = true; streamNote(api, { e: "resuming", sid: String(s.id), ms: Date.now() - t0 }); } return; }
         if (ev.t === "hb") return;
-        if (ev.t === "snapshot") { attached = true; streamNote(api, { e: "resumed", sid: String(s.id), ms: Date.now() - t0, tries, after_update: saw }); }
+        if (ev.t === "snapshot") { attached = true; bad = stuck = 0; streamNote(api, { e: "resumed", sid: String(s.id), ms: Date.now() - t0, tries, after_update: saw }); }
         if (ev.t === "done" && OLD_RESET.test(String(ev.error || ""))) return;   // the reset object's error: keep looking for the resumed turn
         if (ev.t === "done") ended = "done";
         onEvent(ch, s, reply, ev);
         return ev.t === "done";
-      }, lease, { deadline: () => attached ? Infinity : t0 + 90e3 });
+      }, lease);
     } catch { continue; }
     if (ended) { if (ended === "idle") streamNote(api, { e: "ended", sid: String(s.id), ms: Date.now() - t0, tries }); return ended; }
     if (resuming) wait = 1000;   // it's coming back: look again soon
@@ -3956,7 +3978,7 @@ async function liveAttach(ch: Channel, s: Session, reply: Msg) {
 }
 async function liveAttachOwned(ch: Channel, s: Session, reply: Msg, lease: Lease) {
   let end = "", lost = "";
-  try { const r = await streamFetch(`${LIVE!.api}/res/${ch.slug}/sessions/${s.id}/attach`, { credentials: "same-origin" }, lease, Infinity, 30000); await readStream(r, ev => { if (ev.t === "idle") { end = "idle"; s.streaming = false; s.loaded = false; liveLoad(ch, s); } else if (ev.t === "resuming") { s.rawLine = UPDATED_LINE; paintTask(ch, s); } else { if (ev.t === "done" && OLD_RESET.test(String(ev.error || ""))) return; if (ev.t === "done") end = "done"; onEvent(ch, s, reply, ev); } return ev.t === "idle" || ev.t === "done"; }, lease); }
+  try { const r = await streamFetch(`${LIVE!.api}/res/${ch.slug}/sessions/${s.id}/attach`, { credentials: "same-origin" }, lease, Infinity, 30000); await readStream(r, ev => { if (ev.t === "idle") { end = "idle"; s.streaming = false; s.loaded = false; liveLoad(ch, s); } else if (ev.t === "resuming") return; else { if (ev.t === "done" && OLD_RESET.test(String(ev.error || ""))) return; if (ev.t === "done") end = "done"; onEvent(ch, s, reply, ev); } return ev.t === "idle" || ev.t === "done"; }, lease); }
   catch (e: any) { lost = String(e?.message || e); }
   if (!streamCurrent(lease)) return;
   if (!end && s.streaming) end = await reattach(ch, s, reply, lost || "closed", lease);   // the stream broke mid-turn (a deploy): find it again
@@ -4142,7 +4164,7 @@ if (LIVE) {
   const poll = async () => {
     if (document.hidden) return;
     if (Date.now() - (NB_AT.main || 0) >= 60000) nbSync(main);
-    const d = await api(`/app/boot?light=1&v=${bootV}&tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "")}`, undefined, { signal: AbortSignal.timeout(12000) }).catch(() => null); if (d?.unchanged) return; if (!d?.channels) return; bootV = d.v || "";
+    const g = MUT, d = await api(`/app/boot?light=1&v=${bootV}&tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "")}`, undefined, { signal: AbortSignal.timeout(12000) }).catch(() => null); if (d?.unchanged) return; if (!d?.channels) return; if (g !== MUT || PEND) return; bootV = d.v || "";
     pomoSet("*", "global", d.pomodoro_global);   // another device or the helper started / stopped it
     let changed = false, added = false;
     for (const c of d.channels) {
@@ -4153,6 +4175,7 @@ if (LIVE) {
       ch.jobs = c.jobs || []; if (c.files && setFiles(ch, c.files)) changed = true;
       slSet(c.slug, c.later);
       for (const v of c.sessions) {
+        if (chatIsDeleting(c.slug, v.id)) continue;   // its delete is still running on the server
         let x = ch.sessions.find(y => y.id === v.id);
         if (!x) { x = { id: v.id, title: v.title, status: "resolved", state: "idle", updated: v.updated, messages: [], fresh: true } as Session; ch.sessions.unshift(x); changed = true; }
         const before = x.srv?.updated, nativePhaseChanged = x.srv?.native_progress?.phase !== v.native_progress?.phase; if (!x.streaming) applySrv(x, v); pomoSet(ch.slug, v.id, v.pomodoro); lnSet(ch.slug, v.id, v.livenotes);   // focus timers: every task, so a phase end elsewhere can say so

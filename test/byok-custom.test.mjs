@@ -118,6 +118,11 @@ test("a plain service's model list: GET <base>/models with its key, no redirect,
   }
   assert.equal(listedRecords({ models: [{ model: "a/b" }] })[0].id, "a/b"); assert.equal(recordOfListed({ id: "x", supported_parameters: ["tools", "reasoning_effort"] }).efforts.length, 3);
   assert.equal(recordOfListed({ id: "x", tools: false }), null, "a model that says it has no tools"); assert.equal(recordOfListed({ id: "x", family: "responses" }).family, "responses");
+  // Vercel AI Gateway's list: only language models with the tool-use tag, prices under input/output, efforts under reasoning_options.
+  const vercel = JSON.parse(readFileSync(new URL("./fixtures/vercel-models.json", import.meta.url), "utf8")), got = listedRecords(vercel);
+  assert.equal(vercel.data.length, 4); assert.deepEqual(got.map((r) => r.id), ["alibaba/qwen-3-32b"], "image, embedding and no-tool-use entries are dropped");
+  assert.deepEqual([got[0].pricing, got[0].efforts, got[0].context_length], [{ prompt: 0.15, completion: 0.6 }, ["none", "low", "medium", "high"], 128000]);
+  assert.equal(recordOfListed({ id: "x", type: "image" }), null); assert.equal(recordOfListed({ id: "x", type: "language", tags: [] }), null); assert.ok(recordOfListed({ id: "x", type: "language" }));
 });
 
 test("on OpenRouter the picker is the same catalog and privacy filter as a full plan", async () => {

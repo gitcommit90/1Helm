@@ -1,7 +1,7 @@
 // Deleting a chat, a channel, or the account.
 // The server does the deleting (src/deletion.js); this module asks, calls it, and tells the app what's gone.
-//   Chat:    the ⋯ menu on a task row (side panel, phone drawer), the task header, the phone's About sheet → ask() → POST
-//            /res/<ch>/sessions/<id>/delete.
+//   Chat:    the ⋯ menu on a task row (side panel, phone drawer), the task header, the phone's About sheet → ask() → the row
+//            leaves the list at once → POST /res/<ch>/sessions/<id>/delete in the background.
 //   Channel: the ⋯ menu on the channel header (desktop) or the phone's About sheet → ask() with the channel's name typed →
 //            POST /channels/<ch>/delete {confirm}. General has no Delete.
 //   Account: Settings → General → Delete account → ask() with "delete my account" typed → POST /account/delete {confirm} → signed
@@ -16,6 +16,9 @@ export type DelDeps = {
   chat: (slug: string, sid: string) => { title: string; jobs: number } | null;
   /** a channel's display name */
   channelName: (slug: string) => string | null;
+  /** Take a chat out of the lists at once (moving off it if it was open). Returns a function that puts it back where it was. */
+  chatHide: (slug: string, sid: string) => () => void;
+  /** The server finished deleting the chat. */
   chatGone: (slug: string, sid: string) => void;
   channelGone: (slug: string) => void;
   /** Take a channel out of the rail, sidebar and switcher at once (moving off it if it was open). Returns a function that puts it back where it was. */
@@ -35,11 +38,10 @@ export type DelDeps = {
   pin?: (slug: string, on: boolean) => void;
 };
 let D: DelDeps | null = null;
-type ChatDeletion = { slug: string; sid: string; title: string; phase: "confirming" | "deleting" | "failed" };
-const chatDeletions = new Map<string, ChatDeletion>();
+// Chats whose delete is still running (or finished a moment ago). The poll skips them, so a list read before the server removed the chat can't bring it back.
+const chatsDeleting = new Set<string>();
 const chatKey = (slug: string, sid: any) => JSON.stringify([slug, String(sid)]);
-const deleting = (slug: string, sid: any) => chatDeletions.get(chatKey(slug, sid))?.phase === "deleting";
-const SPINNER = '<i class="delspin" aria-hidden="true"></i>';
+export const chatIsDeleting = (slug: string, sid: any) => chatsDeleting.has(chatKey(slug, sid));
 
 export const CHAT_TITLE = "Delete this chat?";
 export const CHAT_BODY = "It's permanently deleted, including its messages, files made in it, and what it added to memory. This can't be undone.";
@@ -53,51 +55,29 @@ const STOPSQ = `<svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="tru
 
 // ---- markup the app drops in ----
 /** The ⋯ button on a task row (inside its <a>; clicks never open the task). */
-export const rowMore = (slug: string, sid: any, title: string) => `<span class="rmore${deleting(slug, sid) ? " delbusy" : ""}" role="button" tabindex="${deleting(slug, sid) ? -1 : 0}" data-rowmenu="${esc(slug)}|${esc(sid)}" aria-disabled="${deleting(slug, sid)}" aria-haspopup="menu" aria-label="${deleting(slug, sid) ? "Deleting" : "More for"} ${esc(title)}" title="${deleting(slug, sid) ? "Deleting…" : "More"}">${deleting(slug, sid) ? SPINNER : MORE}</span>`;
+export const rowMore = (slug: string, sid: any, title: string) => `<span class="rmore" role="button" tabindex="0" data-rowmenu="${esc(slug)}|${esc(sid)}" aria-haspopup="menu" aria-label="More for ${esc(title)}" title="More">${MORE}</span>`;
 /** Delete in the task header (desktop). */
-export const headDelete = (slug: string, sid: any) => `<button class="hdel${deleting(slug, sid) ? " delbusy" : ""}" data-delchat="${esc(slug)}|${esc(sid)}"${deleting(slug, sid) ? " disabled aria-busy=\"true\"" : ""} title="${deleting(slug, sid) ? "Deleting…" : "Delete this chat"}" aria-label="${deleting(slug, sid) ? "Deleting…" : "Delete this chat"}">${deleting(slug, sid) ? SPINNER : TRASH}</button>`;
+export const headDelete = (slug: string, sid: any) => `<button class="hdel" data-delchat="${esc(slug)}|${esc(sid)}" title="Delete this chat" aria-label="Delete this chat">${TRASH}</button>`;
 /** The ⋯ on the channel header (desktop side panel). General has none. */
 export const channelMore = (slug: string, name: string) => slug === "main" ? "" : `<button class="chmore" data-chmenu="${esc(slug)}" aria-haspopup="menu" aria-label="More for ${esc(name)}" title="Channel options">${MORE}</button>`;
 /** Rows for the phone's About sheet: delete the open chat, delete the channel. */
-const sheetChatRow = (slug: string, sid: any) => `<button class="srow delrow" data-delchat="${esc(slug)}|${esc(sid)}"${deleting(slug, sid) ? " disabled aria-busy=\"true\"" : ""}>${deleting(slug, sid) ? SPINNER : TRASH}<span>${deleting(slug, sid) ? "Deleting…" : "Delete this chat"}</span></button>`;
+const sheetChatRow = (slug: string, sid: any) => `<button class="srow delrow" data-delchat="${esc(slug)}|${esc(sid)}">${TRASH}<span>Delete this chat</span></button>`;
 export const sheetRows = (slug: string, sid: any | null) => (sid != null ? sheetChatRow(slug, sid) : "")
   + (slug === "main" ? "" : (D?.pin ? `<button class="srow" data-pinch="${esc(slug)}">${PIN}<span>${D.pinned?.(slug) ? "Unpin channel" : "Pin channel"}</span></button>` : "") + `<button class="srow delrow" data-delch="${esc(slug)}">${TRASH}<span>Delete channel</span></button>`);
 
 // ---- the three deletions ----
-function deletionFeedback() {
-  for (const el of document.querySelectorAll<HTMLElement>("[data-rowmenu],[data-delchat]")) {
-    const [slug, sid] = (el.dataset.rowmenu || el.dataset.delchat || "").split("|");
-    if (el.dataset.rowmenu) el.outerHTML = rowMore(slug, sid, D?.chat(slug, sid)?.title || "chat");
-    else if (el.classList.contains("hdel")) el.outerHTML = headDelete(slug, sid);
-    else if (el.classList.contains("delrow")) el.outerHTML = sheetChatRow(slug, sid);
-  }
-  const visible = [...chatDeletions.values()].filter(x => x.phase !== "confirming");
-  let tray = document.getElementById("chat-deletion-status");
-  if (!visible.length) { tray?.remove(); return; }
-  if (!tray) { tray = document.createElement("div"); tray.id = "chat-deletion-status"; tray.setAttribute("aria-live", "polite"); document.body.appendChild(tray); }
-  tray.innerHTML = visible.map((x, i) => `<div class="delstatus${x.phase === "failed" ? " failed" : ""}" role="${x.phase === "failed" ? "alert" : "status"}">${x.phase === "deleting" ? SPINNER : TRASH}<span><b>${x.phase === "deleting" ? "Deleting…" : "Couldn't confirm deletion"}</b><small>${esc(x.title)}</small>${x.phase === "failed" ? '<small>Check your connection, then try again.</small>' : ""}</span>${x.phase === "failed" ? `<button data-delretry="${i}">Retry</button><button data-deldismiss="${i}" aria-label="Dismiss deletion error">×</button>` : ""}</div>`).join("");
-  tray.onclick = e => { const target = e.target as HTMLElement, retry = target.closest<HTMLElement>("[data-delretry]"), dismiss = target.closest<HTMLElement>("[data-deldismiss]");
-    const item = visible[Number(retry?.dataset.delretry ?? dismiss?.dataset.deldismiss)]; if (!item) return;
-    if (retry) void deleteChat(item.slug, item.sid); else if (dismiss) { chatDeletions.delete(chatKey(item.slug, item.sid)); deletionFeedback(); }
-  };
-}
 export async function deleteChat(slug: string, sid: string) {
-  if (!D) return; const c = D.chat(slug, sid); if (!c) return;
-  const key = chatKey(slug, sid), previous = chatDeletions.get(key);
-  if (previous && previous.phase !== "failed") return;
-  chatDeletions.set(key, { slug, sid, title: c.title, phase: "confirming" });
+  const key = chatKey(slug, sid);
+  if (!D || chatsDeleting.has(key)) return; const c = D.chat(slug, sid); if (!c) return;
   const ok = await ask({ title: CHAT_TITLE, body: CHAT_BODY + (c.jobs ? ` Its scheduled ${c.jobs === 1 ? "job is" : `jobs (${c.jobs}) are`} deleted too.` : ""), confirm: "Delete", danger: true });
-  if (!ok) { if (previous) chatDeletions.set(key, previous); else chatDeletions.delete(key); deletionFeedback(); return; }
-  chatDeletions.set(key, { slug, sid, title: c.title, phase: "deleting" });
-  D.closeSheet?.();
-  deletionFeedback();
+  if (!ok || chatsDeleting.has(key)) return;
+  chatsDeleting.add(key); D.closeSheet?.();
+  const restore = D.chatHide(slug, sid);
   try {
     const r = await D.api(`/res/${slug}/sessions/${sid}/delete`, {});
     if (r?.error) throw new Error(r.error);
-    chatDeletions.delete(key); deletionFeedback();
-    D.chatGone(slug, sid);
-    D.note("Chat deleted", r.kept?.length ? `Kept ${r.kept.length === 1 ? `“${r.kept[0]}”` : `${r.kept.length} files`}: also used in another chat.` : c.title);
-  } catch { chatDeletions.set(key, { slug, sid, title: c.title, phase: "failed" }); deletionFeedback(); }
+    D.chatGone(slug, sid); setTimeout(() => chatsDeleting.delete(key), 20000);   // a list read before the delete finished can still arrive
+  } catch { chatsDeleting.delete(key); restore(); D.note("Couldn't delete the chat", `${c.title} is back. Check your connection and try again.`); }
 }
 // Channels whose delete is still running. The app's refresh and poll skip them, so a channel list read before the server hid the channel can't bring it back.
 const channelsDeleting = new Set<string>();
@@ -188,7 +168,7 @@ export function delInit(deps: DelDeps) {
   D = deps;
   const act = (t: HTMLElement, e: Event) => {
     const rm = t.closest<HTMLElement>("[data-rowmenu]");
-    if (rm) { e.preventDefault(); e.stopImmediatePropagation(); const [slug, sid] = rm.dataset.rowmenu!.split("|"); if (deleting(slug, sid)) return true; openMenu(rm, [...(D?.working?.(slug, sid) && D?.stop ? [["Stop", STOPSQ, () => D!.stop!(slug, sid)] as [string, string, () => void]] : []), ...(D?.rename ? [["Rename task", svg('<path d="m16 3 5 5L8 21H3v-5Z"/>'), () => D!.rename!(slug, sid, rm)] as [string, string, () => void]] : []), ...(D?.moveSection && D.canMove?.(slug) ? [["Move to section", svg('<path d="M3 7h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>'), () => D!.moveSection!(slug, sid, rm)] as [string, string, () => void]] : []), ["Delete chat", TRASH, () => void deleteChat(slug, sid)]]); return true; }
+    if (rm) { e.preventDefault(); e.stopImmediatePropagation(); const [slug, sid] = rm.dataset.rowmenu!.split("|"); openMenu(rm, [...(D?.working?.(slug, sid) && D?.stop ? [["Stop", STOPSQ, () => D!.stop!(slug, sid)] as [string, string, () => void]] : []), ...(D?.rename ? [["Rename task", svg('<path d="m16 3 5 5L8 21H3v-5Z"/>'), () => D!.rename!(slug, sid, rm)] as [string, string, () => void]] : []), ...(D?.moveSection && D.canMove?.(slug) ? [["Move to section", svg('<path d="M3 7h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>'), () => D!.moveSection!(slug, sid, rm)] as [string, string, () => void]] : []), ["Delete chat", TRASH, () => void deleteChat(slug, sid)]]); return true; }
     const cm = t.closest<HTMLElement>("[data-chmenu]");
     if (cm) { e.preventDefault(); e.stopImmediatePropagation(); channelMenu(cm, cm.dataset.chmenu!); return true; }
     const pc = t.closest<HTMLElement>("[data-pinch]");

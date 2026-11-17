@@ -7,7 +7,7 @@
 import { PRIVACY_LEVELS } from "../privacy.js";
 import { modelCatalog, validCatalogRecord, validModelId, unlistedIds, aliasTargets, listedKinds, NO_LONGER_OFFERED, withLivePrivacy } from "./model-catalog.js";
 import { SORTS, CHAT_JOB, CATEGORY_FIELDS, JOBS, JOB_IDS, MODEL_PAGE_JOBS, JOB_KINDS, GROUPS, takesChat, canChat, nativeFor, zdrApplies, ModelSettingsError, jobDef, jobSetting, settingsOf, entriesOf, factsOf, zdrBlocked, privacyCoverage, configuredHosts } from "./model-jobs.js";
-import { seedFromLegacy, mergeLevels, SEED_FACTS, ROUTING_ZDR_THIRD_MODEL, JOB_FIELDS, OPTIONAL_JOB_IDS, optionalJobDefault } from "./model-seed.js";
+import { seedFromLegacy, mergeLevels, SEED_FACTS, ROUTING_ZDR_THIRD_MODEL, TOKENPASS_MODELS, JOB_FIELDS, OPTIONAL_JOB_IDS, optionalJobDefault } from "./model-seed.js";
 import { quirksFromRecord } from "../model-quirks.js";
 import { dynamicRoutingOn, withRoutingConfig, withCategoryLimits } from "./routing-config.js";
 import { limitsProblem, compactLimits, timeoutProblem } from "../limits.js";
@@ -144,10 +144,13 @@ function withStartingFacts(config) {
 }
 export function validateModelSettings(config, { fill = false } = {}) {
   config = withStartingFacts(withOptionalJobs(clone(config)));
+  if (config && typeof config === "object" && !own(config, "tokenpass_models")) config.tokenpass_models = clone(TOKENPASS_MODELS);   // saved before the setting existed: reads as its starting value
   if (fill && config?.jobs && typeof config.jobs === "object") for (const id of JOB_IDS) if (!own(config.jobs, id)) config.jobs[id] = null;
   const expected = config?.version === 3 ? ["version", "jobs", "catalog", "routing"] : ["version", "jobs", "catalog"];
-  keys(config, config && typeof config === "object" && own(config, "limits") ? [...expected, "limits"] : expected, "settings");   // `limits` (limits.js) is optional: older saved settings have none
+  keys(config, config && typeof config === "object" && own(config, "limits") ? [...expected, "limits", "tokenpass_models"] : [...expected, "tokenpass_models"], "settings");   // `limits` (limits.js) is optional: older saved settings have none
   if (own(config, "limits")) { const problem = limitsProblem(config.limits); if (problem) fail(problem); }
+  const tp = config.tokenpass_models;
+  if (!Array.isArray(tp) || tp.length > 40 || new Set(tp).size !== tp.length || !tp.every((id) => typeof id === "string" && looseId(id))) fail("Vercel Token Pass models: a list of up to 40 different model IDs.");
   if (![2, 3].includes(config.version)) fail("Unsupported settings version.");
   if (!config.catalog || typeof config.catalog !== "object" || Array.isArray(config.catalog) || Object.keys(config.catalog).length > 220) fail("Invalid model metadata.");
   for (const [id, m] of Object.entries(config.catalog)) if (!validFacts(m, id)) fail(`Invalid model metadata for ${id}.`);
@@ -217,6 +220,8 @@ async function readRow(env, revision = null) {
   }
 }
 async function insertRow(env, revision, config, by, action) {
+  // Sparse like `limits`: the starting list is not stored (it reads back as the default), so an older release can still read the row.
+  if (config?.tokenpass_models?.join() === TOKENPASS_MODELS.join()) { config = { ...config }; delete config.tokenpass_models; }
   const db = dbOf(env), env_ = settingsEnvironment(env);
   const r = await db.prepare(`INSERT INTO ${TABLE} (environment,revision,config,at,by,action) SELECT ?,?,?,?,?,? WHERE COALESCE((SELECT MAX(revision) FROM ${TABLE} WHERE environment=?),0)=?`)
     .bind(env_, revision + 1, JSON.stringify(config), Date.now(), String(by || "admin").slice(0, 254), action, env_, revision).run();
@@ -423,7 +428,7 @@ async function validatedSelection(env, config, current) {
   // The models of a reply live in the routing categories (there is no chat job), so a save always carries them: a page loaded before this release sends version 2 and must reload.
   if (config.version !== 3) fail("Reload Models before saving routing settings.");
   if (!config.routing || !Array.isArray(config.routing.categories) || config.routing.categories.some((c) => !c || typeof c !== "object" || !c.chains)) fail("Invalid routing settings.");
-  const next = { version: 3, jobs: clone(config.jobs), catalog: clone(current.catalog), routing: clone(config.routing) };
+  const next = { version: 3, jobs: clone(config.jobs), catalog: clone(current.catalog), routing: clone(config.routing), tokenpass_models: clone(own(config, "tokenpass_models") ? config.tokenpass_models : current.tokenpass_models) };
   // The limits (limits.js): what the page sent, kept sparse (only values that differ from the starting value); a save that sends none keeps the saved ones.
   if (own(config, "limits")) { const problem = limitsProblem(config.limits); if (problem) fail(problem); const sparse = compactLimits(config.limits); if (Object.keys(sparse).length) next.limits = sparse; }
   else if (current.limits && Object.keys(current.limits).length) next.limits = clone(current.limits);

@@ -174,6 +174,8 @@ app.addEventListener("change", (e) => {
     else if (f === "title") commit([{ t: "title", cat: C.rowByKey(state, key).id, value: el.value.trim() }]);
     else if (f === "pi" || f === "po") return;   // a price has two boxes, so it is saved when focus leaves both (below)
     else fieldEdit(key, f, { value: el.value });
+  } else if (el.dataset.tp) {
+    commit([{ t: "tokenpass", value: el.value.split(/[\s,]+/).filter(Boolean) }]);
   } else if (el.dataset.lim) {
     const def = state.limits.defs.find((d) => d.key === el.dataset.lim);
     try { const v = parseLimit(def, el.value); commit([{ t: "limit", limitKey: def.key, value: v === def.default ? null : v }]); } catch (err) { refuse(err.message); }
@@ -210,6 +212,7 @@ function act(b) {
   if (a === "close") { ui.open = false; render(); }
   else if (a === "open") { const k = b.dataset.key; ui.view = k.startsWith("limit:") ? "limits" : "all"; if (!k.startsWith("limit:")) { ui.sel = k; ui.open = true; ui.q = ""; } render(k.startsWith("limit:") ? undefined : k); }
   else if (a === "reset") { const row = C.rowByKey(state, key); commit([{ t: "field", ...target(key), field: b.dataset.field, value: C.startOf(state, row, b.dataset.field) ?? null }]); }
+  else if (a === "tpreset") commit([{ t: "tokenpass", value: state.tokenpass_start }]);
   else if (a === "limreset") commit([{ t: "limit", limitKey: b.dataset.key, value: null }]);
   else if (a === "hist") openHistory();
   else if (a === "chg") openPicker(slot(i), "Choose a model for " + C.rowByKey(state, key).label);

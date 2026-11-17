@@ -1,4 +1,4 @@
-// In-app camera for the composer's add-files button on phones (touch screens only; desktop keeps the Library popover).
+// In-app camera for the composer's add-files button on touch devices (phones and tablets; a mouse desktop keeps the Library popover).
 // The + opens a small menu: Camera, Photos, Files and Library. Photos and Files are the system file pickers, Library is the
 // existing Library picker. Camera opens a live viewfinder in a rounded panel over the chat: a round back button, a white
 // shutter and a round "more" button (Flip camera when the phone has two cameras, and Choose from photos).
@@ -9,7 +9,6 @@
 // If getUserMedia is missing, refused or fails, the panel closes and the phone's own camera opens through an input with
 // capture, with at most one plain note.
 export type CamDeps = {
-  phone: () => boolean;                                          // the phone layout (same test as the Library sheet)
   attach: (key: string, files: File[]) => void;                  // v3.ts upload(key, slug, files)
   pick: (key: string, accept: string, multiple: boolean, capture?: string) => void;   // v3.ts pickFiles: a hidden file input, clicked at once
   library: (key: string, btn: HTMLElement) => void;              // v3.ts pkOpen
@@ -27,8 +26,8 @@ const P = {
   more: '<circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/>',
 };
 const touch = () => (navigator.maxTouchPoints || 0) > 0 || matchMedia("(pointer:coarse)").matches;
-/** True where the + opens the menu: a touch phone (a narrow desktop window or a tablet keeps the Library popover). */
-export const camPhone = () => !!D && D.phone() && touch();
+/** True where the + opens the menu: any touch device at any width or orientation (a desktop with a mouse keeps the Library popover). */
+export const camPhone = () => !!D && touch();
 // Photos and Files (and the camera panel's "Choose from photos") are labels that wrap their own visually hidden file input, so the person's tap is the tap
 // on the input and iOS anchors its picker popover to that visible row. The row stays on screen until the picker returns (change, cancel, or the page
 // coming back to the front), and then closes. A file input only exists inside an open menu or panel, never after it closes.

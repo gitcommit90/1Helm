@@ -29,10 +29,11 @@ export function workDomain(email: string | null | undefined): string {
 
 // The domain whose logo stands for an AI service (Settings, AI services, and the model picker). ChatGPT, OpenCode and OpenRouter have fixed
 // domains; an OpenAI-compatible service uses the registrable part of its address (api.openai.com → openai.com). "" for a private or numeric address.
-const SVC_DOMAIN: Record<string, string> = { chatgpt: "chatgpt.com", opencode: "opencode.ai", openrouter: "openrouter.ai", claudecode: "claude.ai" };
+const SVC_DOMAIN: Record<string, string> = { chatgpt: "chatgpt.com", opencode: "opencode.ai", openrouter: "openrouter.ai", claudecode: "claude.ai", tokenpass: "vercel.com" };
 export function serviceDomain(kind: string, host = ""): string {
   if (SVC_DOMAIN[kind]) return SVC_DOMAIN[kind];
   const d = logoDomain(host); if (!d) return "";
+  if (d.endsWith("vercel.sh")) return "vercel.com";   // AI Gateway's address is on vercel.sh, the brand is vercel.com
   const p = d.split("."); if (p.length <= 2) return d;
   const two = p[p.length - 1].length === 2 && ["co", "com", "org", "net", "gov", "ac", "edu"].includes(p[p.length - 2]);
   return p.slice(-(two ? 3 : 2)).join(".");
