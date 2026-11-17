@@ -27,12 +27,11 @@
 .secren:focus{border-color:var(--ink2)}
 .csech[draggable=true]{cursor:grab}
 
-/* a task row in a section: a faint tint of the section color and a thin edge on the left */
+/* a task row in a section: a faint tint of the section color */
 .sess.csr,.ds.csr{position:relative}
 .sess.csr[class*=" sc-"]:not(.on),.ds.csr[class*=" sc-"]:not(.on){background:color-mix(in srgb,var(--sc) 5%,transparent)}
 @media (hover:hover) and (pointer:fine){.sess.csr[class*=" sc-"]:not(.on):hover,.ds.csr[class*=" sc-"]:not(.on):hover{background:color-mix(in srgb,var(--sc) 10%,transparent)}}
 .sess.csr[class*=" sc-"].on,.ds.csr[class*=" sc-"].on{background:color-mix(in srgb,var(--sc) 12%,var(--chip))}
-.sess.csr[class*=" sc-"]::before,.ds.csr[class*=" sc-"]::before{content:"";position:absolute;left:0;top:11px;bottom:11px;width:3px;border-radius:2px;background:var(--sc);opacity:.5}
 .sess.csr[draggable=true]{cursor:grab}
 
 /* dragging */

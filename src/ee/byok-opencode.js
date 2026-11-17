@@ -8,7 +8,7 @@
 // The public model list (GET /inference/v1/models, no key) names the family, base URL, limits and reasoning efforts of each model. Free models answer 403 outside OpenCode, so they
 // are left out. Every answer's usage keeps OpenCode's `cost` and `opencode` (billing_source, list_cost, tokens…) when it sent them.
 import { ByokError, fail, redact, readCapped, errorDetail, guardStream, firstEventOk, byokBody } from "../byok.js";
-import { limitText } from "./byok-usage.js";
+import { limitText, parseOpencodeUsage } from "./byok-usage.js";
 import { withCacheBreakpoints } from "../model.js";
 import { translateStream as responsesStream, responsesBody, collect, sseLines } from "./byok-chatgpt.js";
 
@@ -378,4 +378,16 @@ export async function opencodeChat(cfg, body, opts = {}) {
     toolLimits.set(key, n); console.log(`opencode: ${key} allows ${n} tools, sent ${n} of ${body.tools.length}`);
     return opencodeChatOnce(cfg, capTools(body, n), opts);
   }
+}
+
+// Plan usage for a Go connection (byok-usage.js): the key is sent only to opencode.ai. A refused key, a workspace with no Go plan, a missing endpoint or an answer with no meters are permanent; anything else is retried later.
+export async function ocUsage(cfg, { fetchImpl = globalThis.fetch } = {}) {
+  const no = (why, permanent) => Object.assign(new Error(why), { why, permanent });
+  let origin = ""; try { origin = new URL(cfg?.base).origin; } catch {}
+  if (origin !== "https://opencode.ai" || !cfg.key) throw no("none", true);
+  let r; try { r = await fetchImpl("https://opencode.ai/zen/go/v1/usage", { redirect: "manual", signal: AbortSignal.timeout(10e3), headers: { authorization: `Bearer ${cfg.key}`, accept: "application/json", "user-agent": OC_AGENT } }); } catch (e) { throw no(e?.name === "TimeoutError" ? "timeout" : "network", false); }
+  if (!r.ok) { r.body?.cancel?.().catch?.(() => {}); throw no(`http_${r.status}`, [401, 403, 404].includes(r.status)); }
+  let j; try { j = JSON.parse(await r.text()); } catch { throw no("none", true); }
+  const { windows } = parseOpencodeUsage(j); if (!windows.length) throw no("none", true);
+  return { windows, source: "opencode" };
 }

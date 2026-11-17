@@ -7,6 +7,7 @@ import { markStatus } from "./status-notes.js";
 // The model dispatcher is loaded when a call needs it: importing the EE seam at the top would make an import cycle (deletion-do.js and resident.js load this file first).
 const dispatch = async (...a) => (await import("./ee/index.js")).dispatch(...a);
 import { MemStore, MemHistory, DIMS, EXTRACT_CHARS, nsOf, nsPrefix, removeRows } from "./mem0-store.js";
+import { TENANT_ID, shardsOf, shardEnv, memEnv } from "./mem-shard.js";
 
 export const hsOn = (env) => !!(env.MEMORY_INDEX && env.DB && env.AI);
 export const bankId = (env, tenant, channel) => `${env.ENV_NAME || "dev"}-${tenant}-${channel}`.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 200);
@@ -23,6 +24,7 @@ export function scrubContent(c) {
 // The package's own factories pick a provider by name. Ours return the 1HC stores and model clients, which read the running call (env, tenant, the category of each fact) from `als`.
 export const CATEGORIES = ["identity", "preference", "rule", "decision", "project", "person", "place", "routine", "other"];
 const als = new AsyncLocalStorage();
+const memOf = (env, bank) => memEnv(env, TENANT_ID.exec(bank)?.[0]);   // the env of the account's memory shard: its DB and MEMORY_INDEX
 const plain = (env) => (env.BYOK ? Object.create(env, { BYOK: { value: null } }) : env);   // memory models are 1HC's, never the person's own key
 const EMBED_BATCH = 50;
 // Embedding retries: a transient failure (429, 408, 5xx, or no status at all, e.g. a network error or a short count) is tried again after these waits (ms) before it is thrown.
@@ -85,8 +87,8 @@ const load = () => engine ||= import("mem0ai/oss").then((m) => {
   m.EmbedderFactory.create = () => ({ embed: async (t) => { try { return (await embedAll([t]))[0]; } catch (e) { als.getStore().embedFailed?.push(String(e?.message || e)); throw e; } }, embedBatch: embedAll });   // Mem0 skips a fact whose embed() throws (and an entity too), so the failure is also recorded for withMemory
   m.RerankerFactory.create = () => ({ rerank });
   m.LLMFactory.create = () => ({ generateResponse: extract, generateChat: async (messages) => ({ role: "assistant", content: await extract(messages) }) });
-  m.VectorStoreFactory.create = (_provider, c) => { const x = als.getStore(), main = c.collectionName === x.ns, st = new MemStore(x.env, c.collectionName, x.cats, main ? [] : null); if (main) x.main = st; return st; };   // the fact store buffers its inserts (flushed in withMemory); an entity store writes at once
-  m.HistoryManagerFactory.create = () => new MemHistory(als.getStore().env, als.getStore().ns);
+  m.VectorStoreFactory.create = (_provider, c) => { const x = als.getStore(), main = c.collectionName === x.ns, st = new MemStore(x.mem, c.collectionName, x.cats, main ? [] : null); if (main) x.main = st; return st; };   // the fact store buffers its inserts (flushed in withMemory); an entity store writes at once
+  m.HistoryManagerFactory.create = () => new MemHistory(als.getStore().mem, als.getStore().ns);
   return m.Memory;
 });
 // Starts the engine import before the first lookup, so a fresh isolate's first lookup does not pay for it inside its own timer. A failure shows again at the first real use.
@@ -97,13 +99,13 @@ async function lostFacts(ctx) {
   if (ctx.embedFailed.length) throw new Error(`memory embedding failed, so the add was not kept: ${ctx.embedFailed[0].slice(0, 200)}`);
   if (!ctx.extracted.size || !ctx.main) return;
   const kept = new Set((ctx.main.pending || []).flatMap((p) => p.payloads.map((q) => q.data))), missing = [...ctx.extracted].filter((t) => !kept.has(t));
-  for (const t of missing.slice()) if (await ctx.env.DB.prepare("SELECT 1 AS y FROM mem WHERE ns=? AND json_extract(payload,'$.data')=?").bind(ctx.ns, t).first()) missing.splice(missing.indexOf(t), 1);
+  for (const t of missing.slice()) if (await ctx.mem.DB.prepare("SELECT 1 AS y FROM mem WHERE ns=? AND json_extract(payload,'$.data')=?").bind(ctx.ns, t).first()) missing.splice(missing.indexOf(t), 1);
   if (missing.length) throw new Error(`memory lost ${missing.length} of ${ctx.extracted.size} extracted facts, so the add was not kept`);
 }
 // Runs fn(memory) inside the call's context. instructions: Mem0's customInstructions for an add.
 async function withMemory(env, bank, instructions, fn, xs) {
-  const Memory = await load(), ns = await nsOf(bank), tenant = /[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/.exec(bank)?.[0];
-  const ctx = { env, ns, cats: new Map(), extracted: new Set(), embedFailed: [], xs, n: 0, meta: tenant ? { tenant } : {} };
+  const Memory = await load(), ns = await nsOf(bank), tenant = TENANT_ID.exec(bank)?.[0];
+  const ctx = { env, mem: await memEnv(env, tenant), ns, cats: new Map(), extracted: new Set(), embedFailed: [], xs, n: 0, meta: tenant ? { tenant } : {} };
   try { const out = await als.run(ctx, () => fn(new Memory({
     embedder: { provider: "1hc", config: { embeddingDims: DIMS } }, llm: { provider: "1hc", config: {} }, vectorStore: { provider: "1hc", config: { collectionName: ns, dimension: DIMS } },
     historyStore: { provider: "1hc", config: {} }, reranker: { provider: "1hc", config: {} }, ...(instructions ? { customInstructions: instructions } : {}) }), ns));
@@ -195,7 +197,7 @@ export async function recall(env, bank, query, o = {}) {
   const inside = (x) => from == null || Number(x.metadata?.ts) >= from || (x.metadata?.raw && Number(x.metadata?.ts_end) >= from);
   return { results: r.results.filter(inside).map((x) => shape(x.id, { ...x.metadata, data: x.memory, createdAt: x.createdAt }, x.score, x.rerankScore)), ms: Date.now() - t0 };   // scores.rerank (Mem0's rerankScore, 0 to 1) is present only when the rerank was applied
 }
-const store = async (env, bank) => new MemStore(env, await nsOf(bank));
+const store = async (env, bank) => new MemStore(await memOf(env, bank), await nsOf(bank));
 // An exact list of the facts in a time range (start inclusive, end exclusive, ms), newest first, or of one document (doc).
 export async function memoriesList(env, bank, { start, end, doc, limit = 50, offset = 0 } = {}) {
   const f = { ...(start != null || end != null ? { ts: { ...(start != null ? { gte: Number(start) } : {}), ...(end != null ? { lt: Number(end) } : {}) } } : {}), ...(doc ? { doc } : {}) }, [rows] = await (await store(env, bank)).list(f, Math.min(200, limit), offset);
@@ -205,31 +207,31 @@ export async function getMemory(env, bank, id) { const x = await (await store(en
 // What a fact said before each change, oldest first.
 export async function memoryHistory(env, bank, id) {
   const ns = await nsOf(bank);
-  return (await new MemHistory(env, ns).getHistory(id)).map((h) => ({ changed_at: h.updated_at || h.created_at, previous_text: h.previous_value, new_text: h.new_value, action: h.action }));
+  return (await new MemHistory(await memOf(env, bank), ns).getHistory(id)).map((h) => ({ changed_at: h.updated_at || h.created_at, previous_text: h.previous_value, new_text: h.new_value, action: h.action }));
 }
 const like = (prefix) => `${String(prefix).replace(/[\\%_]/g, "\\$&")}%`;
 // The documents of a channel whose id starts with `q`, with the number of facts of each.
 export async function listDocuments(env, bank, { q = "", limit = 100, offset = 0 } = {}) {
-  const r = await env.DB.prepare("SELECT doc, COUNT(*) n FROM mem WHERE ns=? AND doc LIKE ? ESCAPE '\\' GROUP BY doc ORDER BY doc LIMIT ? OFFSET ?").bind(await nsOf(bank), like(q), limit, offset).all();
+  const r = await (await memOf(env, bank)).DB.prepare("SELECT doc, COUNT(*) n FROM mem WHERE ns=? AND doc LIKE ? ESCAPE '\\' GROUP BY doc ORDER BY doc LIMIT ? OFFSET ?").bind(await nsOf(bank), like(q), limit, offset).all();
   return (r.results || []).map((x) => ({ id: x.doc, facts: x.n }));
 }
 // How many facts, and how many documents whose id starts with `prefix`, a channel's memory holds.
 export async function memoryCounts(env, bank, prefix = "") {
-  const r = await env.DB.prepare("SELECT COUNT(*) facts, COUNT(DISTINCT doc) documents FROM mem WHERE ns=? AND doc LIKE ? ESCAPE '\\'").bind(await nsOf(bank), like(prefix)).first();
+  const r = await (await memOf(env, bank)).DB.prepare("SELECT COUNT(*) facts, COUNT(DISTINCT doc) documents FROM mem WHERE ns=? AND doc LIKE ? ESCAPE '\\'").bind(await nsOf(bank), like(prefix)).first();
   return { facts: r.facts, documents: r.documents };
 }
 // Which of the document ids have at least one fact in a channel's memory (a document the extraction found nothing in has none). One D1 query per 50 ids, no model call.
 export async function docsWithFacts(env, bank, ids) {
-  const ns = await nsOf(bank), list = [...new Set(ids)], have = new Set();
+  const ns = await nsOf(bank), list = [...new Set(ids)], have = new Set(), { DB } = await memOf(env, bank);
   for (let i = 0; i < list.length; i += 50) {
-    const part = list.slice(i, i + 50), r = await env.DB.prepare(`SELECT DISTINCT doc FROM mem WHERE ns=? AND doc IN (${part.map(() => "?").join(",")})`).bind(ns, ...part).all();
+    const part = list.slice(i, i + 50), r = await DB.prepare(`SELECT DISTINCT doc FROM mem WHERE ns=? AND doc IN (${part.map(() => "?").join(",")})`).bind(ns, ...part).all();
     for (const x of r.results || []) have.add(x.doc);
   }
   return have;
 }
 // The whole text of a document of raw chunks, in order.
 export async function documentText(env, bank, doc) {
-  const r = await env.DB.prepare("SELECT payload FROM mem WHERE ns=? AND doc=? ORDER BY rowid").bind(await nsOf(bank), doc).all();
+  const r = await (await memOf(env, bank)).DB.prepare("SELECT payload FROM mem WHERE ns=? AND doc=? ORDER BY rowid").bind(await nsOf(bank), doc).all();
   return (r.results || []).map((x) => JSON.parse(x.payload).data).join("\n");
 }
 
@@ -249,7 +251,7 @@ const ORDER = ["identity", "rule", "preference", "decision", "project", "routine
 export const PROFILE_CHARS = 6000;   // about 1,500 tokens
 // The facts of the given categories (all kept facts, not raw chunks), newest first.
 export async function factsOf(env, bank, categories = CATEGORIES, limit = 300) {
-  const q = categories.map(() => "?").join(","), r = await env.DB.prepare(`SELECT id,payload FROM mem WHERE ns=? AND json_extract(payload,'$.category') IN (${q}) AND json_extract(payload,'$.raw') IS NULL ORDER BY json_extract(payload,'$.createdAt') DESC LIMIT ?`).bind(await nsOf(bank), ...categories, limit).all();
+  const q = categories.map(() => "?").join(","), r = await (await memOf(env, bank)).DB.prepare(`SELECT id,payload FROM mem WHERE ns=? AND json_extract(payload,'$.category') IN (${q}) AND json_extract(payload,'$.raw') IS NULL ORDER BY json_extract(payload,'$.createdAt') DESC LIMIT ?`).bind(await nsOf(bank), ...categories, limit).all();
   return (r.results || []).map((x) => shape(x.id, JSON.parse(x.payload)));
 }
 // The standing context for a prompt: facts in category order, then newest first, until the budget is used. Identity facts are always in.
@@ -261,17 +263,22 @@ export function categoryBlock(facts, { chars = PROFILE_CHARS } = {}) {
 
 // ---- deleting ----
 // One document and every fact drawn from it. { deleted: 1 | 0, units: facts }
-export async function forgetDocument(env, bank, doc) { const n = await removeRows(env, await nsOf(bank), " AND doc=?", [doc]); return { deleted: n ? 1 : 0, units: n }; }
+export async function forgetDocument(env, bank, doc) { const n = await removeRows(await memOf(env, bank), await nsOf(bank), " AND doc=?", [doc]); return { deleted: n ? 1 : 0, units: n }; }
 // A whole channel (or raw agent bank): every fact and vector of its namespace.
-export async function forgetBank(env, bank) { const n = await removeRows(env, await nsOf(bank)); return { deleted: n ? 1 : 0 }; }
+export async function forgetBank(env, bank) { const n = await removeRows(await memOf(env, bank), await nsOf(bank)); return { deleted: n ? 1 : 0 }; }
 export const forgetChannel = (env, tenant, channel) => forgetBank(env, bankId(env, tenant, channel));
 // Every channel of an account, and its raw agent records (their namespaces share the account's prefix).
-export async function forgetTenant(env, tenant) { const n = await removeRows(env, await nsPrefix(tenant)); return { deleted: n ? 1 : 0, facts: n }; }
-// The nightly safety net: the facts of an account that no longer exists (a delete path that missed something). → { accounts, doomed, deleted }
-export async function sweepMemory(env, { dry = false } = {}) {
-  const have = ((await env.DB.prepare("SELECT DISTINCT substr(ns, 1, 16) AS p FROM mem").all()).results || []).map((r) => r.p);
-  const live = new Set(await Promise.all(((await env.DB.prepare("SELECT id FROM tenants").all()).results || []).map((t) => nsPrefix(t.id))));
-  const doomed = have.filter((p) => !live.has(p));
-  if (!dry) for (const p of doomed) await removeRows(env, p);
-  return { accounts: have.length, doomed: doomed.length, deleted: dry ? 0 : doomed.length };
+export async function forgetTenant(env, tenant) { const n = await removeRows(await memEnv(env, tenant), await nsPrefix(tenant)); return { deleted: n ? 1 : 0, facts: n }; }
+// The nightly safety net: the namespace prefixes, in every memory shard, of accounts that no longer exist (a delete path that missed something).
+// src/account-jobs.js sends one message per { shard, prefix }, and forgetPrefix removes that prefix's facts and vectors from that shard.
+export const forgetPrefix = (env, shard, prefix) => removeRows(shardEnv(env, shard), prefix);
+export async function doomedPrefixes(env) {
+  const shards = shardsOf(env), out = [];
+  for (const s of shards) {
+    const m = shardEnv(env, s), have = ((await m.DB.prepare("SELECT DISTINCT substr(ns, 1, 16) AS p FROM mem").all()).results || []).map((r) => r.p);
+    const tenants = shards.length > 1 ? env.DB.prepare("SELECT id FROM tenants WHERE mem_shard=?").bind(s) : env.DB.prepare("SELECT id FROM tenants");   // a Worker with no shard bindings has no mem_shard to read
+    const live = new Set(await Promise.all(((await tenants.all()).results || []).map((t) => nsPrefix(t.id))));
+    for (const p of have) if (!live.has(p)) out.push({ shard: s, prefix: p });
+  }
+  return out;
 }

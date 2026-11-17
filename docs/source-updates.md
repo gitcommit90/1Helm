@@ -1,3 +1,23 @@
+# Source update: 2026-11-17 (computer disk guard, waiting for a free computer, scheduled work per account, own-key usage checks)
+
+## Computers, helpers and scheduled work
+
+The Worker source is reconciled from `445578526dfe6a673ecbabd5d9e06a44fe95469d` to `5ad0efaa6cd9b4f7a775eccbda5e0f61da5188c0`. The web source is reconciled from `90a8b3c059dd4aff92593f737657f522bb540fd7` to `db95e99af303e80e9b157df3973a68ee2390e179`. The channel computer now guards its disk: it keeps a 1 GiB reserve file, reports its disk level to the Worker every 15 seconds, clears download caches at 85 percent used, refuses a wake whose saved files do not fit, and packs only the changes when a full save does not fit. The app shows a notice when the disk is low or full, and an idle computer whose save failed for lack of space stays up and tries again. When no computer is free, a step now waits and tries again for up to 15 minutes, with a status line that says so, instead of failing at once. The browser service fills date, time, color and range inputs directly, drags by visible text, waits for a page to go quiet instead of for a fixed time, and reports the downloads folder. A helper's starting note lists the earlier helpers of the same task, and a helper can read a finished same-task helper's step log.
+
+Work that runs for every account (the hourly Stripe check, the resident watchdog, the storage recount, the memory sweep, and the licensed reminder, Bee, cancellation and past-due jobs) is now listed by the cron, one job per account, in `src/account-jobs.js`. When a Cloudflare Queue is bound as `ACCOUNT_JOBS` (and `ACCOUNT_JOBS_FAST` for the one-minute jobs), each job is one queue message and the Worker's queue handler runs it, so a failing account is retried without holding up the others. With no queue bound, which is the case in `wrangler.example.jsonc`, the same job bodies run inside the cron run, so a single-owner install needs no queue. Sign-in emails are limited per network and for the whole service. Memory calls go through `src/mem-shard.js`, which resolves to the main database and index unless extra shard bindings (`MEM_DB_1` to `MEM_DB_5` with `MEMORY_INDEX_1` to `MEMORY_INDEX_5`) exist, and a new account stores its shard number. Refunds and disputes (licensed billing code, `src/ee/disputes.js`) take back credits and hold an account read-only until the dispute is resolved. The reserved address list accepts extra labels from the `RESERVED_SLUGS` variable, and a host that matches no account answers with a 404 page.
+
+In the app, select menus for the channel computer, the exit node and the file editor use the app's own pick menu, Custom Model Selection can choose models per channel, and a Claude Code connection has a Check usage button next to its usage bars. OpenCode shows three usage bars.
+
+## Install and upgrade
+
+Apply the new D1 migrations `0086_signin_email_sends.sql`, `0087_account_job_state.sql` and `0088_mem_shard.sql` before deploying. Rebuild the computer image, because `image/opt/1hc/init.sh` and `image/opt/1hc/save.sh` now source `image/opt/1hc/disk.sh` and read `image/opt/1hc/chrome-cache.txt`, and run `npm run build` to rebuild the web bundle (`APP_V` is 369).
+
+The legacy import of a v1.x Linux database (the `/import` routes, their Archive upload bookkeeping and the per-account computer that restored its files) is removed, together with `test/import-boundary.test.mjs`, `test/computer-restore-boundary.test.mjs` and `test/computer-r2-test-boundary.test.mjs`. The `Computer` object keeps file preparation jobs and the backup snapshot hooks. `test/account-jobs.test.mjs`, `test/signin-email-limit.test.mjs`, `test/disk-guard.test.mjs` and `test/earlier-steps.test.mjs` cover the new Worker code, and `test/browser-native-value.test.mjs` covers the browser service input conversion.
+
+## Not in the public source
+
+The private release, operations, diagnostics, zone routing and website files, the dev and browser image tests, the memory shard database schema and tests, the image layer build scripts, the public-sync tooling and the deployment configuration are not part of this source. Run `npm run test:core`, `npm run test:sync`, `npm run test:runtime`, `npm run test:web`, `npm run check:migrations`, `npm run build` and a Worker dry run with the example configuration. Synthetic local checks do not establish live provider, container or device behavior in another operator's environment.
+
 # Source update: 2026-11-15 (computer save after the reply, stopped to-do lists, resumed turns, Tailscale approval in phone apps)
 
 ## Turns and phone apps

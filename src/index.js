@@ -9,10 +9,11 @@ import { appUpdateApi } from "./app-update.js";
 import { TOPUP_CENTS, issueConfirm, checkConfirm, savedCard } from "./topup.js";
 import { tolerantEnv, DO_TRANSIENT_RE, RPC_SKEW_RE, rpcSkew, codeV, isResetErr, isPlatformOverload, PLATFORM_OVERLOAD_MSG } from "./do-stub.js";
 import { opsRoute, viewAsGate, viewAsToken } from "./internal-shim.js";
-import { ambientSettingsRoute, dailyBillingFlag, deciderModel, modelSettingsEnv } from "./ee/index.js";
+import { ambientSettingsRoute, deciderModel, modelSettingsEnv } from "./ee/index.js";
+import { listKind, accountJobsQueue } from "./account-jobs.js";   // per-account scheduled work: the cron lists, the queue consumer runs one account per message
 import { SW_RE, swResponse } from "./pwa.js";   // Web Push service worker (notify.js)
 import { notifApi, sessionHashes, dropSubsForSessions } from "./notify.js";
-import { meetingsApi, meetingsCron } from "./ee/index.js";   // Meeting reminders for notes (Google Calendar / Outlook → "Take notes?")
+import { meetingsApi, meetingsCleanup } from "./ee/index.js";   // Meeting reminders for notes (Google Calendar / Outlook → "Take notes?")
 import { reportApi, reportsPage, reportShot } from "./reports.js";
 import { MANIFEST_RE, PWA_ICON_RE, manifestResponse, pwaHead, iconName, DEV_ICON_V } from "./pwa.js";
 import { versionedAsset as versionedAssetFor, withAppV } from "./asset-version.js";
@@ -24,9 +25,7 @@ import { downloadLinkApi } from "./download-links.js";
 import { LONG_MESSAGE } from "./long-message.js";
 import { safeName, mimeOf, servedHeaders, serveStoredBytes, serveThumb, MAX_UPLOAD, MAX_VIEW, storeUpload, storeView } from "./files.js";
 import { previewFileName } from "./file-preview.js";
-import { stComplete, stDelete, room, fullMessage, noteRefused, storageOf, storageView, setBlocks, syncBlocks, recount, recountStale, noticeSeen, rearmNotice, RECOUNT_MS } from "./storage.js";
-import { readImportManifest, readImportRows, validateImportManifest } from "./import-data.js";
-import { verifyImportLayer } from "./import-tar.js";
+import { storageOf, storageView, setBlocks, syncBlocks, recount, noticeSeen, rearmNotice, RECOUNT_MS } from "./storage.js";
 import { boundedText, boundedJson, boundedForm, BodyTooLargeError, UnsupportedFormTypeError } from "./bounded-body.js";
 import { appDetail } from "./ee/index.js";
 import { transportFor } from "./ee/index.js";   // the Composio transport: connections, connect links, disconnect
@@ -38,7 +37,7 @@ import { createChannel, insertChannel, ChannelError } from "./channels.js";
 import { transcribe } from "./transcribe.js";
 import { lnAudio } from "./ee/index.js";   // Live notes from the device's microphone: one chunk → speech to text (transcribe.js) → the LiveNotes DO
 import { transcribeLive, ledgerDictation } from "./transcribe-live.js";
-import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject } from "cloudflare:workers";
 import { deletionRoute, deletionCron, deleteNote, deleteChannel } from "./deletion.js";
 import { archiveDeletionMix, wipeMix } from "./deletion-do.js";
 import { archiveExportMix } from "./data-export-do.js";
@@ -56,7 +55,7 @@ export { QuickScriptHttp, QuickScriptLib } from "./quick-script.js";   // quick_
 import { saveVaultKey, listVaultKeys } from "./vault.js";
 import { keyLockAll, setKeyLockAll } from "./vault-rules.js";
 import { linkStartConnect, linkStatus, linkDisconnect, linkListPurchases, linkGetPurchase, linkApi } from "./ee/index.js";
-import { beeRoute, beeOps, beeCron, beePendingFacts, beePendingSpeakers, beeNoteEdited, beeNoteDeleted, beeNoteRestored } from "./ee/index.js";   // Settings → Ambient → Bee: pairing, sealed token, /v1/me
+import { beeRoute, beeOps, beePendingFacts, beePendingSpeakers, beeNoteEdited, beeNoteDeleted, beeNoteRestored } from "./ee/index.js";   // Settings → Ambient → Bee: pairing, sealed token, /v1/me
 import { beeLibraryRoute, statusOfRow, ownKindForStatus } from "./ee/index.js";   // Bee conversations in the Library, and the Custom Model Selection status (licensed)
 export { BeeSync } from "./ee/index.js";
 export { LiveNotes } from "./ee/index.js";
@@ -69,12 +68,13 @@ import { voiceMemoChoice } from "./voice-memo.js";
 import { accountRoute, shortcutsView, emailChangeRoute, newSession, endSession } from "./account.js";
 import { ownerAccount, ownerAllowsEmail } from "./single-owner.js";
 import { landingPage, selfHostedSignInPage, checkEmailPage, expiredPage, onboardPage, textingPage, hostSignInPage } from "./onboarding.js";
-import { createSignIn, decoyPending, verifyCode, pendingEmail, pendingCookie, clearPendingCookie, signInEmail, sweepCodeFails, RESEND_WAIT } from "./signin-code.js";
+import { createSignIn, decoyPending, verifyCode, pendingEmail, pendingCookie, clearPendingCookie, signInEmail, sweepCodeFails, sendLimit, RESEND_WAIT } from "./signin-code.js";
 import { releasesPage, pushRelease, undoRelease, isReleaseAdmin } from "./internal-shim.js";
 import { kanbanProxy } from "./internal-shim.js";
 import { AGE_VERSION, AGE_ERROR, ageOf, ageCookie, ageClaim, agePage, ageNext, recordAge } from "./age-gate.js";
 import { modelsRoute, imageRoute, cleanAnnotations } from "./ee/index.js";   // imageRoute and cleanAnnotations: image generation (licensed, src/ee/image-gen.js)
-import { hsOn, sweepMemory, recall as hsRecall, bankId as hsBankId } from "./mem0.js";
+import { pickShard } from "./mem-shard.js";
+import { hsOn, recall as hsRecall, bankId as hsBankId } from "./mem0.js";
 import { privacyBoot, privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // AI data privacy (onboarding step, boot)
 import { sendBackfillSnapshot } from "./backfill-trace.js";   // Mem0 backfill counts for Langfuse (numbers only)
 import { askDecider, dispatch } from "./ee/index.js";
@@ -89,9 +89,10 @@ import { googleStatus, googleDisconnect, listConnections, setDefaultAccount, set
 import { nativeReturnPage, nativeConnectPlatform, NATIVE_RETURN_PATH } from "./native-return.js";
 import { connectOfferApi, connectOfferDone, offerCallbackQuery, catalogFile, connectBlock } from "./ee/index.js";
 import { visibleCatalog } from "./ee/index.js";
-import { cancelApi, cancelWebhook, cancelSync, cancelCron } from "./ee/index.js";
-import { holdOf, holdView, holdFromFailure, notePaid, pastdueSync, pastdueCron, pastdueApi, pastdueSeen } from "./ee/index.js";
-import { PAY_MSG, INACTIVE_MSG } from "./ee/index.js";   // payment failed: read-only now, deleted after the paid period + 7 days
+import { cancelApi, cancelWebhook, cancelSync } from "./ee/index.js";
+import { holdOf, holdView, holdFromFailure, notePaid, pastdueSync, pastdueApi, pastdueSeen } from "./ee/index.js";
+import { PAY_MSG, INACTIVE_MSG, DISPUTE_MSG, DISPUTE_LOST_MSG } from "./ee/index.js";   // payment failed: read-only now, deleted after the paid period + 7 days
+import { disputeEvent, disputePaid, disputeOf } from "./ee/index.js";
 import { changePlan } from "./ee/index.js";
 import { isTestAccount, usd as guardUsd } from "./spendguard.js";
 import { ledgerGuard } from "./ee/index.js";   // paid-plan Ledger accounting and notices
@@ -118,11 +119,11 @@ import { importContacts, photoOf, IMPORT_BATCH_MAX } from "./contacts-import.js"
 import { scrubSecrets, hasSecret, SECRET_NOTE } from "./secrets-scrub.js";   // nosecrets: no password, key, card number or code in the Notebook
 import { locationRoute, saveLocation, rawFix } from "./location.js";   // where the person is: the app's precise fix, the helper's place line
 import { replyRef } from "./reply-to.js";   // Reply on a chat bubble: the quoted message rides with /stream and send-later
-const MARKUP = 1.15;
-import { isCapacityError, computerBusyError } from "./computer-capacity.js";
 import { jobsView } from "./jobs-view.js";   // the Scheduled list: active/paused jobs, follow-ups, and recently ended ones
+// Generic infrastructure names. Further address labels that must not be claimed come from the RESERVED_SLUGS secret (comma separated labels).
 const RESERVED = new Set("admin api app assets auth billing blog cdn demo docs help mail provision security status support www 1helm cloudflare login signup static dev staging test internal root system cloud gateway portal account accounts dashboard console design models hooks onboard download downloads manual terms privacy legal pricing about home news careers jobs press email smtp imap ftp ns ns1 ns2 m mobile ios android".split(" "));
-const slugValid = (s) => /^(?=.{3,48}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])$/.test(s) && !s.includes("--") && !/^\d+$/.test(s) && !RESERVED.has(s);
+const reserved = (env, s) => RESERVED.has(s) || String(env.RESERVED_SLUGS || "").split(",").some((x) => x.trim() === s);
+const slugValid = (s, env) => /^(?=.{3,48}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])$/.test(s) && !s.includes("--") && !/^\d+$/.test(s) && !reserved(env, s);
 const enc = new TextEncoder();
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 const sha256 = async (s) => hex(await crypto.subtle.digest("SHA-256", enc.encode(s)));
@@ -134,13 +135,14 @@ const scriptJson = (b) => JSON.stringify(b).replace(/</g, "\\u003c");
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const usd = (nano) => "$" + (Math.max(0, nano) / NANO).toFixed(2);   // a balance a little below zero (a capped hold settled at its real cost) shows as $0.00
 
-function page(title, body) {
+const unknownHost = (env, url) => page("Not found", `<p>There's no 1Helm at ${esc(url.hostname)}.</p><p><a href="https://${env.APP_HOST || url.hostname}/">Start your own 1Helm →</a></p>`, 404);
+function page(title, body, status = 200) {
   return new Response(`<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/1helm-icon-64.png"><title>${esc(title)}</title>
 <style>body{font:16px system-ui;max-width:760px;margin:40px auto;padding:0 16px;color:#111}input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #bbb}button{background:#111;color:#fff;cursor:pointer}
 .pill{position:fixed;top:12px;right:12px;padding:6px 12px;border-radius:999px;background:#e8f5e9}.pill.warn{background:#fff3cd}.pill.low{background:#ffd7d7}
 #log{border:1px solid #ddd;border-radius:10px;padding:12px;min-height:240px;white-space:pre-wrap}.me{color:#555}.cost{color:#888;font-size:12px}
 #modal{display:none;position:fixed;inset:0;background:#0008}#modal>div{background:#fff;max-width:380px;margin:18vh auto;padding:20px;border-radius:12px}</style>${pageDialog("classic")}</head><body>${body}</body></html>`,
-    { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
+    { status, headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 }
 
 async function stripe(env, path, params = {}, method = "POST") {
@@ -149,9 +151,9 @@ async function stripe(env, path, params = {}, method = "POST") {
   for (const [k, v] of Object.entries(params)) add(k, v);
   const r = await fetch(`https://api.stripe.com/v1/${path}`, {
     method, headers: { authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, "content-type": "application/x-www-form-urlencoded" },
-    body: method === "GET" ? undefined : body });
+    body: method === "GET" ? undefined : body, signal: method === "GET" ? AbortSignal.timeout(20000) : undefined });   // only a read is aborted: a slow write that Stripe accepted must not be taken for a failure
   const d = await r.json();
-  if (!r.ok) throw new Error(d.error?.message || `Stripe HTTP ${r.status}`);
+  if (!r.ok) throw Object.assign(new Error(d.error?.message || `Stripe HTTP ${r.status}`), { status: r.status });
   return d;
 }
 
@@ -197,112 +199,13 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "368";
+const APP_V = "369";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
 // Static files requested with ?v= are cached for a year only when ?v= matches this Worker's own version (src/asset-version.js).
 const versionedAsset = (url, r) => versionedAssetFor(url, r, { APP_V, ONBOARD_V, DEV_ICON_V });
 const archive = (env, tenantId) => env.ARCHIVE.get(env.ARCHIVE.idFromName(`archive:${tenantId}`));
-const IMPORT_PART = 50 * 1024 * 1024;
-export async function handleImport(req, env, tenantId, importId, rest) {
-  const A = archive(env, tenantId);
-  const tok = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-  if (!tok || !(await A.auth(importId, await sha256(tok)))) return json({ error: "import not authorized" }, 401);
-  const m = rest.match(/^\/obj\/([a-z0-9._-]{1,80})(?:\/(part)\/(\d+)|\/(complete))?$/);
-  if (rest === "/status" && req.method === "GET") return json({ objects: await A.listObjects(importId) });
-  if (m && !m[2] && !m[4] && req.method === "POST") {
-    const name = m[1], existing = await A.object(importId, name);
-    if (existing) return json({ name, resumed: true, parts: JSON.parse(existing.parts).map((x) => x.partNumber) });
-    const key = `t/${tenantId}/import/${importId}/${name}`, mpu = await env.WS.createMultipartUpload(key, { customMetadata: { app: "1hc-proto", import: importId } });
-    await A.putObject(importId, name, key, mpu.uploadId); return json({ name, resumed: false, parts: [] });
-  }
-  if (m && m[2] && req.method === "PUT") {
-    const partNumber = Number(m[3]);
-    if (!Number.isSafeInteger(partNumber) || partNumber < 1 || partNumber > 10000) return json({ error: "part number must be 1 to 10000" }, 400);
-    const o = await A.object(importId, m[1]); if (!o) return json({ error: "start the object first" }, 404);
-    const rawLength = req.headers.get("content-length") || "", len = Number(rawLength);
-    if (!req.body || !/^[0-9]+$/.test(rawLength) || !Number.isSafeInteger(len) || len < 1 || len > IMPORT_PART) return json({ error: "part needs content-length <= 50 MB" }, 400);
-    const rm = await room(env, tenantId, len); if (!rm.ok) return json({ error: fullMessage(rm), storage_full: true }, 507);   // storage.js
-    const up = await env.WS.resumeMultipartUpload(o.key, o.upload_id).uploadPart(partNumber, req.body.pipeThrough(new FixedLengthStream(len)));
-    const n = await A.addPart(importId, m[1], { partNumber: up.partNumber, etag: up.etag, bytes: len }); return json({ part: partNumber, received: n });
-  }
-  if (m && m[4] && req.method === "POST") {
-    const result = await A.completeImportObject(importId, m[1], tenantId);
-    return json(result.body, result.status);
-  }
-  if (rest === "/finish" && req.method === "POST") {
-    let manifest;
-    try { manifest = await readImportManifest(req); }
-    catch (e) { return json({ error: e.message }, e.message.includes("exceeds") ? 413 : 400); }
-    return json(await finishImport(env, tenantId, importId, manifest));
-  }
-  return json({ error: "unknown import route" }, 404);
-}
-// Verify every uploaded object against the exporter's manifest, register the file layers with the computer,
-// load the database rows, and compare every count. Nothing is marked done unless all checks pass.
-export async function finishImport(env, tenantId, importId, manifest) {
-  const invalid = validateImportManifest(manifest);
-  if (invalid) return { ok: false, problems: [invalid] };
-  const A = archive(env, tenantId), attempt = crypto.randomUUID();
-  if (!(await A.beginImportFinish(importId, attempt))) return { ok: false, problems: ["import finish is already running or complete"] };
-  try {
-    const objs = Object.fromEntries((await A.listObjects(importId)).map((o) => [o.name, o]));
-    const problems = [], layers = [];
-    for (const [name, want] of Object.entries(manifest.objects)) {
-      const o = objs[name]; if (!o || !o.done) { problems.push(`${name}: not uploaded`); continue; }
-      const head = await env.WS.head(o.key);
-      if (!head || head.size !== want.bytes) { problems.push(`${name}: size ${head?.size} != ${want.bytes}`); continue; }
-      if (want.kind === "files") {
-        // A matching R2 size cannot prove the computer layer is the tarball in
-        // the manifest. Verify its bytes before any rows or layers are committed.
-        let layer; try { layer = await env.WS.get(o.key); } catch { problems.push(`${name}: could not read file layer`); continue; }
-        if (!layer?.body || layer.size !== want.bytes) { problems.push(`${name}: file layer missing or changed`); continue; }
-        try {
-          await A.renewImportFinish(importId, attempt);
-          await verifyImportLayer(layer.body, want.sha256, () => A.renewImportFinish(importId, attempt));
-        } catch (e) { problems.push(`${name}: ${String(e?.message || "could not verify file layer").slice(0, 100)}`); continue; }
-        layers.push({ key: o.key, bytes: want.bytes, sha256: want.sha256, files: want.files });
-      }
-    }
-    if (problems.length) return { ok: false, problems };
-    // Stage rows until the whole gzip and every count have passed validation.
-    const data = await env.WS.get(objs["data.jsonl.gz"].key);
-    if (!data?.body) return { ok: false, problems: ["import data is missing"] };
-    let loaded;
-    try { loaded = await readImportRows(data.body, (batch) => A.stageImportRows(importId, attempt, batch), manifest.objects["data.jsonl.gz"].sha256); }
-    catch (e) { return { ok: false, problems: [String(e?.message || e).slice(0, 160)] }; }
-    const counts = await A.stagedCounts(importId, attempt), mismatches = [];
-    for (const [tbl, n] of Object.entries(manifest.rows)) if ((counts[tbl] || 0) !== n) mismatches.push(`${tbl}: ${counts[tbl] || 0} != ${n}`);
-    for (const tbl of Object.keys(counts)) if (!Object.hasOwn(manifest.rows, tbl)) mismatches.push(`${tbl}: unexpected table`);
-    if (mismatches.length) return { ok: false, rows_loaded: loaded, counts, expected_rows: manifest.rows, mismatches };
-    const C = env.COMPUTER.get(env.COMPUTER.idFromName(`computer:${tenantId}`));
-    const reg = await C.importLayers(tenantId, layers);
-    const report = { ok: true, rows_loaded: loaded, counts, expected_rows: manifest.rows, mismatches, layers: reg.layers, source: manifest.source, at: Date.now() };
-    await A.commitImportRows(importId, attempt, report);
-    return report;
-  } finally { await A.releaseImportFinish(importId, attempt); }
-}
-async function importedHtml(env, t) {
-  const A = archive(env, t.id), chans = await A.channels(), rep = await A.lastReport();
-  if (!chans.length) return `<p>No imported data yet.</p>`;
-  return `<p><a href="/w/${esc(t.slug)}/?classic=1">← back to workspace</a></p><h2>Imported from ${esc(rep?.source?.name || "self-hosted 1Helm")}</h2>
-<p style="color:#666">Imported ${rep ? new Date(rep.at).toLocaleString() : ""}. Files are on the Linux computer under <code>/workspace/channels/&lt;channel&gt;/</code>.</p>
-<table style="border-collapse:collapse;width:100%">${chans.map((c) => `<tr style="border-bottom:1px solid #eee"><td style="padding:6px"><a href="/w/${esc(t.slug)}/imported/${c.id}">#${esc(c.name)}</a></td><td>${c.messages} messages</td><td>${c.memory} memories</td><td>${c.workflows} workflows</td></tr>`).join("")}</table>`;
-}
-async function importedChannelHtml(env, t, cid) {
-  const d = await archive(env, t.id).channel(cid);
-  if (!d.channel) return `<p>Unknown channel.</p>`;
-  const who = (m) => m.author || (m.bot_id ? "resident" : "you");
-  return `<p><a href="/w/${esc(t.slug)}/imported">← all imported channels</a></p><h2>#${esc(d.channel.name)}</h2>
-${d.memory.length ? `<details><summary>${d.memory.length} memories</summary><ul>${d.memory.map((m) => `<li>${esc(String(m.content).slice(0, 400))}</li>`).join("")}</ul></details>` : ""}
-${d.workflows.length ? `<details><summary>${d.workflows.length} workflows</summary><ul>${d.workflows.map((w) => `<li><b>${esc(w.name)}</b> (${esc(w.status)}, every ${Math.round(w.interval_seconds / 3600)}h)</li>`).join("")}</ul></details>` : ""}
-<p style="color:#666">Last ${d.messages.length} messages</p>
-${d.messages.map((m) => `<div style="margin:10px 0;padding:8px;border-left:3px solid ${m.bot_id ? "#8ab" : "#ccc"}"><div style="color:#888;font-size:12px">${esc(who(m))} · ${new Date(m.created).toLocaleString()}${m.parent_id ? " · reply" : ""}</div><div style="white-space:pre-wrap">${esc(String(m.body || "").slice(0, 4000))}</div></div>`).join("")}`;
-}
-// Why a model call or computer minute was refused. The daily limit is a "skipped:" error so scheduled jobs don't count it as a failure.
-const DAY_LIMIT_MSG = "skipped: daily safety limit reached";
-const payError = (reason) => reason === "day_limit" ? Object.assign(new Error(DAY_LIMIT_MSG), { status: 429 }) : Object.assign(new Error("out_of_credits"), { status: 402 });
 // 1HC plan ladder: src/plans-def.js (a leaf module the Durable Objects read too).
 const planPrices = (env) => { try { return JSON.parse(env.PLAN_PRICES || "{}"); } catch { return {}; } };
 const planKey = (k) => (PLANS[k] ? k : "plus");
@@ -312,11 +215,12 @@ const ledger = (env, tenantId) => env.LEDGER.get(env.LEDGER.idFromName(`tenant:$
 // Full or read-only. If payment fails, the account becomes read-only until it is fixed. No grace period: anything but an
 // active plan is read-only (they can open the app, read, download and fix payment; nothing that costs anything runs). An unpaid bill
 // adds why and the dates (pastdue.js): data kept until the end of the paid period, then 7 more days, then permanently deleted.
-function accessOf(t, env, hold = null) {
+function accessOf(t, env, hold = null, dispute = null) {
   if (t.status === "active") return { mode: "full", status: t.status };
   const a = { mode: "read_only", status: t.status };
   if (hold) Object.assign(a, holdView(hold));
   else if (t.status === "past_due") Object.assign(a, { reason: "payment_failed", message: PAY_MSG });
+  else if (t.status === "disputed") Object.assign(a, { reason: "payment_disputed", message: dispute === "lost" ? DISPUTE_LOST_MSG : DISPUTE_MSG, ...(dispute === "lost" ? { can_pay: true } : {}) });
   return a;
 }
 // The plain refusal for anything that needs a working plan.
@@ -325,7 +229,9 @@ async function applySubStatus(env, subId, stripeStatus) {
   const status = { active: "active", trialing: "active", past_due: "past_due", unpaid: "suspended", canceled: "suspended", incomplete_expired: "suspended", paused: "suspended" }[stripeStatus];
   if (!status) return;
   await env.DB.prepare(`UPDATE tenants SET status=?, past_due_since=CASE WHEN ?='past_due' THEN COALESCE(past_due_since,?) WHEN ?='active' THEN NULL ELSE past_due_since END,
-    sub_status=?, updated_at=? WHERE stripe_subscription=?`).bind(status, status, now(), status, stripeStatus, now(), subId).run();
+    sub_status=?, updated_at=? WHERE stripe_subscription=? AND status<>'disputed'`).bind(status, status, now(), status, stripeStatus, now(), subId).run();
+  // A disputed account keeps status 'disputed' but still records what the subscription is, so the hold lifts into the right state.
+  await env.DB.prepare("UPDATE tenants SET past_due_since=CASE WHEN ?='past_due' THEN COALESCE(past_due_since,?) WHEN ?='active' THEN NULL ELSE past_due_since END, sub_status=?, updated_at=? WHERE stripe_subscription=? AND status='disputed'").bind(status, now(), status, stripeStatus, now(), subId).run();
 }
 // Where Stripe (and other outside pages) send people back: always the app, never the old classic page at /w/<slug>/.
 // ?settings=usage opens Settings → Usage; the app also reads topup=1 / resubscribed=1 / plan=changed to say what happened.
@@ -347,34 +253,26 @@ async function fixPayment(env, t, origin) {
     metadata: { app: "1hc-proto", tenant_id: t.id }, subscription_data: { metadata: { app: "1hc-proto", tenant_id: t.id } } });
   return { url: cs.url, kind: "resubscribe" };
 }
-// Hourly: heal missed or out-of-order webhooks by asking Stripe for the truth.
-async function reconcile(env) {
-  const rows = (await env.DB.prepare("SELECT id, stripe_subscription, status, sub_status FROM tenants WHERE stripe_subscription<>''").all()).results;
-  let fixed = 0;
-  for (const r of rows) {
-    const sub = await stripe(env, `subscriptions/${r.stripe_subscription}`, {}, "GET").catch(() => null);
-    if (!sub) continue;
-    if (sub.status !== r.sub_status) { await applySubStatus(env, r.stripe_subscription, sub.status); fixed++; }
-    // A payment failure (or a fix) whose webhook we missed: start or end the hold (pastdue.js).
-    await pastdueSync(env, await env.DB.prepare("SELECT * FROM tenants WHERE id=?").bind(r.id).first(), sub, {}).catch((e) => console.log("pastdue sync", r.id, e.message));
-    await syncBlocks(env, r.id, sub).catch((e) => console.log("storage blocks sync", r.id, e.message));   // storage.js: a missed subscription.updated
-    await cancelSync(env, r.id, sub, { stripe }).catch((e) => console.log("cancel sync", r.id, e.message));   // a portal cancel/renew whose webhook we missed (src/cancel.js)
-  }
-  return { checked: rows.length, fixed };
-}
-
-// Watchdog: any resident whose schedule is overdue by >2 min gets poked (re-arms its alarm; the alarm itself runs the work).
-async function scheduleWatchdog(env) {
-  const rows = (await env.DB.prepare("SELECT tenant_id, channel, channel_id FROM resident_schedules WHERE next_run IS NOT NULL AND next_run < ?").bind(now() - 120e3).all()).results;
-  for (const r of rows) { try { await env.RESIDENT.get(env.RESIDENT.idFromName(`res:${r.tenant_id}:${r.channel}`)).ensure(r.tenant_id, r.channel, r.channel_id); } catch (e) { console.log("watchdog", r.channel, e.message); } }
-  return { overdue: rows.length };
+// Hourly, one account per queue message (src/account-jobs.js): heal missed or out-of-order webhooks by asking Stripe for the truth.
+// Every step sets state from Stripe's answer (or claims before it acts), so running it twice for one account changes nothing the second time.
+// A Stripe failure other than "no such subscription" throws, so the queue retries the account.
+async function reconcileOne(env, tid) {
+  const r = await env.DB.prepare("SELECT id, stripe_subscription, status, sub_status FROM tenants WHERE id=? AND stripe_subscription<>''").bind(tid).first();
+  if (!r) return;
+  const sub = await stripe(env, `subscriptions/${r.stripe_subscription}`, {}, "GET").catch((e) => { if (e.status === 404) return null; throw e; });
+  if (!sub) return;
+  if (sub.status !== r.sub_status) await applySubStatus(env, r.stripe_subscription, sub.status);
+  // A payment failure (or a fix) whose webhook we missed: start or end the hold (pastdue.js).
+  await pastdueSync(env, await env.DB.prepare("SELECT * FROM tenants WHERE id=?").bind(r.id).first(), sub, {}).catch((e) => console.log("pastdue sync", r.id, e.message));
+  await syncBlocks(env, r.id, sub).catch((e) => console.log("storage blocks sync", r.id, e.message));   // storage.js: a missed subscription.updated
+  await cancelSync(env, r.id, sub, { stripe }).catch((e) => console.log("cancel sync", r.id, e.message));   // a portal cancel/renew whose webhook we missed (src/cancel.js)
 }
 
 // ---- Your own address: <slug>.1helm.com. Cloud and self-hosted 1Helm share the namespace (self-hosted rows live in the
 // 1helm-workspaces D1, bound as SELFHOST), so a name is free only if neither has it.
 async function slugCheck(env, slug, tenantId = null) {
   slug = String(slug || "").trim().toLowerCase();
-  if (!slugValid(slug)) return { slug, available: false, reason: RESERVED.has(slug) ? "That address is reserved. Try another." : "Use 3–48 letters, numbers or single dashes." };
+  if (!slugValid(slug, env)) return { slug, available: false, reason: reserved(env, slug) ? "That address is reserved. Try another." : "Use 3–48 letters, numbers or single dashes." };
   const mine = await env.DB.prepare("SELECT id FROM tenants WHERE slug=?").bind(slug).first();
   if (mine && mine.id !== tenantId) return { slug, available: false, reason: "That address is taken. Try another." };
   if (env.SELFHOST) { const sh = await env.SELFHOST.prepare("SELECT 1 FROM workspaces WHERE slug=?").bind(slug).first().catch(() => null); if (sh) return { slug, available: false, reason: "That address is taken. Try another." }; }
@@ -409,7 +307,7 @@ const homeUrl = (t, next = "", req = null) => Number(t.host_ready) === 1 && !nat
 // payment is Stripe Checkout; after payment the account is provisioned and the person finishes Ways to reach → Watch it work → First task.
 async function uniqueSlug(env, base) {
   let b = String(base || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30);
-  if (b.length < 3 || /^\d+$/.test(b) || RESERVED.has(b)) b = `my-${b || "helm"}`.replace(/-+$/, "");
+  if (b.length < 3 || /^\d+$/.test(b) || reserved(env, b)) b = `my-${b || "helm"}`.replace(/-+$/, "");
   for (let i = 0; i < 8; i++) {
     const cand = i === 0 ? b : `${b}-${100 + Math.floor(Math.random() * 900)}`;
     if ((await slugCheck(env, cand)).available) return cand;
@@ -419,7 +317,7 @@ async function uniqueSlug(env, base) {
 async function ensureTenant(env, user, first) {
   let t = await tenantOf(env, user.id); if (t) return t;
   const id = crypto.randomUUID(), slug = await uniqueSlug(env, first || user.email.split("@")[0]);
-  await env.DB.prepare("INSERT OR IGNORE INTO tenants (id,slug,owner_user_id,created_at,updated_at) VALUES (?,?,?,?,?)").bind(id, slug, user.id, now(), now()).run();
+  await env.DB.prepare("INSERT OR IGNORE INTO tenants (id,slug,owner_user_id,created_at,updated_at,mem_shard) VALUES (?,?,?,?,?,?)").bind(id, slug, user.id, now(), now(), await pickShard(env)).run();
   return tenantOf(env, user.id);
 }
 async function ensureSelfHostedTenant(env, user) {
@@ -463,10 +361,12 @@ async function onboardApi(req, env, url, op) {
       if (!eeEnabled(env) && !(await ownerAllowsEmail(env, email))) return json({ error: "This server already has an owner." }, 403);
       const recent = await env.DB.prepare("SELECT COUNT(*) n FROM magic_links WHERE email=? AND expires_at>?").bind(email, now()).first();
       if (Number(recent?.n || 0) > 5) return json({ error: "We just sent you a few links. Check your inbox (and spam) for the newest one." });
+      const testAddr = eeEnabled(env) && env.TEST_MODE === "1" && /@example\.(com|org|net)$/.test(email);
+      const limited = !testAddr && await sendLimit(env, req); if (limited) return json({ error: limited }, 429);
       // One email, two ways in: the link and a 6-digit code (src/signin-code.js). The code works only in this browser (hc_signin cookie).
       const plan = PLANS[body.plan] ? body.plan : "", si = await createSignIn(env, email, { age: access.age });
       const link = `${origin}/auth/verify?token=${si.token}${plan ? `&plan=${plan}` : ""}`, ck = { "set-cookie": pendingCookie(si.pending) };
-      if (eeEnabled(env) && env.TEST_MODE === "1" && /@example\.(com|org|net)$/.test(email)) return withAgeCookie(json({ ok: true, test_link: link, test_code: si.code, resend_wait: RESEND_WAIT }, 200, ck), access);
+      if (testAddr) return withAgeCookie(json({ ok: true, test_link: link, test_code: si.code, resend_wait: RESEND_WAIT }, 200, ck), access);
       try { await sendMagicLink(env, email, link, si.code); } catch (e) { console.error("magic link send failed", e?.code, e?.message); return json({ error: "We couldn't send your sign-in email just now. Try again in a minute." }); }
       return withAgeCookie(json({ ok: true, resend_wait: RESEND_WAIT }, 200, ck), access);
     }
@@ -592,34 +492,45 @@ async function onboardApi(req, env, url, op) {
     return json({ error: "unknown" }, 404);
   } catch (e) { if (e instanceof BodyTooLargeError || e instanceof UnsupportedFormTypeError) throw e; console.error("onboard api", op, e?.message); return json({ error: "Something went wrong on our side. Try again in a minute." }); }
 }
+// What a queued per-account job needs from this file (src/account-jobs.js): the Stripe call and the account's Durable Objects.
+const jobDeps = (env) => ({ stripe, reconcile: reconcileOne, residentOf: (tid, ch) => env.RESIDENT.get(env.RESIDENT.idFromName(`res:${tid}:${ch}`)), ledgerOf: (tid) => ledger(env, tid) });
 export default {
   async scheduled(ev, env, ctx) {
     env = tolerantEnv(env);   // do-stub.js: every Durable Object call survives a deploy's skew/reset window
     if (env.ENV_NAME === "selfhost" && env.BACKUP_MAINTENANCE === "1") return;
-    // Every minute: meeting reminders for notes only (src/meetings.js: D1 reads, and a few calendar looks when due). Nothing else runs on it.
-    if (ev.cron === "* * * * *") { if (eeEnabled(env)) ctx.waitUntil(meetingsCron(env, { now: ev.scheduledTime || Date.now() }).then((r) => { if (r.due.sent || r.due.missed || r.polled.length) console.log("meetings cron", JSON.stringify(r).slice(0, 600)); }).catch((e) => console.log("meetings cron failed", e.message))); return; }
+    // Per-account work (src/account-jobs.js): the cron lists the accounts that are due and sends one queue message each; the queue handler below does the
+    // work for one account per message. With no queue bound (the example config), the same job bodies run here, in the cron run itself.
+    const list = (kind) => ctx.waitUntil(listKind(env, kind, ev.scheduledTime || Date.now(), jobDeps(env)).then((r) => { if (r.sent) console.log("account jobs", JSON.stringify(r)); }).catch((e) => console.log("account jobs listing failed", kind, e.message)));
+    // Every minute: meeting reminders for notes (src/meetings.js: D1 reads; the calendar looks and the pushes are jobs). Nothing else runs on it.
+    if (ev.cron === "* * * * *") { if (eeEnabled(env)) { ctx.waitUntil(meetingsCleanup(env, ev.scheduledTime || Date.now())); list("meeting_alert"); list("meeting_poll"); } return; }
     if (ev.cron === "*/5 * * * *") ctx.waitUntil(deletionCron(env).then((r) => { if (r.resumed || r.errors || r.hs) console.log("deletion cron", JSON.stringify(r)); }).catch((e) => console.log("deletion cron failed", e.message)));
     // Export my data: carry on unfinished exports, email finished ones, delete zips after 72 hours (src/data-export.js).
     if (ev.cron === "*/5 * * * *") ctx.waitUntil(exportCron(env).then((r) => { if (r.ran || r.expired || r.failed || r.notified) console.log("export cron", JSON.stringify(r)); }).catch((e) => console.log("export cron failed", e.message)));
-    ctx.waitUntil(scheduleWatchdog(env).then((r) => console.log("watchdog", JSON.stringify(r))));
-    if (ev.cron === "17 * * * *") ctx.waitUntil(reconcile(env).then((r) => console.log("reconcile", JSON.stringify(r))));
+    // Watchdog: any resident whose schedule is overdue by >2 min gets poked (re-arms its alarm; the alarm itself runs the work).
+    list("watchdog");
+    // Hourly Stripe reconcile (reconcileOne above): heal missed or out-of-order webhooks by asking Stripe for the truth.
+    if (ev.cron === "17 * * * *") list("reconcile");
     // Sign-in codes: forget wrong-code counts older than a day (src/signin-code.js).
     if (ev.cron === "17 * * * *") ctx.waitUntil(sweepCodeFails(env).catch((e) => console.log("code fails sweep failed", e.message)));
-    // Bee: restart the sync of a connected account that hasn't synced in 30 min (src/bee.js beeCron; the BeeSync alarm does the work).
-    if (ev.cron === "17 * * * *" && eeEnabled(env)) ctx.waitUntil(beeCron(env).then((r) => { if (r.checked) console.log("bee cron", JSON.stringify(r)); }).catch((e) => console.log("bee cron failed", e.message)));
+    // Bee: restart the sync of a connected account that hasn't synced in 30 min (src/bee.js; the BeeSync alarm does the work).
+    if (ev.cron === "17 * * * *" && eeEnabled(env)) list("bee");
     // Storage: recount the accounts not counted in a day (corrects any drift in the running counter). src/storage.js
-    if (ev.cron === "17 * * * *") ctx.waitUntil(recountStale(env).then((r) => console.log("storage recount", JSON.stringify(r))).catch((e) => console.log("storage recount failed", e.message)));
+    if (ev.cron === "17 * * * *") list("storage");
     // Cancelled plans: reminders 7/3/1 days before the period ends, deletion at the end if the webhook missed it, final emails (src/cancel.js).
-    if (ev.cron === "17 * * * *" && eeEnabled(env)) ctx.waitUntil(cancelCron(env, { stripe }).then((r) => console.log("cancel cron", JSON.stringify(r))).catch((e) => console.log("cancel cron failed", e.message)));
+    if (ev.cron === "17 * * * *" && eeEnabled(env)) list("cancel");
     // Unpaid plans: first notices, reminders (start of the final 7 days, 1 day before), deletion when the 7 days are up (src/pastdue.js).
-    if (ev.cron === "17 * * * *" && eeEnabled(env)) ctx.waitUntil(pastdueCron(env, { stripe }).then((r) => console.log("pastdue cron", JSON.stringify(r))).catch((e) => console.log("pastdue cron failed", e.message)));
+    if (ev.cron === "17 * * * *" && eeEnabled(env)) list("pastdue");
     // Backfill progress for Langfuse (src/backfill-trace.js): hourly counts of every real channel by backfill status. Sends nothing without APP_OTEL_TOKEN.
     if (ev.cron === "17 * * * *" && hsOn(env)) ctx.waitUntil(sendBackfillSnapshot(env, { kind: "cron" }).then((r) => console.log("backfill snapshot", JSON.stringify(r))).catch(() => {}));
-    // Own router pool: rebuilt nightly at 2:17 AM PT (09:17 UTC) when the own router is on (dev only for now).
     // Memory: delete the facts of an account that no longer exists. Nightly at 3:17 AM PT (10:17 UTC).
-    if (ev.cron === "17 * * * *" && hsOn(env) && new Date(ev.scheduledTime).getUTCHours() === 10) ctx.waitUntil(sweepMemory(env).then((r) => console.log("memory sweep", JSON.stringify(r))).catch((e) => console.log("memory sweep failed", e.message)));
+    if (ev.cron === "17 * * * *" && hsOn(env) && new Date(ev.scheduledTime).getUTCHours() === 10) list("memory_sweep");
     // Billing flag (billing-flag.js): once a day, find price_unknown events and turns charged over 10x their list-price estimate. Read-only: no charge changes.
-    if (ev.cron === "17 * * * *" && eeEnabled(env) && new Date(ev.scheduledTime).getUTCHours() === 10) ctx.waitUntil(dailyBillingFlag(env, { since: (ev.scheduledTime || Date.now()) - 864e5, residentOf: (tid, ch) => env.RESIDENT.get(env.RESIDENT.idFromName(`res:${tid}:${ch}`)), ledgerOf: (tid) => ledger(env, tid) }).catch((e) => console.log("billing flag failed", e.message)));
+    if (ev.cron === "17 * * * *" && eeEnabled(env) && new Date(ev.scheduledTime).getUTCHours() === 10) list("billing_flag");
+  },
+  // Queue consumer for ACCOUNT_JOBS and its dead letter queue (src/account-jobs.js): one account's work per message.
+  async queue(batch, env) {
+    env = tolerantEnv(env);
+    return accountJobsQueue(batch, env, jobDeps(env));
   },
   async fetch(req, env, ctx) {
     env = tolerantEnv(env);   // do-stub.js: every Durable Object call survives a deploy's skew/reset window
@@ -690,7 +601,7 @@ export default {
         const hm = domain && url.hostname.endsWith(`.${domain}`) ? [url.hostname, url.hostname.slice(0, -domain.length - 1)] : null;
         if (hm && url.hostname !== env.APP_HOST) {
           const ht = await env.DB.prepare("SELECT * FROM tenants WHERE slug=?").bind(hm[1]).first();
-          if (!ht) return page("Not found", `<p>There's no 1Helm at ${esc(url.hostname)}.</p><p><a href="https://${env.APP_HOST || url.hostname}/">Start your own 1Helm →</a></p>`);
+          if (!ht) return unknownHost(env, url);
           if (p === "/auth/handoff") {
             if (req.method !== "GET") return new Response("Method not allowed", { status: 405, headers: { allow: "GET" } });
             const tok = await sha256(url.searchParams.get("token") || ""), next = String(url.searchParams.get("next") || "");
@@ -710,6 +621,9 @@ export default {
             if (!access.allowed) return hostSignInPage({ ...hostInfo, email, error: AGE_ERROR.error, status: 403 });
             if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return hostSignInPage({ ...hostInfo, email, error: "Enter a valid email address." });
             const ou = await env.DB.prepare("SELECT email FROM users WHERE id=?").bind(ht.owner_user_id).first();
+            // Refused for every address alike (checked here without counting), so a refusal never shows whose 1Helm this is; only a real send is counted below.
+            const limited = !(env.TEST_MODE === "1" && /@example\.(com|org|net)$/.test(email)) && await sendLimit(env, req, false);
+            if (limited) return hostSignInPage({ ...hostInfo, email, error: limited, status: 429 });
             let testLink = "", testCode = "", pending = decoyPending();
             // Only the owner's email gets a link and code; everyone sees the same "check your email" and gets a sign-in cookie
             // (a decoy that matches nothing for any other address), so there's no hint whose 1Helm this is.
@@ -719,7 +633,7 @@ export default {
                 const si = await createSignIn(env, email, { age: access.age }); pending = si.pending;
                 const link = `${origin}/auth/verify?token=${si.token}`;
                 if (eeEnabled(env) && env.TEST_MODE === "1" && /@example\.(com|org|net)$/.test(email)) { testLink = link; testCode = si.code; }
-                else { try { await sendMagicLink(env, email, link, si.code); } catch (e) { console.error("host magic link", e?.message); return hostSignInPage({ ...hostInfo, email, error: "We couldn't send the email just now. Try again in a minute." }); } }
+                else { try { await sendLimit(env, req); await sendMagicLink(env, email, link, si.code); } catch (e) { console.error("host magic link", e?.message); return hostSignInPage({ ...hostInfo, email, error: "We couldn't send the email just now. Try again in a minute." }); } }
               }
             }
             return withAgeCookie(withCookie(hostSignInPage({ ...hostInfo, email, sent: true, testLink, testCode, wait: RESEND_WAIT }), pendingCookie(pending)), access);
@@ -819,6 +733,7 @@ export default {
         if (!testAddr) {
           const recent = await env.DB.prepare("SELECT COUNT(*) n FROM magic_links WHERE email=? AND expires_at>?").bind(email, now()).first();
           if (Number(recent?.n || 0) > 5) return checkEmailPage(email, "", false, { error: "We just sent you a few links. Check your inbox (and spam) for the newest one.", wait: 0, emailFrom: env.EMAIL_FROM });
+          const limited = await sendLimit(env, req); if (limited) return landingPage({ error: limited, email, status: 429 });
         }
         const si = await createSignIn(env, email, { age: access.age }), link = `${origin}/auth/verify?token=${si.token}`;
         if (testAddr) return withAgeCookie(withCookie(checkEmailPage(email, link, true, { testCode: si.code, wait: RESEND_WAIT, emailFrom: env.EMAIL_FROM }), pendingCookie(si.pending)), access);
@@ -875,9 +790,6 @@ export default {
       if (p.startsWith("/onboard/api/")) return await onboardApi(req, env, url, p.slice("/onboard/api/".length));
       if (!eeEnabled(env) && (p === "/onboard" || p.startsWith("/onboard/"))) return json({ error: "not found" }, 404);
 
-      const imp = p.match(/^\/import\/([0-9a-f-]{36})\.([0-9a-f]{16})(\/.*)$/);
-      if (imp) return handleImport(req, env, imp[1], `${imp[1]}.${imp[2]}`, imp[3]);
-
       // Composio's project webhook: app events for "when … happens" workflows. No cookie: the webhook signature is the check.
       if (p === "/composio/webhook") return composioWebhook(req, env, ctx);
 
@@ -906,7 +818,7 @@ export default {
 
       if (p === "/onboard/slug" && req.method === "GET") {
         const slug = String(url.searchParams.get("value") || "").trim().toLowerCase();
-        if (!slugValid(slug)) return json({ available: false, reason: "Use 3–48 lowercase letters, numbers, or single hyphens." });
+        if (!slugValid(slug, env)) return json({ available: false, reason: "Use 3–48 lowercase letters, numbers, or single hyphens." });
         const t = await tenantOf(env, user.id), taken = await env.DB.prepare("SELECT owner_user_id FROM tenants WHERE slug=?").bind(slug).first();
         return json({ available: !taken || taken.owner_user_id === user.id, reason: taken && taken.owner_user_id !== user.id ? "That address is already taken." : null, current: t?.slug || null });
       }
@@ -945,12 +857,12 @@ export default {
 
       if (p === "/onboard" && req.method === "POST") {
         const fd = await boundedForm(req), slug = String(fd.get("slug") || "").trim().toLowerCase(), plan = planKey(String(fd.get("plan") || "plus"));
-        if (!slugValid(slug)) return onboardPage("address", { slug, plan, domain: env.PUBLIC_BASE_DOMAIN, error: "Use 3–48 lowercase letters, numbers, or single hyphens." });
+        if (!slugValid(slug, env)) return onboardPage("address", { slug, plan, domain: env.PUBLIC_BASE_DOMAIN, error: "Use 3–48 lowercase letters, numbers, or single hyphens." });
         let t = await tenantOf(env, user.id);
         if (t?.status === "active") return Response.redirect(`${origin}${onboardNext(t) || "/onboard"}`, 303);
         if (!t) {
           const id = crypto.randomUUID();
-          const r = await env.DB.prepare("INSERT INTO tenants (id,slug,owner_user_id,created_at,updated_at) SELECT ?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM tenants WHERE slug=?)").bind(id, slug, user.id, now(), now(), slug).run();
+          const r = await env.DB.prepare("INSERT INTO tenants (id,slug,owner_user_id,created_at,updated_at,mem_shard) SELECT ?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM tenants WHERE slug=?)").bind(id, slug, user.id, now(), now(), await pickShard(env), slug).run();
           if (!r.meta.changes) return onboardPage("address", { slug, plan, domain: env.PUBLIC_BASE_DOMAIN, error: "That address is already taken." });
           t = { id, slug };
         } else if (t.slug !== slug) {
@@ -1019,7 +931,7 @@ export default {
           // A declined upgrade or storage add (pending_if_incomplete: plan-change.js, storage.js) changes nothing, so the account isn't past due
           // unless Stripe says the subscription itself is.
           if (sub && o.billing_reason === "subscription_update") { const so = await stripe(env, `subscriptions/${sub}`, {}, "GET").catch(() => null); if (so && !["past_due", "unpaid"].includes(so.status)) sub = null; }
-          if (sub) await env.DB.prepare("UPDATE tenants SET status=CASE WHEN status='suspended' THEN status ELSE 'past_due' END, past_due_since=COALESCE(past_due_since,?), updated_at=? WHERE stripe_subscription=?").bind(now(), now(), sub).run();
+          if (sub) await env.DB.prepare("UPDATE tenants SET status=CASE WHEN status IN ('suspended','disputed') THEN status ELSE 'past_due' END, past_due_since=COALESCE(past_due_since,?), updated_at=? WHERE stripe_subscription=?").bind(now(), now(), sub).run();
           // Read-only from this moment; data kept to the end of the paid period, then 7 days, then deleted. Email + text (pastdue.js).
           if (sub) await holdFromFailure(env, sub, o, {});
         }
@@ -1027,7 +939,8 @@ export default {
           const sub = o.parent?.subscription_details?.subscription || o.subscription;
           const tid = o.parent?.subscription_details?.metadata?.tenant_id || (sub && (await env.DB.prepare("SELECT id FROM tenants WHERE stripe_subscription=?").bind(sub).first())?.id);
           if (tid) {
-            await env.DB.prepare("UPDATE tenants SET status='active',past_due_since=NULL,stripe_customer=?,stripe_subscription=?,updated_at=? WHERE id=?").bind(o.customer, sub || "", now(), tid).run();
+            await env.DB.prepare("UPDATE tenants SET status=CASE WHEN status='disputed' THEN status ELSE 'active' END,past_due_since=NULL,stripe_customer=?,stripe_subscription=?,updated_at=? WHERE id=?").bind(o.customer, sub || "", now(), tid).run();
+            if (o.amount_paid > 0) await disputePaid(env, tid, 1);   // a paid invoice ends the hold of a lost dispute
             await notePaid(env, tid, o);   // pastdue.js: how far they've paid; a scheduled deletion for non-payment is cancelled
             // Which plan this invoice pays for: the regular line on create/renewal; on an upgrade (all proration lines) the positive line.
             // Only plan lines count here: extra storage (storage.js) is its own item on the same subscription and never buys usage.
@@ -1073,7 +986,9 @@ export default {
         }
         if (ev.type === "payment_intent.succeeded" && o.metadata?.app === "1hc-proto" && o.metadata?.kind === "topup") {
           await ledger(env, o.metadata.tenant_id).grant(`pi:${o.id}`, o.amount * 1e7, "topup"); // cents → nano$
+          await disputePaid(env, o.metadata.tenant_id);   // a top-up ends the hold of a lost dispute
         }
+        await disputeEvent(env, ev, { stripe, ledger });   // refunds and disputes (src/ee/disputes.js)
         // Cancel at period end: a portal cancel/renew, and customer.subscription.deleted → delete the account once (src/cancel.js).
         await cancelWebhook(env, ev, { stripe });
         await env.DB.prepare("UPDATE stripe_events SET received_at=? WHERE id=? AND received_at=?").bind(now(), ev.id, reservation).run();
@@ -1091,7 +1006,7 @@ export default {
         const t = await env.DB.prepare("SELECT * FROM tenants WHERE slug=?").bind(w[1]).first();
         if (!t || t.owner_user_id !== user.id) return page("Not found", "<p>No 1Helm at this address for your account.</p>");
         if (t.status === "pending_payment" || !onboarded(t)) return Response.redirect(`${origin}/onboard`, 302);
-        const access = accessOf(t, env, t.status === "active" ? null : await holdOf(env, t.id));
+        const access = accessOf(t, env, t.status === "active" ? null : await holdOf(env, t.id), t.status === "disputed" ? await disputeOf(env, t.id) : null);
         const L = ledger(env, t.id), sub = w[2] || "/";
         if (!eeRouteEnabled(env, sub, "workspace")) return json({ error: "not found" }, 404);
         // Workspace API calls from another page origin cannot use the owner's cookie, including same-site sibling hosts
@@ -1453,7 +1368,7 @@ export default {
         if (sub === "/api/plan/cancel" || sub === "/api/plan/keep" || sub === "/api/test/cancel-notices" || sub === "/api/test/cancel-tick") return cancelApi(req, env, t, user, sub, { stripe, json });
         if (sub === "/api/fix-payment" && req.method === "POST") return json(await fixPayment(env, t, origin));
         if (sub === "/api/test/pastdue") return pastdueApi(req, env, t, user, { json, stripe });
-        if ((sub === "/api/topup" || sub === "/api/topup/confirm") && access.mode === "read_only")
+        if ((sub === "/api/topup" || sub === "/api/topup/confirm") && access.mode === "read_only" && !access.can_pay)   // a lost dispute may be paid off by a top-up
           return payRequired(access);
         // TEST_MODE only, test accounts only: deploy measurements (e2e/dev/measure-deploy.mjs).
         //   GET ?c=<channel>: which code version the Worker and that channel's Resident run, its boots, released reservations and the
@@ -1513,11 +1428,6 @@ export default {
             return json({ status: "needs_checkout", url: cs.url, reason: e.message });
           }
         }
-        if (sub === "/api/import/start" && req.method === "POST") {
-          const id = `${t.id}.${rand(8)}`, token = rand(32);
-          await archive(env, t.id).createImport(id, await sha256(token));
-          return json({ import_id: id, token, base: `${origin}/import/${id}`, part_size: IMPORT_PART });
-        }
         // TEST_MODE only: one tiny call down each model path, reporting whether it went through the AI Gateway.
         if (sub === "/api/test/aig" && env.TEST_MODE === "1") {
           const out = { gateway: env.AIG_ID || null, tenant: t.id }, m = { tenant: t.id, kind: "aig-check" }, msg = [{ role: "user", content: "Say OK" }];
@@ -1532,9 +1442,6 @@ export default {
         if (sub === "/api/test/channel" && req.method === "POST" && env.TEST_MODE === "1") { const b = await boundedJson(req); const slug = String(b.slug || "");
           if (!/^bench[1-9]$/.test(slug)) return json({ error: "slug must be bench1..bench9" }, 400); return json(await archive(env, t.id).addTestChannel(slug)); }
         if (sub === "/api/test/peek" && env.TEST_MODE === "1") { const d = await archive(env, t.id).channel(url.searchParams.get("c") || "7", 3); return json({ channel: d.channel, msg: d.messages.slice(-2), mem: d.memory.slice(0, 2), mem_n: d.memory.length }); }
-        if (sub === "/imported") return page(`${t.slug} · imported`, await importedHtml(env, t));
-        const ic = sub.match(/^\/imported\/(\d+)$/);
-        if (ic) return page(`${t.slug} · imported`, await importedChannelHtml(env, t, ic[1]));
         // Channel residents (UI + API). Channel list comes from the imported archive.
         const cp = sub.match(/^\/c\/([a-z0-9][a-z0-9-]{0,62})$/);
         // Tracker cards + helpers (tracker.js / helpers.js): /sessions/<sid>/cards (GET ?n=&before=<opened>) · /cards/<id> · /cards/<id>/steps/<seq> (?dl=1 downloads
@@ -2001,29 +1908,6 @@ export default {
           } catch (e) { return json({ error: e.message }, e.status || 500); }
           return json({ error: "unknown channel computer op" }, 404);
         }
-        if (sub.startsWith("/api/computer/")) {
-          const C = env.COMPUTER.get(env.COMPUTER.idFromName(`computer:${t.id}`)), op = sub.slice("/api/computer/".length);
-          const body = req.method === "POST" ? await boundedJson(req, 64 * 1024) : {};
-          if (op === "status") return json(await C.status());
-          if (access.mode === "read_only") return payRequired(access);
-          try {
-            if (op === "exec" && req.method === "POST") {
-              if (!body.cmd || String(body.cmd).length > 8000) return json({ error: "cmd required" }, 400);
-              const save = env.TEST_MODE === "1" && body.nosave ? "none" : body.save === "now" ? "now" : "defer";
-              return json(await C.exec(t.id, String(body.cmd), { save }));
-            }
-            if (op === "sleep" && req.method === "POST") return json(await C.stop("user requested sleep"));
-            if (op === "end-turn" && req.method === "POST") return json(await C.endTurn());
-            if (env.TEST_MODE === "1" && op === "test/idle" && req.method === "POST") return json(await C.setIdle(Number(body.ms)));
-            if (env.TEST_MODE === "1" && op === "test/full-save" && req.method === "POST") return json(await C.checkpoint({ forceFull: true }));
-            if (env.TEST_MODE === "1" && op === "test/crash-checkpoint" && req.method === "POST") return json(await C.checkpoint({ crashAfterParts: body.parts || 1 }));
-            if (env.TEST_MODE === "1" && op === "test/kill" && req.method === "POST") return json(await C.kill());
-            if (env.TEST_MODE === "1" && op === "test/sigterm" && req.method === "POST") return json(await C.testSigterm());
-            if (env.TEST_MODE === "1" && op === "test/file-to-r2" && req.method === "POST") return json(await C.testFileToR2(String(body.path), String(body.key)));
-            if (env.TEST_MODE === "1" && op === "test/r2-to-file" && req.method === "POST") return json(await C.testR2ToFile(String(body.key), String(body.path), Number(body.parts || 1)));
-          } catch (e) { return json({ error: e.message }, e.status || 500); }
-          return json({ error: "unknown computer op" }, 404);
-        }
         if (sub === "/api/portal" && req.method === "POST") {
           const ps = await stripe(env, "billing_portal/sessions", { customer: t.stripe_customer, return_url: appUrl(origin, t, USAGE) });
           return json({ url: ps.url });
@@ -2156,10 +2040,6 @@ function workspaceHtml(t, env) {
 <p style="margin-top:16px"><button id=b10 type=button>Add $10</button> <button id=b25 type=button>Add $25</button> <button id=portal type=button>Billing</button></p>
 <div id=linkbox style="margin-top:16px;padding:12px 14px;border:1px solid #ddd;border-radius:12px"><b>Buying things</b> <span id=lkst class=cost></span>
 <div id=lkbody style="margin-top:6px"></div></div>
-<details style="margin-top:16px"><summary><b>Linux computer</b> <span id=cst style="color:#888"></span></summary>
-<form id=cf style="display:flex;gap:8px;margin-top:8px"><input id=cmd style="flex:1;font-family:monospace" placeholder="ls -la   (runs in /workspace)"><button>Run</button></form>
-<pre id=cout style="background:#111;color:#ddd;padding:10px;border-radius:8px;max-height:320px;overflow:auto;white-space:pre-wrap"></pre>
-<button id=csleep type=button>Put computer to sleep</button></details>
 <div id=modal><div><h3 id=mt>Out of credits</h3><p id=mb>Add credits to keep going. Your message will be sent automatically.</p>
 <button data-p=10>Add $10</button> <button data-p=25>Add $25</button> <button data-p=50>Add $50</button> <p><a href=# id=close>Not now</a></p></div></div>
 <script>
@@ -2198,11 +2078,6 @@ document.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>topup(+b.dataset.
 $('#close').onclick=e=>{e.preventDefault();$('#modal').style.display='none';};
 $('#portal').onclick=async()=>{location.href=(await (await fetch(base+'/api/portal',{method:'POST'})).json()).url;};
 (async()=>{for(const m of await (await fetch(base+'/api/history')).json())add(m.role==='user'?'me':'bot',m.content);})();
-async function cstat(){const s=await (await fetch(base+'/api/computer/status')).json();$('#cst').textContent=s.running?'· awake':'· asleep'+(s.current_checkpoint?' (saved '+Math.round(s.current_checkpoint.bytes/1024)+' KB)':'');}
-$('#cf').onsubmit=async e=>{e.preventDefault();const c=$('#cmd').value.trim();if(!c)return;$('#cout').textContent+='$ '+c+'\\n'+( $('#cst').textContent.includes('asleep')?'(waking computer…)\\n':'');
- const r=await fetch(base+'/api/computer/exec',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({cmd:c})});const d=await r.json();
- if(r.status===402){$('#modal').style.display='block';return;} $('#cout').textContent+=(d.out??('⚠ '+d.error))+(d.checkpoint?.ok?'[saved]\\n':'')+'\\n';$('#cout').scrollTop=1e9;cstat();state();};
-$('#csleep').onclick=async()=>{await fetch(base+'/api/computer/sleep',{method:'POST'});cstat();};cstat();
 state();setInterval(state,15000);
 </script>`;
 }
@@ -2211,340 +2086,34 @@ export { Ledger };   // Cloud-only billing DO; private 1HC configs bind it.
 Object.assign(Ledger.prototype, ledgerGuard, ledgerByok, ledgerDictation);
 Object.assign(UsageLedger.prototype, ledgerDictation);
 
-// ---------------------------------------------------------------------------
-// Linux computer: one Cloudflare Container per workspace.
-// Disk is ephemeral, so /workspace is checkpointed to R2 as a tar.gz and restored on wake.
-// A checkpoint only becomes "current" after the upload completes and its size+SHA-256 are recorded,
-// so a save that dies halfway can never replace the last good copy.
-const PART = 10 * 1024 * 1024;              // R2 multipart: equal-size parts except the last
-const COMPUTER_NANO_PER_SEC = Math.ceil((1 * 0.0000025 + 0.25 * 0.000020 + 4 * 0.00000007) * 1e9 * MARKUP); // "basic" instance, cost+15%
-const IDLE_MS = 3 * 60e3;
-const EXCLUDES = ["./node_modules", "*/node_modules", "./.cache", "./.npm", "./.venv", "*/__pycache__", "./.home/.cache", "./.home/.npm"];
-const dec = new TextDecoder();
-const SAVE_DEBOUNCE_MS = 20e3;
-// PID 1 inside the container. Cloudflare stops a container (idle, rollout, host restart) by sending SIGTERM to PID 1,
-// then SIGKILL after up to 15 min. `sleep infinity` ignored SIGTERM: no final save, and a billed 15-min hang.
-// This init asks its own Durable Object to save (via the computer.internal virtual host, handled outside the VM),
-// then exits so the platform can stop the machine immediately.
-const INIT_SH = `on_term() { echo "[init] SIGTERM: asking controller to save"; curl -sS -m 600 -X POST http://computer.internal/sigterm; echo; echo "[init] exiting"; exit 0; }
-trap on_term TERM INT
-echo "[init] up"
-while true; do sleep 3600 & wait $!; done`;
-function restoreDeletionPaths(raw) {
-  let paths;
-  try { paths = JSON.parse(raw || "[]"); } catch { throw new Error("invalid restore deletion list"); }
-  if (!Array.isArray(paths)) throw new Error("invalid restore deletion list");
-  for (const path of paths) {
-    if (typeof path !== "string" || !path || path.length > 4096 || path.startsWith("/") || path.includes("\0") ||
-        path.split("/").some((part) => !part || part === "." || part === "..")) throw new Error("invalid restore deletion path");
-  }
-  return paths;
-}
-const SNAP_AGENT = "// Runs inside the container. Diffs /workspace against the last committed state and lists what a save must include.\n// usage: node snap.js scan  -> writes /tmp/1hc/changed (NUL list), /tmp/1hc/next.json; prints {changed,deleted,bytes}\n//        node snap.js commit -> next.json becomes the committed baseline\n//        node snap.js baseline -> record current tree as committed (after restore)\nconst fs = require(\"fs\"), path = require(\"path\");\nconst ROOT = \"/workspace\", DIR = \"/tmp/1hc\";\nconst SKIP = new Set([\"node_modules\", \".cache\", \".npm\", \".venv\", \"__pycache__\"]);\nconst SKIP_PATHS = new Set([\".home/.cache\", \".home/.npm\"]);\nfs.mkdirSync(DIR, { recursive: true });\nfunction walk(rel, out) {\n  const abs = path.join(ROOT, rel);\n  let ents; try { ents = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }\n  for (const e of ents) {\n    const r = rel ? `${rel}/${e.name}` : e.name;\n    if (SKIP.has(e.name) || SKIP_PATHS.has(r)) continue;\n    let st; try { st = fs.lstatSync(path.join(ROOT, r)); } catch { continue; }\n    const kind = st.isDirectory() ? \"d\" : st.isSymbolicLink() ? \"l\" : st.isFile() ? \"f\" : null;\n    if (!kind) continue;\n    out[r] = [kind, kind === \"d\" ? 0 : st.size, Math.floor(st.mtimeMs), Math.floor(st.ctimeMs), st.mode];\n    if (kind === \"d\") walk(r, out);\n  }\n}\nconst cmd = process.argv[2];\nconst now = {}; walk(\"\", now);\nif (cmd === \"baseline\") { fs.writeFileSync(`${DIR}/prev.json`, JSON.stringify(now)); console.log(JSON.stringify({ entries: Object.keys(now).length })); process.exit(0); }\nif (cmd === \"commit\") { fs.renameSync(`${DIR}/next.json`, `${DIR}/prev.json`); console.log(\"{}\"); process.exit(0); }\nlet prev = {}; try { prev = JSON.parse(fs.readFileSync(`${DIR}/prev.json`, \"utf8\")); } catch {}\nconst changed = [], deleted = []; let bytes = 0;\nfor (const [r, v] of Object.entries(now)) {\n  const p = prev[r];\n  if (!p || p[0] !== v[0] || p[1] !== v[1] || p[2] !== v[2] || p[3] !== v[3] || p[4] !== v[4]) { changed.push(r); if (v[0] === \"f\") bytes += v[1]; }\n}\nfor (const r of Object.keys(prev)) if (!(r in now)) deleted.push(r);\nfs.writeFileSync(`${DIR}/changed`, changed.map((r) => r + \"\\0\").join(\"\"));\nfs.writeFileSync(`${DIR}/next.json`, JSON.stringify(now));\nconsole.log(JSON.stringify({ changed: changed.length, deleted, bytes, full: Object.keys(prev).length === 0 }));\n";
-
-// Handles http://computer.internal/* requests made from inside one container. The interception is installed per
-// container with that container's own DO id in props, so a container can only ever reach its own controller.
-export class ComputerControl extends WorkerEntrypoint {
-  async fetch(req) {
-    const u = new URL(req.url);
-    const C = this.env.COMPUTER.get(this.env.COMPUTER.idFromString(this.ctx.props.id));
-    if (u.pathname === "/sigterm" && req.method === "POST") return Response.json(await C.onSigterm());
-    return new Response("not found", { status: 404 });
-  }
-}
-
+// File preparation jobs (sidecar.js) run under the object name "prepjob:<tenant>": the container starts for a job, runs it, and stops after its idle tail.
 export class Computer extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env); this.env = tolerantEnv(env);
     this.sql = ctx.storage.sql;
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS ckpt (seq INTEGER PRIMARY KEY, key TEXT NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, what TEXT NOT NULL);`);
-    const cols = this.sql.exec("PRAGMA table_info(ckpt)").toArray().map((c) => c.name);
-    if (!cols.includes("kind")) {
-      this.sql.exec("ALTER TABLE ckpt ADD COLUMN kind TEXT NOT NULL DEFAULT 'full'");
-      this.sql.exec("ALTER TABLE ckpt ADD COLUMN deleted TEXT NOT NULL DEFAULT '[]'");
-      this.sql.exec("ALTER TABLE ckpt ADD COLUMN files INTEGER NOT NULL DEFAULT 0");
-    }
+    this.sql.exec("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
   }
   get(k) { return this.sql.exec("SELECT v FROM kv WHERE k=?", k).toArray()[0]?.v; }
   put(k, v) { this.sql.exec("INSERT INTO kv VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", k, String(v)); }
-  log(what) { this.sql.exec("INSERT INTO events (at,what) VALUES (?,?)", Date.now(), what); }
-  current() { return this.sql.exec("SELECT * FROM ckpt ORDER BY seq DESC LIMIT 1").toArray()[0]; }
 
-  async sh(cmd, { timeoutMs = 120e3, stdin } = {}) {
-    // HOME lives inside /workspace so dotfiles (git identity, shell history, tool configs) are saved too.
-    const p = await this.ctx.container.exec(["bash", "-lc", `mkdir -p /workspace/.home && ${cmd}`], { cwd: "/", stderr: "combined", env: { HOME: "/workspace/.home" }, ...(stdin ? { stdin } : {}) });
-    const t = setTimeout(() => { try { p.kill(9); } catch {} }, timeoutMs);
-    const out = await p.output(); clearTimeout(t);
-    return { code: out.exitCode, out: dec.decode(out.stdout) };
-  }
-
-  // Prepay one minute at a time from the tenant balance. If the balance can't cover the next minute, the computer stops.
-  async prepayMinute() {
-    const L = this.env.LEDGER.get(this.env.LEDGER.idFromName(`tenant:${this.get("tenant")}`));
-    const id = `computer:${crypto.randomUUID()}`, nano = COMPUTER_NANO_PER_SEC * 60;
-    const r = await L.reserve(id, nano);
-    if (!r.ok) { this._payFail = r.reason; return false; }
-    await L.settle(id, nano);
-    this.put("paid_until", Math.max(Number(this.get("paid_until") || 0), Date.now()) + 60e3);
-    this.put("billed_nano", Number(this.get("billed_nano") || 0) + nano);
-    return true;
-  }
-
-  async ensureRunning(tenant) {
-    if (tenant) this.put("tenant", tenant);
-    if (this.ctx.container.running && this.get("ready") === "1") return { cold: false };
-    const t0 = Date.now();
-    if (!(await this.prepayMinute())) throw payError(this._payFail);
-    // A container that got SIGTERM is saving and about to exit; wait for it instead of reusing it.
-    for (let i = 0; i < 120 && this.ctx.container.running && this.get("draining") === "1"; i++) await new Promise((z) => setTimeout(z, 500));
-    this.put("ready", "0"); this.put("draining", "0");
-    await this.ctx.container.interceptOutboundHttp("computer.internal", this.ctx.exports.ComputerControl({ props: { id: this.ctx.id.toString() } }));
-    let startErr = "";   // the platform's refusal when the class is at max_instances (computer-capacity.js)
-    if (!this.ctx.container.running) { try { this.ctx.container.start({ entrypoint: ["bash", "-c", INIT_SH], enableInternet: true }); } catch (e) { if (!isCapacityError(e)) throw e; startErr = String(e?.message || e); } }
-    this.ctx.container.monitor?.().then(() => { this.put("ready", "0"); this.put("draining", "0"); this.log("container exited"); }).catch((e) => { startErr = String(e?.message || e); this.put("ready", "0"); this.put("draining", "0"); this.log(`container exited: ${e?.message || e}`); });
-    let up = false;
-    for (let i = 0; i < 60 && !up; i++) {
-      try { up = (await this.sh("true", { timeoutMs: 5e3 })).code === 0; } catch { await new Promise((z) => setTimeout(z, 500)); }
-      if (!up && i >= 4 && isCapacityError(startErr)) throw computerBusyError();   // refused: stop after ~2 s, not 30 s
-    }
-    if (!up && isCapacityError(startErr)) throw computerBusyError();
-    if (!up) throw new Error("computer did not start within 30s");
-    const bootMs = Date.now() - t0;
-    const restore = await this.restore();
-    this.put("ready", "1"); this.put("last_activity", Date.now()); this.put("started_at", Date.now());
-    await this.ctx.storage.setAlarm(Date.now() + 30e3);
-    this.log(`started: boot ${bootMs}ms, restore ${JSON.stringify(restore)}`);
-    return { cold: true, boot_ms: bootMs, restore };
-  }
-
-  async restore() {
-    await this.sh("mkdir -p /workspace");
-    await this.installAgent();
-    const chain = this.chain();
-    if (!chain.length) { await this.sh("node /tmp/1hc/snap.js baseline"); return { from: null }; }
-    // These paths become rm arguments inside the container. Validate every
-    // checkpoint before applying a layer so a bad list cannot leave a partial restore.
-    const deletions = chain.map((c) => restoreDeletionPaths(c.deleted));
-    const t0 = Date.now(); let bytes = 0;
-    for (const [index, c] of chain.entries()) {
-      const obj = await this.env.WS.get(c.key);
-      if (!obj) throw new Error(`save ${c.key} missing from storage`);
-      const [forTar, forHash] = obj.body.tee();
-      const digest = new crypto.DigestStream("SHA-256"); const hashing = forHash.pipeTo(digest);
-      const p = await this.ctx.container.exec(["tar", "-xzf", "-", "-C", "/workspace"], { stdin: forTar, stderr: "combined" });
-      const out = await p.output(); await hashing;
-      const sha = hex(await digest.digest);
-      if (out.exitCode !== 0 || sha !== c.sha256) throw new Error(`restore failed at ${c.seq}: tar ${out.exitCode} sha ${sha === c.sha256 ? "ok" : "MISMATCH"}`);
-      const del = deletions[index];
-      if (del.length) {
-        const list = new Blob([del.map((d) => d + "\0").join("")]).stream();
-        const rm = await this.ctx.container.exec(["bash", "-c", "cd /workspace && xargs -0 -r rm -rf --"], { stdin: list, stderr: "combined" });
-        if ((await rm.output()).exitCode !== 0) throw new Error(`restore deletion failed at ${c.seq}`);
-      }
-      bytes += c.bytes;
-    }
-    await this.sh("node /tmp/1hc/snap.js baseline");
-    return { layers: chain.length, kinds: chain.map((c) => c.kind[0]).join(""), bytes, sha_ok: true, ms: Date.now() - t0 };
-  }
-
-  // Incremental saves. A save is a "layer": a tar of only the files that changed since the last committed save,
-  // plus the paths deleted since then. Restore = apply layers in order. A layer counts only after its upload is
-  // complete and verified, so a save that dies halfway is ignored and its changes roll into the next save.
-  // When the chain gets long, the next save is a full one (compaction) and older layers are deleted.
-  async installAgent() {
-    const body = new Blob([SNAP_AGENT]).stream();
-    const p = await this.ctx.container.exec(["bash", "-c", "mkdir -p /tmp/1hc && cat > /tmp/1hc/snap.js"], { stdin: body, stderr: "combined" });
-    const o = await p.output(); if (o.exitCode !== 0) throw new Error("agent install failed: " + dec.decode(o.stdout));
-  }
-  // The current state = the latest base (one full save, or the set of imported layers) plus the deltas after it.
-  chain() {
-    return this.sql.exec(`SELECT * FROM ckpt WHERE seq >= COALESCE((SELECT MAX(seq) FROM ckpt WHERE kind='full'), (SELECT MIN(seq) FROM ckpt WHERE kind='import'), 0) ORDER BY seq`).toArray();
-  }
-  // Migration: register uploaded, verified tarballs as the workspace's base layers. Only allowed on an empty computer.
-  async importLayers(tenant, layers) {
-    if (tenant) this.put("tenant", tenant);
-    if (this.ctx.container.running) throw new Error("computer is awake; import needs it asleep");
-    const existing = this.sql.exec("SELECT key,bytes,sha256,kind FROM ckpt ORDER BY seq").toArray();
-    if (existing.length) {
-      if (existing.length === layers.length && existing.every((x, i) => x.kind === "import" && x.key === layers[i].key && x.bytes === layers[i].bytes && x.sha256 === layers[i].sha256))
-        return { layers: existing.length };   // retry after an archive commit failed
-      throw new Error("computer already has saved files; import only into a fresh workspace");
-    }
-    let seq = Date.now();
-    this.ctx.storage.transactionSync(() => { for (const l of layers) this.sql.exec("INSERT INTO ckpt (seq,key,bytes,sha256,at,kind,deleted,files) VALUES (?,?,?,?,?,?,?,?)", seq++, l.key, l.bytes, l.sha256, Date.now(), "import", "[]", l.files || 0); });
-    this.log(`imported ${layers.length} layers, ${layers.reduce((a, l) => a + l.bytes, 0)} bytes`);
-    return { layers: layers.length };
-  }
-
-  async checkpoint({ crashAfterParts, forceFull } = {}) {
-    const seq = Date.now(), t0 = Date.now();
-    const chain = this.chain();
-    const deltas = chain.filter((c) => c.kind === "delta"), deltaBytes = deltas.reduce((a, c) => a + c.bytes, 0);
-    const baseBytes = chain.filter((c) => c.kind !== "delta").reduce((a, c) => a + c.bytes, 0);
-    const full = forceFull || !baseBytes || deltas.length >= 12 || deltaBytes > baseBytes * 0.5;
-    if (full) await this.sh("rm -f /tmp/1hc/prev.json");
-    const scan = await this.sh("node /tmp/1hc/snap.js scan", { timeoutMs: 110e3 });
-    if (scan.code !== 0) return { ok: false, error: "scan failed: " + scan.out.slice(0, 300) };
-    const diff = JSON.parse(scan.out.trim().split("\n").pop());
-    if (!full && diff.changed === 0 && diff.deleted.length === 0) return { ok: true, skipped: true, reason: "no changes", ms: Date.now() - t0 };
-    const kind = full ? "full" : "delta", key = `t/${this.get("tenant")}/ckpt/${seq}-${kind}.tar.gz`;
-    const p = await this.ctx.container.exec(["bash", "-c", "cd /workspace && tar --null --no-recursion -T /tmp/1hc/changed --warning=no-file-changed --ignore-failed-read -czf - "], { stderr: "ignore" });
-    const mpu = await this.env.WS.createMultipartUpload(key, { customMetadata: { app: "1hc-proto", seq: String(seq), kind } });
-    const digest = new crypto.DigestStream("SHA-256"), dw = digest.getWriter();
-    const parts = []; let buf = new Uint8Array(PART), fill = 0, total = 0;
-    const flush = async (n) => { parts.push(await mpu.uploadPart(parts.length + 1, buf.slice(0, n))); fill = 0; };
-    try {
-      const reader = p.stdout.getReader();
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        await dw.write(value); total += value.byteLength;
-        let off = 0;
-        while (off < value.byteLength) {
-          const n = Math.min(PART - fill, value.byteLength - off);
-          buf.set(value.subarray(off, off + n), fill); fill += n; off += n;
-          if (fill === PART) { await flush(PART); if (crashAfterParts && parts.length >= crashAfterParts) throw new Error("SIMULATED CRASH mid-checkpoint"); }
-        }
-      }
-      const code = await p.exitCode;
-      if (code !== 0 && code !== 1) throw new Error(`tar exited ${code}`);
-      if (fill > 0 || parts.length === 0) await flush(fill);
-      if (crashAfterParts) throw new Error("SIMULATED CRASH mid-checkpoint");
-      // storage.js: a save that would grow the account past its limit is never completed; the previous save stays current.
-      const grows = total - (full ? Number(this.sql.exec("SELECT COALESCE(SUM(bytes),0) b FROM ckpt").one().b) : 0), rm = grows > 0 ? await room(this.env, this.get("tenant"), grows) : { ok: true };
-      if (!rm.ok) { await noteRefused(this.env, this.get("tenant"), "computer save"); throw Object.assign(new Error(fullMessage(rm)), { storage_full: true }); }
-      await stComplete(this.env, key, mpu, parts); await dw.close();
-      const sha = hex(await digest.digest);
-      const head = await this.env.WS.head(key);
-      if (!head || head.size !== total) throw new Error(`size check failed ${head?.size} vs ${total}`);
-      this.sql.exec("INSERT INTO ckpt (seq,key,bytes,sha256,at,kind,deleted,files) VALUES (?,?,?,?,?,?,?,?)", seq, key, total, sha, Date.now(), kind, JSON.stringify(diff.deleted), diff.changed);
-      await this.sh("node /tmp/1hc/snap.js commit");
-      if (full) for (const old of this.sql.exec("SELECT seq,key,bytes FROM ckpt WHERE seq < ?", seq).toArray()) { await stDelete(this.env, [{ key: old.key, size: old.bytes }]); this.sql.exec("DELETE FROM ckpt WHERE seq=?", old.seq); }
-      this.put("dirty", "0");
-      this.log(`save ${kind} ${seq}: ${diff.changed} entries, ${diff.deleted.length} deleted, ${total} bytes, ${Date.now() - t0}ms`);
-      return { ok: true, kind, seq, files: diff.changed, deleted: diff.deleted.length, bytes: total, parts: parts.length, chain: this.chain().length, ms: Date.now() - t0 };
-    } catch (e) {
-      try { p.kill(9); } catch {}
-      await mpu.abort().catch(() => {});
-      this.log(`save ${seq} FAILED: ${e.message}`);
-      return { ok: false, error: e.message, current: this.current()?.seq ?? null, ...(e.storage_full ? { storage_full: true } : {}) };
-    }
-  }
-
-  async stop(reason) {
-    let ck = null;
-    if (this.ctx.container.running && this.get("ready") === "1") ck = await this.checkpoint();
-    if (ck && !ck.ok) return { stopped: false, reason, checkpoint: ck };
-    this.put("ready", "0");
-    if (this.ctx.container.running) await this.ctx.container.destroy(reason);
-    this.log(`stopped: ${reason}`);
-    return { stopped: true, reason, checkpoint: ck };
-  }
-  // Called (through ComputerControl) by the container's init when the platform sends SIGTERM.
-  async onSigterm() {
-    const t0 = Date.now();
-    if (this.get("draining") === "1") return { ok: true, duplicate: true };
-    this.put("draining", "1"); this.log("SIGTERM from platform: final save");
-    let ck = null;
-    if (this.get("ready") === "1") { try { ck = await this.checkpoint(); } catch (e) { ck = { ok: false, error: e.message }; } }
-    this.put("ready", "0");
-    this.log(`SIGTERM save ${ck ? (ck.ok ? (ck.skipped ? "not needed" : `${ck.kind} ${ck.files} files`) : "FAILED " + ck.error) : "skipped (not ready)"}, ${Date.now() - t0}ms`);
-    return { ok: !ck || ck.ok, checkpoint: ck, ms: Date.now() - t0 };
-  }
-  // TEST ONLY: deliver SIGTERM exactly as the platform does, and time how long the machine takes to stop.
-  async testSigterm() {
-    if (!this.ctx.container.running) return { error: "not running" };
-    const t0 = Date.now();
-    this.ctx.container.signal(15);
-    for (let i = 0; i < 240 && this.ctx.container.running; i++) await new Promise((z) => setTimeout(z, 500));
-    return { exited: !this.ctx.container.running, ms: Date.now() - t0, events: this.sql.exec("SELECT at,what FROM events ORDER BY seq DESC LIMIT 4").toArray() };
-  }
-  // TEST ONLY (storage experiments): stream a container file to R2, and R2 back into a container file (optionally N ranged parts in parallel).
-  async testFileToR2(path, key) {
-    if (!key.startsWith(`t/${this.get("tenant")}/exp/`)) return { error: "key must be under t/<tenant>/exp/" };
-    const t0 = Date.now();
-    const p = await this.ctx.container.exec(["cat", path], { stderr: "ignore" });
-    const mpu = await this.env.WS.createMultipartUpload(key);
-    const parts = []; let buf = new Uint8Array(PART), fill = 0, total = 0;
-    const reader = p.stdout.getReader();
-    for (;;) { const { value, done } = await reader.read(); if (done) break; total += value.byteLength; let off = 0;
-      while (off < value.byteLength) { const n = Math.min(PART - fill, value.byteLength - off); buf.set(value.subarray(off, off + n), fill); fill += n; off += n;
-        if (fill === PART) { parts.push(await mpu.uploadPart(parts.length + 1, buf.slice(0, PART))); fill = 0; } } }
-    if (fill > 0 || !parts.length) parts.push(await mpu.uploadPart(parts.length + 1, buf.slice(0, fill)));
-    await stComplete(this.env, key, mpu, parts);
-    return { key, bytes: total, ms: Date.now() - t0 };
-  }
-  async testR2ToFile(key, path, parts) {
-    const tenant = this.get("tenant");
-    if (!tenant || !String(key).startsWith(`t/${tenant}/`)) return { error: "key must be under this tenant" };
-    if (!Number.isSafeInteger(parts) || parts < 1 || parts > 64) return { error: "parts must be from 1 to 64" };
-    const t0 = Date.now();
-    const head = await this.env.WS.head(key); if (!head) return { error: "missing" };
-    const size = head.size, per = Math.ceil(size / parts);
-    // A test route still takes a caller-controlled path; pass it as an argv item, never shell source.
-    for (const argv of [["rm", "-f", "--", path], ["truncate", "-s", String(size), "--", path]]) {
-      const p = await this.ctx.container.exec(argv, { stderr: "combined" }), o = await p.output();
-      if (o.exitCode !== 0) throw new Error(`file preparation failed: ${argv[0]}`);
-    }
-    await Promise.all(Array.from({ length: parts }, async (_, i) => {
-      const off = i * per, len = Math.min(per, size - off); if (len <= 0) return;
-      const obj = await this.env.WS.get(key, { range: { offset: off, length: len } });
-      const p = await this.ctx.container.exec(["dd", `of=${path}`, "bs=1M", `seek=${off}`, "oflag=seek_bytes", "conv=notrunc", "status=none"], { stdin: obj.body, stderr: "combined" });
-      const o = await p.output(); if (o.exitCode !== 0) throw new Error("dd failed " + dec.decode(o.stdout));
-    }));
-    return { key, bytes: size, parts, ms: Date.now() - t0 };
-  }
-  // TEST ONLY: kill the machine with no final save, like a host failure.
-  async kill() { this.put("ready", "0"); if (this.ctx.container.running) await this.ctx.container.destroy("simulated host failure"); this.log("killed without save"); return { killed: true }; }
-
-  // save: "now" (end of turn) | "defer" (mark dirty; saved 20s after the last command, or at sleep/idle) | "none" (test)
-  async exec(tenant, cmd, { save = "defer" } = {}) {
-    const boot = await this.ensureRunning(tenant);
-    this.put("last_activity", Date.now());
-    const t0 = Date.now();
-    const r = await this.sh(`cd /workspace && ${cmd}`, { timeoutMs: 110e3 });
-    this.put("last_activity", Date.now());
-    let ck = null;
-    if (save === "now") ck = await this.checkpoint();
-    else if (save === "defer") { this.put("dirty", "1"); this.put("save_due", Date.now() + SAVE_DEBOUNCE_MS); await this.armAlarm(Date.now() + SAVE_DEBOUNCE_MS); }
-    return { ...r, out: r.out.slice(-20000), ms: Date.now() - t0, boot, checkpoint: ck, pending_save: this.get("dirty") === "1" };
-  }
-  async endTurn() { return this.get("dirty") === "1" && this.ctx.container.running ? await this.checkpoint() : { ok: true, skipped: true, reason: "nothing to save" }; }
-  async armAlarm(at) { const cur = await this.ctx.storage.getAlarm(); if (!cur || at < cur) await this.ctx.storage.setAlarm(at); }
-
-  // File sidecars (sidecar.js) under "prepjob:<tenant>": anydoc / pdf-inspector natively (scanned-page OCR, files too big for the Worker).
   async prepJob(input) { return prepJobOn(this, input); }
+  async prepBenchmarkStatus() {
+    if (this.env.ENV_NAME !== "dev" || this.env.TEST_MODE !== "1") throw new Error("benchmark disabled");
+    return { running: this.ctx.container.running, last: Number(this.get("prep_last") || 0) };
+  }
+  async prepBenchmarkReset() {
+    if (this.env.ENV_NAME !== "dev" || this.env.TEST_MODE !== "1") throw new Error("benchmark disabled");
+    const run = async () => { if (this.ctx.container.running) await this.ctx.container.destroy("prep benchmark reset"); this.put("prep_last", "0"); return { running: false }; };
+    this._prepQ = (this._prepQ || Promise.resolve()).catch(() => {}).then(run);
+    return this._prepQ;
+  }
   async alarm() {
     if (this.env.ENV_NAME === "selfhost" && this.env.BACKUP_MAINTENANCE === "1") { await this.ctx.storage.setAlarm(Date.now() + 60e3); return; }
-    if (this.get("role") === "prep") return prepJobAlarm(this);
-    if (!this.ctx.container.running || this.get("ready") !== "1") return;
-    const idleMs = Number(this.get("idle_ms") || IDLE_MS);
-    if (Date.now() - Number(this.get("last_activity") || 0) > idleMs) { await this.stop("idle"); return; }
-    if (Number(this.get("paid_until") || 0) - Date.now() < 30e3 && !(await this.prepayMinute())) { await this.stop("out of credits"); return; }
-    if (this.get("dirty") === "1" && Date.now() >= Number(this.get("save_due") || 0)) await this.checkpoint();
-    let next = Date.now() + 30e3;
-    if (this.get("dirty") === "1") next = Math.min(next, Number(this.get("save_due")));
-    await this.ctx.storage.setAlarm(Math.max(next, Date.now() + 1000));
+    return prepJobAlarm(this);
   }
   async snapshotPrepare() {
     if (this.env.ENV_NAME !== "selfhost" || this.env.BACKUP_MAINTENANCE !== "1") throw new Error("snapshot unavailable");
-    if (!this.ctx.container) {
-      if (this.get("ready") === "1" || this.get("dirty") === "1") throw new Error("computer binding unavailable during backup");
-      return { ready: true };
-    }
-    const result = await this.stop("backup");
-    if (!result.stopped || (result.checkpoint && !result.checkpoint.ok)) throw new Error("computer checkpoint did not complete");
-    return { ready: true };
-  }
-  async setIdle(ms) { this.put("idle_ms", ms); return { idle_ms: ms }; }
-
-  async status() {
-    return { running: this.ctx.container.running, ready: this.get("ready") === "1", current_checkpoint: this.current() || null,
-      checkpoints: this.sql.exec("SELECT seq,kind,files,bytes FROM ckpt ORDER BY seq DESC").toArray(), dirty: this.get("dirty") === "1",
-      billed_nano: Number(this.get("billed_nano") || 0), rate_nano_per_sec: COMPUTER_NANO_PER_SEC,
-      events: this.sql.exec("SELECT at,what FROM events ORDER BY seq DESC LIMIT 12").toArray() };
+    return { ready: true };   // a file preparation container keeps no saved files; a running one makes the snapshot step refuse as busy
   }
 }
 
@@ -2559,96 +2128,10 @@ export class Archive extends DurableObject {
       CREATE TABLE IF NOT EXISTS import_rows (import_id TEXT NOT NULL, tbl TEXT NOT NULL, id TEXT NOT NULL, channel_id TEXT, data TEXT NOT NULL, PRIMARY KEY (import_id, tbl, id));
       CREATE TABLE IF NOT EXISTS import_finishes (id TEXT PRIMARY KEY, attempt TEXT NOT NULL, expires INTEGER NOT NULL);`);
   }
-  async createImport(id, tokenHash) { this.sql.exec("INSERT INTO imports VALUES (?,?,?,?,?)", id, tokenHash, "uploading", "", Date.now()); return { id }; }
-  async auth(id, tokenHash) { const r = this.sql.exec("SELECT token_hash, status FROM imports WHERE id=?", id).toArray()[0]; return !!r && r.token_hash === tokenHash && r.status !== "done"; }
-  async object(id, name) { return this.sql.exec("SELECT * FROM objects WHERE import_id=? AND name=?", id, name).toArray()[0] || null; }
-  async putObject(id, name, key, uploadId) { this.sql.exec("INSERT OR IGNORE INTO objects (import_id,name,key,upload_id) VALUES (?,?,?,?)", id, name, key, uploadId); return this.object(id, name); }
-  async addPart(id, name, part) {
-    return this.ctx.storage.transactionSync(() => {
-      const o = this.sql.exec("SELECT parts,done FROM objects WHERE import_id=? AND name=?", id, name).one();
-      if (!o || o.done) throw new Error("import object is not accepting parts");
-      const parts = JSON.parse(o.parts).filter((p) => p.partNumber !== part.partNumber); parts.push(part);
-      this.sql.exec("UPDATE objects SET parts=? WHERE import_id=? AND name=?", JSON.stringify(parts), id, name);
-      return parts.length;
-    });
-  }
-  async markDone(id, name) { this.sql.exec("UPDATE objects SET done=1 WHERE import_id=? AND name=?", id, name); }
-  async completeImportObject(id, name, tenantId) {
-    // All imports for a tenant share this Archive. Keep the quota read, R2 complete,
-    // and counter update in one queue so separate objects cannot spend the same room.
-    const finish = async () => {
-      const o = await this.object(id, name);
-      if (!o) return { status: 404, body: { error: "unknown object" } };
-      if (!o.done) {
-        const recorded = JSON.parse(o.parts).sort((a, b) => a.partNumber - b.partNumber);
-        if (recorded.some((p) => !Number.isSafeInteger(p.bytes) || p.bytes < 1 || p.bytes > IMPORT_PART))
-          return { status: 409, body: { error: "re-upload the object's parts before completing it" } };
-        const bytes = recorded.reduce((n, p) => n + p.bytes, 0);
-        const rm = await room(this.env, tenantId, bytes);
-        if (!rm.ok) { await noteRefused(this.env, tenantId, "import"); return { status: 507, body: { error: fullMessage(rm), storage_full: true } }; }
-        await stComplete(this.env, o.key, this.env.WS.resumeMultipartUpload(o.key, o.upload_id), recorded.map(({ partNumber, etag }) => ({ partNumber, etag })));
-        await this.markDone(id, name);
-      }
-      const head = await this.env.WS.head(o.key);
-      return { status: 200, body: { name, bytes: head?.size ?? null } };
-    };
-    const current = (this.importCompletion || Promise.resolve()).then(finish);
-    this.importCompletion = current.catch(() => {});
-    return current;
-  }
-  async listObjects(id) { return this.sql.exec("SELECT name,key,done,parts FROM objects WHERE import_id=?", id).toArray().map((o) => ({ ...o, parts: JSON.parse(o.parts).map((p) => p.partNumber).sort((a, b) => a - b) })); }
   async ingest(batch) {
     this.ctx.storage.transactionSync(() => { for (const r of batch) this.sql.exec("INSERT OR REPLACE INTO rows VALUES (?,?,?,?)", r.t, String(r.r.id ?? (r.t === "agent_skills" ? `${r.r.agent_id}:${r.r.skill_id}` : r.r.agent_id)), r.r.channel_id == null ? null : String(r.r.channel_id), JSON.stringify(r.r)); });
     return batch.length;
   }
-  async beginImportFinish(importId, attempt) {
-    return this.ctx.storage.transactionSync(() => {
-      if (this.sql.exec("SELECT status FROM imports WHERE id=?", importId).one()?.status !== "uploading") return false;
-      const old = this.sql.exec("SELECT attempt,expires FROM import_finishes WHERE id=?", importId).one();
-      if (old && old.expires > Date.now()) return false;
-      if (old) this.sql.exec("DELETE FROM import_rows WHERE import_id=?", old.attempt);
-      this.sql.exec("INSERT OR REPLACE INTO import_finishes VALUES (?,?,?)", importId, attempt, Date.now() + 300000);
-      return true;
-    });
-  }
-  async releaseImportFinish(importId, attempt) {
-    this.ctx.storage.transactionSync(() => {
-      this.sql.exec("DELETE FROM import_rows WHERE import_id=?", attempt);
-      this.sql.exec("DELETE FROM import_finishes WHERE id=? AND attempt=?", importId, attempt);
-    });
-  }
-  async renewImportFinish(importId, attempt) {
-    this.ctx.storage.transactionSync(() => {
-      this.assertImportFinish(importId, attempt);
-      this.sql.exec("UPDATE import_finishes SET expires=? WHERE id=? AND attempt=?", Date.now() + 300000, importId, attempt);
-    });
-  }
-  assertImportFinish(importId, attempt) {
-    const lease = this.sql.exec("SELECT attempt,expires FROM import_finishes WHERE id=?", importId).one();
-    if (lease?.attempt !== attempt || lease.expires <= Date.now()) throw new Error("import finish lease expired");
-  }
-  async stageImportRows(importId, attempt, batch) {
-    this.ctx.storage.transactionSync(() => {
-      this.assertImportFinish(importId, attempt);
-      this.sql.exec("UPDATE import_finishes SET expires=? WHERE id=? AND attempt=?", Date.now() + 300000, importId, attempt);
-      for (const r of batch) this.sql.exec("INSERT OR REPLACE INTO import_rows VALUES (?,?,?,?,?)", attempt, r.t, String(r.r.id ?? (r.t === "agent_skills" ? `${r.r.agent_id}:${r.r.skill_id}` : r.r.agent_id)), r.r.channel_id == null ? null : String(r.r.channel_id), JSON.stringify(r.r));
-    });
-    return batch.length;
-  }
-  async stagedCounts(importId, attempt) { this.assertImportFinish(importId, attempt); return Object.fromEntries(this.sql.exec("SELECT tbl, COUNT(*) n FROM import_rows WHERE import_id=? GROUP BY tbl", attempt).toArray().map((r) => [r.tbl, r.n])); }
-  async commitImportRows(importId, attempt, report) {
-    this.ctx.storage.transactionSync(() => {
-      this.assertImportFinish(importId, attempt);
-      if (this.sql.exec("SELECT status FROM imports WHERE id=?", importId).one()?.status !== "uploading") throw new Error("import already complete");
-      this.sql.exec("INSERT OR REPLACE INTO rows SELECT tbl,id,channel_id,data FROM import_rows WHERE import_id=?", attempt);
-      this.sql.exec("UPDATE imports SET status='done', report=? WHERE id=?", JSON.stringify(report), importId);
-      this.sql.exec("DELETE FROM import_rows WHERE import_id=?", attempt);
-      this.sql.exec("DELETE FROM import_finishes WHERE id=? AND attempt=?", importId, attempt);
-    });
-  }
-  async counts() { return Object.fromEntries(this.sql.exec("SELECT tbl, COUNT(*) n FROM rows GROUP BY tbl").toArray().map((r) => [r.tbl, r.n])); }
-  async finish(id, report) { this.sql.exec("UPDATE imports SET status='done', report=? WHERE id=?", JSON.stringify(report), id); }
-  async lastReport() { const r = this.sql.exec("SELECT report FROM imports WHERE status='done' ORDER BY created DESC LIMIT 1").toArray()[0]; return r ? JSON.parse(r.report) : null; }
   async provisionFresh() {
     const existing = this.sql.exec("SELECT COUNT(*) n FROM rows WHERE tbl='channels'").one().n;
     if (existing) return { created: false, channels: existing };

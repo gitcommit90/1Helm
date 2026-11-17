@@ -91,6 +91,8 @@ async function editorKind(env, t, url) {
 }
 // On a full plan choosing the services' models is optional: the editor shows no "choose a model" warning (byok-custom view field `optional`).
 const optionalOn = (t, view) => (view && t.plan !== "byok" ? { ...view, optional: true } : view);
+// Whether the workspace has a channel with this slug (the key of a channel's own models).
+const channelKnown = async (env, t, slug) => (await env.ARCHIVE.get(env.ARCHIVE.idFromName(`archive:${t.id}`)).channels()).some((c) => (c.slug || c.name) === slug);
 async function listSessions(env, req, userId) {
   const cur = await sha256(cookieToken(req) || "-");
   const rows = (await env.DB.prepare("SELECT token_hash, expires_at, created_at, ua, place FROM sessions WHERE user_id=? AND expires_at>? ORDER BY COALESCE(created_at, expires_at - ?) DESC LIMIT 100")
@@ -134,7 +136,9 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
       ...(hsWalls(env) ? { front_door_available: true, front_door: Number(t.front_door) === 1 } : {}) });   // HS_WALLS: General's front door (walls.js)
   if (eeEnabled(env) && req.method === "GET" && sub === "/api/account/custom-models") {
     const own = await editorKind(env, t, url);
-    if (own) { try { return json(optionalOn(t, await ownViewFor(env, t, own))); } catch { return json({ error: "Couldn't load this. Try again in a minute." }, 503); } }
+    const channel = url.searchParams.get("channel") || null;
+    if (own && channel && !(await channelKnown(env, t, channel))) return json({ error: "No such channel." }, 404);
+    if (own) { try { return json(optionalOn(t, await ownViewFor(env, t, own, { channel }))); } catch { return json({ error: "Couldn't load this. Try again in a minute." }, 503); } }
     return json(customView(await readCustom(env, t.id)));
   }
   if (eeEnabled(env) && req.method === "GET" && sub === "/api/account/custom-models/catalog") {
@@ -214,6 +218,7 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
   if (eeEnabled(env) && sub === "/api/account/custom-models") {
     if (JSON.stringify(b).length > 65536) return json({ error: "That is too large to save." }, 413);
     const own = await editorKind(env, t, url);
+    if (own && typeof b.channel === "string" && !(await channelKnown(env, t, b.channel))) return json({ error: "No such channel." }, 404);
     try {
       if (own) {
         const view = await saveOwn(env, t.id, b, { settings: await savedSettings(env, deps), lookup: deps.lookup, fetchImpl: deps.fetchImpl || globalThis.fetch, at });

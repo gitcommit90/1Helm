@@ -80,6 +80,21 @@ export class Ledger extends DurableObject {
     });
     return this.totals();
   }
+  // A refund or lost dispute takes back credits a payment bought (src/ee/disputes.js). The grant is the first of keys that exists. reversed holds how much of each
+  // grant has been handled (whatever was actually left), so a repeated or reordered event takes nothing twice, and only that grant's own unspent credits can go.
+  async reverse(keys, num, den) {
+    this.sql.exec("CREATE TABLE IF NOT EXISTS reversed (key TEXT PRIMARY KEY, target INTEGER NOT NULL)");
+    const g = this.sql.exec(`SELECT rowid id,key,nano,kind FROM grants WHERE nano>0 AND key IN (${keys.map(() => "?").join(",")})`, ...keys).toArray()[0];
+    if (!g) return null;
+    const target = Math.round(g.nano * Math.min(1, num / den)), done = Number(this.one("SELECT target FROM reversed WHERE key=?", g.key)?.target ?? 0);
+    if (target <= done) return { removed: 0 };
+    // Spending takes the oldest credits first, so what is left of this grant is the balance minus what later grants added, never below zero.
+    const later = Number(this.one("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE nano>0 AND rowid>?", g.id).n);
+    const take = Math.min(target - done, Math.max(0, this.totals().balance_nano - later));
+    this.sql.exec("INSERT OR REPLACE INTO reversed (key,target) VALUES (?,?)", g.key, target);
+    if (take > 0) this.sql.exec("INSERT INTO grants (key,nano,kind,at) VALUES (?,?,?,?)", `reverse:${g.key}:${target}`, -take, g.kind, Date.now());
+    return { removed: take };
+  }
   async grant(key, nano, kind) { this.sql.exec("INSERT OR IGNORE INTO grants (key,nano,kind,at) VALUES (?,?,?,?)", key, Math.round(nano), kind, Date.now()); return this.totals(); }
   // Daily safety net (per account, resets at midnight Pacific): a runaway loop can burn at most one day's limit, never the
   // whole balance and never anyone else's. Limit = DAY_CAP_PCT of what the account put in over the last 31 days

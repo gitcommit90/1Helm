@@ -111,7 +111,23 @@ export async function verifyCode(env, req, typed, { at = Date.now() } = {}) {
 }
 
 export async function sweepCodeFails(env, at = Date.now()) {
+  await env.DB.prepare("DELETE FROM signin_email_sends WHERE at<?").bind(at - 24 * 3600e3).run();
   return Number((await env.DB.prepare("DELETE FROM signin_code_fails WHERE at<?").bind(at - EMAIL_WINDOW).run()).meta?.changes || 0);
+}
+
+// Limits on sign-in emails sent (not test addresses): per network (hashed IP) and for the whole service. The service-wide cap protects the
+// sender's reputation with the mail provider and can be raised. Returns a refusal message, or "" and (when count is true) records one send.
+export const SEND_PER_HOUR = 5, SEND_PER_DAY = 20, SEND_ALL_PER_HOUR = 300;
+export async function sendLimit(env, req, count = true, at = Date.now()) {
+  const ip = await ipHash(req), n = async (sql, ...a) => Number((await env.DB.prepare(sql).bind(...a).first())?.n || 0);
+  if (await n("SELECT COUNT(*) n FROM signin_email_sends WHERE at>?", at - 3600e3) >= SEND_ALL_PER_HOUR) {
+    console.error("signin email service cap reached");
+    return "We can't send sign-in emails right now. Try again in a few minutes.";
+  }
+  if (await n("SELECT COUNT(*) n FROM signin_email_sends WHERE ip=? AND at>?", ip, at - 3600e3) >= SEND_PER_HOUR
+    || await n("SELECT COUNT(*) n FROM signin_email_sends WHERE ip=? AND at>?", ip, at - 24 * 3600e3) >= SEND_PER_DAY) return "Too many sign-in emails from this network. Try again in an hour.";
+  if (count) await env.DB.prepare("INSERT INTO signin_email_sends (ip,at) VALUES (?,?)").bind(ip, at).run();
+  return "";
 }
 
 // The sign-in email: the code first (big, copyable as one run of digits), the link as the other way in.

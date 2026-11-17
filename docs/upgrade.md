@@ -103,3 +103,7 @@ fails, fix the image/build and deploy forward while retaining the new migration
 and namespace; do not remove the migration or delete namespaces to roll back.
 Verify the new transport starts in your account before enabling SSH for a
 channel. The source publication itself does not deploy or connect any machine.
+
+## Source update of 2026-11-17
+
+Apply D1 migrations `0086`, `0087` and `0088` with the normal migration runner. They add `signin_email_sends`, `account_job_state` and the `tenants.mem_shard` column (default 0), and none of them changes an existing row. A Worker with no queue bound runs its per-account scheduled jobs inside the cron run, so you do not have to add a queue to an existing install. Rebuild the channel computer image (`image/opt/1hc/disk.sh` and `image/opt/1hc/chrome-cache.txt` are new files that `init.sh` and `save.sh` read) and run `npm run build`. The legacy v1.x import routes are removed, so do not plan to import a legacy database.

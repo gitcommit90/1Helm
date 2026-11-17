@@ -150,6 +150,8 @@ h3.bykh{margin:22px 6px 8px}
 .bykusage p{margin:0;font-size:12.5px;color:var(--mute);line-height:1.4}
 .bykusage p.bukhit{color:var(--warn);font-weight:600}
 .bykusage p.bukmore{text-align:right}
+.bukcheck{display:inline-flex;flex-direction:column;align-items:center;margin:0 0 0 12px;padding:0;border:0;background:none;font:inherit;font-weight:600;color:var(--mute);cursor:pointer}.bukcheck::after{content:attr(data-w);height:0;overflow:hidden;visibility:hidden}.bukcheck:disabled{cursor:default;opacity:.7}.bukmore .bukcheck{margin:0 12px 0 0}
+@media (hover:hover) and (pointer:fine){.bukcheck:not(:disabled):hover{color:var(--ink)}}
 .bukmanage{color:var(--accent);font-weight:600;text-decoration:none}@media (hover:hover) and (pointer:fine){.bukmanage:hover{text-decoration:underline}}
 .bykusage.bukno{padding:9px 12px}
 @media (max-width:599px),(max-height:499px){.bukt{flex-wrap:wrap;row-gap:0}.bukt em{flex:1 1 auto}}

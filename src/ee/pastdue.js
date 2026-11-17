@@ -213,6 +213,7 @@ export async function endOfHold(env, tid, d = {}, at = Date.now()) {
   if (Number(h.delete_at) > at) return { skipped: "not yet" };
   const t = await tenantRow(env, tid);
   if (!t) { await missing(env, h, d, at); return { gone: true }; }
+  if (t.status === "disputed") return { skipped: "disputed" };   // a dispute hold is never counted down to deletion
   if (t.status === "active") { await resolveHold(env, tid, "active at the end", at); return { paid: true }; }
   // Ask Stripe first: a payment whose webhook we missed is never deleted.
   if (t.stripe_subscription && d.stripe) {
@@ -256,26 +257,24 @@ async function gone(env, h, at) {
   await env.DB.prepare("UPDATE payment_holds SET state='deleted', deleted_at=COALESCE(deleted_at,?), email='', slug='', updated_at=? WHERE tenant_id=?").bind(at, at, h.tenant_id).run();
 }
 
-// ---- hourly cron: first notices not yet sent, reminders, deletion, final-email retries ----
-export async function pastdueCron(env, d = {}) {
-  const at = (d.now || Date.now)(), out = { reminders: 0, deleted: 0, resolved: 0, waiting: 0, errors: 0 };
+// ---- hourly job for one account (src/account-jobs.js lists the accounts): first notices not yet sent, reminders, deletion, final-email retries ----
+// Reads the hold again, so a message that arrives after the hold was resolved or finished does nothing, and a second message for the same
+// account is harmless: every email is claimed first (payment_hold_notices) and the deletion is claimed by the hold's state.
+export async function pastdueOne(env, tid, d = {}) {
+  const at = (d.now || Date.now)();
   await ensurePastdueTables(env);
-  const rows = (await env.DB.prepare("SELECT * FROM payment_holds WHERE state IN ('unpaid','deleting') OR (state='deleted' AND email<>'')").all()).results || [];
-  for (const h of rows) {
-    try {
-      if (h.state === "deleted") { await finalEmail(env, h, d, at); continue; }
-      const t = await tenantRow(env, h.tenant_id);
-      // Gone already: our own deletion, finished by deletion.js's resume after an error here (→ the final email), or they deleted it.
-      if (!t) { await missing(env, h, d, at); continue; }
-      if (t.status === "deleting") continue;   // they're deleting it themselves right now
-      if (t.status === "active" && h.state === "unpaid") { if (await resolveHold(env, h.tenant_id, "active", at)) out.resolved++; continue; }
-      if (Number(h.delete_at) <= at) { const x = await endOfHold(env, h.tenant_id, d, at); if (x.deleted) out.deleted++; if (x.paid) out.resolved++; if (x.waiting || x.error) out.waiting++; continue; }
-      if (h.state !== "unpaid") continue;
-      await notifyFailed(env, h, d, at);   // no-op once sent; a send that failed is retried here
-      if (await holdRemind(env, h, d, at)) out.reminders++;
-    } catch (e) { out.errors++; log("cron", h.tenant_id, e.message); }
-  }
-  return { checked: rows.length, ...out };
+  const h = await env.DB.prepare("SELECT * FROM payment_holds WHERE tenant_id=? AND (state IN ('unpaid','deleting') OR (state='deleted' AND email<>''))").bind(tid).first();
+  if (!h) return;
+  if (h.state === "deleted") return finalEmail(env, h, d, at);
+  const t = await tenantRow(env, h.tenant_id);
+  // Gone already: our own deletion, finished by deletion.js's resume after an error here (→ the final email), or they deleted it.
+  if (!t) return missing(env, h, d, at);
+  if (t.status === "deleting" || t.status === "disputed") return;   // they're deleting it themselves right now
+  if (t.status === "active" && h.state === "unpaid") { await resolveHold(env, h.tenant_id, "active", at); return; }
+  if (Number(h.delete_at) <= at) { await endOfHold(env, h.tenant_id, d, at); return; }
+  if (h.state !== "unpaid") return;
+  await notifyFailed(env, h, d, at);   // no-op once sent; a send that failed is retried here
+  await holdRemind(env, h, d, at);
 }
 
 // ---- TEST_MODE only (dev checks; test accounts only, so a real person's account is never switched) ----

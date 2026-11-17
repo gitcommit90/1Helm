@@ -33,7 +33,7 @@ const fails = (s, re) => assert.throws(() => parse(s), re, s);
   for (const k of ["click", "click_at", "fill", "type", "select", "press", "scroll", "wait", "upload", "hover", "drag", "double_click", "right_click", "hold"]) assert.ok(items.kind.enum.includes(k), k);
   for (const f of ["ref", "x", "y", "to_ref", "to_x", "to_y", "key"]) assert.ok(items[f], f);
   assert.equal(items.to_x.type, "number"); assert.equal(items.to_ref.type, "string");
-  for (const w of ["hover {ref or x,y", "double_click {ref or x,y", "right_click {ref or x,y", "drag {ref or x,y, to_ref or to_x,to_y", "hold {x, y, ms?", "Control+A", "Shift+Tab", "Control+Shift+K", "press never types text"]) assert.ok(t.description.includes(w), w);
+  for (const w of ["hover {ref or x,y", "double_click {ref or x,y", "right_click {ref or x,y", "drag {ref, or on (the item's visible text), or x,y; to_ref, or to_on, or to_x,to_y", "hold {x, y, ms?", "Control+A", "Shift+Tab", "Control+Shift+K", "press never types text"]) assert.ok(t.description.includes(w), w);
   assert.match(t.description, /click_at \{x, y\}/, "old kinds stay described");
   ok("browser_act lists the new kinds and fields, the old ones stay");
 }

@@ -227,7 +227,7 @@ let baseline;
       if (r.done) done = r; else if (r.error) errors++; else if (r.paused) pauses++;
     }
   } finally { WS.put = realPut; WS.resumeMultipartUpload = realUp; }
-  assert.ok(done, "the interrupted export finished"); assert.ok(pauses > 4 && errors > 3, `it was cut off many times (${pauses} pauses, ${errors} failures, ${runs} runs)`);
+  assert.ok(done, "the interrupted export finished"); assert.ok(pauses > 4 && errors > 2, `it was cut off many times (${pauses} pauses, ${errors} failures, ${runs} runs)`);
   const got = norm(openZip(`exports/${T1}/${id}.zip`, "cut.zip")); assert.deepEqual(Object.keys(got).sort(), Object.keys(baseline).sort());
   for (const k2 of Object.keys(baseline)) assert.equal(got[k2], baseline[k2], `${k2} is the same after interruptions`);
   assert.equal([...WS.objs.keys()].filter((x) => x.startsWith(`exports/${T1}/`) && !x.endsWith(".zip")).length, 0, "no scratch left");

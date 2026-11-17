@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { ChannelComputer } from "../src/channel-computer.js";
-import { COMPUTER_BUSY_MSG, isCapacityError, isComputerBusy, computerBusyError } from "../src/computer-capacity.js";
+import { COMPUTER_BUSY_MSG, isCapacityError, isComputerBusy, computerBusyError, retryWhileBusy, busyReply, BUSY_WAITING, BUSY_GIVEUP_MSG, BUSY_WAIT_MAX_MS } from "../src/computer-capacity.js";
+import { claudeChat } from "../src/ee/index.js";
 import { plainError } from "../src/helpers.js";
 
 assert.equal(COMPUTER_BUSY_MSG, "All computers are busy right now. Try again in a minute.");
@@ -46,4 +47,41 @@ try {
   skew = 0; const b = make("boom");
   await assert.rejects(b.c.ensureRunning(), (e) => { assert.match(e.message, /^computer did not start \(\d+ attempts/); assert.ok(!isComputerBusy(e)); return true; });
 } finally { Date.now = realNow; }
+
+// Waiting and retrying (retryWhileBusy): a fake sleep moves the clock, so no real time passes.
+{
+  let clock = 0; const real = Date.now; Date.now = () => clock;
+  const sleep = async (ms) => { clock += ms; };
+  const mk = () => { const events = []; return { events, emit: (e) => events.push(e), line: "Running a command" }; };
+  try {
+    // A refusal followed by a free computer: the same call runs again, once per attempt, with the status line then the old line back.
+    let calls = 0, tc = mk(); clock = 0;
+    assert.equal(await retryWhileBusy(async () => { if (++calls < 3) throw computerBusyError(); return "ok"; }, tc, { sleep }), "ok");
+    assert.equal(calls, 3);
+    assert.deepEqual(tc.events.map((e) => e.line), [BUSY_WAITING, BUSY_WAITING, "Running a command"]);
+    // The first attempt behaves as before: no wait, no status event.
+    tc = mk(); assert.equal(await retryWhileBusy(async () => 1, tc, { sleep }), 1); assert.equal(tc.events.length, 0);
+    // The pauses grow 15 s, 30 s, 60 s, then 60 s each; the wait ends after 15 minutes with the new message.
+    const pauses = []; clock = 0; calls = 0;
+    await assert.rejects(retryWhileBusy(async () => { calls++; throw computerBusyError(); }, mk(), { sleep: async (ms) => { pauses.push(ms); clock += ms; } }), (e) => { assert.equal(e.message, BUSY_GIVEUP_MSG); assert.equal(e.status, 503); return true; });
+    assert.deepEqual(pauses.slice(0, 5), [15e3, 30e3, 60e3, 60e3, 60e3]); assert.ok(clock <= BUSY_WAIT_MAX_MS && clock > BUSY_WAIT_MAX_MS - 60e3);
+    assert.equal(calls, pauses.length + 1);
+    assert.equal(busyReply(BUSY_GIVEUP_MSG), BUSY_GIVEUP_MSG); assert.equal(busyReply(computerBusyError()), COMPUTER_BUSY_MSG); assert.equal(busyReply("out_of_credits"), null);
+    assert.equal(plainError(`Error: ${BUSY_GIVEUP_MSG}`), BUSY_GIVEUP_MSG);
+    // Other errors (a reset by a deploy, no credits) pass through at once and are not retried.
+    calls = 0; await assert.rejects(retryWhileBusy(async () => { calls++; throw new Error("Durable Object reset because its code was updated."); }, mk(), { sleep }), /reset/); assert.equal(calls, 1);
+    // Stop during the wait: the long sleep is let go at once and the busy error ends the step without another attempt.
+    let stop; tc = mk(); tc.stopped = new Promise((z) => { stop = z; }); calls = 0;
+    const p = retryWhileBusy(async () => { calls++; throw computerBusyError(); }, tc, { sleep: () => new Promise(() => {}) });
+    await new Promise((z) => setImmediate(z)); tc.abort = "hard"; stop();
+    await assert.rejects(p, (e) => isComputerBusy(e)); assert.equal(calls, 1);
+    // The Claude engine path: a refused start is retried inside claudeChat, and the model call happens once, after a computer is free.
+    let tries = 0; const engine = { complete: async () => { if (++tries < 3) throw computerBusyError(); return { choices: [{ message: { content: "hi" } }], usage: {} }; } };
+    const env = { CLAUDE_ENGINE: { idFromName: () => "i", get: () => engine } };
+    tc = mk(); clock = 0;
+    const realSet = globalThis.setTimeout; globalThis.setTimeout = (f) => realSet(f, 0);
+    try { const r = await claudeChat({ ccHandle: { env, tid: "t" } }, { messages: [] }, { model: "sonnet", ctx: tc }); assert.equal((await r.json()).choices[0].message.content, "hi"); } finally { globalThis.setTimeout = realSet; }
+    assert.equal(tries, 3); assert.equal(tc.events[0].line, BUSY_WAITING);
+  } finally { Date.now = real; }
+}
 console.log("computer-capacity ok");

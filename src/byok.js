@@ -44,11 +44,11 @@ import { boundedJson } from "./bounded-body.js";
 //     keeps its old meaning (General's model does them). Backup mode (fallback) reads the same models. Switch now needs only the same General model.
 // On the byok plan there's no choice: the key is simply their AI.
 import { sealSecret, openSecret } from "./sentinel.js";
-import { enabled as eeEnabled, effortBody, ownChorePlan, parseOwn, listedRecords, changePlan, nextPlan,
+import { enabled as eeEnabled, effortBody, ownChorePlan, ownFor, parseOwn, listedRecords, changePlan, nextPlan,
   CC_SOURCE, isCcModel, claudeChat, ccModelsJson, ccStart, ccFinish, ccWarm, claudeUsage,
-  usageCache, refreshUsage, dropUsage,
+  usageCache, refreshUsage, dropUsage, usageRow,
   listRows, viewRows, connCfgs, splitModel, ONEHELM_MODEL, isOneHelm, hasOneHelm, connDdl, plainFromForm, addPlain, addSealed, addChatgpt, addClaudeCode, adoptPending, removeConnection, saveTest, testConnection, setOcPlan, CONN_KEY_RE,
-  OC_SOURCE, ocBase, ocPlan, opencodeChat, opencodeModelsJson,
+  OC_SOURCE, ocBase, ocPlan, ocUsage, opencodeChat, opencodeModelsJson,
   CG_SOURCE, CG_USAGE_PAGE, CG_WHY_TEXT, cgDdl, cgFinish, chatgptChat, abortableSleep, chatgptModelsJson, chatgptUseSummary, chatgptWelcomeCreate, chatgptWelcomePending, chatgptWelcomeDone, chatgptInviteShown, chatgptInviteDismiss } from "./ee/index.js";   // the licensed services layer: several AI services at once (every call into it is behind eeEnabled or a provider only it can save)
 import { replayFor } from "./model.js";
 import { singleKeyConfig, singleKeyApi } from "./byok-single.js";   // one saved key: the core path without ONEHELM_EE
@@ -375,7 +375,7 @@ async function byokChatOne(cfg, body, o = {}) {
     }
   }
 }
-async function byokChatOnce(cfg, body, { fast = false, signal = null, fetchImpl = globalThis.fetch, privacy = null, model: pick = null, effort = null, facts = null, maxPrice = null, session = null, purpose = null, limits = null } = {}) {
+async function byokChatOnce(cfg, body, { fast = false, signal = null, fetchImpl = globalThis.fetch, privacy = null, model: pick = null, effort = null, facts = null, maxPrice = null, session = null, purpose = null, limits = null, ctx = null } = {}) {
   if (limits && cfg && !cfg.missing) cfg = Object.create(cfg, { limits: { value: limits } });   // (not a spread: the key and the sign-in handles are not enumerable) the saved Models page waits for this call (byokLimits); the adapters read them from cfg
   if (!cfg || cfg.missing || typeof cfg.key !== "string") throw new ByokError(missingText(cfg));
   // Chores while Custom Model Selection is on: Background jobs' models in order, a failing one hands the call to the next (a bad key and the person's Stop do not).
@@ -389,7 +389,7 @@ async function byokChatOnce(cfg, body, { fast = false, signal = null, fetchImpl 
   }
   const model = pick || (fast ? (cfg.fast || cfg.model) : cfg.model);
   const level = pick ? effort : (fast ? cfg.fastEffort : cfg.effort) || null;   // the chosen model's own level, else the one saved for this model (none: the service's default)
-  if (cfg.provider === CC_SOURCE) return claudeChat(cfg, body, { signal, model, effort: level, session });   // Continue with Claude: the signed-in Claude Code, one model call at a time (byok-claudecode.js)
+  if (cfg.provider === CC_SOURCE) return claudeChat(cfg, body, { signal, model, effort: level, session, ctx });   // Continue with Claude: the signed-in Claude Code, one model call at a time (byok-claudecode.js)
   if (cfg.chatgptHandle) return chatgptChat(cfg, body, { signal, fetchImpl, model, effort: level, session, purpose: purpose || (fast ? "chores" : "chat") });   // Continue with ChatGPT: the Responses API, answered in chat/completions shape
   if (cfg.provider === OC_SOURCE) return opencodeChat(cfg, body, { signal, fetchImpl, model, effort: level, session, purpose: purpose || (fast ? "chores" : "chat") });   // Use OpenCode: its own transport (byok-opencode.js)
   const req = { ...byokBody(body, model), ...byokPrivacyFields(cfg, privacy), ...(level ? effortFields(cfg, level, model, pick ? facts : null) : {}) };
@@ -456,7 +456,7 @@ async function byokRow(env, tenantId) {
   const q = (cols) => env.DB.prepare(`SELECT t.plan, t.slug, t.helper_name${cols} FROM tenants t LEFT JOIN byok b ON b.tenant_id=t.id WHERE t.id=?`).bind(tenantId).first();
   for (const cols of [", b.mode", ""]) { try { return await q(cols); } catch (e) { if (!/no such column/i.test(String(e?.message)) || !cols) throw e; } }   // before migration 033 (mode)
 }
-export async function loadByok(env, tenantId) {
+export async function loadByok(env, tenantId, channel = null) {
   if (!env?.DB || !tenantId) return null;
   if (!eeEnabled(env)) return singleKeyConfig(env, tenantId);   // core: the one saved key (byok-single.js)
   const r = await byokRow(env, tenantId);
@@ -469,7 +469,7 @@ export async function loadByok(env, tenantId) {
   const conns = await connCfgs(env, tenantId, { settings, credits, helper: r.helper_name || "" });
   const usable = Object.keys(conns).filter((k) => !conns[k].missing);
   let saved = null;   // the account's own-key setting, read once (1Helm's models in it keep working with no service connected)
-  try { const t = await env.DB.prepare("SELECT custom_models_own_on, custom_models_own FROM tenants WHERE id=?").bind(tenantId).first(); saved = { t, config: parseOwn(t?.custom_models_own) }; } catch (e) { if (!/no such column/i.test(String(e?.message))) throw e; }   // before migration 080 there is nothing chosen
+  try { const t = await env.DB.prepare("SELECT custom_models_own_on, custom_models_own FROM tenants WHERE id=?").bind(tenantId).first(); saved = { t, config: ownFor(parseOwn(t?.custom_models_own), channel) }; } catch (e) { if (!/no such column/i.test(String(e?.message))) throw e; }   // before migration 080 there is nothing chosen
   if (!usable.length) return onPlan ? { missing: true, ...(rows.length ? { unreadable: true } : {}), settings } : null;   // never fall back to 1Helm's AI, except by the person's own choice of 1Helm's models
   const cfg = withKey({ base: "", host: usable.map((k) => conns[k].host || conns[k].label).join(", "), model: "", fast: "", last4: "", effort: "", fastEffort: "", settings, credits, helper: r.helper_name || "", ...(onPlan ? {} : now ? { now: true } : { fallback: true }) }, "");
   Object.defineProperty(cfg, "connections", { value: conns, enumerable: false, writable: false });
@@ -480,7 +480,7 @@ export async function loadByok(env, tenantId) {
     if (config) {
       const general = config.categories.find((c) => c.id === "general")?.chain?.[0];
       if (general) { cfg.model = general.model; cfg.effort = general.effort || ""; Object.defineProperty(cfg, "facts", { value: config.catalog?.[general.model] || null, enumerable: false }); }
-      const chain = ownChorePlan(t, cfg); if (chain) cfg.background = chain;
+      const chain = ownChorePlan(t, cfg, channel); if (chain) cfg.background = chain;
       cfg.fast = chain?.[0]?.model || cfg.model;
       const hasService = (chain) => (Array.isArray(chain) ? chain : []).some((e) => e && typeof e.model === "string" && !isOneHelm(e.model));
       // Use my services now with only 1Helm's models chosen (General and Background jobs): nothing runs on a service, so the account behaves exactly as without the services.
@@ -710,9 +710,15 @@ export async function byokApi(req, env, t, sub, { json, fetchImpl = globalThis.f
   // Plan usage bars: read again when the cache is stale (byok-usage.js: a failed source is remembered, so this never retries on every view). Always answers; no numbers means the page shows Manage usage.
   if (sub === "/api/byok/usage" && req.method === "GET") {
     const kinds = [...new Set((await listRows(env, t.id)).map((r) => r.kind))].filter((k) => k === "chatgpt" || k === "claudecode" || k === "opencode");
-    const getters = { chatgpt: null, claudecode: () => claudeUsage(env, t.id), opencode: null };   // ChatGPT has no source: its summary is counted from our own calls
+    const getters = { chatgpt: null, claudecode: () => claudeUsage(env, t.id), opencode: async () => ocUsage(Object.values(await connCfgs(env, t.id)).find((c) => c.kind === "opencode"), { fetchImpl }) };   // ChatGPT has no source: its summary is counted from our own calls; with several OpenCode connections the first listed is read
     const views = await Promise.all(kinds.map(async (k) => [k, await refreshUsage(env, t.id, k, getters[k])]));
     return json({ usage: Object.fromEntries(views), ...(kinds.includes("chatgpt") ? { chatgpt: { manage: CG_USAGE_PAGE, summary: await chatgptUseSummary(env, t.id) } } : {}) });
+  }
+  // Check usage (Claude Code only): starts the engine if it is asleep and reads now, at most once a minute per account; inside that minute the saved view is returned.
+  if (sub === "/api/byok/usage" && req.method === "POST") {
+    if ((await boundedJson(req)).service !== "claudecode") return json({ error: "service" }, 400);   // bounded like the other byok bodies
+    const row = await usageRow(env, t.id, "claudecode").catch(() => null), recent = Date.now() - Math.max(Number(row?.fetched_at) || 0, Number(row?.fail_at) || 0) < 60e3;
+    return json({ usage: { claudecode: await refreshUsage(env, t.id, "claudecode", recent ? null : () => claudeUsage(env, t.id, true), { force: true }) } });
   }
   if (sub === "/api/byok/switch-preview" && req.method === "GET") { const r = await switchPreview(env, t, d); return json(r, r.error ? r.status || 400 : 200); }
   if (req.method !== "POST") return json({ error: "method" }, 405);

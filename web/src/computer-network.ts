@@ -1,4 +1,5 @@
 import { copyText } from "./clipboard";
+import { pickHtml } from "./pick-menu";
 import { nativePlatform, openOutside } from "./native-shell";
 // Native computer connections. State comes from the trusted network controller;
 // this UI never derives membership from a login URL or an approval decision.
@@ -153,7 +154,7 @@ export function networkHtml() {
   const button = (op: string, label: string, disabled = false, extra = "") => `<button type="button" class="sa blue" data-netop="${op}"${extra}${N.busy || (W.checking && op === "status") || disabled ? " disabled" : ""}>${e(N.busy === op ? (op === "status" ? "Checking…" : busyLabels[op] || "Working…") : label)}</button>`;
   const loading = N.busy ? `<div class="netloading"><div class="netprogress" role="progressbar" aria-label="${e(busyLabels[N.busy] || "Updating computer connections")}"><i></i></div><div role="status" aria-live="polite"><b>${e(busyLabels[N.busy] || "Updating computer connections…")}</b><p>${N.slow ? "Still loading — this is taking longer than usual. You can leave this page; it won’t interrupt your agent." : N.busy === "status" ? "Checking this computer’s SSH and Tailscale status. This can take a moment." : "Waiting for this computer to confirm the change. You can leave this page."}</p>${N.busy === "status" ? '<button type="button" class="sa blue" data-netop="cancel_status">Stop waiting</button>' : ""}</div></div>` : "";
   const head = `<h2>Computers</h2><p class="slead">SSH and Tailscale run from this agent's 1HC computer, not your Mac or phone.</p>
-    <div class="sc netbox" aria-busy="${!!N.busy}"><label class="netchannel"><span>Channel computer</span><select data-netchannel aria-label="Channel computer"${N.busy && N.busy !== "status" ? " disabled" : ""}>${channels.map(c => `<option value="${e(c.slug)}"${c.slug === N.channel ? " selected" : ""}>#${e(c.name)}</option>`).join("")}</select></label>
+    <div class="sc netbox" aria-busy="${!!N.busy}"><label class="netchannel"><span>Channel computer</span>${pickHtml({ attrs: "data-netchannel", label: "Channel computer", value: N.channel, options: channels.map((c): [string, string] => [c.slug, `#${c.name}`]), disabled: !!N.busy && N.busy !== "status" })}</label>
     <div class="netactions">${button("status", "Refresh status")}<span class="sfine">${!N.busy && N.at ? `Checked ${e(new Date(N.at).toLocaleTimeString())}` : ""}</span></div></div>${!v || (N.busy && N.busy !== "status" && N.busy !== "exit_set" && !N.busy.startsWith("tailscale_")) ? loading : ""}`;
   const error = N.error ? `<p class="neterror" role="alert">${e(N.error)}</p>` : "";
   if (!v) return `${head}${error}`;
@@ -194,14 +195,14 @@ function exitBlock(v: NetworkState, e: (value: unknown) => string, name: string)
   if (!b) return `<div class="sc netbox"><p class="sfine">The browser exit node is not available on this deployment.</p></div>`;
   const on = b.setting === "on", retry = b.retry === "on", saved = b.exit_node, selected = X.pick || saved?.id || "", busy = N.busy === "exit_set", locked = !!N.busy || (!b.can_enable && !on), retryLocked = !!N.busy || !selected || (!b.can_enable && !retry);
   const nodes = X.nodes || [], known = nodes.some(n => n.id === selected);
-  const options = [`<option value=""${selected ? "" : " selected"}>${e(X.loading ? "Loading your devices…" : nodes.length ? "Choose a device…" : "No exit nodes found")}</option>`,
-    ...nodes.map(n => `<option value="${e(n.id)}"${n.id === selected ? " selected" : ""}>${e(n.name)}${n.online ? "" : " (offline)"}</option>`),
-    ...(selected && !known ? [`<option value="${e(selected)}" selected>${e(saved?.name || selected)}${X.nodes ? " (not offered now)" : ""}</option>`] : [])].join("");
+  const options: [string, string][] = [["", X.loading ? "Loading your devices…" : nodes.length ? "Choose a device…" : "No exit nodes found"],
+    ...nodes.map((n): [string, string] => [n.id, `${n.name}${n.online ? "" : " (offline)"}`]),
+    ...(selected && !known ? [[selected, `${saved?.name || selected}${X.nodes ? " (not offered now)" : ""}`] as [string, string]] : [])];
   return `<div class="sc netbox netexit"><div class="netsession"><div><b>Send this computer's browser through my exit node</b><span>Websites then see your own internet connection, not a datacenter address. Applies to the browser whether the agent or you are using it.</span></div>
     <button type="button" class="tg${on ? " on" : ""}" role="switch" aria-checked="${on}" aria-label="Browser exit node for ${e(name)}" data-netop="exit_toggle"${locked ? " disabled" : ""}><i></i></button></div>
     <div class="netsession"><div><b>Retry through my exit node when a site blocks the browser</b><span>The browser keeps this computer's own connection, and the agent uses your exit node for one task only after a site blocks it.</span></div>
     <button type="button" class="tg${retry ? " on" : ""}" role="switch" aria-checked="${retry}" aria-label="Retry through exit node for ${e(name)}" data-netop="exit_retry_toggle"${retryLocked ? " disabled" : ""}><i></i></button></div>
-    <label class="netchannel"><span>Exit node</span><select data-netexit-node aria-label="Exit node"${!b.can_enable || N.busy ? " disabled" : ""}>${options}</select></label>
+    <label class="netchannel"><span>Exit node</span>${pickHtml({ attrs: "data-netexit-node", label: "Exit node", value: selected, options, disabled: !b.can_enable || !!N.busy })}</label>
     <p class="sfine" role="status" aria-live="polite" data-netexit-line>${e(busy ? "Updating…" : b.line)}</p>${X.error ? `<p class="neterror" role="alert">${e(X.error)}</p>` : ""}</div>
     <p class="sfine">Pick one device on your own tailnet that is set up as an exit node. If it goes offline, the browser shows an error and loads nothing, and never falls back to this computer's own connection. Disconnecting Tailscale turns this off. SSH is not affected.</p>`;
 }
@@ -231,7 +232,7 @@ async function setExit(patch: { enabled?: boolean; retry?: boolean }, nodeId: st
 }
 export function networkChange(target: HTMLElement) {
   if (target.matches("[data-netexit-node]") && !target.matches("[data-netchannel]")) {
-    X.pick = (target as HTMLSelectElement).value; X.error = "";
+    X.pick = target.dataset.value!; X.error = "";
     const b = N.value?.browser_exit;
     // While the switch is on, picking another device moves the browser to it at once. While off, the pick is only remembered.
     if ((b?.setting === "on" || b?.retry === "on") && X.pick && X.pick !== b.exit_node?.id && !N.busy) void setExit({ ...(b.setting === "on" ? { enabled: true } : {}), ...(b.retry === "on" ? { retry: true } : {}) }, X.pick); else D.render();
@@ -240,7 +241,7 @@ export function networkChange(target: HTMLElement) {
   if (!target.matches("[data-netchannel]") || (N.busy && N.busy !== "status")) return false;
   invalidate();
   disconnectResult = null;
-  N.channel = (target as HTMLSelectElement).value; N.value = null; N.at = 0; N.error = ""; resetExit(); void load(); return true;
+  N.channel = target.dataset.value!; N.value = null; N.at = 0; N.error = ""; resetExit(); void load(); return true;
 }
 export function networkClick(target: HTMLElement) {
   if (target.closest<HTMLElement>("[data-netapprove]")?.dataset.netapprove !== undefined && D) {

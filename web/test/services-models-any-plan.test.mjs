@@ -32,7 +32,7 @@ m.bykPage(); await wait(500);
 
 // A full plan with a service: the panel shows Models, asks for the services scope, and has no warning
 let h = m.bykPage(); await wait(200); h = m.bykPage();
-assert.match(h, /data-cmown/); assert.match(h, /data-cmcat="general"/); assert.match(h, /Choose a model/); assert.doesNotMatch(h, /No model is chosen yet/);
+assert.match(h, /data-cmown/); assert.match(h, /data-cmopen="general"/); assert.match(h, /Choose a model/); assert.doesNotMatch(h, /No model is chosen yet/);
 assert.ok(paths.some((p) => p === "GET account/custom-models?scope=services"), paths.join(" | "));
 assert.ok(paths.filter((p) => p.startsWith("GET account/custom-models")).every((p) => p.includes("scope=services")), "every request of the panel carries the scope");
 ok("full plan with a service: Models shows, asks with ?scope=services, no warning");

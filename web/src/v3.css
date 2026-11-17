@@ -168,7 +168,9 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .agent .bubble{background:var(--abub)}
 .body>*:first-child{margin-top:0}.body>*:last-child{margin-bottom:0}.body p{margin:.4em 0}.body ul,.body ol{padding-left:1.25em;margin:.4em 0}.body li{margin:.2em 0}
 .body small{color:var(--faint);font-size:12px}.body strong{font-weight:600}
-.body table{border-collapse:separate;border-spacing:0;font-size:13.5px;margin:.7em 0;font-variant-numeric:tabular-nums;background:var(--sheet);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+.body table{border-collapse:separate;border-spacing:0;font-size:13.5px;margin:.7em 0;font-variant-numeric:tabular-nums;background:var(--sheet);border-radius:14px;overflow:hidden;box-shadow:var(--shadow);display:block;width:fit-content;max-width:100%;overflow-x:auto}
+/* The bubble's overflow-wrap:anywhere counts every letter as a break point when sizing columns, so auto table layout squeezed short-word columns to one letter. break-word leaves column sizing at the longest word and still splits an unbroken string only when it overflows; the block box scrolls sideways when the columns do not fit. */
+.body td,.body th{overflow-wrap:break-word}
 .body th{font-weight:600;color:var(--mute);text-align:left;font-size:12px}
 .body td,.body th{border-bottom:1px solid var(--line);padding:8px 14px}.body tr:last-child td{border-bottom:0}
 .body code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--sheet);padding:1px 5px;border-radius:6px}
@@ -597,7 +599,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .seg{display:flex;gap:2px;padding:3px;border-radius:999px;background:var(--sheet);box-shadow:0 0 0 1px var(--line)}
 .seg button{width:38px;height:30px;border-radius:999px;display:grid;place-items:center;color:var(--mute)}@media (hover:hover) and (pointer:fine){.seg button:hover{color:var(--ink)}}.seg button.on{background:var(--abub);color:var(--ink);box-shadow:var(--shadow)}
 .sradio .rck{width:22px;height:22px;display:grid;place-items:center;color:var(--accent);opacity:0}.sradio.on .rck{opacity:1}.rck svg{width:18px;height:18px;stroke-width:2.4}
-.netbox{padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}.netbox p{margin:0;line-height:1.5}.netchannel,.netlabel{display:flex;flex-direction:column;gap:8px;min-width:0}.netchannel select{font:inherit;max-width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}.netlabel textarea{width:100%;box-sizing:border-box;resize:vertical;font:12px/1.5 monospace;overflow-wrap:anywhere;word-break:break-all;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--hover);color:var(--ink)}.netactions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.netfingerprint{display:flex;flex-direction:column;gap:6px}.netfingerprint code,.netwrap,.neterror,.network-settings .sfine,.gu-ssh .gu-sh b,.gu-ssh .gu-cfnote span{overflow-wrap:anywhere;min-width:0}.neterror{color:var(--warn);font-size:14px;line-height:1.5}.netsession{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.netsession>div{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1 1 180px;overflow-wrap:anywhere}.netsession span{font-size:13px;color:var(--mute)}.netlogin{align-self:flex-start;white-space:normal}.network-settings{min-width:0}
+.netbox{padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}.netbox p{margin:0;line-height:1.5}.netchannel,.netlabel{display:flex;flex-direction:column;gap:8px;min-width:0}.netlabel textarea{width:100%;box-sizing:border-box;resize:vertical;font:12px/1.5 monospace;overflow-wrap:anywhere;word-break:break-all;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--hover);color:var(--ink)}.netactions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.netfingerprint{display:flex;flex-direction:column;gap:6px}.netfingerprint code,.netwrap,.neterror,.network-settings .sfine,.gu-ssh .gu-sh b,.gu-ssh .gu-cfnote span{overflow-wrap:anywhere;min-width:0}.neterror{color:var(--warn);font-size:14px;line-height:1.5}.netsession{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.netsession>div{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1 1 180px;overflow-wrap:anywhere}.netsession span{font-size:13px;color:var(--mute)}.netlogin{align-self:flex-start;white-space:normal}.network-settings{min-width:0}
 .tg{position:relative;flex:none;width:44px;height:26px;border-radius:999px;background:var(--line2);transition:background .18s}
 .tg i{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:transform .2s cubic-bezier(.2,.8,.2,1)}
 .tg.on{background:var(--live)}.tg.on i{transform:translateX(18px)}
@@ -1585,7 +1587,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .wkbico{display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:color-mix(in srgb,#f7d64a 26%,var(--sheet))}.wkbico .beemark{border-radius:4px}
 .wkbbody{min-width:0;display:flex;flex-direction:column;gap:3px}
 .wkbp{margin:0;font-size:15px;line-height:1.4;color:var(--ink);overflow-wrap:anywhere}.wkbp b{font-weight:600}
-@media (min-width:600px) and (min-height:500px){.wkbf{height:calc(4em * 1.4);overflow-y:auto;background:linear-gradient(var(--sheet) 30%,transparent) 0 100%/100% 24px no-repeat local,linear-gradient(transparent,color-mix(in srgb,var(--ink) 14%,transparent)) 0 100%/100% 12px no-repeat scroll}.wkbbody .wkbta{height:calc(4em * 1.4);margin-top:0;resize:none}}   /* a fact is always 4 lines tall on desktop and tablet (its Edit box too), so the box and buttons never move; longer text scrolls and a soft edge at the bottom shows while there is more below */
+@media (min-width:600px) and (min-height:500px){.wkbf{height:calc(4em * 1.4);overflow-y:auto}.wkbbody .wkbta{height:calc(4em * 1.4);margin-top:0;resize:none}}   /* a fact is always 4 lines tall on desktop and tablet (its Edit box too), so the box and buttons never move; longer text scrolls */
 .wkbq{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
 .wkbmt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wkbas::before{content:"\2192";margin:0 8px;color:var(--faint)}.wkbas{color:var(--ink2)}
@@ -1847,7 +1849,6 @@ html{-webkit-tap-highlight-color:transparent}
   #setw .smodal .sr[data-kyrow] .srt>b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #setw .smodal .sr[data-kyrow] .srt>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #setw .smodal .sr[data-kyrow] .sa+.sa{margin-left:0}
-  #setw .smodal .cmslot.cmown{grid-template-columns:minmax(0,1fr) auto}   /* Remove takes the width its text needs, also at larger text sizes */
   /* The Bee review card in the Notebook (the Notebook's own width, not the window's): the four buttons make two rows when the card is narrow. */
   @container wk (max-width:400px){
     .wkbacts{flex-wrap:wrap}.wkbacts .sa,.wkbacts .wkbok{flex:1 1 calc(50% - 6px)}

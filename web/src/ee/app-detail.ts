@@ -244,7 +244,7 @@ function infoHtml(d: Detail | null, info: AppListInfo | undefined) {
 function eventsHtml(d: Detail) {
   if (!d.triggers?.count) return "";
   return `<details class="apdev"><summary>${IC.bell}<span>Events ${esc(d.name)} can report</span><em>${d.triggers.count}</em></summary>
-    <p class="apdmuted">Things ${esc(d.name)} can announce, like a new message. ${esc(D!.helper())} doesn't watch for these yet.</p>
+    <p class="apdmuted">Things ${esc(d.name)} can announce, like a new message. Ask ${esc(D!.helper())} to do something when one happens.</p>
     <ul class="apdtools">${d.triggers.items.map(t => `<li class="apdtool"><span class="apdti">${IC.bell}</span><span class="apdtt"><b>${esc(t.name)}</b>${t.does ? `<span>${esc(t.does)}</span>` : ""}</span></li>`).join("")}</ul></details>`;
 }
 const skel = (n: number, cls = "") => Array.from({ length: n }, (_, i) => `<i class="apdsk ${cls}" style="width:${[92, 84, 96, 70, 88, 60][i % 6]}%"></i>`).join("");

@@ -13,12 +13,16 @@ on_term() {
   /opt/1hc/save.sh sigterm; log "exit"; exit 0
 }
 trap on_term TERM INT
+. /opt/1hc/disk.sh
 mount_ws() {
   local t0=$(date +%s%3N) n=0 lowers="" bytes=0
   rm -rf $S; mkdir -p $S/layers $S/lower $S/upper $S/work $S/empty /workspace
   # The controller link can be briefly unavailable right after a retried start: retry for up to ~20 s before giving up.
   local ok=0; for i in 1 2 3 4 5 6 7 8; do curl -fsS --connect-timeout 3 -m 10 "$C/manifest" > $S/manifest && { ok=1; break; }; sleep $(( i < 4 ? 1 : 2 )); done
   [ $ok = 1 ] || { echo "manifest fetch failed after retries" > $S/failed; return 1; }
+  # The layers plus a 1 GiB reserve must fit on this disk, else the download would fill it and the wake would fail with no reason shown.
+  local need; need=$(awk '{s+=$3} END{print s+0}' $S/manifest)
+  [ $((need+1073741824)) -gt "$(df -B1 --output=avail / | tail -1)" ] && { echo "the saved files of this channel ($(awk -v n=$need 'BEGIN{printf "%.1f", n/1e9}') GB) no longer fit on the computer's disk" > $S/failed; return 1; }
   # manifest: "key sha256 bytes presigned-url" per layer, newest first. Download all in parallel straight from R2
   # (short-lived read-only link, no keys in the VM). Stalled transfers are cut (<1 MB/s for 5 s) and retried; the
   # controller path is the last resort. Every layer must match its SHA-256 before it is mounted.
@@ -40,6 +44,9 @@ mount_ws() {
   log "workspace ready $(cat $S/ready)"
 }
 mount_ws || log "mount failed: $(cat $S/failed 2>/dev/null)"
+# Room for a save to pack in; without it (disk already nearly full) the computer still runs.
+disk_reserve
+disk_guard &
 # Real browser service (tiny until used: Xvfb/Chrome/VNC start on the first browser request). Its profile lives in /workspace/.browser.
 if [ -f /opt/1hc-browser/server.mjs ]; then
   ( while true; do node /opt/1hc-browser/server.mjs >>/var/log/1hc-browser.log 2>&1; sleep 1; done ) &

@@ -209,6 +209,16 @@ try {
     assert.equal(tc.viewPics, undefined, "a refused act shows no page"); }
   ok("guards in hands-on mode");
 
+  // ---- browser_screenshot look:true: a model known to take images gets the picture and no vision model runs; any doubt keeps the description ----
+  { const look = { question: "what number?", look: true }; let looked = 0; R.lookAtScreen = async () => { looked++; return { code: 0, out: "Description: d" }; };
+    const run = async (tc, cat) => { R.savedCatalog = async () => cat; const mc = mk("ok"); R.computer = () => mc.c; const r = await R.execComputerTool("browser_screenshot", look, tc); return { r, mc }; };
+    looked = 0; { const tc = chat(seesImages), { r, mc } = await run(tc, {}); assert.equal(looked, 0, "no vision model call"); assert.equal(tc.viewPics.length, 1); assert.match(r.out, /screenshot of the page follows/); assert.match(r.out, /click_at/);
+      assert.equal(mc.calls.find((x) => x.op === "screenshot").body.max_width, 1000); }
+    { const tc = chat({ taskProfile: { requestedModel: "m/v" } }), { r } = await run(tc, { "m/v": { input_modalities: ["text", "image"] } }); assert.equal(looked, 0); assert.equal(tc.viewPics.length, 1); assert.match(r.out, /follows/); }
+    for (const [what, tc, cat] of [["text-only model", chat(textOnly), {}], ["unknown model", chat({ taskProfile: { requestedModel: "m/x" } }), {}], ["no task profile (custom or plan engine)", chat(), { "m/v": { input_modalities: ["image"] } }],
+      ["text-only engine", chat({ ...seesImages, noPics: true }), {}], ["helper task", { ...chat(seesImages), kind: "helper" }, {}]]) {
+      looked = 0; const { r } = await run(tc, cat); assert.equal(looked, 1, what + " takes the description path"); assert.equal(tc.viewPics, undefined, what); assert.match(r.out, /Description: d/); } }
+
   // ---- a failed background job puts the task's next turn in hands-on mode, once, and an old note expires ----
   { R.queueHandsOn(sid); const t1 = chat(seesImages); assert.equal(R.isHandsOn(t1), true); const t2 = chat(seesImages); assert.equal(R.isHandsOn(t2), false, "only the next turn");
     R.put("handson_next:" + sid, String(Date.now() - 31 * 60e3)); assert.equal(R.isHandsOn(chat()), false, "an old note expires");

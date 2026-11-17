@@ -55,11 +55,11 @@ export { PAUSE_FACTS, callKey, navRepeatPending, noteAppFirst, repeatBlock, repe
 export { appLogoRoute } from "./applogo.js";
 export { APPS_USED_LINE, APPS_USED_TOOL, APP_OPTIONS, NONE, appsUsedApi, appsUsedLine, appsUsedTool, getAppsUsed, optionsView, setAppsUsed, usedSlugs } from "./apps-used.js";
 export { BeeSync };
-export { beeCron, beeNoteDeleted, beeNoteEdited, beeNoteRestored, beeOps, beePendingFacts, beePendingSpeakers, beeRoute } from "./bee.js";
+export { CRON_STALE_MS, beeStart, beeNoteDeleted, beeNoteEdited, beeNoteRestored, beeOps, beePendingFacts, beePendingSpeakers, beeRoute } from "./bee.js";
 export { runBrowserTask } from "./browser-agent.js";
 export { BUILTIN_APPS, BUILTIN_TEXT, builtinApps } from "./builtin-apps.js";
 export { hiddenReason, isHiddenApp, isHiddenToolkitAction, visibleCatalog, connectRefusal } from "./app-visibility.js";
-export { cancelApi, cancelCron, cancelSync, cancelWebhook } from "./cancel.js";
+export { cancelApi, cancelOne, cancelSync, cancelWebhook } from "./cancel.js";
 export { APP_FILE_BUFFER_MAX, APP_FILE_MAX, publicUrlCheck } from "./composio-files.js";
 export { createAppLink, serveAppLink, listAppLinks } from "./app-file-links.js";
 export { ENDED_PREFIX, appsMode, appsModeRoute, composioDonePage, endedToolText, isEnded, saveOnboardingChoice, selfAvailable, selfSignOut, selfStatus, signInFinish, signInStart } from "./composio-self.js";
@@ -77,12 +77,13 @@ export { linkApi, linkCreatePurchase, linkDisconnect, linkGetPurchase, linkListP
 export { lnAudio } from "./live-mic.js";
 export { LiveNotes };
 export { lnName, lnResidentMethods } from "./live-notes.js";
-export { meetingsApi, meetingsCron } from "./meetings.js";
-export { holdFromFailure, holdOf, holdView, notePaid, pastdueApi, pastdueCron, pastdueSeen, pastdueSync } from "./pastdue.js";
+export { CLAIM_MS, LATE_MS, POLL_MS, SEEN_MS, meetingsApi, meetingsCleanup, pollAndSend, sendOne } from "./meetings.js";
+export { holdFromFailure, holdOf, holdView, notePaid, pastdueApi, pastdueOne, pastdueSeen, pastdueSync } from "./pastdue.js";
 export { US_ONLY } from "./photon.js";
 export { changePlan, nextPlan } from "./plan-change.js";
 export { MAX_ATTEMPTS } from "./pool.js";
-export { INACTIVE_MSG, PAUSED_TEXT, PAY_MSG } from "./readonly.js";
+export { DISPUTE_LOST_MSG, DISPUTE_MSG, INACTIVE_MSG, PAUSED_TEXT, PAY_MSG } from "./readonly.js";
+export { disputeEvent, disputeOf, disputePaid } from "./disputes.js";
 export { HANDOFF_PREFIX, choreRouteFor, dispatchOrder, isHandoff, markServed, policyRoute, routeTwoTurn } from "./route2.js";
 export { ledgerGuard } from "./spendguard-ledger.js";
 export { appLink, deliverCard, deliverReaction, deliverText, fetchTextedFile, textTyping, textingDebug, textingLine, textingNewCode, textingOff, textingPoll, textingStart, textingStatus, textingUseProject, textingWebhook } from "./texting.js";
@@ -97,18 +98,18 @@ export { customMcpRoute, isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED, wit
 
 export { ambientQuery, addLocalTimes, tzOf, AMBIENT_QUERY_TOOL } from "./ambient-query.js";
 
-export { customView, readCustom, saveCustom, pickerModels, statusOfRow, ownChorePlan, parse as parseOwn } from "./custom-models.js";
+export { customView, readCustom, saveCustom, pickerModels, statusOfRow, ownChorePlan, ownFor, parse as parseOwn } from "./custom-models.js";
 export { ownKeyKind, ownKindForStatus, ownViewFor, ownPicker, saveOwn, byokRouteTurn, planForCall, byokChatChain, listedRecords, warmLists } from "./byok-custom.js";
 // The licensed AI services layer (several own-key connections at once, ChatGPT and OpenCode sign-in, Claude Code through the Claude engine). src/byok.js calls it only behind enabled(env).
 export { CC_SOURCE, isCcModel, claudeChat, ccModelsJson, ccStart, ccFinish, ccWarm, claudeUsage } from "./byok-claudecode.js";
-export { usageCache, refreshUsage, dropUsage } from "./byok-usage.js";
+export { usageCache, refreshUsage, dropUsage, rowOf as usageRow } from "./byok-usage.js";
 export { listRows, viewRows, connCfgs, splitModel, ONEHELM_MODEL, ONEHELM_NAME, isOneHelm, hasOneHelm, connDdl, plainFromForm, addPlain, addSealed, addChatgpt, addClaudeCode, adoptPending, removeConnection, saveTest, testConnection, setOcPlan, CONN_KEY_RE } from "./byok-connections.js";
-export { OC_SOURCE, ocBase, ocPlan, opencodeChat, opencodeModelsJson } from "./byok-opencode.js";
+export { OC_SOURCE, ocBase, ocPlan, ocUsage, opencodeChat, opencodeModelsJson } from "./byok-opencode.js";
 export { CG_SOURCE, CG_USAGE_PAGE, CG_WHY_TEXT, cgStart, cgDdl, cgFinish, chatgptChat, abortableSleep, chatgptModelsJson, chatgptUseSummary, chatgptWelcomeCreate, chatgptWelcomePending, chatgptWelcomeDone, chatgptInviteShown, chatgptInviteDismiss } from "./byok-chatgpt.js";
 export { beeLibraryRoute } from "./bee-library.js";
 export { modelSettingsEnv, readModelSettings, jobModel, jobModels, jobCost, modelFacts } from "./model-settings.js";
 export { MOONDREAM, seedFresh } from "./model-seed.js";
-export { dailyBillingFlag, flagTurns, FLAG_MIN_CHARGE } from "./billing-flag.js";
+export { billingUp, dailyBillingFlag, flagTurns, FLAG_MIN_CHARGE } from "./billing-flag.js";
 export { CHAT_JOB, factsOf, categoryLimits, choreRouteOf, jobLimits, jobRoute, jobSetting, settingsOf, entriesOf, configuredHosts, quirkOf, effortBody, effortFor, reasoningMandatory } from "./model-jobs.js";
 export { askDecider } from "./text-decision.js";
 export { PROMISE_NOTE, promiseSkip, promiseState, turnFacts, runPromiseCheck, promiseTrace } from "./promise-check.js";

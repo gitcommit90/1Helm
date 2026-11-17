@@ -114,8 +114,8 @@ async function startStack() {
         try { execFileSync("certutil", ["-N", "-d", `sql:${HOME}/.pki/nssdb`, "--empty-password"], { stdio: "ignore", timeout: 5e3 }); } catch {}
         execFileSync("certutil", ["-A", "-d", `sql:${HOME}/.pki/nssdb`, "-t", "C,,", "-n", "1helm-sentinel", "-i", CA], { stdio: "ignore", timeout: 5e3 }); } catch (e) { log("CA import failed", e.message); }
     }
-    // A full disk froze this service once. Below 15% free, drop Chrome's caches in the profile (they are rebuilt on use; logins live elsewhere).
-    try { const st = fs.statfsSync(PROFILE); if (st.bavail / st.blocks < 0.15) for (const d of ["Cache", "Code Cache", "GPUCache", "Service Worker/CacheStorage", "Service Worker/ScriptCache"]) fs.rmSync(path.join(PROFILE, "Default", d), { recursive: true, force: true }); } catch {}
+    // A full disk froze this service once. Below 15% free, drop Chrome's caches in the profile (they are rebuilt on use; logins live elsewhere). The folder list is shared with the disk guard (disk.sh, save.sh).
+    try { const st = fs.statfsSync(PROFILE); if (st.bavail / st.blocks < 0.15) for (const d of fs.readFileSync("/opt/1hc/chrome-cache.txt", "utf8").split("\n").filter(Boolean)) fs.rmSync(path.join(PROFILE, "Default", d), { recursive: true, force: true }); } catch {}
     for (const f of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) try { fs.rmSync(path.join(PROFILE, f), { force: true }); } catch {}
     // The computer stops Chrome by killing it on sleep; mark the last exit clean so there's no "Restore pages?" bubble.
     try { const pf = path.join(PROFILE, "Default", "Preferences"); if (fs.existsSync(pf)) { const j = JSON.parse(fs.readFileSync(pf, "utf8")); j.profile = { ...(j.profile || {}), exit_type: "Normal", exited_cleanly: true }; fs.writeFileSync(pf, JSON.stringify(j)); } } catch {}
@@ -185,13 +185,18 @@ async function targets() { return (await (await cdpFetch(`http://127.0.0.1:${CDP
 // Switch: "_wait":"quiet" on a request = wait until the page goes quiet (no DOM changes and no requests in
 // flight for QUIET ms, capped) instead of fixed sleeps, and keep one CDP connection open between requests. Same for every page.
 let FAST = false; const QUIET = 300;
-async function quiet(c, cap = 8e3, loose = false) {
-  const t0 = Date.now(); let last = Date.now(), lastMut = -1;
+// Waits until nothing has changed for QUIET ms: no DOM change (the page's own observer keeps the time of the last one), no request in flight or
+// finished lately, and the document complete. `since` is the earliest moment a change can have come from the caller's action: the default is now,
+// so an action's effect is waited for. 0 means nothing was just done (a plain read, or an action whose own wait has already passed), and then
+// the time the page has already been idle counts, so a settled page returns at once.
+async function quiet(c, cap = 8e3, loose = false, since = Date.now()) {
+  const t0 = Date.now(); let last = since, seen = null;
   while (Date.now() - t0 < cap) {
-    let st; try { st = await evalJS(c, `(() => { if (!window.__1hcq) { window.__1hcq = { n: 0 }; try { new MutationObserver(() => window.__1hcq.n++).observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); } catch {} } return { m: window.__1hcq.n, r: document.readyState }; })()`); } catch { st = null; }
-    const busy = !st || (loose ? st.r === "loading" : (st.r !== "complete" || (c.inflight || 0) > 0));   // loose (navigation): the page only has to be parsed, requests still running (ads, trackers, late images) do not hold it
-    if (!st || st.m !== lastMut || busy) { last = Date.now(); if (st) lastMut = st.m; }
-    if (Date.now() - last >= QUIET) return Date.now() - t0;
+    let st; try { st = await evalJS(c, `(() => { if (!window.__1hcq) { window.__1hcq = { n: 0, t: performance.now() }; try { new MutationObserver(() => { window.__1hcq.n++; window.__1hcq.t = performance.now(); }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); } catch {} } return { m: window.__1hcq.n, r: document.readyState, i: performance.now() - window.__1hcq.t }; })()`); } catch { st = null; }
+    const now = Date.now(), busy = !st || (loose ? st.r === "loading" : (st.r !== "complete" || (c.inflight || 0) > 0));   // loose (navigation): the page only has to be parsed, requests still running (ads, trackers, late images) do not hold it
+    if (busy || st.m !== seen && seen !== null) last = now; else last = Math.max(last, now - st.i, loose ? 0 : c.netAt || 0);
+    if (st) seen = st.m;
+    if (now - last >= QUIET) return now - t0;
     await sleep(60);
   }
   return Date.now() - t0;
@@ -288,7 +293,7 @@ async function connectTarget(t) {
     c.send("Page.handleJavaScriptDialog", { accept }, 5e3, d.sessionId).catch(() => {}); });
   if (FAST) { const pend = new Set(); c.inflight = 0; await c.send("Network.enable");
     c.ev.push((d) => { if (d.method === "Network.requestWillBeSent" && !/^(EventSource|WebSocket)$/.test(d.params.type || "")) pend.add(d.params.requestId);
-      else if (d.method === "Network.loadingFinished" || d.method === "Network.loadingFailed") pend.delete(d.params.requestId); c.inflight = pend.size; });
+      else if (d.method === "Network.loadingFinished" || d.method === "Network.loadingFailed") pend.delete(d.params.requestId); else return; c.inflight = pend.size; c.netAt = Date.now(); });
     c.reset = setInterval(() => { pend.clear(); c.inflight = 0; }, 15e3); c.reset.unref();   // a stuck long-poll never blocks quiet forever
     c.persistent = true; conns.set(t.id, c); c.ws.on("close", () => { clearInterval(c.reset); if (conns.get(t.id) === c) conns.delete(t.id); }); }
   return c;
@@ -335,7 +340,7 @@ async function settleNav(c, parseCap = 15e3, quietCap = 1.5e3) {
   await quiet(c, quietCap, true);
 }
 async function settle(c, ms = 10e3) {
-  if (FAST) { await quiet(c, ms); return; }
+  if (FAST) { await quiet(c, ms); c.settled = true; return; }
   await sleep(400);
   const t0 = Date.now();
   while (Date.now() - t0 < ms) { try { if ((await evalJS(c, "document.readyState")) === "complete") break; } catch {} await sleep(250); }
@@ -445,7 +450,11 @@ const SNAPSHOT_JS = String.raw`(() => {
   const low = (s) => String(s).toLowerCase();
   const wanted = (o) => WANT.some((w) => low(o) === low(w) || (w.length >= 3 && o.length >= 3 && (low(o).includes(low(w)) || low(w).includes(low(o)))));
   const pickOpts = (arr) => { const seen = new Set(), all = arr.filter((t) => t && !seen.has(t) && seen.add(t)); return all.slice(0, 12).concat(all.slice(12).filter(wanted).slice(0, 8)); };
-  const backingSelect = (el) => { for (let p = el.parentElement, k = 0; p && k < 3; p = p.parentElement, k++) { const ss = p.querySelectorAll('select'); if (ss.length === 1 && p.querySelectorAll('input:not([type=hidden]),[role=combobox]').length === 1) return ss[0]; if (ss.length > 1) break; } return null; };
+  // A control's ancestors are searched for selects and for its label again for every control, so the answers are kept for the length of one outline build
+  // (the walk only adds data-1hc attributes, which none of these queries read). Otherwise a long table of inputs costs time quadratic in its size.
+  const qcache = new Map(), qsa = (p, q) => { let m = qcache.get(p); if (!m) qcache.set(p, m = new Map()); let r = m.get(q); if (!r) m.set(q, r = p.querySelectorAll(q)); return r; };
+  const labelFor = (root, id) => { let m = qcache.get(root); if (!m) qcache.set(root, m = new Map()); let f = m.get('label[for]'); if (!f) { m.set('label[for]', f = new Map()); for (const l of root.querySelectorAll('label[for]')) { const k = l.getAttribute('for'); if (!f.has(k)) f.set(k, l); } } return f.get(id) || null; };
+  const backingSelect = (el) => { for (let p = el.parentElement, k = 0; p && k < 3; p = p.parentElement, k++) { const ss = qsa(p, 'select'); if (ss.length === 1 && qsa(p, 'input:not([type=hidden]),[role=combobox]').length === 1) return ss[0]; if (ss.length > 1) break; } return null; };
   const comboOpts = (el) => {
     const bs = backingSelect(el); if (bs) return [...bs.options].map((o) => clean(o.text, 30));
     if (el.list && el.list.options) return [...el.list.options].map((o) => clean(o.value || o.text, 30));
@@ -466,7 +475,7 @@ const SNAPSHOT_JS = String.raw`(() => {
   const deepText = (nd, d = 0) => { if (d > 12) return ''; if (nd.nodeType === 3) return nd.textContent; if (nd.nodeType !== 1) return ''; const t = nd.localName; if (t === 'script' || t === 'style' || t === 'template' || t === 'svg') return '';
     let kids; if (t === 'slot') { try { kids = nd.assignedNodes({ flatten: true }); } catch { kids = []; } } else kids = nd.shadowRoot ? nd.shadowRoot.childNodes : nd.childNodes;
     let o = ''; for (const k of kids) o += ' ' + deepText(k, d + 1); return o; };
-  const label = (el) => { const id = el.id && rootOf(el).querySelector('label[for="' + CSS.escape(el.id) + '"]'); const hostLab = inShadow(el) ? (() => { const h = rootOf(el).host; return h.getAttribute('label') || h.getAttribute('aria-label') || h.getAttribute('placeholder') || h.getAttribute('name') || ''; })() : '';
+  const label = (el) => { const id = el.id && labelFor(rootOf(el), el.id); const hostLab = inShadow(el) ? (() => { const h = rootOf(el).host; return h.getAttribute('label') || h.getAttribute('aria-label') || h.getAttribute('placeholder') || h.getAttribute('name') || ''; })() : '';
     return clean(el.getAttribute('aria-label') || (id && clean(deepText(id))) || (el.closest('label') && clean(deepText(el.closest('label')))) || el.getAttribute('placeholder') || hostLab || el.getAttribute('title') || el.getAttribute('alt') || clean(el.innerText) || (el.shadowRoot || el.querySelector('slot') ? clean(deepText(el)) : '') || (tagOf(el) === 'input' && /^(button|submit|reset)$/.test(el.type) ? el.value : '') || el.getAttribute('name') || ''); };
   // Each line is kept with where it sits: rank 0 an open dialog or the focused control, 1 a control on screen, 2 text on screen, 3 within one screen height of the view, 4 the rest.
   // The top of the outline holds the best ranks, printed in page order; the other lines follow after a marker, also in page order.
@@ -486,7 +495,7 @@ const SNAPSHOT_JS = String.raw`(() => {
       if (['script', 'style', 'noscript', 'svg', 'template', 'head'].includes(tag)) continue;
       if (tag === 'slot') { walkSlot(el, dlg); continue; }
       if (el.getAttribute('aria-hidden') === 'true') { hid.aria += countInter(el); continue; }
-      const lab = (tag === 'input' && ['checkbox', 'radio'].includes(el.type)) ? (el.closest('label') || (el.id && rootOf(el).querySelector('label[for="' + CSS.escape(el.id) + '"]'))) : null;
+      const lab = (tag === 'input' && ['checkbox', 'radio'].includes(el.type)) ? (el.closest('label') || (el.id && labelFor(rootOf(el), el.id))) : null;
       const hostSeen = inShadow(el) && el.matches(INTER) && (() => { let h = rootOf(el).host; for (let k = 0; h && k < 8 && !vis(h); k++) h = rootOf(h) !== document ? rootOf(h).host : h.parentElement; return !!h && h !== document.body; })() && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';   // a field inside a visible web component, drawn with no box of its own
       if (!vis(el) && !(lab && vis(lab)) && !hostSeen && !['details'].includes(tag)) {
         const cs = getComputedStyle(el);
@@ -872,6 +881,43 @@ async function findSwapped(c, kind, orig, ms) {
     await sleep(300);
   }
 }
+// <native-value> (test/browser-native-value.test.mjs loads the text between the native-value markers; keep it free of outside names)
+// Input types that take a value, not typed text, and the format each one requires.
+const NATIVE_FORMAT = { date: "YYYY-MM-DD", time: "HH:MM", "datetime-local": "YYYY-MM-DDTHH:MM", month: "YYYY-MM", week: "YYYY-Www (for example 2026-W48)", color: "#rrggbb", range: "a number" };
+const pad2 = (n) => String(n).padStart(2, "0");
+function nativeDate(s) {
+  let x, y, m, d;
+  if ((x = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))) [y, m, d] = x.slice(1);
+  else if ((x = s.match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})$/) || s.match(/^(\d{2})(\d{2})(\d{4})$/))) [m, d, y] = x.slice(1);
+  else if ((x = s.match(/^([a-z]{3,9})\.? (\d{1,2})(?:st|nd|rd|th)?,? (\d{4})$/i))) { m = "jan feb mar apr may jun jul aug sep oct nov dec".split(" ").indexOf(x[1].slice(0, 3).toLowerCase()) + 1; [d, y] = x.slice(2); }
+  else return null;
+  [y, m, d] = [y, m, d].map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return m >= 1 && t.getUTCMonth() === m - 1 && t.getUTCDate() === d ? `${y}-${pad2(m)}-${pad2(d)}` : null;
+}
+function nativeTime(s) {
+  const x = s.match(/^(\d{1,2})(?::?(\d{2}))?(?::?(\d{2}))?\s*(?:([ap])\.?m\.?)?$/i);
+  if (!x) return null;
+  let h = Number(x[1]); const mi = Number(x[2] || 0), se = x[3];
+  if (x[4]) { if (h < 1 || h > 12) return null; h = (h % 12) + (x[4].toLowerCase() === "p" ? 12 : 0); }
+  return h < 24 && mi < 60 && (se === undefined || se < 60) ? `${pad2(h)}:${pad2(mi)}${se === undefined ? "" : ":" + se}` : null;
+}
+// The value to set on a native input of this type for the text a person would write, or null when the text can't be read as one.
+function nativeValue(type, text) {
+  const s = String(text).trim();
+  if (type === "date") return nativeDate(s);
+  if (type === "time") return nativeTime(s);
+  if (type === "datetime-local") {
+    for (const i of [...s.matchAll(/[\sT]/g)].map((m) => m.index)) { const d = nativeDate(s.slice(0, i).trim()), t = nativeTime(s.slice(i + 1).trim()); if (d && t) return `${d}T${t}`; }
+    return null;
+  }
+  if (type === "month") { const d = nativeDate(s.replace(/^(\d{4}-\d{1,2})$/, "$1-1").replace(/^(\d{1,2})\/(\d{4})$/, "$1/1/$2").replace(/^([a-z]+\.?) (\d{4})$/i, "$1 1 $2")); return d && d.slice(0, 7); }
+  if (type === "week") { const x = s.match(/^(\d{4})-?W(\d{1,2})$/i); return x && x[2] >= 1 && x[2] <= 53 ? `${x[1]}-W${pad2(x[2])}` : null; }
+  if (type === "color") return /^#[0-9a-f]{6}$/i.test(s) ? s.toLowerCase() : null;
+  if (type === "range") return s !== "" && Number.isFinite(Number(s)) ? s : null;
+  return null;
+}
+// </native-value>
 async function fillField(c, a, kind, secret) {
   const text = String(a.text ?? "");
   const q = (r) => String(r).replace(/[^a-z0-9]/gi, "");
@@ -896,6 +942,15 @@ async function fillField(c, a, kind, secret) {
       await sleep(FAST ? 150 : 350);
       const st = await evalJS(c, STATE_JS(ref)).catch(() => null);
       if (st && (st.gone || st.hidden)) { tried = true; const sw = await findSwapped(c, wantKind, orig, 3e3); if (!sw) throw secret ? handoff() : new Error(`${a.ref} went away when it was focused; take a new snapshot`); ref = sw.ref; swapped = true; continue; }
+    }
+    // A native date, time, color or range input takes a value, not typed text: set it the way a framework-built page sees a change.
+    const nat = await evalJS(c, `(() => { const e = ${sel}; return e && e.tagName === 'INPUT' && ${JSON.stringify(Object.keys(NATIVE_FORMAT))}.includes(e.type) ? e.type : null; })()`, p.fr).catch(() => null);
+    if (nat) {
+      const v = nativeValue(nat, text);
+      if (v === null) throw new Error(`${a.ref} is a ${nat} field: give the value as ${NATIVE_FORMAT[nat]}`);
+      const got = await evalJS(c, `(() => { const e = ${sel}; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(e, ${JSON.stringify(v)}); for (const t of ['input', 'change']) e.dispatchEvent(new Event(t, { bubbles: true })); return e.value; })()`, p.fr);
+      if (got !== v) throw new Error(`${a.ref} is a ${nat} field and did not take ${JSON.stringify(v)} (it shows "${got}"); check the value is allowed there`);
+      return;
     }
     // Type in the frame's own session when it has one (out-of-process iframe); otherwise in the page, where the focused frame gets the text.
     if (p.session) { try { await c.send("Input.insertText", { text }, 30e3, p.session); } catch { await c.send("Input.insertText", { text }); } }
@@ -969,14 +1024,31 @@ async function press(c, spec) {
   for (const m of [...p.mods].reverse()) { const [key, code, vk] = mk[m]; bits &= ~MOD_BITS[m]; await c.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk, modifiers: bits }); }
 }
 // Mouse steps beyond a plain click: a pointer position from a ref (scrolled into view first) or from x and y (the same 1280x800 page space as click_at).
+// The centre of the one visible element whose text is exactly `t` (smallest match; exact before case-insensitive), scrolled into view.
+// place before|after aims just inside its top or bottom edge; inside aims at the free space under the children of its container.
+const TEXT_JS = (t, place) => `(() => { const n = (s) => (s || '').replace(/\\s+/g, ' ').trim(), t = ${JSON.stringify(String(t).trim())}, vis = [...document.body.querySelectorAll('*')].filter((e) => { const b = e.getBoundingClientRect(); return b.width >= 2 && b.height >= 2 && getComputedStyle(e).visibility !== 'hidden'; });
+  let m = vis.filter((e) => n(e.textContent) === t); if (!m.length) m = vis.filter((e) => n(e.textContent).toLowerCase() === t.toLowerCase());
+  m = m.filter((e) => !m.some((o) => o !== e && e.contains(o))); if (m.length !== 1) return { n: m.length };
+  let e = m[0]; e.scrollIntoView({ block: 'center', inline: 'center' });
+  if (${JSON.stringify(place)} === 'inside') { e = e.parentElement || e; while (e.parentElement && e.parentElement !== document.body && e.getBoundingClientRect().height < 60) e = e.parentElement; }
+  const b = e.getBoundingClientRect(), k = Math.min(3, b.height / 4), kb = Math.max(b.top, ...[...e.children].map((c) => c.getBoundingClientRect().bottom));
+  const y = ${JSON.stringify(place)} === 'before' ? b.top + k : ${JSON.stringify(place)} === 'after' ? b.bottom - k : ${JSON.stringify(place)} === 'inside' ? (b.bottom - kb >= 12 ? (kb + b.bottom) / 2 : b.bottom - 4) : b.top + b.height / 2;
+  return { n: 1, x: b.left + b.width / 2, y: Math.min(y, innerHeight - 4) }; })()`;
 async function pointOf(c, a, rk, rx, ry, what) {
+  const on = rk === "ref" ? "on" : "to_on";
+  if ((a[rk] === undefined || a[rk] === null || a[rk] === "") && a[on]) {
+    const r = await evalJS(c, TEXT_JS(a[on], rk === "ref" ? "" : a.place));
+    if (r?.n !== 1) throw new Error(`${what}: ${r?.n ? r.n + " visible elements" : "no visible element"} with the text "${a[on]}"; ${r?.n ? "use a ref or x and y instead" : "check the spelling in the outline"}`);
+    if (r.x < 0 || r.y < 0 || r.x > W || r.y > H) throw new Error(`${what}: "${a[on]}" is outside the visible screen even after scrolling to it; take a new snapshot`);
+    return { x: r.x, y: r.y };
+  }
   if (a[rk] !== undefined && a[rk] !== null && a[rk] !== "") {
     const p = await box(c, a[rk]);
     if (p.x < 0 || p.y < 0 || p.x > W || p.y > H) throw new Error(`${what}: ${a[rk]} is outside the visible screen even after scrolling to it; take a new snapshot`);
     return { x: p.x, y: p.y };
   }
   const x = Number(a[rx]), y = Number(a[ry]);
-  if (a[rx] === undefined || a[ry] === undefined || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > W || y > H) throw new Error(`${what} needs ${rk} (a ref from the outline), or ${rx} and ${ry} with x between 0 and ${W} and y between 0 and ${H}`);
+  if (a[rx] === undefined || a[ry] === undefined || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > W || y > H) throw new Error(`${what} needs ${rk} (a ref from the outline), ${on} (its visible text), or ${rx} and ${ry} with x between 0 and ${W} and y between 0 and ${H}`);
   return { x, y };
 }
 const mouse = (c, type, x, y, extra = {}) => c.send("Input.dispatchMouseEvent", { type, x, y, ...extra });
@@ -1180,7 +1252,7 @@ const OPS = {
     const pick = found.find((x) => x.r.password) || found.find((x) => x.r.username) || found[0];
     return { username_ref: pick.r.username || null, password_ref: pick.r.password || null };
   },
-  async snapshot(b, c) { if (FAST) await quiet(c, 1.5e3); else if ((await evalJS(c, "document.readyState").catch(() => "complete")) !== "complete") await quiet(c, 2e3);   // a page still loading gets a moment to finish
+  async snapshot(b, c) { if (FAST) await quiet(c, 1.5e3, false, 0); else if ((await evalJS(c, "document.readyState").catch(() => "complete")) !== "complete") await quiet(c, 2e3);   // a page still loading gets a moment to finish
     const o = await snapshot(c, b.from_line); remember(c, o); return o; },
   async back(b, c, ctx) {
     // A tab a page opened has no history to go back to: close it and return to the task's other tab.
@@ -1220,7 +1292,7 @@ const OPS = {
   },
   async actRun(b, c, ctx, fx) {
     const c0 = c, acts = Array.isArray(b.actions) ? b.actions : []; if (!acts.length || acts.length > 20) throw new Error("actions: 1–20 steps");
-    let done = 0, uploaded = false, switched = false; const notes = []; const before = await snapshot(c).catch(() => null);
+    let done = 0, uploaded = false, switched = false, stepEnd = 0; const notes = []; const before = await snapshot(c).catch(() => null);
     const prevSeen = seenOutline.get(c.targetId) || (before ? outlineRec(before) : null);   // what this tab's outline was when it was last given out
     fx.reset(); fx.mut0 = await fxMut(c).catch(() => null);   // from here on, everything the page does is the steps' effect
     // A click can open a new tab or window. The opener relationship (onBrowserEvent) put it in this task's tab set and made it current;
@@ -1235,7 +1307,7 @@ const OPS = {
     };
     const h0 = (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries.length;
     for (const a of acts) {
-      const kind = String(a.kind || "");
+      const kind = String(a.kind || ""); c.settled = false;
       if (kind === "click") { await clickRef(c, a.ref); await settle(c, 8e3); }
       else if (kind === "click_at") {
         // A pixel position in the page (viewport, CSS pixels: the same numbers a screenshot of the page uses), for things with no ref such as a canvas.
@@ -1276,13 +1348,14 @@ const OPS = {
         else { a.kind = "fill"; acts.splice(acts.indexOf(a) + 1, 0, a); done--; }
       }
       else throw new Error(`unknown action kind "${kind}" (click, click_at, hover, hold, drag, double_click, right_click, fill, type, select, press, scroll, wait, upload)`);
-      done++;
+      done++; stepEnd = Date.now();
       if (await follow()) { const rest = acts.length - acts.indexOf(a) - 1; notes.push(`this step opened a new tab, and it is now this task's current tab${rest > 0 ? `; the other ${rest} step(s) were not run because their refs belong to the earlier page (use the refs below)` : ""}`); break; }
     }
     // Payment/submit buttons often call an API for several seconds before the page moves on. After clicking one,
     // watch for a navigation for up to 20 s so the result reflects what actually happened.
     // Quiet mode: one general rule for every page. If the steps started a navigation, wait for quiet up to 15 s; otherwise up to 3 s.
-    if (FAST) { const n = (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries.length; await quiet(c, n > h0 ? 15e3 : 3e3); }
+    // A last step that settled has already had its wait, so only the page's own idle time counts; one that did not (fill, scroll, wait) is waited for from its end.
+    if (FAST) { const n = (await c.send("Page.getNavigationHistory").catch(() => ({ entries: [] }))).entries.length; await quiet(c, n > h0 ? 15e3 : 3e3, false, c.settled ? 0 : stepEnd); }
     const lastClick = FAST ? null : [...acts].reverse().find((a) => a.kind === "click");
     if (lastClick && before) {
       const line = before.full.split("\n").find((l) => l.startsWith(`[${lastClick.ref}] `)) || "";
@@ -1366,7 +1439,9 @@ const server = http.createServer(async (req, res) => {
           const out = await limited(m[1], OPS[m[1]](b, c, ctx));
           if (/^(navigate|snapshot|act|back)$/.test(m[1]) && out && /^https?:/.test(out.url || "")) { const h = await Promise.race([evalJS(c, VISION_HINTS_JS), new Promise((z) => setTimeout(() => z(null), 1500))]).catch(() => null); if (h) out.hints = h; }
           if (out?.url && /^https?:/.test(out.url)) { try { fs.writeFileSync(LAST_URL, out.url); } catch {} if (out.url !== rec.url) { rec.url = out.url; saveTabs(); } }
-          return { ...out, ...(note ? { tab_note: note } : {}) };
+          // How many entries the downloads folder holds, so the Worker can skip listing it when it is empty (the field is absent from an older service).
+          const dir = /^(navigate|snapshot|act)$/.test(m[1]) ? (() => { try { return fs.readdirSync(DOWNLOADS_DIR).filter((n) => !n.startsWith(".")).length; } catch { return 0; } })() : undefined;
+          return { ...out, ...(note ? { tab_note: note } : {}), ...(dir === undefined ? {} : { downloads_dir: dir }) };
         } finally { for (const c of ctx.opened) c.close(); }
       });
       return send(200, { ok: true, ...(boot.cold ? { browser_started_ms: boot.start_ms } : {}), ...out });

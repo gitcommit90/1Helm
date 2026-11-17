@@ -8,7 +8,7 @@ import { byokApi, withChatgpt, withClaudeCode, ByokError } from "../src/byok.js"
 import { connDdl } from "../src/ee/byok-connections.js";
 import { chatgptChat } from "../src/ee/byok-chatgpt.js";
 import { claudeChat, claudeUsage } from "../src/ee/byok-claudecode.js";
-import { ocFail } from "../src/ee/byok-opencode.js";
+import { ocFail, ocUsage } from "../src/ee/byok-opencode.js";
 import { orDdl } from "../src/byok-openrouter.js";
 import { sealSecret } from "../src/sentinel.js";
 import * as U from "../src/ee/byok-usage.js";
@@ -22,7 +22,7 @@ for (const f of ["0022_031_byok", "0025_034_byok_mode", "0038_046_ai_privacy", "
 const D1 = { prepare: (q) => { const st = d1.prepare(q); let a = []; const o = { bind: (...x) => { a = x; return o; }, first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }),
   run: async () => { const r = st.run(...a); return { meta: { changes: Number(r.changes) } }; } }; return o; } };
 let engineUsage = { none: true, why: "asleep" }, engineThrows = false, engineComplete = null; const engineCalls = [];
-const engine = { usage: async () => { engineCalls.push("usage"); if (engineThrows) throw new Error("x"); return engineUsage; }, complete: async (a) => { if (engineComplete) throw engineComplete; return { choices: [{ message: { content: "ok" } }] }; }, status: async () => ({ signedIn: true, account: { email: "s@x.example" } }), signOut: async () => {} };
+const engine = { usageNow: async () => { engineCalls.push("usageNow"); return engineUsage; }, usage: async () => { engineCalls.push("usage"); if (engineThrows) throw new Error("x"); return engineUsage; }, complete: async (a) => { if (engineComplete) throw engineComplete; return { choices: [{ message: { content: "ok" } }] }; }, status: async () => ({ signedIn: true, account: { email: "s@x.example" } }), signOut: async () => {} };
 const env = { ONEHELM_EE: "1hc", DB: D1, GATEWAY_HOST: "app.example.test", APP_HOST: "app.example.test", ENV_NAME: "test", VAULT_KEY: Buffer.from(new Uint8Array(32).map((_, i) => i * 5 + 1)).toString("base64"), LEDGER: { idFromName: (n) => n, get: () => ({}) },
   CLAUDE_ENGINE: { idFromName: (n) => n, get: () => engine } };
 const jres = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
@@ -41,8 +41,11 @@ const wipe = async () => { await orDdl(env); await connDdl(env); d1.exec("DELETE
 const whamCalls = [];   // every fetch to a ChatGPT backend-api address (there must be none: OpenAI's guidelines say not to use it for this flow)
 const fetchStub = async (u, init = {}) => {
   if (/chatgpt\.com\/backend-api/.test(String(u))) { whamCalls.push(String(u)); return jres({}, 403); }
+  if (String(u) === "https://opencode.ai/zen/go/v1/usage") { ocCalls.push({ u: String(u), init }); const x = typeof ocAnswer === "function" ? await ocAnswer() : ocAnswer; return jres(x.body, x.status); }
   throw new Error(`unexpected fetch ${u}`);
 };
+const ocCalls = []; let ocAnswer = { status: 200, body: {} };
+const GO = { usage: { rolling: { status: "ok", percent: 42.26, resetsAt: "2099-10-24T17:00:00.000Z" }, weekly: { status: "ok", percent: 18, resetsAt: "2099-10-27T00:00:00.000Z" }, monthly: { status: "rate-limited", percent: 97, resetsAt: "2099-11-01T00:00:00.000Z" } } };
 globalThis.fetch = fetchStub;
 
 test("parsers: Claude windows, and the unified headers (a fraction and epoch seconds)", () => {
@@ -54,13 +57,16 @@ test("parsers: Claude windows, and the unified headers (a fraction and epoch sec
   assert.deepEqual([U.resetIn(NOW + 5 * 60e3, NOW), U.resetIn(NOW + 130 * 60e3, NOW), U.resetIn(NOW + 3 * 3600e3, NOW), U.resetIn(NOW + 3 * 86400e3, NOW), U.resetIn(NOW - 1, NOW)], ["in 5 minutes", "in 2 hours 10 minutes", "in 3 hours", "in 3 days", ""]);
 });
 
-test("cache and throttle: fresh numbers are not read again, a refused source is remembered, a network error is retried after two minutes, a passed reset shows nothing used", async () => {
+test("cache and throttle: fresh numbers are not read again, a refused source is remembered, a network error is retried after two minutes, a window whose reset passed is left out", async () => {
   await wipe(); let n = 0, mode = "ok";
   const getter = async () => { n++; if (mode === "ok") return { windows: [{ id: "session", label: "5 hours", used: 40, resets_at: NOW + 3600e3 }, { id: "weekly", label: "This week", used: 10, resets_at: NOW + 86400e3 * 3 }], source: "t" }; throw Object.assign(new Error("x"), { why: mode }); };
   let v = await U.refreshUsage(env, "t1", "chatgpt", getter, { now: NOW }); assert.equal(n, 1); assert.equal(v.windows.length, 2); assert.equal(v.tried, true); assert.equal(v.manage, "https://chatgpt.com/settings/usage");
   await U.refreshUsage(env, "t1", "chatgpt", getter, { now: NOW + 60e3 }); assert.equal(n, 1, "within five minutes: from the cache");
   v = await U.refreshUsage(env, "t1", "chatgpt", getter, { now: NOW + 6 * 60e3 }); assert.equal(n, 2, "stale: read again");
-  v = await U.viewOf("chatgpt", d1.prepare("SELECT * FROM byok_usage").get(), NOW + 3700e3); assert.deepEqual(v.windows[0], { id: "session", label: "5 hours", used: 0, resets_at: null }); assert.equal(v.windows[1].used, 10);
+  const row = d1.prepare("SELECT * FROM byok_usage").get();
+  v = U.viewOf("chatgpt", row, NOW + 3700e3); assert.deepEqual(v.windows.map((w) => [w.id, w.used]), [["weekly", 10]], "the ended window is left out, the current one unchanged");
+  assert.equal(U.viewOf("chatgpt", row, NOW + 86400e3 * 4).windows.length, 0, "both ended: no windows");
+  assert.equal(U.viewOf("chatgpt", row, NOW + 60e3).windows.length, 2, "both current: both");
   v = await U.refreshUsage(env, "t1", "chatgpt", getter, { now: NOW + 3700e3 }); assert.equal(n, 3, "a window that reset is read again");
   d1.exec("DELETE FROM byok_usage"); n = 0; mode = "http_401";
   v = await U.refreshUsage(env, "t1", "chatgpt", getter, { now: NOW }); assert.equal(n, 1); assert.deepEqual(v.windows, []); assert.equal(v.tried, true, "no numbers: the page shows Manage usage");
@@ -104,10 +110,41 @@ test("Claude Code: the engine's numbers become two bars; with none the link show
   await wipe(); seedClaude(); engineThrows = true; r = await api("/api/byok/usage"); assert.equal(r.status, 200); assert.deepEqual(r.d.usage.claudecode.windows, []);
 });
 
-test("OpenCode: no usage endpoint is documented for a personal key, so the link is all there is and nothing is fetched", async () => {
-  await wipe(); await seedOpencode(); const before = whamCalls.length;
-  const r = await api("/api/byok/usage"); assert.deepEqual(r.d.usage.opencode, { windows: [], at: 0, tried: false, manage: "https://opencode.ai/console", limit: null }); assert.equal(whamCalls.length, before);
-  assert.equal(d1.prepare("SELECT COUNT(*) n FROM byok_usage").get().n, 0);
+test("Check usage: the POST reads now, saves and returns the view; a second POST inside 60 seconds asks the engine nothing; other services are refused", async () => {
+  await wipe(); seedClaude();
+  engineUsage = { source: "oauth", at: 1, windows: [{ id: "session", label: "5 hours", used: 12, resets_at: Date.now() + 3600e3 }] };
+  let r = await api("/api/byok/usage", { service: "claudecode" }); assert.equal(r.status, 200); assert.deepEqual(r.d.usage.claudecode.windows.map((w) => [w.id, w.used]), [["session", 12]]);
+  assert.deepEqual(engineCalls, ["usageNow"]); assert.equal(d1.prepare("SELECT COUNT(*) n FROM byok_usage").get().n, 1, "saved in byok_usage");
+  r = await api("/api/byok/usage", { service: "claudecode" }); assert.equal(r.d.usage.claudecode.windows.length, 1); assert.equal(engineCalls.length, 1, "inside 60 seconds");
+  d1.exec("UPDATE byok_usage SET fetched_at = fetched_at - 61000"); engineUsage = { none: true, why: "asleep" };
+  r = await api("/api/byok/usage", { service: "claudecode" }); assert.equal(engineCalls.length, 2, "after 60 seconds"); assert.equal(d1.prepare("SELECT fail_why w FROM byok_usage").get().w, "asleep", "a failed check is saved too");
+  for (const service of ["chatgpt", "opencode", undefined]) assert.equal((await api("/api/byok/usage", { service })).status, 400);
+  assert.equal(engineCalls.length, 2);
+});
+
+test("OpenCode: three bars from Go's usage endpoint (a 0 to 100 percent; a rate-limited meter is 100), parsed meters only", () => {
+  assert.deepEqual(U.parseOpencodeUsage(GO).windows, [{ id: "session", label: "5 hours", used: 42.3, resets_at: Date.parse("2099-10-24T17:00:00.000Z") }, { id: "weekly", label: "This week", used: 18, resets_at: Date.parse("2099-10-27T00:00:00.000Z") }, { id: "monthly", label: "This month", used: 100, resets_at: Date.parse("2099-11-01T00:00:00.000Z") }]);
+  assert.deepEqual(U.parseOpencodeUsage({ usage: { rolling: { status: "ok", percent: "x" }, weekly: null, monthly: { status: "ok", percent: 5, resetsAt: "2099-11-01T00:00:00.000Z" } } }).windows.map((w) => w.id), ["monthly"]);
+  assert.deepEqual(U.parseOpencodeUsage(null).windows, []); assert.deepEqual(U.parseOpencodeUsage({ usage: [] }).windows, []);
+  assert.equal(U.limitFromWindows(U.parseOpencodeUsage(GO).windows).window, "monthly", "a third window works with the limit note");
+});
+test("OpenCode: the getter sends the key to opencode.ai only, maps each outcome, and never returns or throws the key", async () => {
+  const KEY = "OC-SECRET-key", cfg = { base: "https://opencode.ai/inference/go", key: KEY };
+  ocCalls.length = 0; ocAnswer = { status: 200, body: GO };
+  const ok = await ocUsage(cfg, { fetchImpl: fetchStub }); assert.equal(ok.windows.length, 3); assert.equal(ocCalls[0].init.headers.authorization, `Bearer ${KEY}`); assert.equal(ocCalls[0].init.headers["x-opencode-org-id"], undefined); assert.ok(!JSON.stringify(ok).includes(KEY));
+  const fails = [];
+  for (const [status, body, permanent] of [[401, {}, true], [403, {}, true], [404, {}, true], [429, {}, false], [503, {}, false], [200, { usage: {} }, true]]) {
+    ocAnswer = { status, body }; const e = await ocUsage(cfg, { fetchImpl: fetchStub }).catch((x) => x); fails.push(e); assert.equal(e.permanent, permanent, String(status));
+  }
+  const slow = await ocUsage(cfg, { fetchImpl: async () => { throw Object.assign(new Error("t"), { name: "TimeoutError" }); } }).catch((x) => x); assert.deepEqual([slow.why, slow.permanent], ["timeout", false]);
+  ocCalls.length = 0; const off = await ocUsage({ base: "https://evil.example/inference", key: KEY }, { fetchImpl: fetchStub }).catch((x) => x); assert.equal(ocCalls.length, 0, "no call for another host"); assert.equal(off.permanent, true);
+  assert.ok(![...fails, slow, off].some((e) => String(e.message).includes(KEY)));
+});
+test("OpenCode: the usage route shows three bars from the endpoint, and the link after a refusal", async () => {
+  await wipe(); await seedOpencode(); ocCalls.length = 0; ocAnswer = { status: 200, body: GO };
+  let r = await api("/api/byok/usage"); console.log("DBG", JSON.stringify(r.d.usage.opencode), d1.prepare("SELECT fail_why FROM byok_usage").all(), ocCalls.length); assert.deepEqual(r.d.usage.opencode.windows.map((w) => [w.id, w.used]), [["session", 42.3], ["weekly", 18], ["monthly", 100]]); assert.equal(r.d.usage.opencode.manage, "https://opencode.ai/console");
+  assert.match(ocCalls[0].init.headers.authorization, /^Bearer .+/); assert.ok(!JSON.stringify(r.d).includes(ocCalls[0].init.headers.authorization.slice(7)));
+  await wipe(); await seedOpencode(); ocAnswer = { status: 403, body: {} }; r = await api("/api/byok/usage"); assert.deepEqual(r.d.usage.opencode.windows, []); assert.equal(r.d.usage.opencode.tried, true);
 });
 
 test("the usage route covers only connected services, and removing a service forgets its numbers", async () => {

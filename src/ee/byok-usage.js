@@ -7,7 +7,8 @@
 //                token usage of each completed Responses call (byok-chatgpt.js recordChatgptUse and chatgptUseSummary) and a "Manage usage" link.
 //   Claude Code  the rate limit headers Anthropic sends on every model call, kept by the engine (claude-engine.js), else GET https://api.anthropic.com/api/oauth/usage run INSIDE the
 //                engine's container with the CLI's own token (src/ee/claude-engine/relay/usage.mjs), else the link.
-//   OpenCode     no usage endpoint is documented for a personal API key (opencode.ai/v2/docs/console/api), so it is the link.
+//   OpenCode     GET https://opencode.ai/zen/go/v1/usage with the connection's API key (byok-opencode.js ocUsage). The endpoint is not listed in OpenCode's documentation pages; the answer is
+//                expected as { usage: { rolling, weekly, monthly } } (see parseOpencodeUsage). With no numbers the page shows the link.
 // A failed source is remembered (a permanent refusal 6 hours, a network or server error 2 minutes), so a page view never retries it, and the link shows meanwhile.
 //
 // The parser for the Claude usage answer is ported from rerouted (https://github.com/gitcommit90/rerouted, src/lib/quota.js, MIT), an app by the same author.
@@ -41,7 +42,7 @@ export function epochMs(v) {
 function windowOf(id, used, resetsAt, seconds) {
   const u = clampPercent(used); if (u == null) return null;
   const fiveHours = id === "session" && (!seconds || (Number(seconds) >= 17000 && Number(seconds) <= 19000));
-  return { id, label: id === "weekly" ? "This week" : fiveHours ? "5 hours" : "Session", used: Math.round(u * 10) / 10, resets_at: epochMs(resetsAt) };
+  return { id, label: id === "weekly" ? "This week" : id === "monthly" ? "This month" : fiveHours ? "5 hours" : "Session", used: Math.round(u * 10) / 10, resets_at: epochMs(resetsAt) };
 }
 // Claude: { five_hour: { utilization, resets_at }, seven_day: { ... } } (utilization is a percent)
 export function parseClaudeUsage(data) {
@@ -49,6 +50,14 @@ export function parseClaudeUsage(data) {
   const a = windowOf("session", f?.utilization, f?.resets_at, 18000), b = windowOf("weekly", w?.utilization, w?.resets_at, null);
   if (a) windows.push(a); if (b) windows.push(b);
   return { plan: typeof data?.subscription_type === "string" ? data.subscription_type.slice(0, 40) : "", windows };
+}
+// OpenCode Go: { usage: { rolling, weekly, monthly } }, each { status: "ok" | "rate-limited", percent (0 to 100), resetsAt (ISO date) }. A rate-limited meter counts as 100 used.
+export function parseOpencodeUsage(data) {
+  const windows = [];
+  for (const [id, key] of [["session", "rolling"], ["weekly", "weekly"], ["monthly", "monthly"]]) {
+    const m = data?.usage?.[key], w = m && windowOf(id, m.status === "rate-limited" ? 100 : m.percent, m.resetsAt, id === "session" ? 18000 : null); if (w) windows.push(w);
+  }
+  return { windows };
 }
 // The response headers the Claude relay keeps (anthropic-ratelimit-*; lower case names). Claude Code reads the same unified headers for its status line:
 //   anthropic-ratelimit-unified-5h-utilization / -5h-reset and -7d-utilization / -7d-reset (a fraction from 0 to 1, and epoch seconds), -status (allowed, rejected), -reset, -representative-claim.
@@ -73,12 +82,12 @@ export function resetIn(ms, now = Date.now()) {
 }
 
 // ---- the cache ----
-async function rowOf(env, tid, service) { await usageDdl(env); return (await env.DB.prepare("SELECT state_json, fetched_at, fail_at, fail_why, limit_json FROM byok_usage WHERE tenant_id=? AND service=?").bind(String(tid), service).first()) || null; }
+export async function rowOf(env, tid, service) { await usageDdl(env); return (await env.DB.prepare("SELECT state_json, fetched_at, fail_at, fail_why, limit_json FROM byok_usage WHERE tenant_id=? AND service=?").bind(String(tid), service).first()) || null; }
 const parse = (s) => { try { const v = s ? JSON.parse(s) : null; return v && typeof v === "object" ? v : null; } catch { return null; } };
-// What the page gets for one service. A window whose reset time has passed shows 0 used with no reset time (its usage began again from nothing).
+// What the page gets for one service. A window whose reset time has passed is left out, because its numbers describe a period that ended.
 export function viewOf(service, row, now = Date.now()) {
   const st = parse(row?.state_json), lim = parse(row?.limit_json);
-  const windows = (st?.windows || []).map((w) => (w.resets_at && w.resets_at <= now ? { ...w, used: 0, resets_at: null } : w));
+  const windows = (st?.windows || []).filter((w) => !(w.resets_at && w.resets_at <= now));
   const limit = lim && ((lim.resets_at && lim.resets_at > now) || (!lim.resets_at && now - lim.at < LIMIT_SHOW_MS)) ? { window: lim.window || "", resets_at: lim.resets_at || null } : null;
   return { windows, at: Number(row?.fetched_at) || 0, tried: !!(Number(row?.fetched_at) || Number(row?.fail_at)), manage: USAGE_MANAGE[service] || "", limit };
 }

@@ -28,12 +28,12 @@ async function page() {
 // 1) the very first open on a new browser: the frame, no loading line; then the content
 delay = 40; let p = await page(); let h = p.html();
 assert.ok(!/Loading/.test(h), "no loading text on the very first open"); assert.match(h, /cmskel/); assert.match(h, /data-cmown/); ok("first open on a new browser: the frame of the page, no loading line");
-await wait(250); p.html(); await wait(100); h = p.html(); assert.match(h, /data-bykconn=/); assert.match(h, /data-cmpick="general\|0"/); assert.ok(!/Loading/.test(h)); ok("then the content");
+await wait(250); p.html(); await wait(100); h = p.html(); assert.match(h, /data-bykconn=/); assert.match(h, /data-cmopen="general"/); assert.ok(!/Loading/.test(h)); ok("then the content");
 const raw = [...store.values()].join(" "); assert.ok(!/sk_|bearer|token|secret/i.test(raw), "the cached answers hold no key or token"); assert.ok([...store.keys()].every((k) => k.endsWith(":demoslug")), "kept by workspace"); ok("the cache is keyed by workspace and holds no key or token");
 
 // 2) the second open (a new page load with the same browser storage): the full content in the same frame, no loading text
 calls = []; p = await page(); h = p.html();
-assert.ok(!/Loading/.test(h) && !/cmskel/.test(h)); assert.match(h, /data-bykconn=/); assert.match(h, /data-cmpick="general\|0"/); assert.match(h, /GPT-6\.1 Terra/); ok("second open: the full content in the same frame, no loading text");
+assert.ok(!/Loading/.test(h) && !/cmskel/.test(h)); assert.match(h, /data-bykconn=/); assert.match(h, /data-cmopen="general"/); assert.match(h, /GPT-6\.1 Terra/); ok("second open: the full content in the same frame, no loading text");
 await wait(2000); assert.ok(calls.includes("/byok") && calls.includes("account/custom-models?scope=services"), "both answers are read again in the background at boot: " + calls.join()); ok("both answers are read again in the background");
 
 // 3) an unchanged answer redraws nothing; a changed one updates in place

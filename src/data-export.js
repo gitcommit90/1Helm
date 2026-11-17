@@ -26,6 +26,7 @@ import { ZipOut } from "./data-export-zip.js";
 import { stPut, stDelete } from "./storage.js";
 import { bankId } from "./mem0.js";
 import { nsOf } from "./mem0-store.js";
+import { memEnv } from "./mem-shard.js";
 import { linkToken, tokenHash, publicBase } from "./share.js";
 import { scrubDeep } from "./secrets-scrub.js";
 import { safeName } from "./files.js";
@@ -307,7 +308,7 @@ async function raw(env, st, src, cur) {
 async function fetchPage(env, st, src, cur) {
   const tid = st.tenant.id;
   if (src.k === "d1") { const spec = D1_TABLES[src.i]; return d1Page(env, spec, argsOf(spec, st), cur); }
-  if (src.k === "mem") { const ns = await nsOf(bankId(env, tid, src.slug)), spec = { table: src.table, where: "ns = ?" }; return d1Page(env, spec, [ns], cur, { scrub: false }); }
+  if (src.k === "mem") { const ns = await nsOf(bankId(env, tid, src.slug)), spec = { table: src.table, where: "ns = ?" }; return d1Page(await memEnv(env, tid), spec, [ns], cur, { scrub: false }); }
   if (src.k === "arch" || src.k === "archrows" || src.k === "bee") { const r = await raw(env, st, src, cur); return { items: r.rows, next: r.next }; }
   if (src.k === "beeconvs") {
     if (!env.BEE_SYNC) return { items: [], next: null };

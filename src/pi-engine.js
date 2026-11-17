@@ -11,7 +11,7 @@ import { untilStopped, STOPPED_TOOL_TEXT, STEP_LIMIT_CHAT_ASK } from "./stop.js"
 import { guardModel, guardTools, reportAsk, OUT_OF_TIME_REPLY } from "./spendguard.js";
 import { stallCheck } from "./stall-guard.js";
 import { isByokError, BYOK_CREDITS_REPLY } from "./byok.js";
-import { COMPUTER_BUSY_MSG, isComputerBusy } from "./computer-capacity.js";
+import { busyReply, isComputerBusy } from "./computer-capacity.js";
 import { ackNudge, workNudge, openTodoNudge, openWorkFacts } from "./ack-stall.js";
 import { turnFacts } from "./ee/index.js";
 import { liveNudge, noteRan } from "./live-check.js";
@@ -152,7 +152,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
       res.effectStart?.(tc, id, t.function.name, params);   // resume.js: written BEFORE it runs
       if (COMPUTER_TOOLS.has(t.function.name)) {
         stats.computer_used = 1;
-        if (warm) { const w0 = Date.now(); const w = await warm; stats.computer_wait_ms += Date.now() - w0; warm = Promise.resolve({ ok: true }); if (!w.ok) text = res.creditsPaused?.(w.error, tc) || `error: computer unavailable: ${w.error}`; }
+        if (warm) { const w0 = Date.now(); const w = await warm; stats.computer_wait_ms += Date.now() - w0; warm = Promise.resolve({ ok: true }); if (!w.ok && !isComputerBusy(w.error)) text = res.creditsPaused?.(w.error, tc) || `error: computer unavailable: ${w.error}`; }
         if (!text) { try { const r = await res.execComputerTool(t.function.name, params, tc); text = egressLabel(r) + formatExec(r, outLimit); } catch (e) { if (isResetErr(e)) tc.objectReset = true; text = res.creditsPaused?.(e, tc) || `error: ${e.message}`; } }
       } else text = await untilStopped(tc, res.localTool(t.function.name, params, tc), STOPPED_TOOL_TEXT).catch((e) => { if (isResetErr(e)) { tc.objectReset = true; return ""; } throw e; });
       // A reset under this call (resume.js): nothing of it is recorded (no step result, no journal "done", no saved result), so the
@@ -276,7 +276,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
   if (tc.objectReset || (error && isResetErr(error))) { tc.objectReset = true; throw Object.assign(new Error("Durable Object reset because its code was updated."), { objectReset: true }); }
   if (stepCapped && !steerPis.length) tc.limitWhy ||= "steps";   // out of steps (not just answering what they added): a paused card
   let reply = error ? said.join("\n\n") : answerText(splitProgress(said, saidMeta));
-  if (!reply && error) reply = isByokError(error) ? error : isComputerBusy(error) ? COMPUTER_BUSY_MSG : /out_of_credits/.test(error) ? (res.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : /daily safety limit/.test(error) ? DAY_LIMIT_REPLY : isPlatformOverload(error) ? PLATFORM_OVERLOAD_MSG : `Something went wrong: ${error}`;
+  if (!reply && error) reply = isByokError(error) ? error : busyReply(error) ? busyReply(error) : /out_of_credits/.test(error) ? (res.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : /daily safety limit/.test(error) ? DAY_LIMIT_REPLY : isPlatformOverload(error) ? PLATFORM_OVERLOAD_MSG : `Something went wrong: ${error}`;
   if (kind === "chat" && steps >= limit() && !error) reply = reply || "I stopped after several steps; tell me if you want me to keep going.";
   return { reply, error, said, saidMeta, checkpoints, messagesForNotes: toOpenAI(sys, finalMsgs || [...histPi, userPi]) };
 }

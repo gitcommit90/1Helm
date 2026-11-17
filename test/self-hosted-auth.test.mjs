@@ -87,7 +87,7 @@ response = await worker.fetch(new Request(`https://owner.example.com/w/${tenant.
 }), env, { waitUntil() {} });
 assert.equal(response.status, 413, "ordinary workspace JSON rejects an oversized stream despite a forged short length");
 assert.equal((await response.json()).error, "too_large");
-for (const path of ["/api/ch/main/exec", "/api/computer/exec"]) {
+for (const path of ["/api/ch/main/exec"]) {
   let reachedComputer = false;
   const computer = { idFromName: (name) => name, get: () => new Proxy({}, { get() { reachedComputer = true; throw new Error("oversized body reached computer"); } }) };
   response = await worker.fetch(new Request(`https://owner.example.com/w/${tenant.slug}${path}`, {

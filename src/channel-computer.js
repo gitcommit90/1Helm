@@ -5,6 +5,7 @@
 // Layers: newest first; a session's changes are one "delta" layer (replaced on each save in that session).
 // A layer only becomes part of the workspace after its bytes are in R2 and the SHA-256 matched.
 import { capped } from "./limits.js";
+import { boundedJson } from "./bounded-body.js";
 import { SEARCH_POLICY, searchUrlFor, blockedNote } from "./computer-search.js";
 import { interceptTargets } from "./sentinel-hosts.js";
 import { SNAP_CMD } from "./files-saveback.js";
@@ -153,6 +154,7 @@ export async function linkFetch(env, id, req) {
         if (req.method !== "POST") return new Response("POST only", { status: 405 });
         return Response.json(await C.markDraining());
       }
+      case "/disk": { if (req.method !== "POST") return new Response("POST only", { status: 405 }); return Response.json(await C.diskReport(await boundedJson(req, 4096).catch(() => ({})))); }
     }
     return new Response("not found", { status: 404 });
   }
@@ -316,6 +318,36 @@ export class ChannelComputer extends DurableObject {
     this.log(`save ${kind} (${l.reason}): ${l.bytes} bytes, pack ${l.pack_ms}ms, upload ${l.upload_ms}ms, dropped ${drop.length}`);
     return { ok: true, kind, bytes: l.bytes, pack_ms: l.pack_ms, upload_ms: l.upload_ms, layers: this.stack().length };
   }
+  // The computer's disk guard (image/opt/1hc/disk.sh) reports used and total bytes, the level (ok, low, full) and the bytes it cleared.
+  // The latest report is kept in kv (shown by status() and the diagnostics table). A change of level queues one card for the person, and a
+  // change to low or full with unsaved changes asks for a save now so the unsaved part stays small.
+  async diskReport(r) {
+    const level = ["low", "full"].includes(r.level) ? r.level : "ok", prev = this.get("disk_level") || "ok", n = (v) => Math.max(0, Number(v) || 0);
+    this.put("disk", JSON.stringify({ used: n(r.used), total: n(r.total), free: n(r.free), level, cleared: n(r.cleared), at: Date.now() }));
+    if (n(r.cleared)) this.log(`disk ${level}: cleared ${n(r.cleared)} bytes of caches`);
+    if (level === prev) return { ok: true };
+    this.put("disk_level", level); this.log(`disk level ${prev} -> ${level}`);
+    if (level === "ok") this.sql.exec("DELETE FROM kv WHERE k='disk_card'");
+    else { this.put("disk_card", level); if (this.get("dirty") === "1") { this.put("save_due", Date.now()); await this.armAlarm(Date.now() + 1000); } }
+    return { ok: true };
+  }
+  // What the helper and the person hear while the disk is low or full: a note at most every 10 minutes and one card per level change.
+  diskNotes() {
+    let d = null; try { d = JSON.parse(this.get("disk") || "null"); } catch {}
+    if (!d || d.level === "ok" || !d.total) return {};
+    const gb = (b) => (b / 1e9).toFixed(1), nums = `${gb(d.used)} of ${gb(d.total)} GB`, out = {};
+    if (Date.now() - Number(this.get("disk_told") || 0) >= 10 * 60e3) {
+      this.put("disk_told", Date.now());
+      out.disk_note = `The computer's disk is ${Math.round(d.used / d.total * 100)} percent full (${nums}). Caches were cleared automatically. Large files should be removed or moved to the Library.`;
+    }
+    const card = this.get("disk_card");
+    if (card) {
+      this.sql.exec("DELETE FROM kv WHERE k='disk_card'");
+      out.disk_card = card === "full" ? "This channel's computer disk is full, so new work can't be saved. The computer stays on until space is freed. Delete files you no longer need."
+        : `This channel's computer disk is almost full (${nums}). 1Helm cleared its caches. Delete files you no longer need or move them to the Library.`;
+    }
+    return out;
+  }
   async markDraining() { this.put("draining", "1"); this.put("ready", "0"); this.log("container got SIGTERM; saving itself"); return { ok: true }; }
 
   // ---- lifecycle ----
@@ -426,6 +458,7 @@ export class ChannelComputer extends DurableObject {
     // A container that got SIGTERM is saving itself; wait for it to exit rather than racing it.
     for (let i = 0; i < 240 && this.ctx.container.running && this.get("draining") === "1"; i++) await sleep(250);
     this.put("ready", "0"); this.put("draining", "0");
+    this.sql.exec("DELETE FROM kv WHERE k IN ('disk','disk_level','disk_card','disk_hold_until')");   // the last level belongs to the previous container
     // Starting right after a stop is where the platform stalls; respect a short gap since the last stop.
     const gap = Number(this.get("stopped_at") || 0) + Number(this.get("gap_override") ?? RESTART_GAP_MS) - Date.now();
     let gapMs = 0; if (gap > 0) { gapMs = gap; await sleep(gap); }
@@ -468,20 +501,24 @@ export class ChannelComputer extends DurableObject {
       this.log(`start attempt ${attempts} failed after ${Date.now() - t0}ms: ${exited || "no answer in " + START_ATTEMPT_MS + "ms"}`);
       if (this.ctx.container.running) { try { await Promise.race([this.ctx.container.destroy("stuck start"), sleep(5e3)]); } catch {} }
       // The class is at max_instances: stop after a short bound instead of the full START_TOTAL_MS.
-      if (isCapacityError(lastErr)) { busySince ||= Date.now(); if (Date.now() - busySince >= CAPACITY_RETRY_MS) { this.log(`no capacity after ${attempts} attempts: ${lastErr}`); throw computerBusyError(); } }
+      if (isCapacityError(lastErr)) { busySince ||= Date.now(); if (Date.now() - busySince >= CAPACITY_RETRY_MS) { this.log(`no capacity after ${attempts} attempts: ${lastErr}`); await this.refundUnused(); throw computerBusyError(); } }
       else busySince = 0;
       // Refusals ("no container instance…") come back in ~1–2 s and clear ~5 s after the previous stop, so retry quickly
       // instead of backing off (the old 1/2/3/4 s backoff added up to 6 s on top of the platform wait).
       await sleep(500);
     }
-    if (!up && isCapacityError(lastErr)) throw computerBusyError();
+    if (!up && isCapacityError(lastErr)) { await this.refundUnused(); throw computerBusyError(); }
     if (!up) throw new Error(`computer did not start (${attempts} attempts in ${Date.now() - t0}ms: ${lastErr})`);
     if (attempts > 1) this.log(`started after ${attempts} attempts`);
     const bootMs = Date.now() - t0;
     let ready;
     for (let i = 0, w0 = Date.now(); i < 900 && Date.now() - w0 < 90e3; i++) {
       const r = await this.sh("cat /var/1hc/ready 2>/dev/null || (cat /var/1hc/failed 2>/dev/null && echo FAILED)", { timeoutMs: 5e3 });
-      if (r.out.includes("FAILED")) throw new Error("workspace mount failed: " + r.out.trim());
+      if (r.out.includes("FAILED")) {
+        // The computer stays up with ready=0 and never idles out, so stop it; the error carries the reason from the failed file.
+        await this.stop("workspace mount failed", { cancellable: false }).catch(() => {});
+        throw new Error("workspace mount failed: " + r.out.replace(/\s*FAILED\s*$/, "").trim());
+      }
       if (r.out.trim().startsWith("{")) { ready = JSON.parse(r.out.trim()); break; }
       await new Promise((z) => setTimeout(z, 100));
     }
@@ -923,7 +960,7 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
     // A refused save (storage full): the helper hears about it once every 10 minutes at most, not on every command.
     let storage_note = this.storageNote(); if (storage_note && Date.now() - Number(this.get("storage_told") || 0) < 10 * 60e3) storage_note = null;
     if (storage_note) this.put("storage_told", Date.now());
-    return { code: r.code, out: tailOutput(r.out, outMax), ms, boot, saved, egress, ...(r.timed_out ? { timed_out: true, limit_ms: lim } : {}), ...(storage_note ? { storage_note } : {}) };
+    return { code: r.code, out: tailOutput(r.out, outMax), ms, boot, saved, egress, ...(r.timed_out ? { timed_out: true, limit_ms: lim } : {}), ...(storage_note ? { storage_note } : {}), ...this.diskNotes() };
     } finally { this.#busyEnd(busyId); this.commandInFlight--; this.workOps--; this.opEnded = Date.now(); }
   }
   // Skill scripts → /opt/1hc/skills/<slug>/scripts/ on the computer's own disk (outside /workspace: never saved into the channel's
@@ -987,6 +1024,12 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
     }
     const startedStop = Date.now(); this.put("stopping", "1");
     const saved = await this.save(reason);
+    // An idle stop whose save failed for lack of disk space (the computer already tried clearing caches and packing only the changes)
+    // keeps the container up with its files, and the alarm tries again in 2 minutes. Other stops keep their behavior.
+    if (saved?.disk_full && /^idle/.test(reason)) {
+      this.put("stopping", "0"); this.put("disk_hold_until", Date.now() + 2 * 60e3); this.log(`stop (${reason}) held: the save failed, the disk is full (${String(saved.error || "").slice(0, 100)})`);
+      await this.armAlarm(Date.now() + 2 * 60e3); return { stopped: false, held: true, reason, saved };
+    }
     if (!saved?.ok) {
       this.put("stopping", "0"); this.log(`stop (${reason}) refused: save failed`);
       await this.armAlarm(Date.now() + 60e3);
@@ -1017,7 +1060,7 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
     if (this.env.ENV_NAME === "selfhost" && this.env.BACKUP_MAINTENANCE === "1") { await this.ctx.storage.setAlarm(Date.now() + 60e3); return; }
     if (!this.ctx.container.running || this.get("ready") !== "1") return;
     const present = this.viewers && Date.now() < this.humanUntil();
-    if (!this.inflight && !present && Date.now() - Number(this.get("last_activity") || 0) > Number(this.get("idle_ms") || IDLE_MS)) { await this.stop(this.viewers ? "idle (browser open, no activity)" : "idle"); return; }
+    if (!this.inflight && !present && Date.now() >= Number(this.get("disk_hold_until") || 0) && Date.now() - Number(this.get("last_activity") || 0) > Number(this.get("idle_ms") || IDLE_MS)) { await this.stop(this.viewers ? "idle (browser open, no activity)" : "idle"); return; }
     if (Number(this.get("paid_until") || 0) - Date.now() < 30e3 && !(await this.prepayMinute())) { await this.stop(this._payFail === "day_limit" ? "daily safety limit" : "out of credits"); return; }
     if (this.get("dirty") === "1" && Date.now() >= Number(this.get("save_due") || 0)) {
       const r = await this.save("debounce", 600e3);
@@ -1053,7 +1096,7 @@ if [ ! -e "/workspace/$3/$t" ] && mv -n -- "$src" "/workspace/$3/$t" && [ ! -e "
   }
   async status() {
     return { tenant: this.get("tenant"), channel: this.get("channel"), running: this.ctx.container.running, ready: this.get("ready") === "1", dirty: this.get("dirty") === "1",
-      layers: this.stack().map((l) => ({ kind: l.kind, bytes: l.bytes, at: l.at })), all_layers: this.sql.exec("SELECT COUNT(*) n FROM layers").one().n,
+      disk: JSON.parse(this.get("disk") || "null"), layers: this.stack().map((l) => ({ kind: l.kind, bytes: l.bytes, at: l.at })), all_layers: this.sql.exec("SELECT COUNT(*) n FROM layers").one().n,
       events: this.sql.exec("SELECT at,what FROM events ORDER BY seq DESC LIMIT 12").toArray() };
   }
 }

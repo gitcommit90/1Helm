@@ -1,6 +1,7 @@
 // The storage under Mem0 (docs/configuration.md, "Memory"). Facts, their history and the keyword index live in D1 (tables mem, mem_history and mem_fts,
 // db/migrations/0063_memory.sql). Vectors live in the Vectorize index bound as MEMORY_INDEX. A namespace is one channel's memory (nsOf), so channels never share rows.
 // Vectorize cannot list or delete by filter, so every list, count and delete reads D1 first and then removes the vectors by id.
+import { shardsOf, shardEnv } from "./mem-shard.js";
 const VEC_IDS_MAX = 100;   // deleteByIds refuses more than 100 ids in one call (error 40007, seen in production); the docs state no limit, so getByIds is held to the same size
 const TOP_K_MAX = 100;   // Vectorize returns at most 100 results when it returns no values and no metadata (limits page, 2026-08)
 export const EXTRACT_CHARS = 12000;   // the most characters one extraction call reads (the meter in byok.js prices it)
@@ -58,8 +59,9 @@ async function noteGone(env, ids) {
   await ensureGone(env); const due = Date.now() + GONE_RECHECK[0];
   for (const part of chunks(ids, 30)) await env.DB.prepare(`INSERT INTO mem_vec_gone (id,due,tries) VALUES ${part.map(() => "(?,?,0)").join(",")} ON CONFLICT(id) DO UPDATE SET due=excluded.due, tries=0`).bind(...part.flatMap((id) => [id, due])).run();
 }
-// Deletes again the vectors of the ids whose recheck is due, then schedules the next recheck or forgets the id. → the number of ids rechecked
-export async function goneVectorsDue(env, { limit = 500 } = {}) {
+// Deletes again the vectors of the ids whose recheck is due, then schedules the next recheck or forgets the id, in every memory shard. → the number of ids rechecked
+export async function goneVectorsDue(env, opts) { let n = 0; for (const s of shardsOf(env)) n += await shardGoneDue(shardEnv(env, s), opts); return n; }
+async function shardGoneDue(env, { limit = 500 } = {}) {
   if (!env.MEMORY_INDEX || !env.DB) return 0;
   await ensureGone(env);
   const rows = (await env.DB.prepare("SELECT id, tries FROM mem_vec_gone WHERE due<=? ORDER BY due LIMIT ?").bind(Date.now(), limit).all()).results || [];
@@ -79,7 +81,7 @@ export async function goneVectorsDue(env, { limit = 500 } = {}) {
   return rows.length;
 }
 
-// Every id of the namespaces that start with `prefix`, with their rows removed from D1 and their vectors from Vectorize. where: SQL after the ns range (default: all).
+// env is the shard's env (memEnv). Every id of the namespaces that start with `prefix`, with their rows removed from D1 and their vectors from Vectorize. where: SQL after the ns range (default: all).
 // The namespaces are matched as a range (ns >= prefix AND ns < prefix + U+FFFF), because LIKE scans the whole table.
 export async function removeRows(env, prefix, where = "", args = []) {
   const hi = `${prefix}\uffff`, found = ((await env.DB.prepare(`SELECT id, ns FROM mem WHERE ns>=? AND ns<?${where}`).bind(prefix, hi, ...args).all()).results || []), ids = found.map((r) => r.id), gone_vectors = [...ids];

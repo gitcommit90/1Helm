@@ -269,4 +269,12 @@ let page1;
   assert.equal((await api("/share", undefined, { cookie: "hc_session=bb22", slug: "ck2" })).body.chats.length, 0);
   ok("a link whose copy is gone is 404 and is removed; each account's list holds only its own links");
 }
+{
+  // Letter-level breaking (overflow-wrap:anywhere) inherited from the bubble or the shared file page makes table columns size to one letter, so cells must override it and the table must scroll inside its own box.
+  const { CHAT_CSS } = await import("../src/share-chat-css.js");
+  const rule = (sel) => [...CHAT_CSS.matchAll(new RegExp("(?:^|[\\s}])" + sel.replace(/[.,]/g, "\\$&") + "\\{([^}]*)\\}", "g"))].map((m) => m[1]).join(";");
+  assert.match(rule(".body td,.body th"), /overflow-wrap:\s*break-word/);
+  assert.match(rule(".body table"), /display:\s*block[^]*overflow-x:\s*auto/);
+  ok("table cells break words only when needed and a wide table scrolls inside its own box");
+}
 console.log(`share-chat: ${passed} groups passed`);

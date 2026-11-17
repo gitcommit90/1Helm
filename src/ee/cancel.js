@@ -220,18 +220,16 @@ export async function cancelWebhook(env, ev, d = {}) {
   return null;
 }
 
-// Hourly cron: reminders, the deletion fallback, and final-email retries.
-export async function cancelCron(env, d = {}) {
-  const at = (d.now || Date.now)(), out = { reminders: 0, deleted: 0, waiting: 0, errors: 0 };
-  const rows = (await env.DB.prepare("SELECT * FROM plan_cancellations WHERE state IN ('scheduled','deleting') OR (state='deleted' AND email<>'')").all()).results || [];
-  for (const r of rows) {
-    try {
-      if (r.state === "deleted") { await finalEmail(env, r, d, at); continue; }
-      if (r.period_end <= at) { const x = await endOfPeriod(env, r.tenant_id, {}, d, at); if (x.deleted) out.deleted++; if (x.waiting || x.error) out.waiting++; continue; }
-      if (r.state === "scheduled" && await remind(env, r, d, at)) out.reminders++;
-    } catch (e) { out.errors++; log("cron", r.tenant_id, e.message); }
-  }
-  return { checked: rows.length, ...out };
+// Hourly job for one account (src/account-jobs.js lists the accounts): reminders, the deletion fallback, and final-email retries. Reads the
+// record again, so a repeated message does nothing once the work is done; emails are claimed before they are sent and the deletion is
+// claimed by the record's state.
+export async function cancelOne(env, tenantId, d = {}) {
+  const at = (d.now || Date.now)();
+  const r = await env.DB.prepare("SELECT * FROM plan_cancellations WHERE tenant_id=? AND (state IN ('scheduled','deleting') OR (state='deleted' AND email<>''))").bind(tenantId).first();
+  if (!r) return;
+  if (r.state === "deleted") return finalEmail(env, r, d, at);
+  if (r.period_end <= at) { await endOfPeriod(env, r.tenant_id, {}, d, at); return; }
+  if (r.state === "scheduled") await remind(env, r, d, at);
 }
 
 // ---- the app's API: /w/<slug>/api/plan/cancel (GET status, POST cancel), /api/plan/keep (POST) ----

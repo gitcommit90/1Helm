@@ -30,9 +30,9 @@ export function flagTurns(rows, catalog, { ratio = FLAG_RATIO } = {}) {
   return out;
 }
 
-// All accounts and channels with activity since `since`. residentOf(tenantId, channel) and ledgerOf(tenantId) return the Durable Object stubs.
-export async function scanBilling(env, { since, residentOf, ledgerOf, maxChannels = 300 }) {
-  const rows = (await env.DB.prepare("SELECT s.tenant_id, s.channel, t.slug FROM memjob_state s JOIN tenants t ON t.id=s.tenant_id WHERE s.last_activity > ? ORDER BY s.tenant_id, s.channel").bind(since).all().catch(() => ({ results: [] }))).results || [];
+// All accounts and channels with activity since `since` (or the channels of one account, when `tenant` is set). residentOf(tenantId, channel) and ledgerOf(tenantId) return the Durable Object stubs.
+export async function scanBilling(env, { since, residentOf, ledgerOf, maxChannels = 300, tenant = null }) {
+  const rows = (await env.DB.prepare(`SELECT s.tenant_id, s.channel, t.slug FROM memjob_state s JOIN tenants t ON t.id=s.tenant_id WHERE s.last_activity > ?${tenant ? " AND s.tenant_id=?" : ""} ORDER BY s.tenant_id, s.channel`).bind(...(tenant ? [since, tenant] : [since])).all().catch(() => ({ results: [] }))).results || [];
   const found = { since, channels: Math.min(rows.length, maxChannels), capped: rows.length > maxChannels, price_unknown: [], over_estimate: [], errors: 0, error_samples: [] };
   const todo = rows.slice(0, maxChannels), tenants = new Map(rows.map((r) => [r.tenant_id, r.slug]));
   const work = [...tenants].map(([tid, slug]) => Object.assign(async () => {
@@ -49,9 +49,16 @@ export async function scanBilling(env, { since, residentOf, ledgerOf, maxChannel
 export const flagLine = (f) => f.flagged ? `${f.price_unknown.length} price_unknown, ${f.over_estimate.length} over ${FLAG_RATIO}x estimate (${[...new Set([...f.price_unknown, ...f.over_estimate].map((x) => x.slug))].slice(0, 5).join(", ")})` : `none (${f.channels} channels checked)`;
 
 // The daily run: log it, and push it to Uptime Kuma when a push URL is set (the URL has no query string; status and msg are added).
+// With opts.tenant (one account's message from src/account-jobs.js) it speaks only when that account is flagged, and the listing pushes "up".
 export async function dailyBillingFlag(env, opts) {
   const f = await scanBilling(env, opts), line = flagLine(f);
+  if (opts.tenant && !f.flagged) return f;
   console.log("BILLING flag", f.flagged ? "FLAGGED" : "ok", line, f.flagged ? JSON.stringify({ price_unknown: f.price_unknown.slice(0, 20), over_estimate: f.over_estimate.slice(0, 20) }) : "");
-  if (env.BILLING_FLAG_PUSH) { try { await fetch(`${env.BILLING_FLAG_PUSH}?status=${f.flagged ? "down" : "up"}&msg=${encodeURIComponent(line.slice(0, 200))}`); } catch (e) { console.log("billing flag push failed", String(e?.message || e).slice(0, 80)); } }
+  await billingPush(env, f.flagged ? "down" : "up", line);
   return f;
 }
+async function billingPush(env, status, msg) {
+  if (env.BILLING_FLAG_PUSH) { try { await fetch(`${env.BILLING_FLAG_PUSH}?status=${status}&msg=${encodeURIComponent(msg.slice(0, 200))}`); } catch (e) { console.log("billing flag push failed", String(e?.message || e).slice(0, 80)); } }
+}
+// The heartbeat of a complete listing: every account with activity has been sent to be checked.
+export const billingUp = (env, n) => billingPush(env, "up", `none flagged yet (${n} accounts queued)`);

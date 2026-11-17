@@ -7,6 +7,7 @@
 //   - a Claude Code model is one more model for 1Helm's own helper loop: claudeChat sends one chat/completions call through the engine's complete(), so chains, chores and
 //     Background jobs work as for any service. 1Helm's loop, tools, cards, plans and memory are unchanged.
 import { claudeEngine } from "./claude-engine.js";
+import { retryWhileBusy } from "../computer-capacity.js";
 import { ccSignInUrlOk, ccUrlHost } from "./claude-signin-url.js";
 import { limitFromWindows, limitText, noteLimit } from "./byok-usage.js";
 import { ByokError, guardStream, firstEventOk, MAX_JSON_BYTES } from "../byok.js";
@@ -99,9 +100,9 @@ export async function ccWarm(env, tid) {
 }
 
 // Plan usage for the row (byok-usage.js): the engine's own numbers (Anthropic's rate limit headers of the last call, else the CLI's token used inside the container). → { windows, source } or throws .why.
-export async function claudeUsage(env, tid) {
-  const e = engineOf(env, tid); if (!e || typeof e.usage !== "function") throw Object.assign(new Error("no engine"), { why: "engine" });
-  let r; try { r = await e.usage(); } catch { throw Object.assign(new Error("engine"), { why: "engine" }); }
+export async function claudeUsage(env, tid, now = false) {   // now: the person pressed Check usage, so the engine may start its container and read at once
+  const m = now ? "usageNow" : "usage", e = engineOf(env, tid); if (!e || typeof e[m] !== "function") throw Object.assign(new Error("no engine"), { why: "engine" });
+  let r; try { r = await e[m](); } catch { throw Object.assign(new Error("engine"), { why: "engine" }); }
   if (r?.none || !r?.windows?.length) throw Object.assign(new Error("none"), { why: r?.why === "asleep" ? "asleep" : String(r?.why || "none"), permanent: false });
   return { windows: r.windows, source: r.source || "" };
 }
@@ -134,12 +135,12 @@ export function cachedBody(env, body, model, session = null) {
 }
 // One chat call on Claude Code: the engine's complete({ body, model, effort, session, stream }) takes an OpenAI chat.completions request and answers with a chat.completions response or SSE chunks.
 // Returns the same Response shape the other services return (chatgptChat), so byokChat, chains, chores and Background jobs work unchanged. Nothing is charged: the person's Claude plan pays.
-export async function claudeChat(cfg, body, { signal = null, model, effort = null, session = null } = {}) {
+export async function claudeChat(cfg, body, { signal = null, model, effort = null, session = null, ctx = null } = {}) {
   const h = cfg.ccHandle; if (!h) throw new ByokError(ccFailText("no engine"), 0, "no engine");
   const engine = engineOf(h.env, h.tid); if (!engine || typeof engine.complete !== "function") throw new ByokError(ccFailText("no engine"), 0, "no engine");
   const effortOk = effort && effort !== "default" ? effort : undefined, stream = body.stream === true;
   let r;
-  try { r = await engine.complete({ body: cachedBody(h.env, body, model, session), model, ...(effortOk ? { effort: effortOk } : {}), session: session ? String(session) : undefined, stream }); }
+  try { r = await retryWhileBusy(() => engine.complete({ body: cachedBody(h.env, body, model, session), model, ...(effortOk ? { effort: effortOk } : {}), session: session ? String(session) : undefined, stream }), ctx); }   // a busy refusal waits and retries (computer-capacity.js)
   catch (e) { if (signal?.aborted) throw e; if (isCcLimit(e)) throw Object.assign(new ByokError(await ccLimitReply(h.env, h.tid), 0, String(e?.message || e).slice(0, 160)), { limit: true }); throw new ByokError(ccFailText(e), 0, String(e?.message || e).slice(0, 160)); }
   if (r?.error && !r.choices && !r.body && !r.getReader) { const raw = r.error?.message || r.error; if (isCcLimit(raw)) throw Object.assign(new ByokError(await ccLimitReply(h.env, h.tid), 0, String(raw).slice(0, 160)), { limit: true }); throw new ByokError(ccFailText(raw), 0, String(raw).slice(0, 160)); }
   const sse = (b) => new Response(b, { status: 200, headers: { "content-type": "text/event-stream" } });

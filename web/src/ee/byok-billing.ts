@@ -108,11 +108,11 @@ if (QP.has("byoksaved") || QP.has("byokfb") || QP.has("byokswitch")) mockSt.conn
 if (QP.has("byokthree")) mockSt.connections = [MOCK_CONNS.chatgpt, MOCK_CONNS.opencode, MOCK_CONNS.p_work1];
 if (QP.has("byokcc")) mockSt.connections = [MOCK_CONNS.claudecode, MOCK_CONNS.opencode];
 if (QP.has("byokcgagain")) mockSt.connections = [{ ...MOCK_CONNS.chatgpt, signin_again: true }];
-// Sandbox only: Claude shows two bars (?byokusagelink: the link instead, ?byokusagelimit: a limit reached), OpenCode is always the link. ChatGPT shows the usage summary (?byokcgzero: no use yet, ?byokcgnosum: not loaded, ?byokcgwelcome: the first-sign-in message).
+// Sandbox only: Claude shows two bars (?byokusagelink: the link instead, ?byokusagelimit: a limit reached), OpenCode shows three. ChatGPT shows the usage summary (?byokcgzero: no use yet, ?byokcgnosum: not loaded, ?byokcgwelcome: the first-sign-in message).
 const mockUsage = (kinds: string[]): Record<string, Usage> => Object.fromEntries(kinds.map(k => {
-  const manage = usagePages()[k], none = k === "opencode" || k === "chatgpt" || QP.has("byokusagelink"), hit = QP.has("byokusagelimit") && k === "chatgpt";
+  const manage = usagePages()[k], none = k === "chatgpt" || QP.has("byokusagelink"), hit = QP.has("byokusagelimit") && k === "chatgpt";
   if (k === "chatgpt") return [k, { windows: [], at: 0, tried: false, manage, limit: hit ? { window: "", resets_at: null } : null }];   // ChatGPT has no windows: its summary is counted from our own calls, and a limit has no reset time
-  return [k, { windows: none ? [] : [{ id: "session", label: "5 hours", used: hit ? 100 : k === "chatgpt" ? 38 : 64, resets_at: Date.now() + (hit ? 85 : 130) * 60e3 }, { id: "weekly", label: "This week", used: k === "chatgpt" ? 12 : 41, resets_at: Date.now() + 3 * day }], at: Date.now(), tried: true, manage,
+  return [k, { windows: none ? [] : [{ id: "session", label: "5 hours", used: hit ? 100 : k === "chatgpt" ? 38 : 64, resets_at: Date.now() + (hit ? 85 : 130) * 60e3 }, { id: "weekly", label: "This week", used: k === "chatgpt" ? 12 : 41, resets_at: Date.now() + 3 * day }, ...(k === "opencode" ? [{ id: "monthly", label: "This month", used: 23, resets_at: Date.now() + 20 * day }] : [])], at: Date.now(), tried: true, manage,
     limit: hit ? { window: "session", resets_at: Date.now() + 85 * 60e3 } : null }];
 }));
 if (QP.has("byokusagecached")) mockSt.usage = mockUsage(mockSt.connections.map(c => c.kind));   // sandbox: the numbers were saved from an earlier visit
@@ -128,6 +128,7 @@ async function mock(path: string, body?: any): Promise<any> {
   }
   if (path === "/byok/chatgpt/invite-dismiss") { mockSt = { ...mockSt, chatgpt: { ...mockSt.chatgpt, invite: false } }; return { ok: true, ...mockSt }; }
   if (path === "/byok/chatgpt/welcomed") { mockSt = { ...mockSt, chatgpt: { ...mockSt.chatgpt, welcome: false } }; return { ok: true, ...mockSt }; }
+  if (path === "/byok/usage" && body?.service === "claudecode") { await new Promise(z => setTimeout(z, 1500)); mockSt = { ...mockSt, usage: { ...mockSt.usage, ...mockUsage(["claudecode"]) } }; return { usage: { claudecode: mockSt.usage!.claudecode } }; }   // sandbox: Check usage answers after a short wait
   if (path === "/byok/usage") { if (QP.has("byokusagefail")) { await new Promise(z => setTimeout(z, 1500)); return { error: "Try again in a minute." }; } const kinds = mockSt.connections.map(c => c.kind).filter(k => k === "chatgpt" || k === "claudecode" || k === "opencode"); await new Promise(z => setTimeout(z, QP.has("byokusageslow") ? 4000 : 0)); mockSt = { ...mockSt, usage: mockUsage(kinds) }; return { usage: mockSt.usage, ...(kinds.includes("chatgpt") ? { chatgpt: { manage: mockSt.chatgpt.manage, summary: mockSt.chatgpt.summary } } : {}) }; }
   if (path === "/byok/test") { const c = mockSt.connections.find(x => x.id === body?.id); if (!c) return { error: "That service isn't connected." };
     const t: Test = { ok: true, at: Date.now(), checks: { reach: { ok: true, ms: 540 } } }; add({ ...c, test: t, tested_at: t.at! }); return { ok: true, test: t, ...mockSt }; }
@@ -289,7 +290,7 @@ function usageOf(d: any): Record<string, Usage> {
   const out: Record<string, Usage> = {};
   for (const k of Object.keys(usagePages())) {
     const u = d && typeof d === "object" ? d[k] : null; if (!u || typeof u !== "object") continue;
-    const windows: UsageWin[] = (Array.isArray(u.windows) ? u.windows : []).filter((w: any) => w && Number.isFinite(Number(w.used))).slice(0, 2).map((w: any) => ({ id: w.id === "weekly" ? "weekly" : "session", label: String(w.label || "").slice(0, 24) || (w.id === "weekly" ? "This week" : "Session"), used: Math.max(0, Math.min(100, Number(w.used))), resets_at: Number(w.resets_at) > 0 ? Number(w.resets_at) : null }));
+    const windows: UsageWin[] = (Array.isArray(u.windows) ? u.windows : []).filter((w: any) => w && Number.isFinite(Number(w.used))).slice(0, 3).map((w: any) => ({ id: w.id === "weekly" || w.id === "monthly" ? w.id : "session", label: String(w.label || "").slice(0, 24) || (w.id === "weekly" ? "This week" : "Session"), used: Math.max(0, Math.min(100, Number(w.used))), resets_at: Number(w.resets_at) > 0 ? Number(w.resets_at) : null }));
     const lim = u.limit && typeof u.limit === "object" ? { window: String(u.limit.window || ""), resets_at: Number(u.limit.resets_at) > 0 ? Number(u.limit.resets_at) : null } : null;
     out[k] = { windows, at: Number(u.at) || 0, tried: !!u.tried, manage: USAGE_HOST.test(String(u.manage || "")) ? String(u.manage) : usagePages()[k], limit: lim };
   }
@@ -320,17 +321,24 @@ function usageBlock(c: Conn): string {
   if (c.kind === "chatgpt") return cgUsageBlock();
   const u = B.st?.usage?.[c.kind], manage = u?.manage || usagePages()[c.kind];
   const link = (t: string) => `<a class="bukmanage" href="${esc(manage)}" target="_blank" rel="noopener noreferrer">${t}</a>`;
-  const wins = (u?.windows || []).map(w => (w.resets_at && w.resets_at <= Date.now() ? { ...w, used: 0, resets_at: null } : w));
+  const check = c.kind === "claudecode" ? `<button type="button" class="bukcheck" data-bykcheck data-w="Check usage"${checking ? " disabled" : ""}>${checking ? "Checking…" : "Check usage"}</button>` : "";   // wakes the engine and reads now; data-w keeps the wider label's width
+  const wins = (u?.windows || []).filter(w => !(w.resets_at && w.resets_at <= Date.now()));   // a window whose reset time has passed describes a finished period, so it is not drawn
   if (wins.length) {
     const lim = u?.limit && (!u.limit.resets_at || u.limit.resets_at > Date.now()) ? u.limit : null;
     return `<div class="bykusage" data-bykusage="${c.kind}">${wins.map(w => { const pct = Math.round(w.used), full = w.used >= 99.5;
       return `<div class="bukw${full ? " full" : ""}"><div class="bukt"><b>${esc(w.label)}</b><span>${pct}% used</span><em>${esc(w.resets_at ? resetText(w.resets_at) : "Not in use")}</em></div><div class="bukbar" role="progressbar" aria-label="${esc(w.label)} usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${Math.max(w.used > 0 ? 2 : 0, w.used)}%"></i></div></div>`; }).join("")}
-      ${lim ? `<p class="bukhit" role="status">${esc(lim.window === "weekly" ? "Weekly limit reached" : lim.window === "session" ? "5 hour limit reached" : "Usage limit reached")}${lim.resets_at ? `. ${esc(resetText(lim.resets_at))}` : ""}. ${link("Manage usage")}</p>` : `<p class="bukmore">${link("Manage usage")}</p>`}</div>`;
+      ${lim ? `<p class="bukhit" role="status">${esc(lim.window === "weekly" ? "Weekly limit reached" : lim.window === "session" ? "5 hour limit reached" : "Usage limit reached")}${lim.resets_at ? `. ${esc(resetText(lim.resets_at))}` : ""}. ${link("Manage usage")}${check}</p>` : `<p class="bukmore">${check}${link("Manage usage")}</p>`}</div>`;
   }
-  if (c.kind === "opencode" || u?.tried || usageFailed.has(c.kind)) return `<div class="bykusage bukno" data-bykusage="${c.kind}"><p>${u?.limit ? "Usage limit reached. " : "Usage isn't shown here. "}${link("Manage usage")}</p></div>`;
+  if (u?.tried || usageFailed.has(c.kind)) return `<div class="bykusage bukno" data-bykusage="${c.kind}"><p>${u?.limit ? "Usage limit reached. " : "Usage isn't shown here. "}${link("Manage usage")}${check}</p></div>`;
   // The numbers are on their way: the same two rows the bars use (labels, a dash, empty bars) and the same link, so the block keeps its size and nothing moves when they arrive.
   const row = (label: string) => `<div class="bukw" aria-hidden="true"><div class="bukt"><b>${label}</b><span>—</span><em></em></div><div class="bukbar"><i style="width:0%"></i></div></div>`;
-  return `<div class="bykusage bukwait" data-bykusage="${c.kind}">${row("5 hours")}${row("This week")}<p class="bukmore">${link("Manage usage")}</p></div>`;
+  return `<div class="bykusage bukwait" data-bykusage="${c.kind}">${row("5 hours")}${row("This week")}${c.kind === "opencode" ? row("This month") : ""}<p class="bukmore">${check}${link("Manage usage")}</p></div>`;
+}
+let checking = false;
+async function usageCheck() {
+  if (checking) return; checking = true; D?.repaint();
+  try { const d = await call("/byok/usage", { service: "claudecode" }); if (d && !d.error && B.st) B.st = { ...B.st, usage: { ...B.st.usage, ...usageOf(d.usage) } }; else usageFailed.add("claudecode"); } catch { usageFailed.add("claudecode"); }
+  checking = false; D?.repaint();
 }
 let usageAt = 0, usageBusy = false, usageAgain = false;
 const usageFailed = new Set<string>();   // plan services whose numbers could not be read: they show the Manage usage line until a later try works
@@ -675,6 +683,7 @@ export function bykInit(d: Deps) {
     const rb = t.closest<HTMLElement>("[data-bykrm]"); if (rb) { e.preventDefault(); remove(rb.dataset.bykrm!); return; }
     if (t.closest("[data-bykcancel]")) { e.preventDefault(); closeStep(); D?.repaint(); return; }
     if (t.closest("[data-bykinvx]")) { e.preventDefault(); inviteDismiss(); return; }
+    if (t.closest("[data-bykcheck]")) { e.preventDefault(); usageCheck(); return; }
     if (t.closest("[data-bykcg]")) { e.preventDefault(); cgSignIn(); return; }
     if (t.closest("[data-bykccopen]")) { e.preventDefault(); ccOpen(); return; }
     if (t.closest("[data-bykcc]")) { e.preventDefault(); ccSignIn(); return; }

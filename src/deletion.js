@@ -389,7 +389,7 @@ async function photonUnregister(env, tid) {
   } catch (e) { console.log("photon user remove", e.message); }
   return n;
 }
-// Live only: <slug>.1helm.com is a Workers custom domain (index.js claimHost). Dev never creates one.
+// Removes the Workers custom domain an address had when it was claimed one by one (a miss is fine). Dev never creates one.
 async function releaseHost(env, slug, ready) {
   if (env.ENV_NAME === "dev" || !ready || !slug || !env.CF_API_TOKEN || !env.CF_ACCOUNT_ID || !env.PUBLIC_BASE_DOMAIN) return 0;
   const H = { authorization: `Bearer ${env.CF_API_TOKEN}` }, base = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/workers/domains`, host = `${slug}.${env.PUBLIC_BASE_DOMAIN}`;

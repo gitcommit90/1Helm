@@ -236,17 +236,12 @@ export async function beeSyncNow(env, tid, deps = DEFAULT_DEPS) {
   return beeState(env, tid);
 }
 
-// Hourly safety net: a connected account whose sync hasn't succeeded in CRON_STALE_MS (never started: connected before step 3 shipped;
+// Hourly safety net (listed by src/account-jobs.js): a connected account whose sync hasn't succeeded in CRON_STALE_MS (never started: connected before step 3 shipped;
 // or its alarm was lost) gets start() again. start() is idempotent; an account paused for credits / read-only just runs its cheap check.
 // A quiet sync checks every 30 min (60 overnight) and a failing one backs off to 60 min, so 2 h without a sync means a lost alarm.
 export const CRON_STALE_MS = 2 * 3600e3;
-export async function beeCron(env, deps = DEFAULT_DEPS) {
-  if (!env.BEE_SYNC) return { checked: 0, started: 0 };
-  const rows = (await env.DB.prepare("SELECT tenant_id, bee_user_id FROM bee_accounts WHERE status='connected' AND COALESCE(synced_at,0) < ? AND tenant_id NOT IN (SELECT t.id FROM tenants t JOIN users u ON u.id=t.owner_user_id WHERE LOWER(u.email) LIKE '%@example.com') LIMIT 100").bind(now() - CRON_STALE_MS).all()).results || [];
-  let started = 0;
-  for (const r of rows) { try { await deps.sync(env, r.tenant_id).start(r.tenant_id, { beeUser: r.bee_user_id }); started++; } catch (e) { console.log("bee cron", String(e?.message || e).slice(0, 120)); } }
-  return { checked: rows.length, started };
-}
+// One account of that safety net (src/account-jobs.js lists the accounts); start() is idempotent, so a repeated message is harmless.
+export const beeStart = (env, tid, beeUser, deps = DEFAULT_DEPS) => deps.sync(env, tid).start(tid, { beeUser });
 
 // /w/<slug>/api/bee[/op]. GET is read-only (no call to Bee, so a look-only view can show it); every step is a POST.
 export async function beeRoute(req, env, t, sub, deps = DEFAULT_DEPS) {

@@ -533,15 +533,19 @@ echo started`;
     this.put("limits", JSON.stringify({ at: Date.now(), status: Number(ev.status) || 0, h: keep }));
     const names = Object.keys(keep).sort().join(","); if (this.get("limits_names") !== names) { this.put("limits_names", names); this.log(`rate limit headers (status ${Number(ev.status) || 0}): ${names}`); }
   }
-  // The account's plan usage: { source: "headers" | "oauth", windows, status } or { none: true, why }. The headers of the latest call come first. With none, the CLI's own token is used INSIDE the
+  // The account's plan usage: { source: "headers" | "oauth", windows, status } or { none: true, why }. The headers of the latest call come first, while none of their windows has ended. With none, the CLI's own token is used INSIDE the
   // container (relay/usage.mjs) when the container is already running (it is never started for this), at most every 5 minutes. The token is never returned.
   async usage() {
     let lim = null; try { lim = JSON.parse(this.get("limits") || "null"); } catch {}
-    if (lim?.h) { const p = parseClaudeHeaders(lim.h); if (p.windows.length) return { source: "headers", at: lim.at, windows: p.windows, status: p.status, reset: p.reset }; }
+    if (lim?.h) { const p = parseClaudeHeaders(lim.h); if (p.windows.length && !p.windows.some((w) => w.resets_at && w.resets_at <= Date.now())) return { source: "headers", at: lim.at, windows: p.windows, status: p.status, reset: p.reset }; }
     let cached = null; try { cached = JSON.parse(this.get("usage_cache") || "null"); } catch {}
     const tried = Number(this.get("usage_try")) || 0;
     if (Date.now() - tried < USAGE_TRY_MS) return cached?.windows?.length ? { source: "oauth", at: cached.at, windows: cached.windows } : { none: true, why: this.get("usage_why") || "none" };
     if (this.get("signed_in") !== "1" || !this.ctx.container?.running) return { none: true, why: "asleep" };
+    return this.readUsage();
+  }
+  // Runs the usage call inside the running container and keeps its answer (or the reason it failed) for usage().
+  async readUsage() {
     this.put("usage_try", Date.now());
     let out = null;
     try { const r = await this.bash('node "$1"', [USAGE_JS], { timeoutMs: 20e3, env: { CLAUDE_CODE_VERSION } }); out = JSON.parse(String(r.out || "").trim().split("\n").pop() || "null"); } catch { out = null; }
@@ -550,6 +554,18 @@ echo started`;
     if (!p.windows.length) { this.put("usage_why", "none"); return { none: true, why: "none" }; }
     this.put("usage_cache", JSON.stringify({ at: Date.now(), windows: p.windows })); this.put("usage_why", "");
     return { source: "oauth", at: Date.now(), windows: p.windows };
+  }
+  // The person's "Check usage": starts the container if it is asleep, reads the usage call now (ignoring kept headers and the 5 minute interval), and puts the container back to sleep
+  // only when this call started it and nothing else touched it meanwhile. One read at a time: a second caller gets the same answer.
+  usageNow() { return (this._usageNow ||= this.checkUsage().finally(() => { this._usageNow = null; })); }
+  async checkUsage() {
+    if (this.get("signed_in") !== "1") return { none: true, why: "signed_out" };
+    const was = this.ctx.container.running || !!this._starting;
+    try { await this.ensureRunning(); } catch { return { none: true, why: "engine" }; }
+    const mark = this.get("last_activity"), r = await this.readUsage();
+    // stop() itself defers while the last activity is recent, so the mark is cleared first; it still refuses a run or call in progress and cancels when work arrives while it saves the login.
+    if (!was && this.get("last_activity") === mark && !this.calls.size && this.get("login_active") !== "1") { this.put("last_activity", 0); await this.stop("usage check"); }
+    return r;
   }
   // The person's Stop: kill the CLI and everything it started.
   async cancel(session) {

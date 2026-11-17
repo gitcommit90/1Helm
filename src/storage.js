@@ -112,15 +112,6 @@ export async function recount(env, tenantId) {
   const bytes = KINDS.reduce((a, k) => a + by[k].bytes, 0);
   return { bytes, by: Object.fromEntries(KINDS.map((k) => [k, by[k].bytes])), objects: KINDS.reduce((a, k) => a + by[k].objects, 0), drift: bytes - before };
 }
-// Cron: the accounts counted longest ago (never first), a few per run.
-export async function recountStale(env, { limit = 20, maxAge = RECOUNT_MS } = {}) {
-  const rows = (await env.DB.prepare(`SELECT t.id FROM tenants t LEFT JOIN storage_plan s ON s.tenant_id=t.id WHERE t.status IN ('active','past_due') AND COALESCE(s.counted_at,0) < ?
-    ORDER BY COALESCE(s.counted_at,0) LIMIT ?`).bind(Date.now() - maxAge, limit).all()).results || [];
-  let fixed = 0, drift = 0;
-  for (const r of rows) { try { const c = await recount(env, r.id); if (c.drift) { fixed++; drift += Math.abs(c.drift); } } catch (e) { console.log("storage recount", r.id, e.message); } }
-  return { checked: rows.length, fixed, drift };
-}
-
 // ---------------------------------------------------------------- the limit ----------------------------------------------------------------
 async function ensurePlanRow(env, tenantId) { await env.DB.prepare("INSERT OR IGNORE INTO storage_plan (tenant_id, blocks, updated_at) VALUES (?,0,?)").bind(tenantId, Date.now()).run(); }
 export async function usedBytes(env, tenantId) {

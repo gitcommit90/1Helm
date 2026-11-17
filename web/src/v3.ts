@@ -31,7 +31,8 @@ import { openNewChannel, createViaApi, type NewChannel } from "./newchannel";   
 import { bdqrHtml } from "./bdqr";
 import { shInit, shFiles, shCards, shEvent, shCardHtml, shFold, shFileBtn, shViewerBtns, shBadge, shLibHtml, shFileGone, shHeadBtn, shChatGone } from "./share";   // share links + published pages (its sheet's Esc, too)
 import { orb } from "./activity-orb";
-import { cmodelsInit, cmodelsCard, cmodelsPrivacy, cmodelsDragging, cmodelsAfter } from "./ee/custom-models";   // Settings → Advanced → Custom Model Selection (chat categories of this account); an own key edits its models in Settings → AI services
+import { pickHtml } from "./pick-menu";
+import { cmodelsInit, cmodelsCard, cmodelsPrivacy, cmodelsDragging, cmodelsAfter, cmodelsLeave, cmodelsOpenTitle } from "./ee/custom-models";   // Settings → Advanced → Custom Model Selection (chat categories of this account); an own key edits its models in Settings → AI services
 import { memoBubble } from "./memobubble";
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
@@ -1021,10 +1022,10 @@ function oedCard(cards: any[], ch: Channel) {
   const fs: FileV[] = []; for (const c of cards) if (c.t === "file" && c.f?.id && zoneKind(c.f) && !fs.some(x => x.id === c.f.id)) fs.push(c.f);
   if (!fs.length) return "";
   const key = ch.slug + "|" + fs[0].id, cur = fs.find(x => x.id === OED[key]) || fs[0];
-  const who = fs.length > 1 ? `<select class="oed-pick" data-oed="${esc(key)}" aria-label="File to open in the editor">${fs.map(x => `<option value="${esc(x.id)}"${x.id === cur.id ? " selected" : ""}>${esc(x.name)}</option>`).join("")}</select>` : `<span class="oed-name">${esc(cur.name)}</span>`;
+  const who = fs.length > 1 ? `${pickHtml({ attrs: `data-oed="${esc(key)}"`, label: "File to open in the editor", value: cur.id, options: fs.map((x): [string, string] => [x.id, x.name]) })}` : `<span class="oed-name">${esc(cur.name)}</span>`;
   return `<div class="oed" data-oedc="${esc(key)}"><button type="button" class="oed-open" data-zone="${esc(ch.slug)}|${esc(cur.id)}" aria-label="Open ${esc(cur.name)} in the editor">${I('<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/><rect x="9" y="9" width="6" height="6" rx="1"/>', 16)}<span>Open in editor</span></button>${who}</div>`;
 }
-if (LIVE) document.addEventListener("change", e => { const t = e.target as HTMLSelectElement; if (!t?.matches?.("select[data-oed]")) return; OED[t.dataset.oed!] = t.value; const b = t.closest(".oed")?.querySelector<HTMLElement>("[data-zone]"); if (b) { b.dataset.zone = t.dataset.oed!.split("|")[0] + "|" + t.value; b.setAttribute("aria-label", `Open ${t.selectedOptions[0]?.text || "the file"} in the editor`); } });
+if (LIVE) document.addEventListener("change", e => { const t = e.target as HTMLElement; if (!t?.matches?.(".pkb[data-oed]")) return; OED[t.dataset.oed!] = t.dataset.value!; const b = t.closest(".oed")?.querySelector<HTMLElement>("[data-zone]"); if (b) { b.dataset.zone = t.dataset.oed!.split("|")[0] + "|" + t.dataset.value; b.setAttribute("aria-label", `Open ${t.firstElementChild?.textContent || "the file"} in the editor`); } });
 function chatCards(cards: any[], ch: Channel, reply?: string, all: any[] = cards) {
   let html = "", group = false;
   for (const c of cards) { const tile = c.t === "file" || c.t === "image";
@@ -3099,7 +3100,7 @@ function sDesk() {
     <button class="sx" data-sclose aria-label="Close settings">${g("x", 18)}</button></div>`;
 }
 function sPhone() {
-  const back = secParent(S.sec);
+  const back = secParent(S.sec), cm = S.sec === BYK_SEC ? cmodelsOpenTitle() : "";   // the open category of Models: its name is the title and Back returns to the list
   if (!S.sec) {
     const r = (k: string) => { const [, l, i] = SECS.find(x => x[0] === k)!; return srow(g(i), l, "", chev(), nav(k)); };
     return `<div class="smodal sphone" role="dialog" aria-modal="true" aria-label="Settings"><div class="sph"><span class="sp"></span><h1>Settings</h1><button class="cb" data-sclose aria-label="Close settings">${g("x", 20)}</button></div>
@@ -3109,7 +3110,7 @@ function sPhone() {
         <div class="sc">${r("help")}${r("legal")}</div>
         <div class="sc">${srow("", `<span class="red">Log out</span>`, "", "", snote("logout"))}</div></section></div>`;
   }
-  return `<div class="smodal sphone sdet" role="dialog" aria-modal="true" aria-label="${esc(secName(S.sec))}"><div class="sph"><button class="cb" data-sgo="${back}" aria-label="Back">${ic.back}</button><h1>${esc(secName(S.sec))}</h1><span class="sp"></span></div>
+  return `<div class="smodal sphone sdet" role="dialog" aria-modal="true" aria-label="${esc(secName(S.sec))}"><div class="sph"><button class="cb" ${cm ? "data-cmback" : `data-sgo="${back}"`} aria-label="Back">${ic.back}</button><h1>${esc(cm || secName(S.sec))}</h1><span class="sp"></span></div>
     <section class="sbody">${secHtml(S.sec)}</section></div>`;
 }
 // Phone Settings is a stack of full-screen pages. Going to another page (dir 1 deeper, -1 back) slides once: the new page in from
@@ -3197,7 +3198,7 @@ function openSettings(sec: string) {
   requestAnimationFrame(() => requestAnimationFrame(() => w!.classList.add("on")));
   if (!touchy()) (w.querySelector(".sn.on, .sph .cb") as HTMLElement | null)?.focus();   // on touch a focus ring on ✕ just looks stuck
 }
-function closeSettings() { scReset(); const w = document.getElementById("setw"); S.open = false; settingsContact = null; networkVisible(false); slideEnd?.(); piDrop(); PI.done = null; if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!S.open) w.innerHTML = ""; }, 240); }
+function closeSettings() { scReset(); cmodelsLeave(); const w = document.getElementById("setw"); S.open = false; settingsContact = null; networkVisible(false); slideEnd?.(); piDrop(); PI.done = null; if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!S.open) w.innerHTML = ""; }, 240); }
 function sGo(sec: string) { if (!secShown(sec)) sec = "general"; if (!S.open) return openSettings(sec); acctNoteReset(); if (sec !== "shortcuts") scReset(); if (!phone() && !sec) sec = "general"; if (sec === "account" && S.sec !== "account") AC.back = S.sec === "general" ? "general" : "";
   const depth = (k: string) => !k ? 0 : secParent(k) ? 2 : 1, dir = sec === S.sec ? 0 : depth(sec) < depth(S.sec) ? -1 : 1;
   AC.edit = ""; KY.edit = null; S.sec = sec; S.adding = KY.addkey = false; KY.kedit = null; KY.q = ""; KY.show = KY_FIRST; piDrop(); PI.done = null; sRender(false, phone() ? dir : 0); }
@@ -3410,7 +3411,7 @@ document.addEventListener("submit", e => {
   }
 }, true);
 window.addEventListener("keydown", e => {
-  if (e.key === "Escape" && document.querySelector(".cmback")) return;   // the model picker (custom-models.ts) closes first; Settings stays open behind it
+  if (e.key === "Escape" && document.querySelector(".cmback,.pkm")) return;   // the model picker (custom-models.ts) and the pick menu (pick-menu.ts) close first; Settings stays open behind it
   if (e.key === "Escape" && S.menu) { e.preventDefault(); e.stopImmediatePropagation(); closeMenu(); return; }
   if (e.key === "Escape" && S.open) { e.preventDefault(); e.stopImmediatePropagation(); const form = S.adding || KY.addkey || KY.kedit || KY.edit || AC.edit || ((PI.plan || PI.err) && !PI.busy), sec = S.sec;
     guarded(() => { if (form) { S.adding = KY.addkey = false; KY.kedit = null; KY.edit = null; AC.edit = ""; piDrop(); sRender(); } else if (phone() && sec) sGo(secParent(sec)); else closeSettings(); }); return; }
@@ -3522,7 +3523,7 @@ nfInit({ live: LIVE, look: !!BOOT?.look, blocked: () => dpSheetOpen(), texting: 
 rpInit({ live: LIVE, before: () => { closeMenu(); if (mState.sheet === "set") closeSheet(); } , note: (t, s) => note(ic.check, t, s, "") });
 if (hasFeature("smart_routing")) cmodelsInit({ api: LIVE ? (path, init) => fetch(`${LIVE.api}/${path}`, { method: init?.method || "GET", credentials: "same-origin", cache: "no-store", ...(init?.body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) } : {}) })
     .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok || d?.error) throw new Error(typeof d?.error === "string" ? d.error : `Something went wrong (${r.status}).`); return d; }) : null,
-  repaint: () => sRender(), shown: () => S.open && (S.sec === CMCP_SEC || S.sec === BYK_SEC), srow: (i, t, s, r, a = "") => srow(i, t, s, r, a), ask: o => ask(o),
+  repaint: () => sRender(), channels: () => channels.map(c => ({ slug: c.slug, name: c.name })), shown: () => S.open && (S.sec === CMCP_SEC || S.sec === BYK_SEC), srow: (i, t, s, r, a = "") => srow(i, t, s, r, a), ask: o => ask(o),
   openAdvanced: () => { if (S.open) sGo(CMCP_SEC); else openSettings(CMCP_SEC); }, openAi: () => { if (S.open) sGo(BYK_SEC); else openSettings(BYK_SEC); }, version: String((LIVE as any)?.v || ""), saved: () => bykRefresh(), noteBoot: v => { if (BOOT?.account) BOOT.account.custom_models = v; } }, BOOT?.account?.custom_models);
 if (hasFeature("connected_apps")) cmcpInit({ api: LIVE ? (path, init) => fetch(`${LIVE.api}/${path}`, { method: init?.method || "GET", credentials: "same-origin", ...(init?.body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) } : {}) })
     .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) { const er = d?.error, e: any = new Error((typeof er === "string" ? er : er?.message) || `Something went wrong (${r.status}).`); e.status = r.status; e.code = er?.code; throw e; } return d; }) : null,
@@ -3766,6 +3767,7 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
   else if (ev.t === "spend_pause") { pauseSet([ev.pause]); (reply as any).paused = true; return; }   // why this turn is pausing (its card closes "paused" next)
   else if (ev.t === "ai_used" && hasFeature("billing")) { bykUsed(ev.chatgpt === true, s, route().s === s); return; }   // which service answered this chat call: the "Using ChatGPT plan" line follows it (byok.ts)
   else if (ev.t === "byok_switch" && hasFeature("billing")) { noticeShow({ text: ev.notice }); bykSwitched(); return; }   // credits used up: chat now on their backup key (byok.ts), said once
+  else if (ev.t === "disk_notice") { noticeShow({ text: ev.notice }); return; }   // the computer's disk is low or full, or the saved files no longer fit (channel-computer.js)
   else if (ev.t === "pomodoro") { pomoSet(ch.slug, s.id, ev.pomodoro); return; }
   else if (ev.t === "pomodoro_global") { pomoSet("*", "global", ev.pomodoro); return; }
   else if (ev.t === "livenotes") { lnSet(ch.slug, s.id, ev.livenotes); return; }

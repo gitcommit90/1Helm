@@ -30,17 +30,20 @@ ok("ChatGPT: the 30 day summary and a Manage usage link, no bars");
 p = await page("?byokthree");
 assert.match(block(p.html, "chatgpt"), /class="bykusage siwcuse"/, "the summary is drawn at once from the state");
 await new Promise((z) => setTimeout(z, 100)); await p.m.bykUsageLoad(); await new Promise((z) => setTimeout(z, 600));
-b = block(p.m.bykPage(), "chatgpt"); assert.match(b, /1\.2M tokens/); assert.match(block(p.m.bykPage(), "opencode"), /bukno/);
-ok("the summary stays after the usage load, and OpenCode is the link");
+b = block(p.m.bykPage(), "chatgpt"); assert.match(b, /1\.2M tokens/); assert.equal((block(p.m.bykPage(), "opencode").match(/class="bukbar"/g) || []).length, 3, "OpenCode: three bars");
+ok("the summary stays after the usage load, and OpenCode shows its three bars");
 
 p = await page("?byokthree&byokusagelink&byokusagecached", 400);
 b = block(p.html, "chatgpt"); assert.match(b, /Manage usage/); assert.doesNotMatch(b, /progressbar/);
 b = block(p.html, "opencode"); assert.match(b, /bukno/); assert.match(b, /href="https:\/\/opencode\.ai\/console"/);
-ok("ChatGPT keeps its summary and link; OpenCode is always the link");
+ok("ChatGPT keeps its summary and link; OpenCode is the link when its numbers cannot be read");
 
 p = await page("?byokcc&byokusagecached", 400);
 b = block(p.html, "claudecode"); assert.match(b, /<b>5 hours<\/b><span>64% used<\/span>/); assert.match(b, /href="https:\/\/claude\.ai\/settings\/usage"/); assert.match(block(p.html, "opencode"), /opencode\.ai\/console/);
 ok("Claude Code: two bars and its own Manage usage page");
+assert.match(b, /class="bukmore"><button type="button" class="bukcheck" data-bykcheck data-w="Check usage">Check usage<\/button><a class="bukmanage"/); assert.doesNotMatch(block(p.html, "opencode"), /bykcheck/);
+p = await page("?byokcc&byokusagelink&byokusagecached", 400); assert.match(block(p.html, "claudecode"), /Usage isn't shown here\. <a class="bukmanage"[^>]*>Manage usage<\/a><button[^>]*data-bykcheck/);
+ok("Claude Code: the Check usage button beside Manage usage in the bars and link-only states, never on OpenCode (the browser test covers waiting, pressing and sizes)");
 
 p = await page("?byokthree&byokusagelimit&byokusagecached", 400);
 b = block(p.html, "chatgpt"); assert.match(b, /<p class="bukhit" role="status">Usage limit reached\. Review your plan or this app's limit in ChatGPT settings\.<\/p>/); assert.doesNotMatch(b, /Resets|hour/);
@@ -67,6 +70,36 @@ const wait = (ms) => new Promise((z) => setTimeout(z, ms));
 const claude = { id: "claudecode", kind: "claudecode", label: "Claude Code", host: "", last4: "", email: "sam@example.com", plan_name: "Max", added_at: 1, tested_at: null, test: null };
 const stateOf = (conns, usage = {}) => ({ on_plan: false, full: true, plan_name: "Personal", price: 10, mode: "", connections: conns, usage, openrouter: { manage: "https://openrouter.ai/keys/x" }, custom: { model: null }, chatgpt: { manage: "https://chatgpt.com/settings/usage", summary: null, welcome: false, invite: false } });
 const tried = (at) => ({ claudecode: { windows: [{ id: "session", label: "5 hours", used: 64, resets_at: Date.now() + 36e5 }, { id: "weekly", label: "This week", used: 41, resets_at: Date.now() + 864e5 }], at, tried: true, manage: "https://claude.ai/settings/usage", limit: null } });
+
+// ---- windows whose reset time has passed are not drawn ----
+const win = (id, label, used, resets_at) => ({ id, label, used, resets_at });
+async function barsFor(windows) {
+  const u = { claudecode: { ...tried(1).claudecode, windows } };
+  const r = await apiPage("?x5", async (path) => (path === "/byok" ? stateOf([claude], u) : path === "/byok/usage" ? { usage: u } : {}));
+  r.m.bykLoad(); await wait(150); return block(r.m.bykPage(), "claudecode");
+}
+const gone = Date.now() - 1000, soon = Date.now() + 36e5;
+b = await barsFor([win("session", "5 hours", 64, gone), win("weekly", "This week", 41, gone)]);
+assert.equal((b.match(/class="bukbar"/g) || []).length, 0); assert.doesNotMatch(b, /% used|Not in use/); assert.match(b, /Usage isn't shown here\. <a class="bukmanage"/);
+b = await barsFor([win("session", "5 hours", 64, gone), win("weekly", "This week", 41, soon)]);
+assert.equal((b.match(/class="bukbar"/g) || []).length, 1); assert.match(b, /<b>This week<\/b><span>41% used<\/span>/); assert.doesNotMatch(b, /5 hours|Not in use/); assert.match(b, /Manage usage/);
+b = await barsFor([win("session", "5 hours", 64, soon), win("weekly", "This week", 41, soon)]);
+assert.equal((b.match(/class="bukbar"/g) || []).length, 2);
+ok("ended windows are left out: none, one or both bars");
+console.log("byok usage ended windows: all passed");
+
+// three windows (OpenCode Go) and the OpenCode placeholder
+const ocConn = { ...claude, id: "opencode", kind: "opencode", label: "OpenCode", plan: "go", email: "" };
+const ocWins = [win("session", "5 hours", 42, soon), win("weekly", "This week", 18, soon), win("monthly", "This month", 100, soon)];
+const ocU = { opencode: { windows: ocWins, at: 1, tried: true, manage: "https://opencode.ai/console", limit: null } };
+let o = await apiPage("?x6", async (path) => (path === "/byok" ? stateOf([ocConn], ocU) : path === "/byok/usage" ? { usage: ocU } : {}));
+o.m.bykLoad(); await wait(150); b = block(o.m.bykPage(), "opencode");
+assert.equal((b.match(/class="bukbar"/g) || []).length, 3); assert.match(b, /<b>This month<\/b><span>100% used<\/span>/); assert.match(b, /bukw full/);
+let heldOc = true; o = await apiPage("?x7", async (path) => { if (path === "/byok") return stateOf([ocConn]); if (path === "/byok/usage") { while (heldOc) await wait(20); return { usage: ocU }; } return {}; });
+o.m.bykLoad(); await wait(100); b = block(o.m.bykPage(), "opencode");
+assert.match(b, /bykusage bukwait/); assert.equal((b.match(/class="bukbar"/g) || []).length, 3); assert.match(b, /<b>This month<\/b><span>—<\/span>/); assert.match(b, /Manage usage/);
+heldOc = false; await wait(150); assert.equal((block(o.m.bykPage(), "opencode").match(/class="bukbar"/g) || []).length, 3);
+ok("OpenCode: three bars, and the placeholder keeps three rows until the numbers arrive");
 
 // 1. waiting: same rows as the bars (labels, dashes, empty bars) and the link, never an empty box
 let live = stateOf([claude]), hold = true;
@@ -108,4 +141,5 @@ assert.ok(releaseByok, "the /byok request is waiting"); releaseByok(); await wai
 assert.match(block(a.m.bykPage(), "claudecode"), /64% used/, "the older answer kept the newer numbers");
 ok("a late /byok answer keeps the newer usage");
 console.log("byok usage wait: all passed");
+
 

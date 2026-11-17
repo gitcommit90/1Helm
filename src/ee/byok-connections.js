@@ -183,9 +183,12 @@ export function withoutConnection(config, id) {
   if (!config) return { config, removed: 0 };
   const c = clone(config), prefix = `${id}:`; let removed = 0;
   const keep = (chain) => (chain || []).filter((e) => { const drop = String(e.model).startsWith(prefix); if (drop) removed++; return !drop; });
-  c.categories = (c.categories || []).map((x) => ({ ...x, chain: keep(x.chain) }));
-  if (c.background?.chain) c.background = { chain: keep(c.background.chain) };
-  c.catalog = Object.fromEntries(Object.entries(c.catalog || {}).filter(([m]) => !m.startsWith(prefix)));
+  const strip = (x) => {   // the account's models and each channel's own entry
+    x.categories = (x.categories || []).map((y) => ({ ...y, chain: keep(y.chain) }));
+    if (x.background?.chain) x.background = { chain: keep(x.background.chain) };
+    x.catalog = Object.fromEntries(Object.entries(x.catalog || {}).filter(([m]) => !m.startsWith(prefix)));
+  };
+  strip(c); Object.values(c.channels || {}).forEach(strip);
   return { config: c, removed };
 }
 export async function removeConnection(env, tid, id, { fetchImpl = globalThis.fetch } = {}) {

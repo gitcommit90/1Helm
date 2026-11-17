@@ -1,7 +1,7 @@
 // node --import ./test/stubs/register.mjs test/billing-flag.test.mjs
 // Daily billing flag (src/billing-flag.js): finds price_unknown events and turns charged over 10x their list-price estimate; changes nothing.
 import assert from "node:assert";
-import { listPrice, flagTurns, scanBilling, dailyBillingFlag, flagLine } from "../src/ee/billing-flag.js";
+import { listPrice, flagTurns, scanBilling, dailyBillingFlag, billingUp, flagLine } from "../src/ee/billing-flag.js";
 
 const catalog = { "a/cheap": { pricing: { prompt: 0.09, completion: 0.29, input_cache_read: 0.025 } }, "a/dear": { pricing: { prompt: 3, completion: 15 } }, "bad/x": { pricing: { prompt: "x", completion: 1 } } };
 assert.deepEqual(listPrice(catalog, "a/cheap [fast/main]"), { in: 90, out: 290, cacheRead: 25 }, "routing suffix is ignored; $/M becomes nano$/token");
@@ -36,6 +36,11 @@ try {
   assert.equal(d.flagged, 2); assert.equal(pushes.length, 1); assert.match(pushes[0], /^https:\/\/uptime\.example\/api\/push\/abc\?status=down&msg=/);
   const none = await dailyBillingFlag({ DB: D1, BILLING_FLAG_PUSH: "https://uptime.example/api/push/abc" }, { since: 0, residentOf: () => ({ billingFlags: async () => [] }), ledgerOf: () => ({ resEvents: async () => [] }) });
   assert.equal(none.flagged, 0); assert.match(pushes[1], /status=up/);
+  // one account's message (src/account-jobs.js): silent when nothing is flagged, "down" when flagged; the finished listing pushes "up"
+  const n0 = pushes.length, push = { DB: D1, BILLING_FLAG_PUSH: "https://uptime.example/api/push/abc" };
+  await dailyBillingFlag(push, { since: 0, tenant: "t1", residentOf: () => ({ billingFlags: async () => [] }), ledgerOf: () => ({ resEvents: async () => [] }) }); assert.equal(pushes.length, n0, "a clean account pushes nothing");
+  await dailyBillingFlag(push, { since: 0, tenant: "t1", residentOf, ledgerOf }); assert.match(pushes.at(-1), /status=down/);
+  await billingUp(push, 12); assert.match(pushes.at(-1), /status=up&msg=none%20flagged%20yet%20\(12%20accounts%20queued\)/);
   // a failing account is counted, not thrown
   const bad = await scanBilling({ DB: D1 }, { since: 0, residentOf: () => ({ billingFlags: async () => { throw new Error("x"); } }), ledgerOf });
   assert.equal(bad.errors, 2); assert.equal(bad.price_unknown.length, 1);

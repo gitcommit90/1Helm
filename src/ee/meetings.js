@@ -4,10 +4,10 @@
 // notes in a new task named after the meeting, with the Start sheet ready to pick the input (a meeting tab by default).
 // - An app notification the person opted into (Settings → Notifications → "Meeting reminders for notes", on by default; only devices
 //   with notifications on, or an open app, get it). Not the helper: no model runs, nothing is written in a chat.
-// - Cheap: the one-minute cron (index.js scheduled "* * * * *") only reads D1, except for at most POLL_BATCH workspaces a minute whose
-//   next look is due. A workspace is looked at every POLL_MS (10 min) while it has a device with notifications on or the app was open
+// - Cheap: the one-minute cron (index.js scheduled "* * * * *") only reads D1 and sends one queue message per workspace whose
+//   next look is due and per reminder that is due (src/account-jobs.js); the queue consumer makes the looks. A workspace is looked at every POLL_MS (30 min) while it has a device with notifications on or the app was open
 //   in the last 15 min; which calendars it has is re-read every CALS_MS (1 h). Each look is one Composio call per calendar for the next
-//   WINDOW_MS (20 min). Nothing wakes the computer or a Resident (the time zone comes from the app, or the calendar itself).
+//   WINDOW_MS (45 min). Nothing wakes the computer or a Resident (the time zone comes from the app, or the calendar itself).
 // - Calendars: Google through 1Helm's own GOOGLECALENDAR_EVENTS_LIST (the default googlecalendar account, or a legacy googlesuper one);
 //   Outlook (Microsoft 365 / Outlook.com; corporate America mostly) through Composio's OUTLOOK_GET_CALENDAR_VIEW on the default
 //   outlook account. Managed or Self-managed apps alike (composio.js transport).
@@ -20,7 +20,8 @@ import { listConnections, pickAccount, execTool, OWN_VERSIONS } from "./composio
 import { latestVersion } from "./composio-api.js";
 import { DEFAULT_TZ, validTz } from "../schedule.js";
 
-export const POLL_MS = 10 * 60e3, CALS_MS = 60 * 60e3, WINDOW_MS = 20 * 60e3, LEAD_MS = 60e3, LATE_MS = 5 * 60e3, CLAIM_MS = 90e3, SEEN_MS = 15 * 60e3, POLL_BATCH = 8, KEEP_MS = 2 * 864e5;
+// WINDOW_MS covers the gap to the next look: POLL_MS 30 min + up to 2 min of cron and queue delay + LEAD_MS 1 min = 33 min, so 45 min leaves a margin.
+export const POLL_MS = 30 * 60e3, CALS_MS = 60 * 60e3, WINDOW_MS = 45 * 60e3, LEAD_MS = 60e3, LATE_MS = 5 * 60e3, CLAIM_MS = 90e3, SEEN_MS = 15 * 60e3, KEEP_MS = 2 * 864e5;
 const json = (b, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
 // ---- which events (pure) ----
@@ -117,37 +118,34 @@ export async function pollTenant(env, tenantId, now = Date.now(), deps = {}) {
   return out;
 }
 
-// ---- send what's due ----
-export async function sendDue(env, now = Date.now()) {
-  const out = { sent: 0, off: 0, missed: 0 };
-  await env.DB.prepare("UPDATE meeting_alerts SET state='missed' WHERE state IN ('due','sending') AND start_at < ?").bind(now - LATE_MS).run().catch(() => {});
-  const rows = (await env.DB.prepare(`SELECT a.*, t.slug, w.tz FROM meeting_alerts a JOIN tenants t ON t.id=a.tenant_id LEFT JOIN meeting_watch w ON w.tenant_id=a.tenant_id
-    WHERE a.alert_at<=? AND a.start_at>=? AND (a.state='due' OR (a.state='sending' AND a.claimed_at<?)) ORDER BY a.alert_at LIMIT 50`).bind(now, now - LATE_MS, now - CLAIM_MS).all()).results || [];
-  for (const a of rows) {
-    const c = await env.DB.prepare("UPDATE meeting_alerts SET state='sending', claimed_at=? WHERE id=? AND (state='due' OR (state='sending' AND claimed_at<?))").bind(now, a.id, now - CLAIM_MS).run();
-    if (!c?.meta?.changes) continue;   // another run has it
-    const prefs = await getPrefs(env, a.tenant_id);
-    if (!prefs.meetings) { await env.DB.prepare("UPDATE meeting_alerts SET state='off' WHERE id=?").bind(a.id).run(); out.off++; continue; }
-    const txt = reminderText(a.title, Number(a.start_at), a.tz || DEFAULT_TZ);
-    const r = await pushAll(env, a.tenant_id, { kind: "meeting", title: txt.title, body: txt.body, url: appUrl(env, a.slug, `#/meet/${a.id}`), tag: `meet-${a.id}` }, { urgency: "high", topic: `m${a.id.slice(2, 26)}` }).catch((e) => ({ error: String(e?.message || e).slice(0, 200) }));
-    await env.DB.prepare("UPDATE meeting_alerts SET state='sent', sent_at=?, push=? WHERE id=? AND state='sending'").bind(Date.now(), JSON.stringify(r || {}).slice(0, 400), a.id).run();
-    out.sent++;
-  }
+// ---- send one reminder (src/account-jobs.js lists the due ones every minute) ----
+// The row is read again with the same conditions, and claimed (state sending) before the push, so a repeated message finds nothing to do.
+export async function sendOne(env, id, now = Date.now()) {
+  const a = await env.DB.prepare(`SELECT a.*, t.slug, w.tz FROM meeting_alerts a JOIN tenants t ON t.id=a.tenant_id LEFT JOIN meeting_watch w ON w.tenant_id=a.tenant_id
+    WHERE a.id=? AND a.alert_at<=? AND a.start_at>=? AND (a.state='due' OR (a.state='sending' AND a.claimed_at<?))`).bind(id, now, now - LATE_MS, now - CLAIM_MS).first();
+  if (!a) return;
+  const c = await env.DB.prepare("UPDATE meeting_alerts SET state='sending', claimed_at=? WHERE id=? AND (state='due' OR (state='sending' AND claimed_at<?))").bind(now, a.id, now - CLAIM_MS).run();
+  if (!c?.meta?.changes) return;   // another run has it
+  const prefs = await getPrefs(env, a.tenant_id);
+  if (!prefs.meetings) { await env.DB.prepare("UPDATE meeting_alerts SET state='off' WHERE id=?").bind(a.id).run(); return; }
+  const txt = reminderText(a.title, Number(a.start_at), a.tz || DEFAULT_TZ);
+  const r = await pushAll(env, a.tenant_id, { kind: "meeting", title: txt.title, body: txt.body, url: appUrl(env, a.slug, `#/meet/${a.id}`), tag: `meet-${a.id}` }, { urgency: "high", topic: `m${a.id.slice(2, 26)}` }).catch((e) => ({ error: String(e?.message || e).slice(0, 200) }));
+  await env.DB.prepare("UPDATE meeting_alerts SET state='sent', sent_at=?, push=? WHERE id=? AND state='sending'").bind(Date.now(), JSON.stringify(r || {}).slice(0, 400), a.id).run();
+}
+
+// A look that found reminders that are already due (a meeting starting within the minute) sends them at once, as the minute listing would a minute later;
+// the per-reminder claim in sendOne keeps the two from sending twice.
+export async function pollAndSend(env, tenantId, now = Date.now()) {
+  const out = await pollTenant(env, tenantId, now);
+  if (out.added) for (const a of (await env.DB.prepare("SELECT id FROM meeting_alerts WHERE tenant_id=? AND alert_at<=? AND start_at>=? AND state='due'").bind(tenantId, Date.now(), Date.now() - LATE_MS).all()).results || []) await sendOne(env, a.id);
   return out;
 }
 
 // ---- the minute cron ----
-// Workspaces whose next look is due: reminders on, active, and someone to tell (a device with notifications on, or the app open lately).
-export async function meetingsCron(env, { now = Date.now(), deps = {} } = {}) {
-  const out = { due: await sendDue(env, now), polled: [] };
-  const ts = (await env.DB.prepare(`SELECT t.id FROM tenants t LEFT JOIN meeting_watch w ON w.tenant_id=t.id LEFT JOIN notif_prefs n ON n.tenant_id=t.id
-    WHERE t.status='active' AND COALESCE(n.meetings,1)=1 AND COALESCE(w.next_poll_at,0)<=?
-      AND (EXISTS (SELECT 1 FROM push_subs p WHERE p.tenant_id=t.id) OR COALESCE(w.seen_at,0)>?)
-    ORDER BY COALESCE(w.next_poll_at,0) LIMIT ?`).bind(now, now - SEEN_MS, POLL_BATCH).all()).results || [];
-  for (const t of ts) out.polled.push(await pollTenant(env, t.id, now, deps).catch((e) => ({ tenant: t.id, error: String(e?.message || e).slice(0, 160) })));
-  if (out.polled.length) out.due2 = await sendDue(env, Date.now());   // a meeting found just now that starts within the minute
+// Housekeeping that is one statement: reminders older than KEEP_MS are deleted at minute 7. The accounts to look at and the reminders to send
+// are listed by src/account-jobs.js (kinds meeting_poll and meeting_alert).
+export async function meetingsCleanup(env, now = Date.now()) {
   if (new Date(now).getUTCMinutes() === 7) await env.DB.prepare("DELETE FROM meeting_alerts WHERE start_at<?").bind(now - KEEP_MS).run().catch(() => {});
-  return out;
 }
 
 // ---- /w/<slug>/api/meetings… (index.js) ----

@@ -71,9 +71,9 @@ export function backgroundChain(config, fallbackModel) {
 }
 // The chores' chain while Custom Model Selection is on (task titles, labels, hand-off notes, the browser planner): Background jobs' models in order with their facts, or null (off:
 // the own key's fast model applies, as before). Read when the own key's config is loaded (byok.js loadByok) and used by byokChat for every call with fast: true.
-export function ownChorePlan(row, cfg) {
+export function ownChorePlan(row, cfg, channel = null) {
   if (!row) return null;   // an own key always uses its setting: models are chosen only there (byok-custom.js)
-  const config = parse(row.custom_models_own); if (!config) return null;
+  const config = ownFor(parse(row.custom_models_own), channel); if (!config) return null;
   const chain = backgroundChain(config, cfg.fast || cfg.model);
   return chain.length ? chain : null;
 }
@@ -93,6 +93,8 @@ export function requiredMessage(problems, level, where = "Settings, Advanced, Cu
 
 // ---- reading the account's setting ----
 export const parse = (text) => { try { const c = typeof text === "string" && text ? JSON.parse(text) : null; return c && typeof c === "object" && c.version === CUSTOM_VERSION && Array.isArray(c.categories) && c.catalog && typeof c.catalog === "object" ? c : null; } catch { return null; } };
+// The models in effect for a channel: its own entry ({ categories, background, catalog }) while the per-channel switch is on and the channel has one, otherwise the account's.
+export const ownFor = (config, channel) => (config?.per_channel && channel && Object.prototype.hasOwnProperty.call(config.channels || {}, channel) ? { ...config, ...config.channels[channel] } : config);
 // The account's saved facts with OpenRouter's current privacy terms over them (model-catalog.js), so the status, the save, the picker and dispatch all agree.
 // A failed lookup leaves the saved facts. Nothing is written back by reading.
 export async function liveConfig(env, config, opts = {}) {

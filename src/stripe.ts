@@ -15,7 +15,7 @@ export async function stripe(env: any, method: string, path: string, body?: Reco
   if (body && method === "GET") url += "?" + form(body).join("&");
   else if (body) { payload = form(body).join("&"); headers["content-type"] = "application/x-www-form-urlencoded"; }
   if (idem) headers["idempotency-key"] = idem;
-  const r = await fetch(url, { method, headers, body: payload });
+  const r = await fetch(url, { method, headers, body: payload, signal: method === "GET" ? AbortSignal.timeout(20000) : undefined });
   const d: any = await r.json();
   if (!r.ok) { const e: any = new Error(d?.error?.message || `Stripe HTTP ${r.status}`); e.stripe = d?.error; e.status = r.status; throw e; }
   return d;

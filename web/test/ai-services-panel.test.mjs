@@ -16,14 +16,17 @@ const ok = (name) => console.log("  ok", name);
 const wait = (ms) => new Promise((z) => setTimeout(z, ms));
 async function page(search) {
   globalThis.location = { search, pathname: "/v3/", hash: "", href: `http://x/v3/${search}`, origin: "http://x" };
+  clicks.length = 0;
   const m = await import(`${pathToFileURL(out).href}?${encodeURIComponent(search)}`);
-  clicks.length = 0; let repaints = 0;
+  let repaints = 0;
   const srow = (i, t, s, r) => `<div class="sr">${t}|${s}|${r}</div>`;
   m.cmodelsInit({ api: null, repaint() { repaints++; }, shown: () => true, srow, ask: async () => false, openAdvanced() {}, openAi() {}, version: "t", noteBoot() {} }, null);
   m.bykInit({ api: null, repaint() { repaints++; }, open() {}, note() {}, who: () => "Skipper", srow, icon: () => "", shown: () => true, credits() {} });
   m.bykPage(); await wait(500); m.bykPage(); await wait(100);
   return { m, html: () => m.bykPage(), repaints: () => repaints };
 }
+// Press a category's row in the Models list (its editor then replaces the list).
+const openCat = (id) => { for (const f of clicks) f({ target: { closest: (q) => (q === "[data-cmopen]" ? { dataset: { cmopen: id } } : null) }, preventDefault() {} }); };
 
 assert.match(readFileSync(here("../src/settings-links.ts"), "utf8"), /byok: \{ section: "ai"/, "the old link name opens the new panel");
 const v3 = readFileSync(here("../src/v3.ts"), "utf8");
@@ -35,7 +38,8 @@ ok("nav entry right after General, the General row is gone, ?settings=byok point
 // An own key with services connected and models chosen: the editor is in the panel, between the list and the plan options, and Advanced draws nothing for it.
 let p = await page("?byokthree&cmown");
 let h = p.html();
-assert.match(h, /data-cmown/); assert.match(h, /data-cmcat="general"/); assert.match(h, /data-cmpick="general\|0"/);
+assert.match(h, /data-cmown/); assert.match(h, /data-cmopen="general"/); assert.doesNotMatch(h, /data-cmpick=/, "the list has no model boxes");
+openCat("general"); h = p.html(); assert.match(h, /data-cmcat="general"/); assert.match(h, /data-cmpick="general\|0"/);
 assert.ok(h.indexOf("data-bykconn=") < h.indexOf("data-cmown"), "services first, then Models");
 assert.ok(h.indexOf("data-cmown") < h.indexOf('class="sfine"'), "Models before the fine print");
 assert.strictEqual(p.m.cmodelsCard(), "", "Advanced no longer shows the own-key editor");
@@ -45,8 +49,8 @@ ok("services, then Models with the editor, then the fine print; Advanced shows n
 // Services connected, nothing chosen: one plain line and an empty slot that says Choose a model.
 p = await page("?byokthree&cmown&cmownnone");
 h = p.html();
-assert.doesNotMatch(h, /No model is chosen yet/, "on a full plan choosing is optional, so no warning"); assert.match(h, /cmempty/); assert.match(h, /Choose a model/); assert.match(h, /1Helm&#39;s models/, "empty Background jobs means 1Helm's models on a full plan");
-assert.strictEqual((h.match(/data-cmpick=/g) || []).length >= 1, true);
+assert.doesNotMatch(h, /No model is chosen yet/, "on a full plan choosing is optional, so no warning"); assert.match(h, /Choose a model/); assert.match(h, /1Helm&#39;s models/, "empty Background jobs means 1Helm's models on a full plan");
+openCat("general"); assert.match(p.html(), /cmempty/); assert.strictEqual((p.html().match(/data-cmpick=/g) || []).length >= 1, true);
 assert.ok(!/data-bykchoose/.test(h), "the old Choose models banner is gone");
 ok("connected with no model chosen: one line and an empty Choose a model slot, nothing picked");
 
@@ -59,7 +63,7 @@ for (const f of clicks) f({ target: { closest: (q) => (q === "[data-bykor]" ? {}
 await wait(1300);
 assert.ok(p.repaints() > before, "the page is drawn again once the models are read");
 h = p.html();
-assert.match(h, /data-cmown/); assert.match(h, /Choose a model/); assert.match(h, /No model is chosen yet\./);
+assert.match(h, /data-cmown/); assert.match(h, /Choose a model/); assert.match(h, /No model is chosen yet\./); openCat("general"); h = p.html();
 assert.ok(!/data-cmpick="general\|0"[^>]*aria-label="First choice model for General: (?!Choose a model)/.test(h), "the slot is empty: nothing was picked");
 p.m.bykAfter(); assert.deepStrictEqual(scrolled.map((o) => o.block), ["start"], "scrolled to Models once");
 p.m.bykAfter(); assert.strictEqual(scrolled.length, 1, "only once per connect");

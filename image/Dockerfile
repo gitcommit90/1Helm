@@ -39,12 +39,14 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
 
 COPY opt/1hc/init.sh /opt/1hc/init.sh
 COPY opt/1hc/save.sh /opt/1hc/save.sh
+COPY opt/1hc/disk.sh /opt/1hc/disk.sh
+COPY opt/1hc/chrome-cache.txt /opt/1hc/chrome-cache.txt
 COPY opt/1hc/secure-file.py /opt/1hc/secure-file.py
 COPY opt/1hc-browser/server.mjs /opt/1hc-browser/server.mjs
 COPY opt/1hc-browser/exit-proxy.mjs /opt/1hc-browser/exit-proxy.mjs
 COPY opt/1hc-browser/request-guard.mjs /opt/1hc-browser/request-guard.mjs
 COPY usr/local/bin/rg /usr/local/bin/rg
-RUN chmod 755 /opt/1hc/init.sh /opt/1hc/save.sh /usr/local/bin/rg \
+RUN chmod 755 /opt/1hc/init.sh /opt/1hc/save.sh /opt/1hc/disk.sh /usr/local/bin/rg \
     && test -x /opt/chrome/chrome \
     && ffmpeg -hide_banner -devices 2>&1 | grep -q x11grab \
     && ffmpeg -hide_banner -encoders 2>&1 | grep -q ' libx264 ' \

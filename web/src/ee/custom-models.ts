@@ -25,6 +25,7 @@ type Deps = {
   shown: () => boolean;                                   // Settings is open on the Advanced page or on AI services
   srow: (icon: string, title: string, sub: string, right: string, attrs?: string) => string;
   ask: (o: { title: string; body?: string; confirm?: string; cancel?: string | null }) => Promise<boolean>;
+  channels: () => { slug: string; name: string }[];       // the workspace's channels (Choose models per channel)
   openAdvanced: () => void;
   openAi?: () => void;                                    // Settings, AI services (where an own key's models are chosen)
   saved?: () => void;                                     // a save of the models went through (Settings, AI services reads its plan option again: choosing General's model can turn Use my services now on)
@@ -32,6 +33,7 @@ type Deps = {
   noteBoot: (v: { on: boolean; level?: string; own_key?: boolean; needs_choice: boolean; problems: Problem[] }) => void;   // keeps the boot answer current for the rest of the app
 };
 import { efsHtml, efsMount, efsPressed } from "./effort-slider";
+import { pickHtml } from "../pick-menu";
 import { logoChip, serviceDomain } from "../logo";   // logo.dev through /logo/<domain>: the service's logo beside its name
 let D: Deps | null = null;
 type Scope = "" | "services";
@@ -41,9 +43,11 @@ const LEVEL_NAME: Record<string, string> = { unrestricted: "Unrestricted", no_tr
 const SLOT = ["First choice", "Second choice", "Third choice"];
 type Svc = { id: string; kind: string; label: string; host?: string };
 const M: { fetched: boolean; at: number; loaded: boolean; loading: boolean; busy: boolean; err: string; on: boolean; level: string; own: boolean; endpoint: string; needs: boolean; problems: Problem[]; max: number; cats: Cat[]; bg: Cat | null; models: Record<string, Card>;
-  draft: Record<string, { prompt: string; completion: string }>; core: any; noModel: boolean; optional: boolean; oneHelm: boolean; svcs: Svc[]; hasOr: boolean } =
-  { fetched: false, at: 0, loaded: false, loading: false, busy: false, err: "", on: false, level: "zdr", own: false, endpoint: "", needs: false, problems: [], max: 12, cats: [], bg: null, models: {}, draft: {}, core: null, noModel: false, optional: false, oneHelm: false, svcs: [], hasOr: false };
+  draft: Record<string, { prompt: string; completion: string }>; open: string | null; top: number; core: any; noModel: boolean; optional: boolean; oneHelm: boolean; svcs: Svc[]; hasOr: boolean } =
+  { fetched: false, at: 0, loaded: false, loading: false, busy: false, err: "", on: false, level: "zdr", own: false, endpoint: "", needs: false, problems: [], max: 12, cats: [], bg: null, models: {}, draft: {}, open: null, top: 0, core: null, noModel: false, optional: false, oneHelm: false, svcs: [], hasOr: false };
 const BG = "background";
+// Choose models per channel (own editor): on = the switch, chan = the chosen channel's slug ("" is All channels), own = that channel has models of its own.
+const CH = { on: false, chan: "", own: false };
 // "1Helm's models" (src/byok-connections.js ONEHELM_MODEL): a place in any chain that runs the call on 1Helm's own models, chosen by 1Helm, paid from the plan's usage or credits. It is listed first in
 // the picker under its own heading, "1Helm". The server owns the id; this is only how it looks.
 const ONE_ID = "1helm:models", ONE_NAME = "1Helm's models";
@@ -53,7 +57,7 @@ const svcTag = (service: string, conn?: string) => { const c = M.svcs.find(x => 
 const BG_NOTE = "Writes task titles, labels and the note at the end of each task, and plans the browser's steps. Your chats use the categories above.";
 let queue: Promise<unknown> = Promise.resolve();
 // Repaint Settings and give the focus back to the control that had it (the page is drawn again from text).
-const KEYS = ["cmtoggle", "cmadd", "cmdel", "cmpick", "cmeff", "cmlvl", "cmtitle", "cmprice", "cmfb", "cmrm"];
+const KEYS = ["cmpc", "cmchan", "cmreset", "cmtoggle", "cmopen", "cmback", "cmadd", "cmdel", "cmpick", "cmeff", "cmlvl", "cmtitle", "cmprice", "cmfb", "cmrm"];
 // While a pointer is down on a reasoning slider the page is never redrawn, so the control under the pointer stays the same element and follows it.
 export const cmodelsDragging = () => efsPressed();
 function repaint() {
@@ -65,6 +69,17 @@ function repaint() {
 let prompted = false;
 
 const findCat = (id: string): Cat | undefined => (id === BG ? M.bg ?? undefined : M.cats.find(x => x.id === id));
+const modelName = (id: string) => M.models[id]?.name || (id === ONE_ID ? ONE_NAME : id.replace(/^[^:]*:/, ""));
+const emptyText = (isBg: boolean) => isBg ? (M.optional && M.oneHelm ? "1Helm's models" : "Same as General's first model") : "Choose a model";
+const svg = (d: string, px: number) => `<svg width="${px}" height="${px}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+// Show one category's editor (null: the list). The list's scroll place is kept and comes back with the list; the row that was open takes the focus again.
+function show(id: string | null) {
+  const was = M.open, sb = () => document.querySelector<HTMLElement>("#setw .sbody");
+  if (id) M.top = sb()?.scrollTop ?? 0;
+  M.open = id; repaint();
+  const b = sb(); if (b) b.scrollTop = id ? 0 : M.top;
+  if (!id && was) document.querySelector<HTMLElement>(`[data-cmopen="${CSS.escape(was)}"]`)?.focus({ preventScroll: true });
+}
 const esc_id = (m: { id: string; name?: string }) => (m.name && m.name !== m.id ? m.id : "");
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x));
@@ -85,6 +100,7 @@ const fromConfig = (cfg: any): Cat[] => cfg.routing.categories.filter((c: any) =
 function adopt(v: any, fromCache = false) {
   M.on = !!v.on; M.level = v.level || M.level; M.own = !!v.own_key; M.endpoint = M.own ? v.endpoint || "plain" : ""; M.needs = !!v.needs_choice; M.problems = v.problems || []; M.max = v.max_categories || M.max;
   M.cats = v.categories || []; M.bg = v.background?.chain ? { id: BG, title: "Background jobs", chain: v.background.chain, max_price: null } : null; M.models = v.models || {}; M.draft = {}; M.loaded = true;
+  CH.on = !!v.per_channel; CH.own = !!v.channel_own;
   M.noModel = !!v.no_model; M.optional = !!v.optional; M.oneHelm = !!v.onehelm; M.svcs = Array.isArray(v.connections) ? v.connections : []; M.hasOr = !!v.has_openrouter; if (M.own) M.on = true;   // an own key has no switch: it is always used
   if (!fromCache) { lastJson = JSON.stringify(v); cachePut(v); }
   if (scope === "") { boot0.on = M.on; boot0.own = M.own; if (!fromCache) note(v); }   // the boot answer is about Advanced only
@@ -94,31 +110,36 @@ function note(v: { on?: boolean; level?: string; own_key?: boolean; needs_choice
 }
 // The last answer is kept in this browser (localStorage, by workspace; models and settings only, no key or token), so Settings, AI services draws the Models section in full on every open.
 // It is read again in the background (at most every 15 seconds, and whenever the page opens), and the page changes in place only when the answer differs.
-const ckey = () => { try { const slug = String((window as any).__1HC?.slug || ""); return D?.api && slug ? `1hc-ai-models:${slug}${scope === "services" ? "" : ":adv"}` : ""; } catch { return ""; } };
+const ckey = () => { try { const slug = String((window as any).__1HC?.slug || ""); return D?.api && slug ? `1hc-ai-models:${slug}${scope === "services" ? "" : ":adv"}${CH.chan ? `:ch:${CH.chan}` : ""}` : ""; } catch { return ""; } };
 const cacheGet = (): any => { try { const k = ckey(); const raw = k ? localStorage.getItem(k) : null; const v = raw ? JSON.parse(raw) : null; return v && Array.isArray(v.categories) ? v : null; } catch { return null; } };
 const cachePut = (v: any) => { try { const k = ckey(); if (k) localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage unavailable: the page just draws from the server's answer */ } };
 let lastJson = "", hydrated = false, warmedAt = 0;
 // The page that is open decides which editor this state holds; the other page's answer is dropped and read again when it opens.
 function setScope(want: Scope) {
   if (scope === want) return;
-  scope = want; hydrated = false; lastJson = ""; warmedAt = 0;
-  Object.assign(M, { fetched: false, at: 0, loaded: false, err: "", cats: [], bg: null, models: {}, draft: {}, svcs: [], noModel: false, optional: false, oneHelm: false, needs: false, problems: [], endpoint: "", own: want === "services" || boot0.own, on: want === "services" || boot0.on });
+  scope = want; hydrated = false; lastJson = ""; warmedAt = 0; Object.assign(CH, { on: false, chan: "", own: false });
+  Object.assign(M, { fetched: false, at: 0, loaded: false, err: "", cats: [], bg: null, models: {}, draft: {}, open: null, svcs: [], noModel: false, optional: false, oneHelm: false, needs: false, problems: [], endpoint: "", own: want === "services" || boot0.own, on: want === "services" || boot0.on });
+}
+// Choose a channel ("" is All channels): its view is drawn from this browser's copy of it, or as a loading frame until the server answers; no other view's rows stay on screen.
+function setChan(slug: string) {
+  CH.chan = slug; CH.own = false; hydrated = false; lastJson = ""; Object.assign(M, { fetched: false, at: 0, loaded: false, err: "", open: null, draft: {} }); repaint();
 }
 function hydrate() { if (hydrated || M.loaded) return; hydrated = true; const v = cacheGet(); if (v) { try { adopt(v, true); lastJson = JSON.stringify(v); } catch { M.loaded = false; } } }
 async function load(force = false, restore = false) {   // restore: a refused save put the unsaved choice on screen, so the saved answer is drawn again even if it is the one already held
   if (!D || M.loading) return;
   hydrate();
   if (M.fetched && !force && Date.now() - M.at < 15000) return;
-  M.loading = true; M.at = Date.now(); let changed = false; const sc = scope;
+  M.loading = true; M.at = Date.now(); let changed = false, again = false; const sc = scope;
   try {
-    const v = await call("account/custom-models"), j = JSON.stringify(v);
+    const v = await call(`account/custom-models${CH.chan ? `?channel=${encodeURIComponent(CH.chan)}` : ""}`), j = JSON.stringify(v);
     if (sc !== scope) return;   // the other page opened while this answer was on its way
+    if ((v.channel || "") !== CH.chan) { again = true; return; }   // another channel was chosen meanwhile: ask again for that one
     if (restore || j !== lastJson) { if (force || !Object.keys(M.draft).length) { adopt(v); changed = true; } }
     if (M.err) { M.err = ""; changed = true; }
     M.fetched = true;
     if (M.own && M.svcs.length && (force || Date.now() - warmedAt > 5 * 60e3)) { warmedAt = Date.now(); void call("account/custom-models/catalog?warm=1").catch(() => {}); }   // the server reads each service's model list now, so the picker opens with models
   } catch (e: any) { if (!M.loaded) { M.err = e?.message || "Couldn't load this. Try again in a minute."; changed = true; } }
-  finally { M.loading = false; if (changed && D?.shown()) repaint(); }
+  finally { M.loading = false; if (changed && D?.shown()) repaint(); if (again) void load(true); }
 }
 // Every request of the editor carries its scope, first in the query so the sandbox and the server read the rest as before.
 const scoped = (path: string) => (scope === "services" ? (path.includes("?") ? path.replace("?", "?scope=services&") : `${path}?scope=services`) : path);
@@ -127,7 +148,7 @@ function save(body: any, after?: () => void) {
   queue = queue.then(async () => {
     M.busy = true; M.err = "";
     const sc = scope;
-    try { const v = await call("account/custom-models", { method: "POST", body }); if (sc === scope) { adopt(v); after?.(); D?.saved?.(); } }
+    try { const v = await call("account/custom-models", { method: "POST", body: CH.chan && body.per_channel === undefined ? { ...body, channel: CH.chan } : body }); if (sc === scope && (v.channel || "") === CH.chan) { adopt(v); after?.(); D?.saved?.(); } }
     catch (e: any) { const why = e?.message || "Couldn't save that. Try again in a minute."; for (let i = 0; M.loading && i < 40; i++) await new Promise(r => setTimeout(r, 100)); await load(true, true).catch(() => {}); M.err = why; }   // the reload puts the saved choice back, and the reason stays on screen
     finally { M.busy = false; repaint(); }
   });
@@ -150,11 +171,22 @@ export function cmodelsOwnPanel(hasConn: boolean): string {
   if (!D || !hasConn) return "";
   setScope("services"); hydrate(); void load();
   const err = M.err ? `<p role="alert" class="meta cmerr">${esc(M.err)}</p>` : "";
-  if (!M.loaded || !M.svcs.length) return `<h3 data-cmown>Models</h3>${err || `<div class="sc cmskel" aria-hidden="true"></div>`}`;   // only the very first open on a new browser gets here: the frame, no loading line
+  const picker = CH.on ? `<label class="netchannel">${pickHtml({ attrs: "data-cmchan", label: "Channel", value: CH.chan, options: [["", "All channels"], ...D.channels().map((c): [string, string] => [c.slug, `#${c.name}`])] })}</label>` : "";
+  if (!M.loaded || !M.svcs.length) return `<h3 data-cmown>Models</h3>${picker}${err || `<div class="sc cmskel" aria-hidden="true"></div>`}`;   // only the very first open on a new browser gets here: the frame, no loading line
   const none = M.noModel && !M.optional ? `<p role="alert" class="meta cmerr cmnone">No model is chosen yet. Choose General's first model so chat can answer.</p>` : "";
   const bad0 = new Set(M.problems.map(p => `${p.category_id}|${p.slot}`));
   const need0 = M.needs ? `<p role="alert" class="meta cmerr">Your privacy setting is ${esc(LEVEL_NAME[M.level] || M.level)}. Replace the models marked below to keep working.</p>` : "";
-  return `<h3 data-cmown>Models</h3>${err}${none}${need0}<div class="sc cmx" data-cmx>${M.cats.map(c => catHtml(c, bad0)).join("")}${M.cats.length < M.max && !M.noModel ? `<div class="cmadd"><button type="button" class="sa blue" data-cmadd>Add category</button></div>` : ""}${M.bg ? catHtml(M.bg, bad0) : ""}</div>`;
+  const c = M.open ? findCat(M.open) : undefined;
+  if (c) return `<div data-cmown data-cmedit><button type="button" class="sbk" data-cmback>${svg('<path d="m15 18-6-6 6-6"/>', 18)}<span>Models${esc(chName())}</span></button>${err}<div class="sc cmx cmmy" data-cmx>${catHtml(c, bad0)}${c.id === BG || c.id === "general" ? "" : `<div class="cmadd"><button type="button" class="sa red" data-cmdel="${esc(c.id)}">Delete category</button></div>`}</div></div>`;
+  const row = (c: Cat) => {
+    const names = c.chain.map(e => modelName(e.model)), lv = (e: Entry) => M.models[e.model]?.efforts?.length ? effortLabel(e.effort) : "";
+    const ch = c.chain.map((e, i) => { const sv = M.svcs.find(x => x.id === M.models[e.model]?.conn);
+      return `<span class="cmch${bad0.has(`${c.id}|${i}`) ? " cmbd" : ""}">${sv ? logoChip(serviceDomain(sv.kind, sv.host), 14) : ""}${esc(names[i])}${lv(e) ? ` · ${lv(e)}` : ""}</span>${i < c.chain.length - 1 ? ` <span class="cmar">→</span> ` : ""}`; }).join("");
+    return `<button type="button" class="cmrw" data-cmopen="${esc(c.id)}" aria-label="${esc(c.title)}: ${esc(names.map((n, i) => n + (lv(c.chain[i]) ? `, ${lv(c.chain[i])}` : "")).join(", then ") || emptyText(c.id === BG))}"><span class="cmrn">${esc(c.title)}</span><span class="cmrc">${ch || esc(emptyText(c.id === BG))}</span>${svg('<path d="m9 18 6-6-6-6"/>', 18)}</button>`;
+  };
+  const reset = CH.chan && CH.own ? `<div class="cmadd"><button type="button" class="sa blue" data-cmreset>Use the models of All channels</button></div>` : "";
+  const sw = D.srow("", "Choose models per channel", "", `<button type="button" class="tg${CH.on ? " on" : ""}" role="switch" aria-checked="${CH.on}" aria-label="Choose models per channel" data-cmpc><i></i></button>`);
+  return `<h3 data-cmown>Models</h3>${picker}${err}${none}${need0}<div class="sc cmx cmmy" data-cmx>${M.cats.map(row).join("")}${M.cats.length < M.max && !M.noModel ? `<div class="cmadd"><button type="button" class="sa blue" data-cmadd>Add category</button></div>` : ""}${M.bg ? row(M.bg) : ""}${reset}${sw}</div>`;
 }
 // Settings, AI services asks for the page's own answer and the Models answer together, so neither waits for the other.
 export function cmodelsPrefetch(hasConn = true) { if (D && hasConn) { setScope("services"); hydrate(); void load(); } }
@@ -175,9 +207,8 @@ export function cmodelsCard(): string {
 function catHtml(c: Cat, bad: Set<string>) {
   const d = M.draft[c.id], pin = d ? d.prompt : c.max_price ? String(c.max_price.prompt) : "", pout = d ? d.completion : c.max_price ? String(c.max_price.completion) : "";
   const isBg = c.id === BG;
-  const head = isBg ? `<b class="cmname">Background jobs</b>` : c.id === "general" ? `<b class="cmname">General</b>` : `<input class="cmtitle" data-cmtitle="${esc(c.id)}" value="${esc(c.title)}" maxlength="80" autocomplete="off" aria-label="Category name"><button type="button" class="sa mute" data-cmdel="${esc(c.id)}" aria-label="Delete ${esc(c.title)}">Delete</button>`;
-  const nameOfModel = (id: string) => { const m = M.models[id]; return m?.name || (id === ONE_ID ? ONE_NAME : id.replace(/^[^:]*:/, "")); };
-  const own = M.own;
+  const head = isBg ? `<b class="cmname">Background jobs</b>` : c.id === "general" ? `<b class="cmname">General</b>` : `<input class="cmtitle" data-cmtitle="${esc(c.id)}" value="${esc(c.title)}" maxlength="80" autocomplete="off" aria-label="Category name">${M.own ? "" : `<button type="button" class="sa mute" data-cmdel="${esc(c.id)}" aria-label="Delete ${esc(c.title)}">Delete</button>`}`;
+  const nameOfModel = modelName, own = M.own;
   const slotsOf = (chain: Entry[]) => (own && !chain.length ? [{ model: "", effort: null as string | null }] : chain);
   const slots = slotsOf(c.chain).map((e, i) => {
     if (own) {
@@ -185,16 +216,16 @@ function catHtml(c: Cat, bad: Set<string>) {
       const steps = levels.map(x => ({ value: x, label: effortLabel(x) }));
       const withDefault = [{ value: "", label: "Default" }, ...steps];
       const idx = Math.max(0, withDefault.findIndex(x => x.value === (e.effort ?? "")));
-      const level = !empty && levels.length ? `<div class="cmeffw">${efsHtml({ id: `cmeff-${c.id}-${i}`, label: "Reasoning", steps: withDefault, index: idx, thumbAttr: `data-cmlvl="${esc(c.id)}|${i}"` })}</div>` : "";
-      const canRm = !empty && (isBg ? true : i > 0), rm = canRm ? `<button type="button" class="cmrm" data-cmrm="${esc(c.id)}|${i}" aria-label="Remove the ${esc(SLOT[i].toLowerCase())} model from ${esc(c.title)}">Remove</button>` : `<span class="cmrmgap"></span>`;
-      const first = empty ? (isBg ? (M.optional && M.oneHelm ? "1Helm's models" : "Same as General's first model") : "Choose a model") : nameOfModel(e.model), svc = !empty && m?.service && e.model !== ONE_ID ? svcTag(m.service, m.conn) : "";
+      const level = !empty && levels.length ? efsHtml({ id: `cmeff-${c.id}-${i}`, label: "Reasoning", steps: withDefault, index: idx, thumbAttr: `data-cmlvl="${esc(c.id)}|${i}"` }) : "";
+      const canRm = !empty && (isBg ? true : i > 0), rm = canRm ? `<button type="button" class="cmrm" data-cmrm="${esc(c.id)}|${i}" aria-label="Remove the ${esc(SLOT[i].toLowerCase())} model from ${esc(c.title)}">${svg('<path d="M18 6 6 18M6 6l12 12"/>', 16)}</button>` : "";
+      const first = empty ? emptyText(isBg) : nameOfModel(e.model), svc = !empty && m?.service && e.model !== ONE_ID ? svcTag(m.service, m.conn) : "";
       const lab = isBg && empty ? "Models" : SLOT[i];
-      return `<div class="cmslot cmown${isBad ? " bad" : ""}"><span class="cmlab">${lab}</span><button type="button" class="cmmodel${empty ? " cmempty" : ""}" data-cmpick="${esc(c.id)}|${i}" aria-label="${esc(lab)} model for ${esc(c.title)}: ${esc(first)}${svc ? `, ${esc(m!.service!)}` : ""}"><span class="cmmn"><span class="cmmt">${esc(first)}</span>${svc}</span></button>${level}${rm}${isBad ? `<span class="cmwhy">Not available with ${esc(LEVEL_NAME[M.level] || M.level)}</span>` : ""}</div>`;
+      return `<div class="cmslot cmown${isBad ? " bad" : ""}">${isBg ? "" : `<span class="cmnum">${i + 1}</span>`}<button type="button" class="cmmodel${empty ? " cmempty" : ""}" data-cmpick="${esc(c.id)}|${i}" aria-label="${esc(lab)} model for ${esc(c.title)}: ${esc(first)}${svc ? `, ${esc(m!.service!)}` : ""}"><span class="cmmn"><span class="cmmt">${esc(first)}</span>${svc}</span></button>${level}${rm}${isBad ? `<span class="cmwhy">Not available with ${esc(LEVEL_NAME[M.level] || M.level)}</span>` : ""}</div>`;
     }
     const m = M.models[e.model], levels = m?.efforts || [], many = levels.length > 1, isBad = bad.has(`${c.id}|${i}`);
     const only = levels.length === 1 ? levels[0] : "none", label = `${SLOT[i]} reasoning level for ${c.title}`;
-    const options = many ? levels.map(x => `<option value="${esc(x)}"${x === e.effort ? " selected" : ""}>${esc(effortLabel(x))}</option>`).join("") : `<option value="${esc(only)}" selected>${esc(effortLabel(only))}</option>`;
-    const select = `<select class="cmeff" ${many ? `data-cmeff="${esc(c.id)}|${i}" aria-label="${esc(label)}"` : `disabled aria-label="${esc(label)}${levels.length ? ": the only reasoning level for this model" : ": this model has no reasoning levels"}"`}>${options}</select>`;
+    const options = (many ? levels : [only]).map((x): [string, string] => [x, effortLabel(x)]);
+    const select = pickHtml({ attrs: many ? `data-cmeff="${esc(c.id)}|${i}"` : "", label: many ? label : `${label}${levels.length ? ": the only reasoning level for this model" : ": this model has no reasoning levels"}`, value: many ? e.effort ?? "" : only, options, disabled: !many });
     return `<div class="cmslot${isBad ? " bad" : ""}"><span class="cmlab">${SLOT[i]}</span><button type="button" class="cmmodel" data-cmpick="${esc(c.id)}|${i}" aria-label="${esc(SLOT[i])} model for ${esc(c.title)}: ${esc(m?.name || e.model)}"><span>${esc(m?.name || e.model)}</span></button>${select}${isBad ? `<span class="cmwhy">Not available with ${esc(LEVEL_NAME[M.level] || M.level)}</span>` : ""}</div>`;
   }).join("");
   const priceErr = d && (!!d.prompt !== !!d.completion) ? `<p class="meta cmerr">Enter both prices, or leave both empty.</p>` : "";
@@ -211,10 +242,15 @@ document.addEventListener("click", e => {
   const t = at(e);
   const tog = t.closest<HTMLButtonElement>("[data-cmtoggle]");
   if (tog) { e.preventDefault(); if (M.busy || !D) return; const on = !M.on; M.on = on; repaint(); void save({ on }); return; }
-  if (t.closest("[data-cmadd]")) { e.preventDefault(); void commit([{ t: "catAdd", newId: newId() }]); return; }
+  if (t.closest("[data-cmpc]")) { e.preventDefault(); if (M.busy || !D) return; const on = !CH.on; if (!on && CH.chan) setChan(""); CH.on = on; repaint(); void save({ per_channel: on }); return; }
+  if (t.closest("[data-cmreset]")) { e.preventDefault(); void D?.ask({ title: "Use the models of All channels?", confirm: "Use All channels" }).then(ok => { if (ok) void save({ reset: true }); }); return; }
+  const op = t.closest<HTMLElement>("[data-cmopen]");
+  if (op) { e.preventDefault(); show(op.dataset.cmopen!); return; }
+  if (t.closest("[data-cmback]")) { e.preventDefault(); show(null); return; }
+  if (t.closest("[data-cmadd]")) { e.preventDefault(); const id = newId(); show(id); void commit([{ t: "catAdd", newId: id }]); return; }
   const del = t.closest<HTMLElement>("[data-cmdel]");
   if (del) { e.preventDefault(); const id = del.dataset.cmdel!, c = findCat(id);
-    void D?.ask({ title: `Delete ${c?.title || "this category"}?`, body: "Its models and prices are removed. General stays.", confirm: "Delete" }).then(ok => { if (ok) void commit([{ t: "catDelete", cat: id }]); }); return; }
+    void D?.ask({ title: `Delete ${c?.title || "this category"}?`, body: "Its models and prices are removed. General stays.", confirm: "Delete" }).then(ok => { if (ok) { show(null); void commit([{ t: "catDelete", cat: id }]); } }); return; }
   const fb = t.closest<HTMLElement>("[data-cmfb]");
   if (fb) { e.preventDefault(); const id = fb.dataset.cmfb!, c = findCat(id); if (c) void openPicker(id, c.chain.length, fb); return; }
   const rm = t.closest<HTMLElement>("[data-cmrm]");
@@ -224,8 +260,10 @@ document.addEventListener("click", e => {
 });
 document.addEventListener("change", e => {
   const t = at(e);
-  const eff = t.closest<HTMLSelectElement>("[data-cmeff]");
-  if (eff) { const [id, i] = eff.dataset.cmeff!.split("|"); void commit([{ t: "effort", cat: id, idx: Number(i), value: eff.value === "" ? null : eff.value }]); return; }
+  const ch = t.closest<HTMLElement>("[data-cmchan]");
+  if (ch) { setChan(ch.dataset.value!); return; }
+  const eff = t.closest<HTMLElement>("[data-cmeff]");
+  if (eff) { const [id, i] = eff.dataset.cmeff!.split("|"); void commit([{ t: "effort", cat: id, idx: Number(i), value: eff.dataset.value === "" ? null : eff.dataset.value! }]); return; }
   const ti = t.closest<HTMLInputElement>("[data-cmtitle]");
   if (ti) { const id = ti.dataset.cmtitle!, v = ti.value.trim(), c = findCat(id); if (!c || v === c.title) { ti.value = c?.title || ""; return; }
     if (!v) { ti.value = c.title; return; } void commit([{ t: "title", cat: id, value: v }]); return; }
@@ -367,6 +405,7 @@ async function choose(i: number) {
 // ---- hooks for v3.ts ----
 // After every Settings paint: the reasoning sliders come alive. Letting go of one (or a click or a key) saves that model's reasoning level once. "" is Default, no level.
 export function cmodelsAfter() {
+  if (!document.querySelector("[data-cmown]")) { M.open = null; resetChan(); }   // another Settings page is showing
   if (!M.own) return;
   efsMount(document, (id, value) => { const m = /^cmeff-(.+)-(\d+)$/.exec(id); if (m) void commit([{ t: "effort", cat: m[1], idx: Number(m[2]), value: value === "" ? null : value }]); });
 }
@@ -388,6 +427,11 @@ async function promptNeeded() {
   const go = await D.ask({ title: "Choose new models", body: `Your privacy setting is ${LEVEL_NAME[M.level] || M.level}, and ${names || "some of your chosen models"} can't be used with it. Chat is paused until you choose new models.`, confirm: "Choose models", cancel: "Not now" });
   prompted = false; if (go) (M.own && D.openAi ? D.openAi : D.openAdvanced)();
 }
+const chName = () => { const c = CH.chan && D?.channels().find(x => x.slug === CH.chan); return c ? `, #${c.name}` : ""; };   // the chosen channel's name, for the editor's back control and page title
+// Back to All channels: the account's view is read again from this browser's copy (and the server) the next time the panel is drawn.
+function resetChan() { if (CH.chan) { CH.chan = ""; hydrated = false; lastJson = ""; Object.assign(M, { fetched: false, at: 0, loaded: false }); } }
+export const cmodelsLeave = () => { M.open = null; resetChan(); };   // Settings closed: the next open starts at the list
+export const cmodelsOpenTitle = () => (M.open && findCat(M.open) ? findCat(M.open)!.title + chName() : "");   // the phone page header names the open category
 export const cmodelsNeedChoice = () => M.on && M.needs;
 
 // ---- demo mode has no Worker: a small in-memory copy of the same answers ----
@@ -398,7 +442,7 @@ const DEMO: Card[] = [
   { id: "openai/gpt-oss-120b", name: "GPT OSS 120B", efforts: ["low", "medium", "high"], default_effort: "medium", levels: ["unrestricted", "no_training", "zdr"], pricing: { prompt: 0.1, completion: 0.4 } },
   { id: "example/open-model", name: "Open Model", efforts: ["default"], default_effort: "default", levels: ["unrestricted"], pricing: { prompt: 0.2, completion: 0.8 } },
 ];
-const demo = { on: false, categories: null as Cat[] | null, bg: null as Entry[] | null };
+const demo = { on: false, categories: null as Cat[] | null, bg: null as Entry[] | null, pc: false, chans: {} as Record<string, { cats: Cat[]; bg: Entry[] }> };
 // Sandbox (?cmown): an account with ChatGPT and OpenCode connected. ?cmownnone: nothing chosen yet. ?cmownor: OpenRouter connected too.
 const OWN_Q = () => location.search;
 const ownCard = (conn: string, service: string, id: string, name: string, efforts: string[], family = ""): Card => ({ id: `${conn}:${id}`, name, service, conn, source: "BYOK", efforts, default_effort: efforts.includes("medium") ? "medium" : efforts[0] ?? null, levels: [], pricing: null, context_length: 200000, ...(family ? { family } : {}) });
@@ -417,14 +461,18 @@ async function demoApi(path: string, init?: { method?: string; body?: any }) {
       return { level, endpoint: "own", errors: [], models: OWN_MODELS.filter(m => (!conn || m.conn === conn) && `${m.id} ${m.name} ${m.service}`.toLowerCase().includes(q)) };
     }
     if (init?.method === "POST" && OWN_Q().includes("cmownrefuse")) throw new Error("This model's reasoning level can't be changed here.");   // sandbox: a refused save, to see the reason shown
-    if (init?.method === "POST") { (globalThis as any).__cmSaves = ((globalThis as any).__cmSaves || 0) + 1; (globalThis as any).__cmLast = clone(body);   // the sandbox counts its saves so the browser test can check one save per choice
-      if (body.categories) demo.categories = clone(body.categories); if (body.background) demo.bg = clone(body.background.chain); }
     const none = OWN_Q().includes("cmownnone");
     const shots = OWN_Q().includes("cmownshots");   // sandbox: ChatGPT's six levels, a long model name, a fallback and Background jobs, for screenshots
-    const cats = demo.categories || (demo.categories = [{ id: "general", title: "General", chain: none ? [] : shots ? [{ model: "chatgpt:gpt-6.1-sol", effort: "max" }, { model: "chatgpt:gpt-6.1-sol-long", effort: "xhigh" }] : [{ model: "chatgpt:gpt-6.1-sol", effort: "high" }, { model: "opencode:glm-5.3", effort: "medium" }], max_price: null }]);
-    const bg = demo.bg || (demo.bg = none ? [] : shots ? [{ model: "chatgpt:gpt-6.1-sol-long", effort: null }] : [{ model: "opencode:kimi-k3", effort: null }]);
+    demo.categories ||= [{ id: "general", title: "General", chain: none ? [] : shots ? [{ model: "chatgpt:gpt-6.1-sol", effort: "max" }, { model: "chatgpt:gpt-6.1-sol-long", effort: "xhigh" }] : [{ model: "chatgpt:gpt-6.1-sol", effort: "high" }, { model: "opencode:glm-5.3", effort: "medium" }], max_price: null }];
+    demo.bg ||= none ? [] : shots ? [{ model: "chatgpt:gpt-6.1-sol-long", effort: null }] : [{ model: "opencode:kimi-k3", effort: null }];
+    if (init?.method === "POST") { (globalThis as any).__cmSaves = ((globalThis as any).__cmSaves || 0) + 1; (globalThis as any).__cmLast = clone(body);   // the sandbox counts its saves so the browser test can check one save per choice
+      if (typeof body.per_channel === "boolean") demo.pc = body.per_channel;
+      else if (body.channel && body.reset) delete demo.chans[body.channel];
+      else if (body.channel) { const e = demo.chans[body.channel] ||= { cats: clone(demo.categories!), bg: clone(demo.bg!) }; if (body.categories) e.cats = clone(body.categories); if (body.background) e.bg = clone(body.background.chain); }
+      else { if (body.categories) demo.categories = clone(body.categories); if (body.background) demo.bg = clone(body.background.chain); } }
+    const chan = decodeURIComponent((path.match(/[?&]channel=([^&]*)/) || [])[1] || body?.channel || ""), ce = demo.pc ? demo.chans[chan] : undefined, cats = ce?.cats || demo.categories!, bg = ce?.bg || demo.bg!;
     const used = new Set([...cats.flatMap(c => c.chain.map(e => e.model)), ...bg.map(e => e.model)]);
-    return { on: true, level, own_key: true, endpoint: "own", optional: !OWN_Q().includes("byokplan"), needs_choice: false, no_model: !cats[0].chain.length, problems: [], max_categories: 12, categories: clone(cats), background: { title: "Background jobs", chain: clone(bg) }, connections: svcs, has_openrouter: false,
+    return { on: true, level, own_key: true, per_channel: demo.pc, channel: chan || null, channel_own: !!ce, endpoint: "own", optional: !OWN_Q().includes("byokplan"), needs_choice: false, no_model: !cats[0].chain.length, problems: [], max_categories: 12, categories: clone(cats), background: { title: "Background jobs", chain: clone(bg) }, connections: svcs, has_openrouter: false,
       onehelm: OWN_Q().includes("byokplan") ? null : { id: ONE_ID, name: ONE_NAME, service: "1Helm" }, models: Object.fromEntries([...OWN_MODELS, ...(OWN_Q().includes("byokplan") ? [] : [oneCard()])].filter(m => used.has(m.id)).map(m => [m.id, { ...m, allowed: true }])) };
   }
   const view = () => { const cats = demo.categories || (demo.categories = [{ id: "general", title: "General", chain: DEMO.slice(0, 3).map(m => ({ model: m.id, effort: m.default_effort })), max_price: null }]);

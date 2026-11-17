@@ -23,13 +23,7 @@ assert.equal(destroyed, 0, "failed save must leave the computer running");
 assert.equal(state.get("ready"), "1");
 await assert.rejects(channel.snapshotPrepare(), /did not complete/);
 
-const legacy = fake(Computer);
-legacy.checkpoint = async () => ({ ok: false, error: "storage full" });
-const oldOutcome = await legacy.stop("backup");
-assert.equal(oldOutcome.stopped, false);
-assert.equal(destroyed, 0, "failed legacy checkpoint must leave the container running");
-assert.equal(state.get("ready"), "1");
-await assert.rejects(legacy.snapshotPrepare(), /did not complete/);
+// The file preparation Computer keeps no saved files: its snapshot step needs no save, and a running container makes the snapshot refuse as busy (installSnapshotRpc).
 state.set("ready", "0");
 const idleChannel = fake(ChannelComputer), idleComputer = fake(Computer);
 idleChannel.ctx = {}; idleComputer.ctx = {};
@@ -37,5 +31,6 @@ assert.deepEqual(await idleChannel.snapshotPrepare(), { ready: true });
 assert.deepEqual(await idleComputer.snapshotPrepare(), { ready: true });
 state.set("dirty", "1");
 await assert.rejects(idleChannel.snapshotPrepare(), /binding unavailable/);
-await assert.rejects(idleComputer.snapshotPrepare(), /binding unavailable/);
-console.log("ok - backup preparation preserves running computers on failed saves and refuses missing bindings for dirty computers");
+assert.deepEqual(await idleComputer.snapshotPrepare(), { ready: true });
+await assert.rejects(fake(Computer).snapshotPrepare.call({ env: { ENV_NAME: "selfhost" } }), /snapshot unavailable/);
+console.log("ok - backup preparation preserves running channel computers on failed saves, refuses missing bindings for dirty channel computers, and the file preparation computer needs no save");

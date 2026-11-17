@@ -67,6 +67,15 @@ console.log("payload-cut ok");
   assert.match(bad, /^error: this call was not run/); assert.match(bad, /"name":"pomodoro"/); assert.ok(meta.length === 1);
   const first = await Resident.prototype.runTool.call(o, call("schedule_followup", { step_title: "x" }), { ...ctx, loadedTools: new Set() });
   assert.match(first, /guidance/); assert.match(first, /not run/);
+  // A look-only tool with valid arguments runs on its first call; the result comes first and the definition and guidance follow it.
+  o.localTool = async () => "RESULT";
+  const lctx = { ...ctx, loadedTools: new Set() };
+  const ran = await Resident.prototype.runTool.call(o, call("list_workflows", { step_title: "x" }), lctx);
+  assert.ok(ran.startsWith("RESULT\n\n[This call ran")); assert.match(ran, /"name":"list_workflows"/); assert.match(ran, /"guidance"/); assert.doesNotMatch(ran, /not run/);
+  assert.equal(await Resident.prototype.runTool.call(o, call("list_workflows", { step_title: "x" }), lctx), "RESULT", "second call: no guidance again");
+  // Invalid arguments are still refused and nothing runs.
+  const badLook = await Resident.prototype.runTool.call(o, call("browser_navigate", { step_title: "x", url: 5 }), { ...ctx, loadedTools: new Set() });
+  assert.match(badLook, /^error: this call was not run because its arguments/);
 }
 console.log("runTool stub ok");
 

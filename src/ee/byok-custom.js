@@ -12,7 +12,7 @@
 //     worker, which runs on that category's models. byokChatChain tries a plan's models in order through byokChat, which sends each to the connection it is named after.
 import { allFailed, byokChat, streamFallback, byokModelsJson, answersOnOwnKey, ByokError, chooseModelText } from "../byok.js";
 import { normalizePrivacy, privacyOf } from "../privacy.js";
-import { liveConfig, parse, BACKGROUND_TITLE, CUSTOM_VERSION, MAX_CATEGORIES, CHAIN_LENGTH, allowedAt, nameOf, validateCategories, ownProblems, requiredMessage, CustomModelsRequired, modelCard, pickerModels, statusOf, customEnv } from "./custom-models.js";
+import { liveConfig, parse, ownFor, BACKGROUND_TITLE, CUSTOM_VERSION, MAX_CATEGORIES, CHAIN_LENGTH, allowedAt, nameOf, validateCategories, ownProblems, requiredMessage, CustomModelsRequired, modelCard, pickerModels, statusOf, customEnv } from "./custom-models.js";
 import { modelSettingsEnv } from "./model-settings.js";
 import { dynamicRoutingOn } from "./routing-config.js";
 import { chooseTwo, prevToolsOf, openWorkOf, openAgentsOf, browserBackSteer } from "./route2.js";
@@ -216,24 +216,37 @@ function joinBackground(config, bg, have) {
   for (const e of chain) if (!catalog[e.model]) { const r = bg?.catalog?.[e.model] || have?.catalog?.[e.model]; if (r) catalog[e.model] = r; }
   return { ...config, catalog, background: { chain: chain.map((e) => ({ model: e.model, effort: e.effort ?? null })) } };
 }
-// ctx: { settings, lookup, fetchImpl, at }. Body: { categories?, background? } ("on" is accepted and ignored: an own key has no off state).
+// ctx: { settings, lookup, fetchImpl, at }. Body: { categories?, background? } ("on" is accepted and ignored: an own key has no off state), { per_channel }, or { channel, categories?, background? | reset }.
+// A channel's entry has the same shape as the account's ({ categories, background, catalog }) and counts only while per_channel is true. A channel without an entry starts from the account's models.
 export async function saveOwn(env, tenantId, body, ctx = {}) {
   const { settings = null, lookup = null, fetchImpl = globalThis.fetch, at = Date.now() } = ctx;
-  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((k) => !["on", "categories", "background"].includes(k)) || (!own(body, "on") && !own(body, "categories") && !own(body, "background"))) fail("Nothing to change.");
+  const keys = ["categories", "background", "per_channel", "reset"];
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((k) => ![...keys, "on", "channel"].includes(k)) || ![...keys, "on"].some((k) => own(body, k))) fail("Nothing to change.");
   if (own(body, "on") && typeof body.on !== "boolean") fail("Choose on or off.");
-  const cur = await readOwn(env, tenantId);
+  if (own(body, "per_channel") && typeof body.per_channel !== "boolean") fail("Choose on or off.");
+  const cur = await readOwn(env, tenantId), chan = body.channel;
+  if (chan !== undefined && !(typeof chan === "string" && chan)) fail("Invalid channel.");
   let config = cur.config;
-  if (own(body, "categories") || own(body, "background")) {
+  if (own(body, "per_channel")) { if (!config) fail("Choose a model for General first.", 409); config = { ...config, per_channel: body.per_channel }; }
+  if (chan && !config?.per_channel) fail("Choose models per channel is off.", 409);
+  if (chan && body.reset === true) { const { [chan]: _, ...left } = config.channels || {}; config = { ...config, channels: left }; }
+  else if (own(body, "categories") || own(body, "background")) {
     const conns = await connCfgs(env, tenantId);
     if (!Object.keys(conns).length) fail("Connect an AI service first, in Settings, AI services.", 409);
-    const v = { env, conns, byokPlan: await onByokPlan(env, tenantId), level: cur.level, have: cur.config?.catalog, settings, lookup, fetchImpl, tenantId, lists: new Map(), errs: new Map() };
+    const base = chan && own(config?.channels, chan) ? config.channels[chan] : config;
+    const v = { env, conns, byokPlan: await onByokPlan(env, tenantId), level: cur.level, have: base?.catalog, settings, lookup, fetchImpl, tenantId, lists: new Map(), errs: new Map() };
     const bg = own(body, "background") ? await checkBackground(body.background, v) : null;
-    if (own(body, "categories")) config = await validateOwn(body.categories, v); else if (!config) fail("Choose a model for General first.", 409);
-    config = joinBackground(config, bg, cur.config);
+    let next;
+    if (own(body, "categories")) next = await validateOwn(body.categories, v); else if (!base) fail("Choose a model for General first.", 409); else next = base;
+    next = joinBackground(next, bg, base);
+    if (chan) { const { categories, background, catalog } = next; config = { ...config, channels: { ...config.channels, [chan]: { categories, background, catalog } } }; }
+    else config = { ...next, ...(config?.per_channel !== undefined ? { per_channel: config.per_channel } : {}), ...(config?.channels ? { channels: config.channels } : {}) };
+  }
+  if (config !== cur.config) {
     try { await env.DB.prepare("UPDATE tenants SET custom_models_own_on=1, custom_models_own=?, updated_at=? WHERE id=?").bind(JSON.stringify(config), at, String(tenantId)).run(); }
     catch (e) { if (/no such column/i.test(String(e?.message))) fail("This isn't available yet. Try again shortly.", 503); throw e; }
   }
-  return ownViewFor(env, { id: tenantId }, "own", { st: { on: true, config, level: cur.level } });
+  return ownViewFor(env, { id: tenantId }, "own", { st: { on: true, config, level: cur.level }, channel: chan });
 }
 // The editor's state on an own key: General always has its place (empty until a model is chosen), the connected services (their names label the models), and where max price applies.
 export const onByokPlan = async (env, tenantId) => { try { return (await env.DB.prepare("SELECT plan FROM tenants WHERE id=?").bind(String(tenantId)).first())?.plan === "byok"; } catch { return false; } };
@@ -249,12 +262,14 @@ export function ownView(st, conns = [], { byokPlan = false } = {}) {
     models: cfg ? Object.fromEntries(Object.entries(cfg.catalog).map(([id, r]) => [id, { ...modelCard(r, st.level), service: isOneHelm(id) ? "1Helm" : label[r.conn] || "", conn: r.conn || "", allowed: r.connKind === "openrouter" ? r.eligible !== true || allowedAt(r, st.level) : true }])) : {} };
 }
 // What the editor reads for the account (own key only; otherwise null).
-export async function ownViewFor(env, t, kind, { st = null, fetchImpl = globalThis.fetch } = {}) {
+// channel: the view is that channel's effective models, with per_channel, channel and channel_own (the channel has an entry of its own).
+export async function ownViewFor(env, t, kind, { st = null, fetchImpl = globalThis.fetch, channel = null } = {}) {
   if (!kind) return null;
   const given = !!st; st ||= await readOwn(env, t.id);
   const rows = await listRows(env, t.id);
   if (!given) st = await fillSeeds(env, t.id, st, fetchImpl);
-  return ownView(st, await viewRows(env, t.id, rows), { byokPlan: t.plan !== undefined ? t.plan === "byok" : await onByokPlan(env, t.id) });
+  const config = ownFor(st.config, channel);
+  return { ...ownView({ ...st, config }, await viewRows(env, t.id, rows), { byokPlan: t.plan !== undefined ? t.plan === "byok" : await onByokPlan(env, t.id) }), per_channel: st.config?.per_channel === true, channel: channel || null, channel_own: config !== st.config };
 }
 // Models carried over by the upgrade of the old single key are saved as seed records (name = id, no reasoning levels) because the upgrade never asks the service. Once the service's own list
 // can be read, the view shows the list's record (name, levels, context) in place of each seed, so the editor shows the slider. Loading never writes: the setting itself keeps the seed
@@ -296,9 +311,9 @@ export async function ownPicker(env, t, kind, q, { settings = null, search = nul
 // ---- routing ----
 // The plan for one call on an own key: the category's models in order with their facts and the category's max price, or null (off: the main model answers, as before).
 // An OpenRouter key whose saved models aren't allowed at the privacy level stops the call before anything is sent (CustomModelsRequired), as on a full plan.
-export async function ownKeyPlan(env, tenantId, cfg, categoryId = "general") {
+export async function ownKeyPlan(env, tenantId, cfg, categoryId = "general", channel = null) {
   if (!cfg || cfg.missing || !env?.DB) return null;
-  const st = await readOwn(env, tenantId), config = st.config;
+  const st = await readOwn(env, tenantId), config = ownFor(st.config, channel);
   if (!config?.categories?.length) throw new ByokError(chooseModelText(cfg));
   const problems = ownProblems(config, st.level); if (problems.length) throw new CustomModelsRequired(requiredMessage(problems, st.level, "Settings, AI services, Models"), { problems, level: st.level });
   const general = config.categories.find((c) => c.id === "general") || config.categories[0];
@@ -346,7 +361,7 @@ export function ownKeyDispatch(R, tc, general, worker, { steer = null } = {}) {
 export async function byokRouteTurn(R, tc, { kind, text, hist, stats = null, skipSort = false }) {
   const cfg = R.env.BYOK, tenant = R.get("tenant");
   // No model chosen yet is not thrown from here: the call itself (planForCall) says so as the person's reply, like any own-key failure.
-  const planOf = async (category) => { try { return await ownKeyPlan(R.env, tenant, cfg, category); } catch (e) { if (e?.byok) return undefined; throw e; } };
+  const channel = R.get("channel"), planOf = async (category) => { try { return await ownKeyPlan(R.env, tenant, cfg, category, channel); } catch (e) { if (e?.byok) return undefined; throw e; } };
   if (tc.helper?.dynamic_routing) { tc.byokPlan = await planOf(tc.helper.category || "general"); return tc.byokPlan; }
   const general = await planOf("general");   // privacy problems: stops here, before anything is paid for
   tc.byokPlan = general; tc.byokProfile = null;
@@ -357,13 +372,13 @@ export async function byokRouteTurn(R, tc, { kind, text, hist, stats = null, ski
     if (hold) {
       let jev = null, d = null;
       try {
-        const st = await readOwn(R.env, tenant), config = st.config;
+        const st = await readOwn(R.env, tenant), config = ownFor(st.config, channel);
         const base = R.env.__byokBase || R.env, env = customEnv(await modelSettingsEnv(base), config), level = await privacyOf(env, tenant);
         d = await chooseTwo(env, { kind, text, hist, prevTools: prevToolsOf(R, tc.session), openWork: openWorkOf(R, tc.session), openAgents: openAgentsOf(R, tc.session), prevCategory: null, level },
           { meta: { tenant, channel: R.get("channel") } });
         browserBackSteer(R, tc.session, d, text);
         jev = d.jev; steer = d.route?.steer || null;
-        if (config.categories.some((c) => c.id === d.route?.category)) worker = (await ownKeyPlan(R.env, tenant, cfg, d.route.category)) || general;
+        if (config.categories.some((c) => c.id === d.route?.category)) worker = (await ownKeyPlan(R.env, tenant, cfg, d.route.category, channel)) || general;
       } catch (e) { jev = { error: String(e?.message || e).slice(0, 160) }; steer = null; worker = general; console.log("byok sorter", jev.error); }
       await hold.done(Math.ceil((Number(jev?.cost) || 0) * 1e9));   // done() adds the same 15% as every part 1Helm runs on an own key
       if (stats) stats.route = { label: worker.title, category: worker.category, categoryTitle: worker.title, level: general.level, p: jev?.p ?? null, ms: jev?.ms ?? null, error: jev?.error || null, answers: jev?.answers || null, steer };
@@ -376,7 +391,7 @@ export async function byokRouteTurn(R, tc, { kind, text, hist, stats = null, ski
 // The plan for a model call of this turn: a routed worker's own category, otherwise General (the main turn never changes model). Chores (the fast model) never use it.
 export async function planForCall(R, tc) {
   if (tc && tc.byokPlan !== undefined) return tc.byokPlan;
-  const plan = await ownKeyPlan(R.env, R.get("tenant"), R.env.BYOK, tc?.helper?.dynamic_routing && tc.helper.category || "general");
+  const plan = await ownKeyPlan(R.env, R.get("tenant"), R.env.BYOK, tc?.helper?.dynamic_routing && tc.helper.category || "general", R.get("channel"));
   if (tc) tc.byokPlan = plan;
   return plan;
 }

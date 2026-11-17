@@ -49,7 +49,7 @@ function setup({ loginOut = '', usageOut = '', completeLines = [], completeHang 
       if (script.startsWith('printf')) { f.loginSent.push(args[1]); f.loginDone = true; if (loginExit === 0) { fs.set('/home/node/.claude/.credentials.json', '{"claudeAiOauth":{"accessToken":"AT1","refreshToken":"RT1"}}'); fs.set('/home/node/.claude.json', '{"oauthAccount":{"emailAddress":"p@example.com"}}'); } return done(0); }
       if (script.includes('[ -f "$1/code" ] && cat "$1/code"')) return done(0, f.loginDone ? String(loginExit) : '');
       if (script.includes('cat "$1/err"')) return done(0, loginErr);
-      if (script.startsWith('node "$1"')) { f.usageRuns = (f.usageRuns || 0) + 1; f.usageArgs = args; return done(0, usageOut); }
+      if (script.startsWith('node "$1"')) { f.usageRuns = (f.usageRuns || 0) + 1; f.onUsage?.(); f.usageArgs = args; return done(0, usageOut); }
       if (script.startsWith('claude auth status')) return done(0, JSON.stringify({ loggedIn: !!fs.has('/home/node/.claude/.credentials.json'), email: 'p@example.com', subscriptionType: 'max' }));
       if (script.startsWith('claude auth logout')) { fs.delete(args[0]); fs.delete(args[1]); return done(0); }
       if (script.startsWith('find "$2"')) { f.runDirs.add(args[0]); return done(0); }
@@ -314,6 +314,16 @@ test('usage: a streamed call keeps the headers too, and a call that fails still 
   await assert.rejects(() => x.e.complete({ body: { messages: [{ role: 'user', content: 'hi' }] }, model: 'sonnet' }), /usage limit reached/);
   assert.equal((await x.e.usage()).windows.length, 2);
 });
+test('usage: kept headers with an ended window are not returned; the endpoint path is used instead', async () => {
+  const out = JSON.stringify({ ok: true, data: { five_hour: { utilization: 30, resets_at: '2099-01-01T00:00:00Z' }, seven_day: { utilization: 55, resets_at: '2099-01-05T00:00:00Z' } } }) + '\n';
+  const old = { at: 1, status: 200, h: { ...LIM, 'anthropic-ratelimit-unified-5h-reset': '1000000000' } };
+  const a = setup(); await a.e.init('tenant-a'); a.e.put('limits', JSON.stringify(old));
+  assert.deepEqual(await a.e.usage(), { none: true, why: 'asleep' }); assert.ok(!a.f.usageRuns, 'asleep: nothing runs');
+  const b = setup({ usageOut: out }); await signIn(b); b.e.put('limits', JSON.stringify(old));
+  const u = await b.e.usage(); assert.equal(u.source, 'oauth'); assert.equal(b.f.usageRuns, 1);
+  const c = setup(); await signIn(c); c.e.put('limits', JSON.stringify({ ...old, h: LIM }));
+  assert.equal((await c.e.usage()).source, 'headers', 'current windows: the headers');
+});
 test('usage: with no headers, the CLI token is used inside the running container, at most every 5 minutes, and nothing secret is returned', async () => {
   const out = JSON.stringify({ ok: true, data: { five_hour: { utilization: 30, resets_at: '2099-01-01T00:00:00Z' }, seven_day: { utilization: 55, resets_at: '2099-01-05T00:00:00Z' } } }) + '\n';
   const x = setup({ usageOut: out }); await signIn(x);
@@ -328,4 +338,30 @@ test('usage: it never starts the container, a refused call is remembered, and si
   const z = setup(); await z.e.init('tenant-a'); const starts = z.f.starts; assert.deepEqual(await z.e.usage(), { none: true, why: 'asleep' }); assert.equal(z.f.starts, starts, 'asleep: no start');
   const w = setup({ completeLines: [{ t: 'limits', headers: LIM, status: 200 }, { t: 'final', response: { choices: [] } }] }); await signIn(w); await w.e.complete({ body: { messages: [{ role: 'user', content: 'x' }] }, model: 'sonnet' });
   assert.equal((await w.e.usage()).source, 'headers'); await w.e.signOut(); assert.equal((await w.e.usage()).source, undefined);
+});
+
+// ---- Check usage (usageNow) ----
+const USAGE_OK = JSON.stringify({ ok: true, data: { five_hour: { utilization: 30, resets_at: '2099-01-01T00:00:00Z' }, seven_day: { utilization: 55, resets_at: '2099-01-05T00:00:00Z' } } }) + '\n';
+const asleep = async (x) => { await x.e.stop('test', { cancellable: false }); x.f.destroyed = 0; x.f.starts = 0; };
+test('usageNow: an asleep container is started, read, and put back to sleep', async () => {
+  const x = setup({ usageOut: USAGE_OK }); await signIn(x); await asleep(x);
+  x.e.put('limits', JSON.stringify({ at: 1, status: 200, h: LIM })); x.e.put('usage_try', Date.now());
+  const u = await x.e.usageNow(); assert.equal(u.source, 'oauth', 'kept headers and the 5 minute interval are ignored'); assert.equal(x.f.usageRuns, 1);
+  assert.equal(x.f.starts, 1); assert.equal(x.f.destroyed, 1); assert.equal(x.container.running, false);
+});
+test('usageNow: a container that was already running is read and left running', async () => {
+  const x = setup({ usageOut: USAGE_OK }); await signIn(x);
+  assert.equal((await x.e.usageNow()).source, 'oauth'); assert.equal(x.f.usageRuns, 1); assert.equal(x.f.destroyed, 0); assert.equal(x.container.running, true);
+});
+test('usageNow: a model call that starts during the read keeps the container awake', async () => {
+  const x = setup({ usageOut: USAGE_OK }); await signIn(x); await asleep(x);
+  x.f.onUsage = () => x.e.calls.set('s1', {});
+  assert.equal((await x.e.usageNow()).source, 'oauth'); assert.equal(x.f.destroyed, 0); assert.equal(x.container.running, true);
+  const y = setup({ usageOut: USAGE_OK }); await signIn(y); await asleep(y);
+  y.f.onUsage = () => y.e.put('last_activity', Date.now() + 5); await y.e.usageNow(); assert.equal(y.f.destroyed, 0, 'other activity during the read');
+});
+test('usageNow: not signed in starts nothing, and two calls at once make one read', async () => {
+  const z = setup(); await z.e.init('tenant-a'); assert.deepEqual(await z.e.usageNow(), { none: true, why: 'signed_out' }); assert.equal(z.f.starts, 0);
+  const x = setup({ usageOut: USAGE_OK }); await signIn(x); await asleep(x);
+  const [a, b] = await Promise.all([x.e.usageNow(), x.e.usageNow()]); assert.deepEqual(a, b); assert.equal(x.f.usageRuns, 1); assert.equal(x.f.starts, 1);
 });

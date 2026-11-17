@@ -6,7 +6,7 @@
 //   - Archive: channelRowAny / markChannelDeleting / deleteChannelRows (a channel's rows), wipeArchive (the account).
 //   - ChannelComputer: wipe (container + every R2 layer + storage), compactNext (the next save is a full base, so deleted files'
 //     bytes leave the old layers).
-//   - Ledger, Computer (legacy per-tenant computer): wipe.
+//   - Ledger, Computer (storage left by the old per-account computer): wipe.
 // Real deletion only: rows are DELETEd, objects are deleted, storage is deleteAll()'d. No soft-delete flags.
 // The licensed routing, texting and agent memory cleanups come in as this.eeDeletion (resident.js sets it; importing the EE seam here would make an import cycle).
 // Mixed in from resident.js (deletionMix) and index.js (archiveDeletionMix, wipeMix) / channel-computer.js (computerDeletionMix).
@@ -295,5 +295,5 @@ export const computerDeletion = {
 };
 export function computerDeletionMix(Cls) { for (const [k, v] of Object.entries(computerDeletion)) Cls.prototype[k] = v; }
 
-// Ledger and the legacy per-tenant Computer: everything goes.
+// Ledger and the Computer class: everything goes (account deletion also deletes every R2 object under the account prefix, including old saves).
 export function wipeMix(Cls) { Cls.prototype.wipe = async function () { await wipeStorage(this, "account deleted"); return { ok: true }; }; }

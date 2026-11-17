@@ -12,7 +12,7 @@ import { connDdl } from "../src/ee/byok-connections.js";
 import { HANDOFF_PREFIX } from "../src/ee/route2.js";
 import { sealSecret } from "../src/sentinel.js";
 import { saveOwn, readOwn, ownPicker, ownViewFor, ownKeyPlan, byokChatChain, endpointRecords, listedRecords, ownKeyKind, _resetLists, recordOfListed } from "../src/ee/byok-custom.js";
-import { validateCategories, statusOfRow, saveCustom } from "../src/ee/custom-models.js";
+import { validateCategories, statusOfRow, saveCustom, ownFor } from "../src/ee/custom-models.js";
 import { setPrivacy } from "../src/privacy.js";
 import { accountRoute } from "../src/account.js";
 import { withSettings } from "./helpers/seed-settings.mjs";
@@ -309,4 +309,63 @@ test("Background jobs is validated like a category and exists only for own-key a
   await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("main-1"))], extra: 1 } }, base), /Invalid Background jobs/);
   await assert.rejects(saveCustom(env, "t1", { background: { chain: [entry("acme/a")] } }, { settings: SETTINGS }), /Nothing to change/);
   d1.exec("UPDATE tenants SET plan='plus' WHERE id='t1'"); assert.equal(await loadByok(env, "t1"), null);
+});
+
+// ===== models per channel =====
+const chainOf = async (channel, cat = "general") => (await ownKeyPlan(env, "t1", await loadByok(env, "t1", channel), cat, channel)).chain.map((e) => e.model);
+test("per-channel models: the channel's chain applies only while the switch is on and the channel has an entry", async () => {
+  await reset(); modelList = PLAIN;
+  const own1 = { categories: ["a"], per_channel: true, channels: { c1: { categories: ["c"] } } };
+  assert.deepEqual([ownFor(own1, "c1").categories, ownFor(own1, "c2"), ownFor(own1, "constructor"), ownFor({ ...own1, per_channel: false }, "c1"), ownFor(null, "c1")], [["c"], own1, own1, { ...own1, per_channel: false }, null]);
+  const channels = ["main", "c1", "c2"]; env.ARCHIVE = { idFromName: (n) => n, get: () => ({ channels: async () => channels.map((slug) => ({ slug })) }) };
+  const origin = "https://app.example.test", user = { id: "u1", email: "a@example.com" }, deps = { modelSettings: async () => SETTINGS, search: async () => [], lookup };
+  const call = async (method, sub, body) => { const url = new URL(origin + "/w/ck1" + sub); sub = sub.split("?")[0];
+    const res = await accountRoute(new Request(url, { method, headers: { origin, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }), env, d1.prepare("SELECT * FROM tenants WHERE id='t1'").get(), user, url, sub, deps); return { status: res.status, body: await res.json() }; };
+  const POST = (b) => call("POST", "/api/account/custom-models?scope=services", b), GET = (q = "") => call("GET", `/api/account/custom-models?scope=services${q}`);
+  assert.equal((await POST({ per_channel: true })).status, 409, "no General model yet");
+  await saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")))], background: { chain: [entry(P("fast-1"))] } }, base);
+  let r = await POST({ channel: "c1", categories: [cat("general", "General", entry(P("gemma-2")))] }); assert.equal(r.status, 409, "the switch is off");
+  r = await POST({ per_channel: true }); assert.deepEqual([r.status, r.body.per_channel, r.body.channel, r.body.channel_own], [200, true, null, false]);
+  assert.equal((await POST({ per_channel: "yes" })).status, 400);
+  assert.equal((await POST({ channel: "nope", reset: true })).status, 404);
+  // a channel with no entry: the account's chain
+  assert.deepEqual([await chainOf("c1"), await chainOf(null)], [[P("main-1")], [P("main-1")]]);
+  // only the categories sent: Background jobs are copied from the account's
+  r = await POST({ channel: "c1", categories: [cat("general", "General", entry(P("gemma-2")))] });
+  assert.deepEqual([r.status, r.body.channel, r.body.channel_own, r.body.categories[0].chain, r.body.background.chain.map((e) => e.model)], [200, "c1", true, [entry(P("gemma-2"))], [P("fast-1")]]);
+  assert.deepEqual([await chainOf("c1"), await chainOf("c2"), await chainOf("main")], [[P("gemma-2")], [P("main-1")], [P("main-1")]]);
+  assert.equal((await loadByok(env, "t1", "c1")).model, P("gemma-2"), "the channel's General model answers there");
+  r = await GET("&channel=c1"); assert.deepEqual([r.body.categories[0].chain, r.body.channel_own, r.body.per_channel], [[entry(P("gemma-2"))], true, true]);
+  r = await GET("&channel=c2"); assert.deepEqual([r.body.categories[0].chain, r.body.channel_own, r.body.channel], [[entry(P("main-1"))], false, "c2"]);
+  r = await GET(); assert.deepEqual([r.body.categories[0].chain, r.body.channel, r.body.channel_own], [[entry(P("main-1"))], null, false]);
+  assert.equal((await GET("&channel=nope")).status, 404);
+  // a channel's Background jobs alone, then an account save keeps the channel entries
+  r = await POST({ channel: "c1", background: { chain: [entry(P("qwen-coder"))] } }); assert.deepEqual(r.body.background.chain.map((e) => e.model), [P("qwen-coder")]);
+  await byokChat(await loadByok(env, "t1", "c1"), chat, { fast: true }); assert.equal(prov.at(-1).body.model, "qwen-coder", "chores of the channel use its Background jobs");
+  await POST({ categories: [cat("general", "General", entry(P("llama-3.3-70b")))] });
+  assert.deepEqual([await chainOf("c1"), await chainOf("c2")], [[P("gemma-2")], [P("llama-3.3-70b")]]);
+  assert.equal(JSON.parse(d1.prepare("SELECT custom_models_own x FROM tenants WHERE id='t1'").get().x).per_channel, true);
+  // the switch off keeps the entries but the account's models answer
+  r = await POST({ per_channel: false }); assert.equal(r.body.per_channel, false);
+  assert.deepEqual(await chainOf("c1"), [P("llama-3.3-70b")]); assert.ok(JSON.parse(d1.prepare("SELECT custom_models_own x FROM tenants WHERE id='t1'").get().x).channels.c1);
+  await POST({ per_channel: true }); assert.deepEqual(await chainOf("c1"), [P("gemma-2")]);
+  r = await POST({ channel: "c1", reset: true }); assert.deepEqual([r.status, r.body.channel_own], [200, false]); assert.deepEqual(await chainOf("c1"), [P("llama-3.3-70b")]);
+  // a turn in channel "main" runs on its own models
+  await POST({ channel: "main", categories: [cat("general", "General", entry(P("o-reason"), "high"))] });
+  const t = await turn("hello"); assert.deepEqual(t.main.map((c) => c.body.model), ["o-reason"]);
+  // removing a service takes its models out of the channel entries too
+  await POST({ channel: "c2", categories: [cat("general", "General", entry(P("gemma-2")))] });
+  const { withoutConnection } = await import("../src/ee/byok-connections.js");
+  const w = withoutConnection(JSON.parse(d1.prepare("SELECT custom_models_own x FROM tenants WHERE id='t1'").get().x), "p_main");
+  assert.deepEqual([w.config.channels.c2.categories[0].chain, Object.keys(w.config.channels.c2.catalog)], [[], []]);
+});
+test("per-channel models: the privacy check reads the channel's own categories", async () => {
+  await reset("zdr", ["openrouter", "openrouter", OR_BASE]);
+  const config = { version: 1, per_channel: true, categories: [cat("general", "General", entry(O("acme/a"), "low"))], catalog: { [O("acme/a")]: { ...rec("acme/a"), conn: "openrouter", connKind: "openrouter" } },
+    channels: { c1: { categories: [cat("general", "General", entry(O("acme/open"), "low"))], catalog: { [O("acme/open")]: { ...rec("acme/open", ["low"], ["unrestricted"]), id: "acme/open", conn: "openrouter", connKind: "openrouter" } } } } };
+  config.catalog[O("acme/a")].id = "acme/a";
+  d1.prepare("UPDATE tenants SET custom_models_own=?, ai_privacy='zdr' WHERE id='t1'").run(JSON.stringify(config));
+  const cfg = await loadByok(env, "t1", "c1");
+  assert.ok((await ownKeyPlan(env, "t1", cfg, "general", null)).chain.length, "the account's models are allowed");
+  await assert.rejects(ownKeyPlan(env, "t1", cfg, "general", "c1"), (e) => e.code === "custom_models_required");
 });
