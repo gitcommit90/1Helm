@@ -20,6 +20,7 @@
 //    formula recalculates the workbook at once, and each change is saved through the same zone-edit route (the server writes it with ExcelJS, src/zone-sheet.js).
 //  - A Word document (.docx, .docm) opens in an editable view (zone-docedit.ts, in zone/doc.js): one white page of text a person clicks into and types in, saved about a second after typing stops
 //    as paragraph ops through the same route (src/zone-docx.js). "Print view" in the header switches to the server's PDF preview drawn as page pictures, and back. A .doc, .odt or .rtf opens in the print view only.
+import { PHONE } from "./phone-query";
 import { asJs, chipLabel, deckParts, docEditable, labelFor, patchForZone, thumbDoc, zoneKind, type ZKind } from "./zone-doc";
 import { loadPdfjs } from "./pdfjs-loader";
 import { SHELL_CSS, bridgeFor, relayFor } from "./zone-bridge";
@@ -58,8 +59,8 @@ const $ = <T extends HTMLElement>(s: string, r: ParentNode = document) => r.quer
 const $$ = <T extends HTMLElement>(s: string, r: ParentNode = document) => [...r.querySelectorAll<T>(s)];
 const esc = (s: any) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 const reduced = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
-const phone = () => matchMedia("(max-width:599px),(max-height:499px)").matches;
-const mid = () => matchMedia("(min-width:600px) and (min-height:500px) and (max-width: 1359px)").matches;
+const phone = () => matchMedia(PHONE).matches;
+const mid = () => !phone() && matchMedia("(max-width:1359px)").matches;
 const svg = (d: string, s = 18, w = 1.8) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const IC = {
   back: '<path d="m15 18-6-6 6-6"/>', x: '<path d="M18 6 6 18M6 6l12 12"/>', undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>', redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',

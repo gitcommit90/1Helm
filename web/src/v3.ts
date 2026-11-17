@@ -1,5 +1,6 @@
 // App source / v3 — "Soft": v2's structure with Muse-style surfaces: raised stage, soft bubbles, pill composer, character identity.
 import { ask, dialogOpen, sheet } from "./dialog";   // first: its Esc handler must run before every other one
+import { PHONE } from "./phone-query";
 import { createAmbientCue } from "./ee/ambient-cue";
 import { loadPdfjs } from "./pdfjs-loader";
 import { openTaskRename } from "./task-rename";   // modal keys stay out of app shortcuts
@@ -347,7 +348,7 @@ function route(): { ch: Channel; s: Session | null } {
   const s = sid === "new" ? null : (sid ? ch.sessions.find(x => String(x.id) === sid || x.tmp === sid) ?? null : null);
   return { ch, s };
 }
-const phone = () => matchMedia("(max-width:599px),(max-height:499px)").matches;
+const phone = () => matchMedia(PHONE).matches;
 const go = (slug: string, sid?: number | "new") => { location.hash = `/${slug}${sid !== undefined ? `/s/${sid}` : ""}`; };
 
 // The computer: one icon, top-right of every screen. A dot means this channel's computer is running a browser step or a command right now
@@ -1358,7 +1359,7 @@ function fvDeckPager(body: HTMLElement, frames: HTMLElement[], n: number, dl: st
   frames.forEach(f => io.observe(f));
   // d: ±1 from the slide in view (abs: go to slide d). false when there is no slide that way (← → then move to the next file).
   FVS.slide = (d: number, abs = false) => { const j = abs ? Math.max(0, Math.min(n - 1, d < 0 ? n - 1 : d)) : cur + d; if (j < 0 || j >= n || (abs && j === cur)) return !abs ? false : true;
-    frames[j].scrollIntoView({ block: matchMedia("(max-width:599px),(max-height:499px)").matches ? "center" : "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); show(j); return true; };
+    frames[j].scrollIntoView({ block: matchMedia(PHONE).matches ? "center" : "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); show(j); return true; };
 }
 // An HTML file (an HTML slide deck, a page): it runs in a frame with an empty origin (sandbox without allow-same-origin), so its own script
 // works (arrow keys, tap, full screen) but can't read the app's cookies, storage or page, or call the app's API. Links open in a new tab.
@@ -2018,7 +2019,7 @@ if (LIVE) { cbInit(); scpInit({ on: () => BOOT?.account?.secret_prompt !== false
   setMode: (slug, sid, mode) => { const x = channels.find(c => c.slug === slug)?.sessions.find(y => String(y.id) === sid); if (x?.srv) x.srv.image_mode = mode; } }); }
 window.addEventListener("hashchange", () => { const s = route().s; if (LIVE && s && !s.loaded) s.loadFailAt = 0; });   // opening a task again tries its load again, even right after a failure
 window.addEventListener("hashchange", render);
-matchMedia("(max-width:599px),(max-height:499px)").addEventListener("change", () => keepFields(["#stage", "#m", "#side", "#sheet"], ["box", "q"], render));   // the message box and the search box keep themselves (keepDraft, renderStage)
+matchMedia(PHONE).addEventListener("change", () => keepFields(["#stage", "#m", "#side", "#sheet"], ["box", "q"], render));   // the message box and the search box keep themselves (keepDraft, renderStage)
 
 
 // ---------- Phone: Muse-style chat with a tasks drawer; channels switch from a sheet (no channel-list page) ----------
@@ -2752,7 +2753,6 @@ function apPage() {
   return `<h2>${AP_TITLE}</h2><p class="slead">Choose how AI providers may use your data. All plans include these choices.</p>
     <div class="sc" role="radiogroup" aria-label="How AI providers may use your data">${AP_OPTS.map(([k, t, d]) => { const on = AP.level === k;
       return `<button type="button" class="sr sradio${on ? " on" : ""}" role="radio" aria-checked="${on}" data-apset="${k}"><span class="srt"><b>${t}</b><span>${d}</span></span><span class="rck">${ic.check}</span></button>`; }).join("")}</div>
-    ${bdRow()}
     <p class="sfine apst${AP.st ? ` ${AP.st}` : ""}" id="apst" role="status" aria-live="polite">${apSt()}</p>
     <p class="sfine">Requests can include messages, attachments, memory, and connected-app information used to answer you. This setting concerns AI providers; 1Helm's saved chats and connected services have separate storage policies. A change applies to requests from then on, including scheduled and background work; it can't recall requests already sent.</p>
     ${bk === "openrouter" ? `<p class="sfine">Your own AI key (Sign in with OpenRouter) follows this setting too. If no provider of your chosen model fits it, ${esc(who(main))} tells you instead of switching models.</p>`
@@ -2762,7 +2762,6 @@ function apPage() {
 function apPaint() {
   document.querySelectorAll<HTMLElement>("[data-apset]").forEach(b => { const on = b.dataset.apset === AP.level;
     b.classList.toggle("on", on); b.setAttribute("aria-checked", String(on)); });
-  const bt = document.querySelector<HTMLElement>("[data-bdesign]"); if (bt) { const on = bdOn(); bt.classList.toggle("on", on); bt.setAttribute("aria-checked", String(on)); }
   const st = document.getElementById("apst"); if (st) { st.className = `sfine apst${AP.st ? ` ${AP.st}` : ""}`; st.innerHTML = apSt(); }
 }
 function apSend(lv: string) {
@@ -2786,24 +2785,6 @@ document.addEventListener("keydown", e => {   // arrow keys move the choice, lik
   const b = (e.target as HTMLElement).closest?.<HTMLElement>("[data-apset]"); if (!b || !["ArrowDown", "ArrowUp"].includes(e.key)) return;
   e.preventDefault(); const ks = AP_OPTS.map(o => o[0]), i = ks.indexOf(b.dataset.apset || ""), n = ks[(i + (e.key === "ArrowDown" ? 1 : ks.length - 1)) % ks.length];
   document.querySelector<HTMLElement>(`[data-apset="${n}"]`)?.focus();
-});
-// Settings → AI data privacy → "Better Design for page design" (the private build shows it on Advanced, which the public edition hides without the Cloud connected apps feature; src/better-design.js, POST /api/account/prefs { better_design }): Better Design keeps what it is
-// sent and may train on it, so it follows the AI data privacy level. Effective value = the person's own choice if they ever made one, else on only for
-// Unrestricted. BOOT.account.better_design = { choice: "on" | "off" | null, on }; the level comes from AP, so changing it here updates the row.
-const BDS: { choice: "on" | "off" | null; busy: boolean; err: string } = { choice: LIVE ? (BOOT?.account?.better_design?.choice ?? null) : null, busy: false, err: "" };
-const bdOn = () => BDS.choice ? BDS.choice === "on" : AP.level === "unrestricted";
-const bdRow = () => `<div class="sc">${srow("", "Better Design for page design", "Sends the description of a page you ask for to Better Design, which keeps it and may train on it.",
-  `<button type="button" class="tg${bdOn() ? " on" : ""}" role="switch" aria-checked="${bdOn()}" aria-label="Better Design for page design" data-bdesign${BDS.busy ? " disabled" : ""}><i></i></button>`, " data-bdrow")}</div>${BDS.err ? `<p role="alert" class="meta">${esc(BDS.err)}</p>` : ""}`;
-document.addEventListener("click", e => {
-  const b = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-bdesign]"); if (!b) return;
-  e.preventDefault(); if (BDS.busy) return;
-  const was = BDS.choice, next = !bdOn() ? "on" : "off";
-  BDS.choice = next; BDS.err = "";
-  if (!LIVE) { sRender(); return; }
-  BDS.busy = true; sRender();
-  kyApi("account/prefs", { better_design: next === "on" }).then(d => { if (BOOT?.account) BOOT.account.better_design = d?.better_design || { choice: next, on: next === "on" }; })
-    .catch(err => { BDS.choice = was; BDS.err = err.message || "Couldn't save that. Try again in a minute."; })
-    .finally(() => { BDS.busy = false; sRender(); document.querySelector<HTMLButtonElement>("[data-bdesign]")?.focus(); });
 });
 // Settings → General → Usage → "Show estimated costs" (tenants.show_costs, POST /api/account/prefs): per account, OFF by default.
 // Off hides the estimate under a task ("This task: about $0.04"). Never hidden: the spend-guard pause cards (safety), the balance and
@@ -3418,7 +3399,7 @@ window.addEventListener("keydown", e => {
   if (S.open && (e.key === "Enter" || e.key === " ")) { const r = (e.target as HTMLElement).closest?.<HTMLElement>('[role="button"]'); if (r) { e.preventDefault(); r.click(); } }
 }, true);
 // The layout switches when the on-screen keyboard shrinks the window (Android resizes it): the open edit form, what was typed and the focused field stay (keep-fields.ts), and so does the scroll place.
-matchMedia("(max-width:599px),(max-height:499px)").addEventListener("change", () => { if (S.open) { if (!phone() && !S.sec) S.sec = "general"; keepFields(["#setw"], [], () => sRender(true)); } });
+matchMedia(PHONE).addEventListener("change", () => { if (S.open) { if (!phone() && !S.sec) S.sec = "general"; keepFields(["#setw"], [], () => sRender(true)); } });
 
 // ---------- Live mode (1Helm Cloud): tasks, replies, status, approvals come from the channel's resident ----------
 const HOST_OF = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
@@ -4753,8 +4734,8 @@ function beeFactAct(ch: Channel, op: "approve" | "edit" | "deny", id: number, te
 // and makes no pages request. In demo mode (LIVE unset) the same screen runs on demo data at #/main/notebook.
 // The Bee review reuses the real handlers (data-bfok, data-spkok, ...) in one queue: a slim row above the article, and on a phone a pill.
 const nbPagesOff = (): boolean => !!LIVE && BOOT?.flags?.notebook_pages === false;
-const wkPhone = () => matchMedia("(max-width:599px),(max-height:499px)").matches;
-window.matchMedia("(max-width:599px),(max-height:499px)").addEventListener("change", () => { if (isNb()) nbRefresh(); });
+const wkPhone = () => matchMedia(PHONE).matches;
+window.matchMedia(PHONE).addEventListener("change", () => { if (isNb()) nbRefresh(); });
 window.addEventListener("hashchange", () => { if (!isNb()) NBW.sheet = false; });   // leaving the Notebook closes the Bee tray, so it is the pill on the way back
 type WkSec = { id: string; h: string; text: string; sec: string };
 type WkPage = { k: string; title: string; group: number; kind: "page" | "notes"; secs: WkSec[]; ready: boolean; state?: "ready" | "building" | "empty" };

@@ -8,9 +8,10 @@
 //  6. The helper's saved keys list (label, variable, note, file, sites) and the "Check every site" switch.
 import assert from "node:assert"; import { DatabaseSync } from "node:sqlite"; import { execFileSync } from "node:child_process"; import { mkdtempSync, readFileSync, statSync, readdirSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { Resident, keyLineFor } from "../src/resident.js";
+import { Resident, keyLineFor, scrubbingSql } from "../src/resident.js";
 import { Sentinel, sealSecret, newStandin } from "../src/sentinel.js";
 import { ChannelComputer } from "../src/channel-computer.js";
+import { isCardReply } from "../src/genui.js";
 import { makeScrubber, MIN_SUBSTRING, MIN_TOKEN } from "../src/vault-scrub.js";
 import { keyUseCheck } from "../src/key-use.js";
 import { egressRule } from "../src/egress-policy.js";
@@ -37,7 +38,32 @@ const API = "sk-live-abcdefghijkl123", PIN = "73914", SIN_A = "1hs_" + "a".repea
   assert.equal(s.scrub("id 1739145"), "id 1739145", "a short value inside a longer number is left alone");
   assert.equal(s.scrub("a" + API + "b"), "a[API]b", "a long value is replaced wherever it is");
   assert.equal(makeScrubber([{ name: "TINY", value: "abc" }]).scrub("abc abc"), "abc abc", "under 4 characters is never replaced");
-  assert.equal(makeScrubber([{ name: "S", value: "abcd" }]).scrub("abcd xabcd abcd."), "[S] xabcd [S].");
+  assert.equal(makeScrubber([{ name: "S", value: "Ab1d" }]).scrub("Ab1d xAb1d Ab1d."), "[S] xAb1d [S].");
+  // a 4 to 7 letter lower case value is ordinary text: left alone in prose, a path and CSS, while find() still reports it and its stand-in is replaced
+  const word = makeScrubber([{ name: "DEMO_USERNAME", value: "root", standin: "1hs_" + "b".repeat(32) }]);
+  for (const t of ["log in as root now", "cd /root/app", ":root{--a:1}"]) assert.equal(word.scrub(t), t);
+  assert.deepEqual(word.find("log in as root"), ["DEMO_USERNAME"]);
+  assert.equal(word.scrub("x 1hs_" + "b".repeat(32)), "x [DEMO_USERNAME]");
+  for (const v of ["Ab12", "r00t", "pass!"]) assert.equal(makeScrubber([{ name: "N", value: v }]).scrub(`a ${v} b`), "a [N] b", v);
+  assert.equal(makeScrubber([{ name: "N", value: "password" }]).scrub("my password"), "my [N]");
+  // card code: only string literals are scrubbed, never names or punctuation
+  const card = 'root = Stack([hi, go])\nhi = Say("Use root and Stack with sk-live-abcdefghijkl123")\ngo = Buttons([Button("Stack", "x", "primary")])';
+  for (const v of ["root", "Stack", "Button", "Buttons"]) { const out = makeScrubber([{ name: "N", value: v }, { name: "K", value: API }]).scrubReply(card); assert.ok(isCardReply(out) && out.startsWith("root = Stack([hi, go])\nhi = Say(") && out.includes("go = Buttons([Button("), `${v}: ${out}`); assert.ok(!out.includes("sk-live")); }
+  const hit = makeScrubber([{ name: "N", value: "Stack" }, { name: "R", value: "ro0t!" }, { name: "K", value: API }]).scrubReply(card.replace("root and", "ro0t! and"));
+  assert.ok(hit.startsWith("root = Stack([hi, go])\nhi = Say(\"Use [R] and [N] with [K]\")"), hit);
+  assert.equal(isCardReply(word.scrubDeep({ role: "assistant", content: card }).content), true, "a stored message keeps its card");
+  assert.equal(word.scrubReply(`Here you go\n\n${card}`).startsWith("Here you go\n\nroot = Stack("), true);
+  // only the model's own reply is card-aware: the same card text as a tool result, user message or plain scrub is replaced whole
+  const outside = 'root = Stack([hi])\nhi = Say("ok")\nx = Tip(Secretword1)', lone = makeScrubber([{ name: "S", value: "Stack" }, { name: "K", value: "Secretword1" }]);
+  assert.equal(lone.scrub(card.replace(API, "x")).startsWith("root = [S]([hi, go])"), true, "scrub replaces the whole text");
+  assert.equal(lone.scrubDeep({ role: "tool", content: outside }).content.includes("Secretword1"), false);
+  assert.equal(lone.scrubDeep({ role: "tool", content: card }).content.startsWith("root = [S]("), true);
+  assert.equal(lone.scrubDeep({ role: "user", content: card }).content.startsWith("root = [S]("), true);
+  assert.equal(isCardReply(lone.scrubDeep({ role: "assistant", content: card }).content), true);
+  assert.equal(lone.scrubDeep({ role: "assistant", content: outside }).content.includes("Secretword1"), false, "a secret outside literals in a reply is replaced too");
+  assert.equal(lone.scrubDeep({ role: "assistant", content: outside }).content.startsWith("root = Stack([hi])"), true);
+  const calls = [{ id: "c", function: { name: "Stack", arguments: "{}" } }];
+  assert.equal(lone.scrubDeep({ role: "assistant", tool_calls: calls }).tool_calls[0].function.name, "[S]", "tool call arguments are scrubbed whole");
   assert.equal(s.scrub("nothing secret here, 12345"), "nothing secret here, 12345");
   // deep: strings, arrays, objects, keys; binary is left alone
   const bin = new Uint8Array([1, 2, 3]);
@@ -160,6 +186,17 @@ const sid = (await R.createSession("Keys")).id;
   R.save(dodb.prepare("SELECT id FROM turns ORDER BY at DESC LIMIT 1").get().id, { role: "assistant", content: `fact ${API} ${b64(API)}`, tool_calls: [{ id: "x", type: "function", function: { name: "n", arguments: JSON.stringify({ a: API }) } }] });
   assert.ok(!leaked(JSON.stringify(dodb.prepare("SELECT content, tool_calls FROM msgs ORDER BY seq DESC LIMIT 1").all())), "save() scrubs content and tool calls");
   await R.keyScrubber();
+  const cardMsg = `root = Stack([hi])\nhi = Say("key ${API}")`, asTool = `root = Stack([hi])\nhi = Say("ok")\nx = Tip(${API})`;
+  assert.ok(!leaked(await R.scrubKeysFresh(asTool)), "a card-shaped tool result is scrubbed whole");
+  assert.ok(!leaked(JSON.stringify(R.scrubKeys({ role: "tool", tool_call_id: "x", content: asTool }))), "a card-shaped tool message is scrubbed whole");
+  R.save(dodb.prepare("SELECT id FROM turns ORDER BY at DESC LIMIT 1").get().id, { role: "assistant", content: cardMsg });
+  const stored = dodb.prepare("SELECT content FROM msgs ORDER BY seq DESC LIMIT 1").get().content;
+  assert.ok(isCardReply(stored) && !leaked(stored) && /\[[A-Z_]+\]/.test(stored), "a stored assistant card keeps its structure and hides the value");
+  { const rows = []; const sql = scrubbingSql({ exec: (q, ...a) => rows.push(a) }, () => makeScrubber([{ name: "S", value: "Stack" }]));
+    sql.exec("INSERT INTO msgs (turn,role,content,tool_calls,tool_call_id,at) VALUES (?,?,?,?,?,?)", "t", "assistant", "root = Stack([a])\na = Say(\"Stack\")", null, null, 1);
+    sql.exec("INSERT INTO msgs (turn,role,content,tool_calls,tool_call_id,at) VALUES (?,?,?,?,?,?)", "t", "tool", "root = Stack([a])", null, null, 1);
+    assert.equal(rows[0][2], 'root = Stack([a])\na = Say("[S]")', "the storage wrapper treats an assistant message's content as the reply");
+    assert.equal(rows[1][2], "root = [S]([a])", "and every other row whole"); }
   const turnId = dodb.prepare("SELECT id FROM turns ORDER BY at DESC LIMIT 1").get().id;
   dodb.prepare("UPDATE turns SET user_text=?, reply=? WHERE id=?").run(`me ${API}`, `you ${b64(API)}`, turnId);
   assert.ok(!leaked(JSON.stringify(await R.memjobTurns(0, 50))), "memory job input is scrubbed");

@@ -56,7 +56,7 @@ form.composer.dicting .cbtn:not(.dict){opacity:.4;filter:blur(1.5px)}
 /* Nothing heard yet: a dotted line where the words will appear. */
 form.composer.dicting textarea:placeholder-shown{background:radial-gradient(circle,color-mix(in srgb,var(--ink) 35%,transparent) 1.1px,transparent 1.6px) 0 50%/8px 4px repeat-x}
 
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   form.composer{padding:6px}
   form.composer .cbtn,form.composer #go:not(.slgo),form.composer .gostop{width:40px;height:40px}
 }

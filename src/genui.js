@@ -174,6 +174,24 @@ export const hasCards = (text) => replySegments(text).some((p) => p.k === "card"
 // One thing said = one chat bubble. Prose followed by Say(…) in a single message becomes two: the prose, then the card reply.
 export function splitCardParts(text) { const ps = replySegments(text); return ps.length > 1 ? ps.map((p) => p.s) : [String(text ?? "")]; }
 
+// For the model's own reply only. Applies lit to the text inside the string literals of the card code in a reply, bare to every identifier
+// that is not card structure (not a component name or a name this card assigns), and prose to every other part (the prose around the card and
+// the characters between the parts stay as written). Component names, assignment names, numbers and punctuation are never touched. Returns
+// null when the reply holds no card code, so the caller handles it as ordinary text.
+const COMP_CALL = new RegExp(`\\b(?:${[...KNOWN].join("|")})\\(`), STR = /(")((?:[^"\\]|\\.)*)("?)|(')((?:[^'\\]|\\.)*)('?)/g;
+const IDENT_OR_STR = new RegExp(`${STR.source}|(\\$?[A-Za-z_]\\w*)`, "g");
+const card = (code, lit, bare) => {
+  const own = new Set([...code.matchAll(/^\s*(\$?[A-Za-z_]\w*)\s*=(?!=)/gm)].map((m) => m[1]));
+  return code.replace(IDENT_OR_STR, (m, a, b, c, d, e, f, g) => g ? (KNOWN.has(g) || own.has(g) ? g : bare(g)) : a ? a + lit(b) + c : d + lit(e) + f);
+};
+export function mapReply(text, prose, lit, bare) {
+  const t = String(text ?? ""); if (!COMP_CALL.test(t)) return null;
+  const ps = replySegments(t); if (!ps.some((p) => p.k === "card")) return null;
+  let at = 0, out = "";
+  for (const p of ps) { const i = t.indexOf(p.s, at); out += t.slice(at, i) + (p.k === "card" ? card(p.s, lit, bare) : prose(p.s)); at = i + p.s.length; }
+  return out + t.slice(at);
+}
+
 // ---- Repair (web app scripts/genui-repair.mjs, same as genui-render.ts section 2): keep only the statements, name bare
 // calls, give the reply a root when it has none (a Stack of the top-level cards nothing else lists, in the order written), then
 // attach any card the model defined but forgot to list in root. ----

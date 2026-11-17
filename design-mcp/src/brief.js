@@ -1,12 +1,12 @@
 // design_brief: one call that gathers design direction from every source and returns ONE compact plain-text answer (about 8 KB at most).
 // Sources run in parallel and each has its own time limit. A source that errors or times out is left out without a word.
 //   Inspo (public MCP, no key)           3 to 5 real-site references (name, URL, screenshot, palette, type) and a layout direction
-//   Better Design (BETTER_DESIGN_KEY)    one matching design system as a ready-to-paste :root block, plus UI rules
+//   Built-in theme catalog (catalog.js)  one matching design theme as a ready-to-paste :root block, its fonts, and our own UI rules; no network call
 //   Magic UI, React Bits, Canvas UI      3 to 6 component suggestions with the command that fetches their source
 import { REGISTRIES, searchRegistryItems } from "./registry.js";
+import { CATALOG } from "./catalog.js";
 
 export const INSPO_URL = "https://inspomcp.dev/api/mcp";
-export const BETTER_DESIGN_URL = "https://better-design.com/api/mcp";
 export const BRIEF_MAX = 8000;
 const SOURCE_MS = 6000;
 const PROTOCOL = "2025-06-18";
@@ -155,171 +155,47 @@ async function inspoPart(description) {
  return { refs, direction, palette, fonts: [...new Set(top.flatMap((e) => e.fonts || []))].slice(0, 3) };
 }
 
-// ---- Better Design ----
-const NAME_KEYS = ["query", "description", "brief", "prompt", "search", "text", "keywords", "personality", "style", "industry"];
-const ERROR_TEXT = /^\s*(error|failed|invalid|missing|unknown|unauthori[sz]ed|forbidden|not found|pass either|you must|please provide)\b|pass either '/i;
-// Better Design's own session notes and tool-call reminders are not design rules.
-const META_LINE = /\bsession\b|loaded design guidance|not reviewed|pass either|get-review-rules|check-comprehension|inspect-spacing|\bcall `|\bnext step/i;
-
-// A tool's arguments from its own schema. `extra` pins values (topic, target, an id). A string property with an enum gets the value the
-// description names (an industry or a personality), or the first value when it is required. topic and query are never sent together.
-function argsFor(tool, description, extra = {}, ref = null) {
- const props = tool?.inputSchema?.properties || {};
- const required = new Set(tool?.inputSchema?.required || []);
- const ws = words(description), out = {};
- for (const [k, spec] of Object.entries(props)) {
-  const type = Array.isArray(spec.type) ? spec.type[0] : spec.type;
-  if (k in extra) { out[k] = extra[k]; continue; }
-  if (type !== "string") continue;
-  if (Array.isArray(spec.enum)) {
-   const pick = spec.enum.find((v) => String(v).toLowerCase().split(/[^a-z]+/).some((p) => p && (ws.includes(p) || ws.some((w) => w.length > 3 && p.startsWith(w)))))
-    || (/industry|category/i.test(k) ? spec.enum.find((v) => Object.entries(INDUSTRY_WORDS).some(([ind, list]) => String(v).toLowerCase().includes(ind.split("-")[0]) && ws.some((w) => list.split(" ").includes(w)))) : null);
-   if (pick !== undefined && pick !== null) out[k] = pick; else if (required.has(k)) out[k] = spec.enum[0];
-   continue;
-  }
-  if (ref && /^(id|slug|designSystemId|designSystem)$/.test(k)) { out[k] = ref; continue; }   // the catalog id only; projectId is for generated systems
-  if (NAME_KEYS.includes(k) || required.has(k)) out[k] = clip(description, 300);
- }
- for (const [k, v] of Object.entries(extra)) if (!(k in out) && (k in props || !Object.keys(props).length)) out[k] = v;
- if ("topic" in props && "query" in props) { if (out.topic !== undefined) delete out.query; else if (out.query !== undefined) delete out.topic; }
- return out;
-}
-
-// The matches in a find-design-system answer, in the order listed: "### [Name](url)", a description line, "_tags_ · id: `id`".
-export function catalogMatches(text) {
- const out = [];
- for (const m of String(text).matchAll(/###\s*\[([^\]]+)\]\([^)]*\)\s*\n([\s\S]*?)(?:\n_([^\n]*?)_)?\s*·?\s*id:\s*`([a-z0-9][a-z0-9-]*)`/g)) {
-  out.push({ id: m[4], name: m[1].trim(), description: m[2].trim(), tags: String(m[3] || "") });
- }
- return out;
-}
-
+// ---- Design theme ----
 const MOODS = new Set("playful warm editorial minimal minimalist bold luxe calm retro friendly elegant modern dark light quirky soft raw".split(" "));
 const TECHNICAL = /developer|docs|documentation|\bapi\b|dashboard|analytics|console|admin|saas|terminal|desktop|macos|window chrome|fintech|trading|enterprise|cli\b/i;
-const CONSUMER_FIT = /restaurant|food|hospitality|editorial|poster|photograph|warm|ecommerce|retail|boutique|magazine|brand|cafe|menu|hand-built|friendly|colorful|colourful/gi;
 
-// The best catalog match for the subject and mood. The catalog's own order counts a little; words the description shares with the match, mood words,
-// and consumer-facing words count more; a developer, dashboard or desktop-app system is penalised unless the request is technical.
+// The best catalog theme for the subject and mood: words the description shares with a theme's name and tag line count (mood words a little less),
+// and a theme tagged for developers or dashboards is penalised unless the request is technical. The first theme wins a tie.
 export function pickSystem(matches, description) {
  const ws = words(description), technical = TECHNICAL.test(description);
  let best = null;
- matches.forEach((m, i) => {
-  const text = `${m.name} ${m.description} ${m.tags}`.toLowerCase();
-  let score = (matches.length - i) * 0.5;
+ for (const m of matches) {
+  const text = `${m.name} ${m.tags}`.toLowerCase();
+  let score = 0;
   for (const w of ws) if (w.length > 3 && text.includes(w)) score += MOODS.has(w) ? 2 : 3;
-  if (!technical) {
-   score -= 4 * ((text.match(new RegExp(TECHNICAL.source, "gi")) || []).length > 0 ? 1 : 0);
-   score += 1.5 * new Set((text.match(CONSUMER_FIT) || []).map((x) => x.toLowerCase())).size;
-  }
+  if (!technical && TECHNICAL.test(text)) score -= 4;
   if (!best || score > best.score) best = { ...m, score };
- });
+ }
  return best;
 }
 
-// A system from a find-design-system answer: the best catalog match, or (older JSON or loose text) the first id found.
-function systemIn(text, description = "") {
- const ms = catalogMatches(text);
- if (ms.length) { const b = pickSystem(ms, description); return { id: b.id, name: b.name }; }
- const f = firstWithId(asJson(text));
- if (f) return f;
- const m = /(?:designSystemId|\bid|\bslug)["']?\s*[:=]\s*["'`]?([a-z0-9]+(?:-[a-z0-9]+)*)/i.exec(text) || /`([a-z0-9]+(?:-[a-z0-9]+)+)`/.exec(text);
- return m ? { id: m[1], name: "" } : null;
-}
+// Short rules on hierarchy, color, spacing and type, written for this brief.
+const RULES = [
+ "Give each screen one focal point, usually the page title or the main action, and make it clearly the largest or highest contrast element.",
+ "Use at most three type sizes per section (title, body, caption), and change size or weight, not both together, to show rank.",
+ "Keep body text near 16 px with a line height of 1.5, and limit lines to about 65 characters.",
+ "Use the primary color only for the main action and for links, so it stays rare enough to guide the eye.",
+ "Draw neutral surfaces, borders and secondary text from the muted and border variables rather than new greys.",
+ "Check contrast: body text needs at least 4.5 to 1 against its background, and large text needs 3 to 1.",
+ "Never use color alone for meaning. Pair it with a label, an icon or a shape.",
+ "Space things on one scale (for example 4, 8, 16, 24, 48 px), and put more space between groups than inside a group.",
+ "Align elements to a shared left edge or grid, and keep padding equal on matching cards and sections.",
+ "Use a single radius and a single shadow from the tokens for every card and button.",
+ "Keep each section to one message with a short heading, and cut any text that repeats the heading.",
+].map((r) => "- " + r);
 
-function jsonStrings(v, out = [], depth = 0) {
- if (typeof v === "string") out.push(v);
- else if (v && typeof v === "object" && depth < 8) for (const x of Object.values(v)) jsonStrings(x, out, depth + 1);
- return out;
-}
-
-function firstWithId(v, depth = 0) {
- if (!v || typeof v !== "object" || depth > 4) return null;
- if (Array.isArray(v)) {
-  for (const x of v) { const f = firstWithId(x, depth + 1); if (f) return f; }
-  return null;
- }
- const id = v.designSystemId || v.id || v.slug;
- if (typeof id === "string" && (v.name || v.title || v.designSystemId || v.slug)) return { id, name: v.name || v.title || id };
- for (const x of Object.values(v)) { const f = firstWithId(x, depth + 1); if (f) return f; }
- return null;
-}
-
-function rootBlock(text) {
- const j = asJson(text);
- const all = j ? jsonStrings(j).join("\n") + "\n" + String(text) : String(text);
- const blocks = [...all.matchAll(/:root\s*\{[^}]*\}/g)].map((m) => m[0]);
- if (blocks.length) {
-  const out = []; let used = 0;
-  for (const b of blocks) { if (used + b.length > 1800) break; out.push(b); used += b.length; }
-  return out.join("\n") || clip(blocks[0], 1800);
- }
- const vars = [...new Set([...all.matchAll(/^\s*(--[\w-]+\s*:\s*[^;\n]+;)/gm)].map((m) => m[1].trim()))].slice(0, 40);
- return vars.length ? `:root{\n${vars.map((v) => "  " + v).join("\n")}\n}` : "";
-}
-
-const SYSTEM_FONT = /^(sans-serif|serif|monospace|system-ui|inherit|var\(|ui-|-apple-system|blinkmacsystemfont|segoe ui|helvetica|arial|roboto mono|sfmono|menlo|monaco|consolas|liberation|georgia|cambria|times|courier|apple )/i;
-
-// The fonts a kit really uses: the Google Fonts families in its @import line first, then font-family names. System stacks are left out.
-// Also returns a stylesheet link for the Google families, so the page can load them.
-export function fontsIn(text) {
- const names = [], google = [];
- const imp = /@import\s+url\(\s*["']?(https:\/\/fonts\.googleapis\.com\/css2\?[^"')]+)/.exec(String(text));
- if (imp) {
-  for (const part of imp[1].replace(/^[^?]*\?/, "").split("&")) {
-   if (!part.startsWith("family=")) continue;
-   const fam = decodeURIComponent(part.slice(7).replace(/\+/g, " "));
-   const name = fam.split(":")[0].trim();
-   if (name && !SYSTEM_FONT.test(name) && !names.includes(name)) { names.push(name); google.push(part); }
-  }
- }
- for (const m of google.length ? [] : String(text).matchAll(/font-family\s*:\s*([^;}\n]+)/g)) {
-  for (const part of m[1].split(",")) {
-   const n = part.trim().replace(/^['"]|['"]$/g, "");
-   if (n && !SYSTEM_FONT.test(n) && !names.includes(n)) names.push(n);
-  }
- }
- return { names: names.slice(0, 4), link: google.length ? `https://fonts.googleapis.com/css2?${google.join("&")}&display=swap` : "" };
-}
-
-export function ruleLines(text, n) {
- const out = [];
- for (const raw of String(text).split("\n")) {
-  if (!/^\s*(?:[-*]|\d+[.)])\s+\S/.test(raw)) continue;   // bullets and numbered points only; headings, Topic and Aliases lines are not rules
-  const l = raw.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "").replace(/\*\*|__|`/g, "").replace(/\s+/g, " ").trim();
-  if (l.length > 24 && !META_LINE.test(l) && !/ = /.test(l) && !/^(topic|aliases?)\s*:/i.test(l) && !out.includes(l)) out.push(l);
-  if (out.length >= n) break;
- }
- return out.map((l) => "- " + clip(l, 170));
-}
-
-async function betterDesignPart(description, env, trace = null) {
- const key = env && env.BETTER_DESIGN_KEY;
- if (!key) throw new Error("no key");
- const c = connect(BETTER_DESIGN_URL, { authorization: `Bearer ${key}` });
- const tools = await c.list();
- const tool = (n) => tools.find((t) => t.name === n);
- const ok = (t) => (t && !ERROR_TEXT.test(t) ? t : "");
- const callTool = (n, a) => (tool(n) ? c.call(n, a).then((t) => { trace?.push(`${n} ${JSON.stringify(a).slice(0, 160)} -> ${ok(t) ? "ok" : "error text"}: ${clip(t, 160)}`); return ok(t); }).catch((e) => { trace?.push(`${n} ${JSON.stringify(a).slice(0, 160)} -> failed: ${clip(e.message, 160)}`); return ""; }) : (trace?.push(`${n} -> not offered (tools: ${tools.map((t) => t.name).join(", ").slice(0, 300)})`), Promise.resolve("")));
- const ui = (topic) => callTool("get-ui-principle", argsFor(tool("get-ui-principle"), "", { topic }));   // topic only, never with query
- const [found, ui1, ui2] = await Promise.all([
-  callTool("find-design-system", argsFor(tool("find-design-system"), description)),
-  ui("hierarchy"),
-  ui("color"),
- ]);
- let sys = found ? systemIn(found, description) : null;
- if (!sys && tool("find-design-system")) {   // a second try on the subject words alone
-  const again = await callTool("find-design-system", argsFor(tool("find-design-system"), words(description).slice(0, 4).join(" ") || description));
-  sys = again ? systemIn(again, description) : null;
- }
- let system = null;
- if (sys && tool("get-design-system-kit")) {
-  const kit = await callTool("get-design-system-kit", argsFor(tool("get-design-system-kit"), description, { target: "html", designSystemId: sys.id }, sys.id));
-  const root = rootBlock(kit);
-  if (root) { const f = fontsIn(kit); system = { name: sys.name || sys.id, root, fonts: f.names, fontsLink: f.link }; }
- }
- const rules = [...new Set([...ruleLines(ui1, 3), ...ruleLines(ui2, 3)])];
- if (!system && !rules.length) throw new Error("nothing usable");
- return { system, rules };
+// The theme that best fits the description: scores the catalog's names and tag lines, with no network call and no model.
+export function themeFor(description) {
+ const t = pickSystem(CATALOG, description);
+ const block = (vars) => Object.entries(vars).map(([k, v]) => `  --${k}:${v};`).join("\n");
+ const family = (stack) => /^"([^"]+)"/.exec(stack)[1];
+ const root = `:root{\n${block(t.light)}\n  --radius:${t.radius};\n  --shadow:${t.shadow};\n${Object.entries(t.fonts).map(([k, v]) => `  --font-${k}:${v};`).join("\n")}\n}\n.dark{\n${block(t.dark)}\n}`;
+ return { id: t.id, name: t.name, root, fonts: [...new Set(Object.values(t.fonts).map(family))] };
 }
 
 // ---- component registries ----
@@ -358,13 +234,10 @@ export function renderBrief(description, p) {
   sections.push({ keep: true, text: "REFERENCES (real sites; study their palette, type and layout)\n" + p.inspo.refs.map((r, i) =>
    `${i + 1}. ${r.title}${r.url ? ` ${r.url}` : ""}${r.shot ? `\n   screenshot: ${r.shot}` : ""}\n   palette: ${r.palette.join(" ") || "n/a"}; fonts: ${r.fonts.join(", ") || "n/a"}; ${r.mode || ""}${r.note ? `\n   ${clip(r.note, 150)}` : ""}`).join("\n") });
  }
- const sys = p.better && p.better.system;
- if (sys) sections.push({ keep: true, text: `DESIGN SYSTEM TOKENS (${sys.name}${sys.fonts.length ? `; fonts: ${sys.fonts.join(", ")}` : ""}). Paste this into the page's <style>:\n${sys.root}${sys.fontsLink ? `\nLoad the fonts with: <link rel="stylesheet" href="${sys.fontsLink}">` : ""}` });
- else if (p.inspo && p.inspo.palette.length) {
-  const f = p.inspo.fonts[0];
-  sections.push({ keep: true, text: `STARTING TOKENS (palette from the references${f ? `, display font ${f}` : ""}). Paste this into the page's <style> and adjust to the mood:\n:root{\n${p.inspo.palette.map((c, i) => `  --color-${i + 1}: ${c};`).join("\n")}\n}` });
- }
- if (p.better && p.better.rules.length) sections.push({ text: "RULES\n" + p.better.rules.join("\n") });
+ const sys = p.theme;
+ if (sys) sections.push({ keep: true, text: `DESIGN THEME TOKENS (${sys.name}; fonts: ${sys.fonts.join(", ")}, installed on your computer). Paste this into the page's <style>. Style with var(--background), var(--primary) and the other names; add class="dark" on <html> for the dark version:\n${sys.root}` });
+
+ sections.push({ text: "RULES\n" + RULES.join("\n") });
  if (p.components && p.components.length) {
   sections.push({ text: "COMPONENTS (optional; port into plain HTML, CSS and JS, and fetch the source with the command)\n" + p.components.map((c) =>
    `- ${c.label} ${c.name}: ${c.line}\n  ${SCRIPT} ${c.id} getRegistryItem '{"name":"${c.name}","includeSource":true}'`).join("\n") });
@@ -375,29 +248,19 @@ export function renderBrief(description, p) {
  return out.length > BRIEF_MAX ? out.slice(0, BRIEF_MAX - 1) + "\n" : out;
 }
 
-export async function designBrief(args, env) {
+export async function designBrief(args) {
  const description = clip(args && args.description, 600);
  if (!description) throw new Error("description is required");
- const trace = args && args.debug ? [] : null;
- // skip: sources the caller does not want used, by name ("better-design"). Optional; without it every source runs, as before. 1Helm passes it for an
- // account that has not allowed Better Design (it keeps tool inputs and may train on them), so the description is never sent there.
- const skip = new Set((Array.isArray(args && args.skip) ? args.skip : []).map((x) => String(x).toLowerCase()));
  const run = (fn) => withTimeout(() => fn(), SOURCE_MS + 1000).catch(() => null);
- const [inspo, better, components] = await Promise.all([
-  run(() => inspoPart(description)),
-  skip.has("better-design") ? Promise.resolve(null) : run(() => betterDesignPart(description, env, trace)),
-  run(() => componentsPart(description)),
- ]);
- if (!inspo && !better && !components) throw new Error("no design source answered");
- const text = renderBrief(description, { inspo, better, components });
- return trace ? `${text}\n\nDEBUG (Better Design calls)\n${trace.join("\n") || "(none)"}` : text;
+ const [inspo, components] = await Promise.all([run(() => inspoPart(description)), run(() => componentsPart(description))]);
+ return renderBrief(description, { inspo, theme: themeFor(description), components });
 }
 
 export const briefTools = [{
  name: "design_brief",
  failure: "Could not build the design brief",
  text: true,
- description: "One call that returns a compact design brief for a page, site, deck or designed PDF: real-site references (Inspo), one design system as a ready-to-paste :root block (Better Design), a few UI rules, and component suggestions (Magic UI, React Bits, Canvas UI) with the command that fetches each one's source. Sources that fail are skipped.",
- inputSchema: { type: "object", properties: { description: { type: "string", description: "What it is, who it is for, and the mood." }, debug: { type: "boolean", description: "Append what each Better Design call returned." }, skip: { type: "array", items: { type: "string" }, description: "Sources not to use, by name. The only name is \"better-design\"; the description is then never sent to Better Design." } }, required: ["description"] },
- call: (a, env) => designBrief(a, env),
+ description: "One call that returns a compact design brief for a page, site, deck or designed PDF: real-site references (Inspo), one built-in design theme as a ready-to-paste :root block with its fonts, a few UI rules, and component suggestions (Magic UI, React Bits, Canvas UI) with the command that fetches each one's source. Sources that fail are skipped.",
+ inputSchema: { type: "object", properties: { description: { type: "string", description: "What it is, who it is for, and the mood." } }, required: ["description"] },
+ call: (a) => designBrief(a),
 }];

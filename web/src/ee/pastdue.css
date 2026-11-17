@@ -14,7 +14,7 @@ body.pd-on #bcxbar{display:none}
 @media (hover:hover) and (pointer:fine){.pdfix:hover{filter:brightness(1.12)}}.pdfix[disabled]{opacity:.7;cursor:default}
 body.pd-on{padding-top:var(--pdh,44px)}
 body.pd-on.bcx-on{padding-top:var(--pdh,44px)}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   #pdbar{justify-content:flex-start;padding-left:16px;padding-right:12px;font-size:13.5px}
   .pdwhen{display:none}
   body.pd-on,body.pd-on.bcx-on{padding-top:0}

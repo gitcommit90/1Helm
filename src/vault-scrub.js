@@ -12,9 +12,15 @@
 // Short values: a value of at least MIN_SUBSTRING (8) characters is replaced wherever it appears, in any of the forms above. A value of 4 to 7
 // characters is replaced only when it stands alone (the characters before and after are not letters or digits) and only in its exact form,
 // because a short string inside other text is usually something else (a number, a word). A value shorter than MIN_TOKEN (4) is never replaced.
-// Pure code (WebCrypto and TextEncoder only), so it is unit tested and works in any Worker or Durable Object.
+// A value of 4 to 7 characters made only of lower case ASCII letters (a username, a common word) is never replaced by scrub(): it appears in
+// ordinary text, paths and code far more often than as a secret, and replacing it corrupts that text. find() still reports it, so the check that
+// holds a request carrying a saved value for an unapproved site is unchanged. Its stand-in (1hs_...) is always replaced.
+// The model's own reply (scrubReply, and assistant message content in scrubDeep) is card-aware: card code is scrubbed only inside its string
+// literals and other non-structural words, so a saved value can never change the structure of a card. Every other text is scrubbed whole.
+// Pure code (WebCrypto, TextEncoder and the card tokenizer in genui.js), so it is unit tested and works in any Worker or Durable Object.
 import { openSecret } from "./vault-seal.js";
 import { vaultRows } from "./vault-rules.js";
+import { mapReply } from "./genui.js";
 
 export const MIN_SUBSTRING = 8, MIN_TOKEN = 4, LINE_MIN = 16;
 const enc = new TextEncoder();
@@ -65,27 +71,31 @@ export function valueForms(value) {
 
 // entries: [{ name, value, standin? }]. → { scrub(text), scrubDeep(x), find(text) -> names, names }
 export function makeScrubber(entries = []) {
-  const long = [], short = [], stand = [], by = new Map();
+  const long = [], short = [], plain = new Set(), stand = [], by = new Map();
   for (const e of entries) {
     const value = String(e.value ?? ""), t = value.replace(/^[\s​﻿ ]+|[\s​﻿ ]+$/g, "");
     if (e.standin) { stand.push([String(e.standin), e.name]); }
     if (t.length >= MIN_SUBSTRING || value.length >= MIN_SUBSTRING) for (const f of valueForms(value)) { if (!by.has(f)) by.set(f, e.name); long.push(f); }
-    else if (t.length >= MIN_TOKEN) { if (!by.has(t)) by.set(t, e.name); short.push(t); }
+    else if (t.length >= MIN_TOKEN) { if (!by.has(t)) by.set(t, e.name); short.push(t); if (/^[a-z]+$/.test(t)) plain.add(t); }
   }
   const forms = [...new Set(long)].sort((a, b) => b.length - a.length);
   const shortForms = [...new Set(short)].sort((a, b) => b.length - a.length);
   const reLong = forms.length ? new RegExp(forms.map(reEsc).join("|"), "g") : null;
   const reShort = shortForms.length ? new RegExp(`(?<![A-Za-z0-9])(?:${shortForms.map(reEsc).join("|")})(?![A-Za-z0-9])`, "g") : null;
+  const scrubShort = shortForms.filter((x) => !plain.has(x));
+  const reScrubShort = scrubShort.length ? new RegExp(`(?<![A-Za-z0-9])(?:${scrubShort.map(reEsc).join("|")})(?![A-Za-z0-9])`, "g") : null;
   const standMap = new Map(stand), reStand = stand.length ? new RegExp(stand.map(([s]) => reEsc(s)).join("|"), "g") : null;
   const mark = (n) => `[${n}]`;
-  const scrub = (text) => {
-    if (typeof text !== "string" || !text) return text;
+  const scrubText = (text) => {
     let s = text;
     if (reLong) s = s.replace(reLong, (m) => mark(by.get(m)));
-    if (reShort) s = s.replace(reShort, (m) => mark(by.get(m)));
+    if (reScrubShort) s = s.replace(reScrubShort, (m) => mark(by.get(m)));
     if (reStand) s = s.replace(reStand, (m) => mark(standMap.get(m)));
     return s;
   };
+  const scrub = (text) => (typeof text !== "string" || !text ? text : scrubText(text));
+  // Only for the model's own reply text (never a tool result, user message or other input): card code keeps its structure, see mapReply.
+  const scrubReply = (text) => (typeof text !== "string" || !text ? text : mapReply(text, scrubText, scrubText, scrubText) ?? scrubText(text));
   const find = (text) => {
     const found = new Set(); if (typeof text !== "string" || !text) return [];
     if (reLong) for (const m of text.matchAll(reLong)) found.add(by.get(m[0]));
@@ -93,16 +103,16 @@ export function makeScrubber(entries = []) {
     if (reStand) for (const m of text.matchAll(reStand)) found.add(standMap.get(m[0]));
     return [...found];
   };
-  const scrubDeep = (x, depth = 0) => {
-    if (typeof x === "string") return scrub(x);
+  const scrubDeep = (x, depth = 0, reply = false) => {
+    if (typeof x === "string") return reply ? scrubReply(x) : scrub(x);
     if (!x || typeof x !== "object" || depth > 40) return x;
     if (ArrayBuffer.isView(x) || x instanceof ArrayBuffer) return x;   // binary (images, files) is not text: left alone
-    if (Array.isArray(x)) return x.map((v) => scrubDeep(v, depth + 1));
-    const o = {}; for (const [k, v] of Object.entries(x)) o[scrub(k)] = scrubDeep(v, depth + 1); return o;
+    if (Array.isArray(x)) return x.map((v) => scrubDeep(v, depth + 1, reply));
+    const o = {}; for (const [k, v] of Object.entries(x)) o[scrub(k)] = scrubDeep(v, depth + 1, reply || (x.role === "assistant" && k === "content")); return o;
   };
   const parse = (h) => { try { const x = JSON.parse(h || "[]"); return Array.isArray(x) ? x : []; } catch { return Array.isArray(h) ? h : []; } };
   const keys = entries.map((e) => ({ name: e.name, label: e.label || e.name, hosts: parse(e.hosts) }));
-  return { scrub, scrubDeep, find, names: entries.map((e) => e.name), keys, size: entries.length, empty: !entries.length };
+  return { scrub, scrubReply, scrubDeep, find, names: entries.map((e) => e.name), keys, size: entries.length, empty: !entries.length };
 }
 export const NO_SCRUB = makeScrubber([]);
 

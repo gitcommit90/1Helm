@@ -49,7 +49,7 @@
 @media (hover:hover) and (pointer:fine){.cxpill:hover{background:var(--hover);color:var(--ink)}}
 .cxpill[aria-checked=true]{background:var(--ink);color:var(--sheet)}@media (hover:hover) and (pointer:fine){.cxpill[aria-checked=true]:hover{background:var(--ink);color:var(--sheet)}}
 .cxpill:focus-visible{outline:2px solid var(--ink2);outline-offset:2px}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   [data-cxpage=list]>.cxwrap{padding-bottom:0}
   [data-cxpage=det]{display:block;overflow:auto}[data-cxpage=det] .cxsplit{display:block}[data-cxpage=det] .cxright{overflow:visible}
   .cxlw{margin-right:-12px}

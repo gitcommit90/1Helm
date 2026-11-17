@@ -60,7 +60,7 @@ a.gu-b.shopen{text-decoration:none;color:var(--ink2)}
 .shgrp{display:flex;gap:8px}
 .shfield a.dlgb{display:inline-flex;align-items:center;gap:6px;flex:none;text-decoration:none}
 @media (hover:hover) and (pointer:fine){.gu-b.shunp:hover{color:var(--dlgred,#dc2626)}}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .shw{place-items:end stretch;padding:0}
   .shw .dlg{opacity:1;transform:translateY(100%)}.shw.on .dlg{transform:none}
   .shfield{flex-direction:column}.shfield .dlgb{justify-content:center}
@@ -107,7 +107,7 @@ a.gu-b.shopen{text-decoration:none;color:var(--ink2)}
 .bdqr-card .dlggrab{background:var(--bdqr-mute);opacity:.4}
 .sc.lkapp.bdqr-card{border-radius:2em;padding:20px}
 .lkapp.bdqr-card p{color:var(--bdqr-mute)}
-@media (max-width:599px),(max-height:499px){.dlg.bdqr-card{border-radius:2em 2em 0 0}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.dlg.bdqr-card{border-radius:2em 2em 0 0}}
 @media (prefers-reduced-motion:reduce){.bdqr-card .dlgb,.bdqr-card.lkapp .sa{transition:none}}
 /* QR code block (bdqr.ts): Bruno Delorence's pill that opens into a card with the code. Copyright (c) 2026 Bruno Delorence. MIT License. */
 .bdqr-qr{--bdqr-plate:#fff;--bdqr-dot:#1c1b19;position:relative;display:block;margin-top:14px;text-align:left}
@@ -135,8 +135,8 @@ a.gu-b.shopen{text-decoration:none;color:var(--ink2)}
 @keyframes bdqr-pop{from{opacity:0;scale:0}}
 @media (prefers-reduced-motion:reduce){.bdqr-qr *{animation:none!important}}
 .lkapp .bdqr-qr{margin-top:14px}
-@media (max-width:599px),(max-height:499px){.shw .dlg.bdqr-card .bdqr-qr{margin-top:12px}.bdqr-plate{flex-basis:min(150px,38dvh)}}
-@media (max-width:599px),(max-height:499px){.bdqr-card .shfield input{flex:none;width:100%}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.shw .dlg.bdqr-card .bdqr-qr{margin-top:12px}.bdqr-plate{flex-basis:min(150px,38dvh)}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.bdqr-card .shfield input{flex:none;width:100%}}
 /* Library published/shared row at phone portrait width: the buttons drop under the text so the title, address and meta get the full width */
 @media (max-width:600px){
   .shrow{flex-wrap:wrap;row-gap:0}

@@ -78,7 +78,7 @@ import { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedT
 import { CONNECT_TOOLS, CONNECT_LINES, connectOfferInit, connectTool, offersView, offerAct, offerGet, offerConnected, composioSigninOffer, connectWriteBlock, appCatalog, catalogFile } from "./ee/index.js";
 import { approvalLabel } from "./egress-policy.js";
 import { ackFor, jobStartedReply, ACK_UPDATE_SENT, ACK_UPDATE_UNCONFIRMED, ACK_RESULT_NOT_READY, ACK_UPDATE_FAILED, ACK_JOB_NOT_STARTED, ACK_ANSWER_RECEIVED } from "./plain-ack.js";
-import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, DESIGNED_WORK, DESIGNED_WORK_NO_BD, HELPER_NAME_MAX, HELPER_TASK_MAX, HELPER_MESSAGE_MAX, HELPER_MESSAGES_MAX, COORDINATOR_MAX_CHILDREN, COORDINATOR_LIMITS, helperExclude, helperAllowed, helperContextSnapshot, helperDir, workerOutputPath, helperJobText, earlierStepsBlock, coordinatorFinalText, helperStartedText, helperNoteText, helperMessageRows, helperMessagePending, helperMessageText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, reviewableWorker, helperRow, coordinatorChildren, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, reconcileHelperReviews, helperNextWake, liveTurnOf, helperTcOf, emitHelper, helperRequestOpen, helperRequestPending, workerLoginGrant, workerPurchaseGrant, workerPauseNote, LOGIN_GRANT_MS, LOGIN_GRANT_USES } from "./helpers.js";
+import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, DESIGNED_WORK, HELPER_NAME_MAX, HELPER_TASK_MAX, HELPER_MESSAGE_MAX, HELPER_MESSAGES_MAX, COORDINATOR_MAX_CHILDREN, COORDINATOR_LIMITS, helperExclude, helperAllowed, helperContextSnapshot, helperDir, workerOutputPath, helperJobText, earlierStepsBlock, coordinatorFinalText, helperStartedText, helperNoteText, helperMessageRows, helperMessagePending, helperMessageText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, reviewableWorker, helperRow, coordinatorChildren, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, reconcileHelperReviews, helperNextWake, liveTurnOf, helperTcOf, emitHelper, helperRequestOpen, helperRequestPending, workerLoginGrant, workerPurchaseGrant, workerPauseNote, LOGIN_GRANT_MS, LOGIN_GRANT_USES } from "./helpers.js";
 import { routeTwoTurn, dispatchOrder, HANDOFF_PREFIX, policyRoute } from "./ee/index.js";   // routing policy
 import { privacyOf, PRIVACY_EXHAUSTED } from "./privacy.js";   // AI data privacy: the account's level, read on every dispatch
 import { jobModel, modelSettingsEnv, dispatch, CHAT_JOB, plannedChatMaxOutput, plannedChatHoldNano, plannedHoldNano, plannedHold, holdOutNano } from "./ee/index.js";
@@ -116,7 +116,6 @@ import { splitLongMessage } from "./long-message.js";
 import { stPut, stDelete } from "./storage.js";
 import { imageAllowed, imageModeOf, setImageMode, applyOfferAnswer, imageToolDefs, imageToolNames, IMAGE_TOOL_NAMES, runImageTool, prepareImageSend, imageModeNote, dismissOnSend } from "./ee/index.js";   // image generation in a chat (image-gen.js)
 import { designToolDefs, designToolCall, prepareDesignTools, isDesignToolName } from "./design-tools.js";   // the five design MCP servers as tools
-import { betterDesignState } from "./better-design.js";   // Better Design as a design source follows the account (Settings → Advanced, AI privacy level)
 import { briefForWrite } from "./design-brief.js";   // the design brief 1Helm appends to a task's first .html write (no model choice involved)
 import { identicalLibraryFile, adoptName, dropNewBytes } from "./library-dedupe.js";
 import { parseSnap, changedNames, saveBack, saveBackNote } from "./files-saveback.js";   // changes under /workspace/files reach the Library file
@@ -454,8 +453,8 @@ export { jpegSize };   // (browser-vision.js)
 // ---- The main chat request, built by pure functions ----
 // The Durable Object calls these with the real channel, and the Sandbox on the Models page (src/sandbox-samples/chat.js) calls the same ones with
 // invented data, so a change to a prompt or a tool list shows up in the Sandbox with no other edit.
-export function chatPromptFlags(env, { browser = false, mode = "off", stable = true, cards = false, append = false, betterDesign = false } = {}) {
-  return { ...(append ? { append: true } : {}), browser_task: !!browser, apps: eeEnabled(env) && !!env.COMPOSIO_KEY, app_events: eeEnabled(env) && !!env.COMPOSIO_KEY && eventsReady(env), recall: mode === "on", compact: !!stable, cards: !!cards, better_design: !!betterDesign, ...(hsUse(env) ? { use: true } : {}) };
+export function chatPromptFlags(env, { browser = false, mode = "off", stable = true, cards = false, append = false } = {}) {
+  return { ...(append ? { append: true } : {}), browser_task: !!browser, apps: eeEnabled(env) && !!env.COMPOSIO_KEY, app_events: eeEnabled(env) && !!env.COMPOSIO_KEY && eventsReady(env), recall: mode === "on", compact: !!stable, cards: !!cards, ...(hsUse(env) ? { use: true } : {}) };
 }
 // The Notebook rows that stay pinned in the system prompt, as one budgeted block (pinned-notes.js).
 export const HOW_HELPER_BUDGET = 3000;   // characters for helper-written "how" rows, oldest first so long-lived setup notes are never crowded out by newer ones
@@ -488,10 +487,12 @@ export const keyLineFor = (k) => {
 };
 // The Resident's own storage, with a saved key value replaced by [NAME] in every string written by INSERT, UPDATE or REPLACE. Reads, table creation and non-string
 // values (numbers, bytes) pass through untouched. With no saved keys loaded it changes nothing.
+// Which bound argument holds the model's own reply text: the content of an assistant message, or the reply of a turn. Everything else is scrubbed whole.
+const replyArg = (q, a) => /^\s*INSERT INTO msgs \(turn,role,content/i.test(q) && a[1] === "assistant" ? 2 : /^\s*INSERT INTO turns \(id,at,user_text,reply,/i.test(q) ? 3 : -1;
 export function scrubbingSql(raw, getScrubber) {
   if (!raw || typeof raw.exec !== "function") return raw;
   return new Proxy(raw, { get(t, k) {
-    if (k === "exec") return (q, ...a) => { const sc = getScrubber?.(); if (sc && !sc.empty && a.length && /^\s*(INSERT|UPDATE|REPLACE)\b/i.test(q)) a = a.map((x) => (typeof x === "string" ? sc.scrub(x) : x)); return t.exec(q, ...a); };
+    if (k === "exec") return (q, ...a) => { const sc = getScrubber?.(); if (sc && !sc.empty && a.length && /^\s*(INSERT|UPDATE|REPLACE)\b/i.test(q)) { const ri = replyArg(q, a); a = a.map((x, i) => (typeof x === "string" ? (i === ri ? sc.scrubReply(x) : sc.scrub(x)) : x)); } return t.exec(q, ...a); };
     const v = t[k]; return typeof v === "function" ? v.bind(t) : v;
   } });
 }
@@ -511,10 +512,10 @@ export function composeSystemPrompt(env, { flagOpts = {}, stable = false, cards 
   const block = channelBlock(channelOptions);
   return `${staticCore({ ...chatPromptFlags(env, { ...flagOpts, stable, cards }), ee: eeEnabled(env) })}${cards ? `\n\n${genuiPromptSection()}` : ""}\n\n${block}`;
 }
-// The channel's tool list before the task adds its own: the base set, the browser and Better Design tools when on, and General's extra tools.
-export function chatBaseTools(env, { workmem = false, browser = false, betterDesign = false, general = false, sidecars } = {}) {
+// The channel's tool list before the task adds its own: the base set, the browser tools when on, and General's extra tools.
+export function chatBaseTools(env, { workmem = false, browser = false, general = false, sidecars } = {}) {
   ensureFreshTools();
-  const base0 = [...(eeEnabled(env) && env.COMPOSIO_KEY ? [...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, ...(eventsReady(env) ? [APP_EVENTS_TOOL] : []), ...CONNECT_TOOLS, APPS_USED_TOOL] : TOOLS()), WEB_SEARCH_TOOL], base = workmem ? [...base0, BRING_BACK_TOOL] : base0; return [...(browser ? [...base, BROWSER_TASK_TOOL] : base), LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, ...HELPER_TOOLS, PROPOSE_PLAN_TOOL, POMODORO_TOOL, ...SHARE_TOOLS, ...NATIVE_TOOLS, ...designToolDefs({ betterDesign: betterDesign }), ...(general ? [MARK_DONE_TOOL, LIST_CHANNELS_TOOL, CREATE_CHANNEL_TOOL, START_TASK_TOOL, ...(eeEnabled(env) ? [AMBIENT_QUERY_TOOL] : []), LOCATION_QUERY_TOOL] : [])].filter((t) => (t !== FILE_TEXT_TOOL || sidecars !== false) && (t !== QUICK_SCRIPT_TOOL || !!env.LOADER) && eeToolEnabled(env, t.function.name));
+  const base0 = [...(eeEnabled(env) && env.COMPOSIO_KEY ? [...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, ...(eventsReady(env) ? [APP_EVENTS_TOOL] : []), ...CONNECT_TOOLS, APPS_USED_TOOL] : TOOLS()), WEB_SEARCH_TOOL], base = workmem ? [...base0, BRING_BACK_TOOL] : base0; return [...(browser ? [...base, BROWSER_TASK_TOOL] : base), LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, ...HELPER_TOOLS, PROPOSE_PLAN_TOOL, POMODORO_TOOL, ...SHARE_TOOLS, ...NATIVE_TOOLS, ...designToolDefs(), ...(general ? [MARK_DONE_TOOL, LIST_CHANNELS_TOOL, CREATE_CHANNEL_TOOL, START_TASK_TOOL, ...(eeEnabled(env) ? [AMBIENT_QUERY_TOOL] : []), LOCATION_QUERY_TOOL] : [])].filter((t) => (t !== FILE_TEXT_TOOL || sidecars !== false) && (t !== QUICK_SCRIPT_TOOL || !!env.LOADER) && eeToolEnabled(env, t.function.name));
 }
 // Every tool a task may be offered: the base list plus the routing, context and archive tools, minus the ones this task excludes.
 export function availableChatTools(env, base, channelOf, tc = null) {   // channelOf: a function, read only when the front door setting is on
@@ -798,7 +799,7 @@ export class Resident extends DurableObject {
   async memjobTurns(since = 0, limit = 40) {
     // nosecrets: secrets are removed too, so no job's model sees one and no quote can cite one.
     return (this.sql.exec("SELECT t.id, t.at, t.session, t.user_text, t.reply, s.title FROM turns t LEFT JOIN sessions s ON s.id=t.session WHERE t.kind='chat' AND t.at>? AND t.user_text IS NOT NULL AND t.user_text<>'' ORDER BY t.at LIMIT ?", Number(since) || 0, Math.min(200, Number(limit) || 40)).toArray()
-      .map((t) => ({ ...t, user_text: this.scrubKeys(scrubSecrets(t.user_text)), reply: this.scrubKeys(scrubSecrets(t.reply)), title: this.scrubKeys(scrubSecrets(t.title)) })));
+      .map((t) => ({ ...t, user_text: this.scrubKeys(scrubSecrets(t.user_text)), reply: this.scrubKeys(scrubSecrets(t.reply), true), title: this.scrubKeys(scrubSecrets(t.title)) })));
   }
   // Evidence behind a fact a retired job saved (memory_explain still shows it for old facts): the person's words, when, which turn and task.
   memjobCite(ref, o) {
@@ -826,7 +827,7 @@ export class Resident extends DurableObject {
   genuiOn() { const v = this.get("genui"); return v ? v === "on" : genuiEnvOn(this.env); }
   async setGenui(v) { if (!["on", "off", ""].includes(v)) return { error: "genui must be on, off or empty (= env default)" }; this.put("genui", v); return { genui: v || null, on: this.genuiOn() }; }
   browserAgentOn() { if (!eeEnabled(this.env)) return false; const v = this.get("browser_agent"); return v ? v === "jev" : this.env.BROWSER_AGENT === "jev"; }
-  tools() { return chatBaseTools(this.env, { workmem: this.workmemOn(), browser: this.browserAgentOn(), betterDesign: !!this._betterDesign, general: this.get("channel") === SKIPPER_SLUG, sidecars: this.scOn?.() }); }   // sidecar.js: file_text only while sidecars are on
+  tools() { return chatBaseTools(this.env, { workmem: this.workmemOn(), browser: this.browserAgentOn(), general: this.get("channel") === SKIPPER_SLUG, sidecars: this.scOn?.() }); }   // sidecar.js: file_text only while sidecars are on
   async setBrowserWait(ms) { const n = ms === "" || ms == null ? "" : String(Math.min(Math.max(Math.floor(Number(ms)) || 0, 0), 90000)); this.put("browser_wait_ms", n); return { browser_wait_ms: n === "" ? null : Number(n) }; }   // TEST_MODE only (index.js); empty = the default
   async setBrowserAgent(v) { if (!["jev", "off", ""].includes(v)) return { error: "browser_agent must be jev, off or empty (= env default)" }; this.put("browser_agent", v); return { browser_agent: v || null, on: this.browserAgentOn() }; }
   archive() { return this.env.ARCHIVE.get(this.env.ARCHIVE.idFromName(`archive:${this.get("tenant")}`)); }
@@ -1051,11 +1052,9 @@ export class Resident extends DurableObject {
   // (same shape as SKILLS in src/skills/index.js) and in the per-channel prompt block. A built-in slug wins.
   async channelSkills() { return listChannelSkills(this.sql); }
   async channelSkillDelete(slug) { const r = saveSkill(this.sql, { slug, delete: true }); if (hsWriters(this.env)) this.ctx.waitUntil?.(this.hsSkillSync(String(slug)).catch((e) => console.log("skill memory", e.message))); return r; }   // the app (Notebook → This channel's skills)
-  // Whether Better Design may be used for this account (better-design.js): one D1 read, kept in this._betterDesign for the prompt text. Off if unreadable.
-  async betterDesignOn() { const s = await betterDesignState(this.env, this.get("tenant")); this._betterDesign = s.on; return s.on; }
-  promptFlags(stable = true, cards = this.genuiOn(), append = false) { return chatPromptFlags(this.env, { browser: this.browserAgentOn(), mode: this.memoryMode(), stable, cards, append, betterDesign: this._betterDesign }); }
+  promptFlags(stable = true, cards = this.genuiOn(), append = false) { return chatPromptFlags(this.env, { browser: this.browserAgentOn(), mode: this.memoryMode(), stable, cards, append }); }
   async systemPrompt(stable = false, cards = this.genuiOn(), layered = false, append = false, lazy = append) {
-    await this.betterDesignOn().catch(() => {}); await this.keyScrubber().catch(() => {});
+    await this.keyScrubber().catch(() => {});
     try { const ks = await vaultRows(this.env, this.get("tenant"), ["name", "hosts", "label", "note", "kind"]);
       this._keysLine = ks.length ? `Saved keys on this computer:\n${ks.map(keyLineFor).join("\n")}\n${KEYS_USE_NOTE}` : ""; } catch { this._keysLine = ""; }
     { const ls = await loginSites(this.env, this.get("tenant")); this._loginsLine = ls.length ? `Saved logins (browser_fill_login types them; you never see the passwords): ${ls.join(", ")}.${ls.some((x) => x.endsWith(" accounts)")) ? " For a site with several accounts, pass username (call it without one to get the list)." : ""}` : ""; }
@@ -1083,7 +1082,7 @@ export class Resident extends DurableObject {
       textingLine: eeEnabled(this.env) ? await textingLine(this.env, this.get("tenant")) : "",
       channelsLine: await channelsLine(this),   // front-door.js: General only; "" in every other channel
       permLine: permPromptLine((await loadPerms(this.env, this.get("tenant"))).level) });   // perms.js: "" on Standard (the block stays as it was)
-    return composeSystemPrompt(this.env, { flagOpts: { browser: this.browserAgentOn(), mode: mmode, betterDesign: this._betterDesign }, stable, cards, layered, append, lazy, channelOptions, appsInstructions: appContext.instructions || "" });
+    return composeSystemPrompt(this.env, { flagOpts: { browser: this.browserAgentOn(), mode: mmode }, stable, cards, layered, append, lazy, channelOptions, appsInstructions: appContext.instructions || "" });
   }
   history(session) {
     const turns = this.sql.exec("SELECT id FROM turns WHERE kind='chat' AND session=? ORDER BY at DESC LIMIT ?", session, HISTORY_TURNS).toArray().map((r) => r.id);
@@ -1742,9 +1741,7 @@ export class Resident extends DurableObject {
     if (tc) tc.lastCmd = name === "run_command" || name === "search_files" ? cmd : null;   // the exact shell line, for the card step's receipts
     // Every command has its own shell. Give a helper a private default cwd so concurrent jobs do not
     // accidentally read or write each other's relative paths on the shared channel computer.
-    // design_mcp.py has no account of its own, so a command that names it carries the account's Better Design switch (better-design.js); the script skips Better Design when it reads off.
-    const bdOff = name === "run_command" && /design_mcp/.test(cmd) && !(await this.betterDesignOn().catch(() => false)) ? "export DESIGN_MCP_BETTER_DESIGN=off; " : "";
-    const work = bdOff + (tc?.kind === "helper" && tc.helper?.id ? `mkdir -p -- ${q(helperDir(tc.helper.id))} && cd -- ${q(helperDir(tc.helper.id))} && ` : "");
+    const work = tc?.kind === "helper" && tc.helper?.id ? `mkdir -p -- ${q(helperDir(tc.helper.id))} && cd -- ${q(helperDir(tc.helper.id))} && ` : "";
     const watch = !tc?.helper?.dynamic_routing && (name === "run_command" || name === "write_file" || name === "edit_file");   // files-saveback.js: what changes under /workspace/files is saved to the Library file
     const snap = async () => { try { const x = await this.computer().filesSnapshot(); return x?.ok ? parseSnap(x.out) : null; } catch { return null; } };
     const before = watch ? await snap() : null;
@@ -2022,7 +2019,7 @@ export class Resident extends DurableObject {
   // this._vs; scrubKeys(x) then replaces each value in any text inside x with [NAME]. Every tool result goes through scrubKeysFresh before the model or any
   // store sees it, and the places that write chat messages, the work log and memory input call scrubKeys. No saved keys: nothing changes.
   async keyScrubber() { this._vs ||= {}; return loadScrubber(this.env, this.get("tenant"), this._vs); }
-  scrubKeys(x) { const sc = this._vs?.scrubber; return sc && !sc.empty ? sc.scrubDeep(x) : x; }
+  scrubKeys(x, reply = false) { const sc = this._vs?.scrubber; return sc && !sc.empty ? sc.scrubDeep(x, 0, reply) : x; }   // reply: x is the model's own reply text
   async scrubKeysFresh(x) { try { await this.keyScrubber(); } catch {} return this.scrubKeys(x); }
   async runTool(call, ctx = {}) {
     if (!eeToolEnabled(this.env, call.function?.name)) return `error: ${call.function.name} is unavailable on this deployment.`;
@@ -2314,7 +2311,7 @@ export class Resident extends DurableObject {
         return this.recallContext(a.query, ctx, { otherChannels: oc });
       }
       case "read_doc": return readDoc(a, { ...this.docFlags(), context_v2: ctx.context?.version === 2 });   // no computer
-      case "read_skill": await this.betterDesignOn().catch(() => {}); return readSkill(a, { ...this.docFlags(), context_v2: ctx.context?.version === 2 }, { extra: await this.channelSkills() });
+      case "read_skill": return readSkill(a, { ...this.docFlags(), context_v2: ctx.context?.version === 2 }, { extra: await this.channelSkills() });
       case "save_skill": { const r = saveSkill(this.sql, a, ctx); if (hsWriters(this.env) && !/^error|^There's no/.test(String(r))) this.ctx.waitUntil?.(this.hsSkillSync(String(a.slug || "").toLowerCase().replace(/[\s_]+/g, "-")).catch((e) => console.log("skill memory", e.message))); return r; }   // skills/channel.js: only when the person asked   // skills (src/skills/): no computer
       case "bring_back": { const r = bringBack(a.key, ctx.wmFull, ctx.wmState); if (r != null) return r; const v = /^wl\d+$/i.test(String(a.key || "")) ? savedBody(this.sql, String(a.key).slice(2)) : null; return v != null ? `[restored ${a.key}]\n${v}` : "error: no set-aside step with that key in this request"; }
       case "work_log": return workLogTool(this, a, ctx);   // worklog.js: earlier lookups (email, calendar, apps, web)
@@ -2338,7 +2335,7 @@ export class Resident extends DurableObject {
       case "app_events": return await appEventsTool(this.env, this.get("tenant"), a, await this.conns(true));   // composio-triggers.js: an app's events, for on_event
       case "set_workflow_status": return JSON.stringify(await this.setWorkflowStatus(Number(a.id), String(a.status), "model", `the helper called set_workflow_status${ctx.session ? ` in task ${String(ctx.session).slice(0, 8)}` : ""}`));
       default:
-        if (isDesignToolName(name)) return await designToolCall(this.env, name, a, { betterDesign: await this.betterDesignOn().catch(() => false), wrap: untrusted });   // design-tools.js: Inspo, Better Design, Magic UI, React Bits, Canvas UI
+        if (isDesignToolName(name)) return await designToolCall(this.env, name, a, { wrap: untrusted });   // design-tools.js: Inspo, Magic UI, React Bits, Canvas UI
         return `error: unknown tool ${name}`;
     }
   }
@@ -4263,7 +4260,6 @@ export class Resident extends DurableObject {
     const memUse = !opts.resume && !tc.helper?.dynamic_routing && contextV2(this.env) ? this.memUseStart(String(text), tc, { kind, resumed: false }) : null;
     // Three independent reads, so their waits overlap.
     [this._privacy] = await Promise.all([privacyOf(this.env, tenant),   // AI data privacy for this turn's docs (read_doc); every model dispatch re-reads it
-      this.betterDesignOn().catch(() => {}),   // the Better Design switch for this turn's prompt text and docs (better-design.js)
       prepareDesignTools(this.env).catch((e) => console.log("design tools", e.message))]);   // design-tools.js: the design servers' tool list (cached), read before the tool list is built
     // resume.js: a turn a reset cut off carries on here (same card, same start time, same budget and charge so far).
     const RS = opts.resume || null;
@@ -4292,7 +4288,7 @@ export class Resident extends DurableObject {
     const nativeWorker = !!tc.helper?.dynamic_routing;
     // Every other turn (own-key chat, workflow, follow-up, helper, routed worker) also sends stubs for the non-eager tools; a resumed layered turn keeps what it started with.
     if (!tc.appendRuntime) tc.appendLazy = cutLazy(this.env) && (nativeWorker || (!!layered && (!RS || !!savedContext?.developer?.includes(LAZY_TOOLS_NOTE))));
-    const prompt = nativeWorker ? "Use the supplied tools to carry out the assigned job. Call done with your response to finish. If information is missing, call request_input to ask Primary and pause this same job. In the browser, call browser_handoff when the person must act themselves (it pauses you until Primary sends what they did), request_saved_login to ask Primary to let you use a saved login, and request_purchase to ask Primary to start a purchase. You have the same work tools as Primary. When a tool needs the person (an approval or confirm card, a connect card, SSH approval), its card appears in their task and you pause until they act, then continue in this same session. request_input asks Primary, which speaks to the person. A plain response does not end the job. " + (this._betterDesign ? DESIGNED_WORK : DESIGNED_WORK_NO_BD) + (tc.appendLazy ? " Some tools are listed with a short description and field names only. Call load_tools with their exact names to get the full description and parameters, then use them normally." : "") : await this.systemPrompt(compact, this.genuiOn(), layered, !!tc.appendRuntime, !!tc.appendLazy);
+    const prompt = nativeWorker ? "Use the supplied tools to carry out the assigned job. Call done with your response to finish. If information is missing, call request_input to ask Primary and pause this same job. In the browser, call browser_handoff when the person must act themselves (it pauses you until Primary sends what they did), request_saved_login to ask Primary to let you use a saved login, and request_purchase to ask Primary to start a purchase. You have the same work tools as Primary. When a tool needs the person (an approval or confirm card, a connect card, SSH approval), its card appears in their task and you pause until they act, then continue in this same session. request_input asks Primary, which speaks to the person. A plain response does not end the job. " + DESIGNED_WORK + (tc.appendLazy ? " Some tools are listed with a short description and field names only. Call load_tools with their exact names to get the full description and parameters, then use them normally." : "") : await this.systemPrompt(compact, this.genuiOn(), layered, !!tc.appendRuntime, !!tc.appendLazy);
     tc.context = layered ? savedContext || { version: 2, ...prompt } : null;
     if (savedContext) { try { tc.loadedTools = new Set([...(tc.loadedTools || []), ...(JSON.parse(RS.extra || "{}").loadedTools || [])]); } catch { tc.loadedTools = new Set(); } }
     if (tc.context) tc.context.developer = taskDeveloperText(prompt.developer, { appendRuntime: !!tc.appendRuntime, appendLazy: !!tc.appendLazy, saved: savedContext?.developer });
@@ -4828,7 +4824,7 @@ export class Resident extends DurableObject {
     drainModelUsage(tc, stats);   // optional post-completion notes may have paid usage before failing
     if (tc.extraCharge) { stats.charge += tc.extraCharge; tc.extraCharge = 0; }   // browser_task's own Ledger charges (already settled)
     tc.route = null;
-    this.sql.exec("INSERT INTO turns (id,at,user_text,reply,steps,tool_calls,computer_used,computer_wait_ms,model_ms,total_ms,in_tok,cached_tok,out_tok,charge_nano,error,kind,workflow_id,trace,notes,ctx,checkpoints,step_in,engine,session,models,cache_write_tok,service) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", turn, t0, text, this.scrubKeys(reply), stats.steps, stats.tool_calls, stats.computer_used, stats.computer_wait_ms, stats.model_ms, Date.now() - t0, stats.in, stats.cached, stats.out, stats.charge, error, kind, opts.workflow_id ?? null, this.scrubKeys(diagnosticTrace(trace, tc.progressOmitted)), this.scrubKeys(notes), ctxMode, checkpoints, JSON.stringify(stepIn), engine, tc.session, JSON.stringify(stats.models), stats.cache_write, tc.service ?? null);
+    this.sql.exec("INSERT INTO turns (id,at,user_text,reply,steps,tool_calls,computer_used,computer_wait_ms,model_ms,total_ms,in_tok,cached_tok,out_tok,charge_nano,error,kind,workflow_id,trace,notes,ctx,checkpoints,step_in,engine,session,models,cache_write_tok,service) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", turn, t0, text, this.scrubKeys(reply, true), stats.steps, stats.tool_calls, stats.computer_used, stats.computer_wait_ms, stats.model_ms, Date.now() - t0, stats.in, stats.cached, stats.out, stats.charge, error, kind, opts.workflow_id ?? null, this.scrubKeys(diagnosticTrace(trace, tc.progressOmitted)), this.scrubKeys(notes), ctxMode, checkpoints, JSON.stringify(stepIn), engine, tc.session, JSON.stringify(stats.models), stats.cache_write, tc.service ?? null);
     // Stopped by the person or ended by an error: the reply carries none of what it found, so its lookups are kept as "unfinished work" (worklog.js).
     if (!nativeWorker && (tc.stoppedTurn || error)) {
       this.ctx.waitUntil?.(this.nativeCancel(tc.session, tc.stoppedTurn ? 'Task stopped' : 'Task failed').catch(() => {}));

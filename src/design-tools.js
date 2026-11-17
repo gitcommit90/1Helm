@@ -1,12 +1,8 @@
-// Design MCP servers as real tools (the agent already loads the design skill, and these tools let it use the design sources). Four servers are hosted at https://mcp.1helm.com (design-mcp/src/index.js, streamable HTTP): /better-design/mcp,
-// /magicui/mcp, /reactbits/mcp and /canvasui/mcp. Inspo is called at its own public endpoint, https://inspomcp.dev/api/mcp (no key, no Authorization header). This file is a small MCP client for them and the tool definitions the Resident offers.
+// Design MCP servers as real tools (the agent already loads the design skill, and these tools let it use the design sources). Three servers are hosted at https://mcp.1helm.com (design-mcp/src/index.js, streamable HTTP): /magicui/mcp, /reactbits/mcp and /canvasui/mcp. Inspo is called at its own public endpoint, https://inspomcp.dev/api/mcp (no key, no Authorization header). This file is a small MCP client for them and the tool definitions the Resident offers.
 //   * Names: <prefix>_<server tool name with every character outside A-Z a-z 0-9 _ turned into _>, e.g. inspo_search_screens,
-//     better_design_get_design_system_kit, magicui_getRegistryItem. Descriptions and input schemas are the server's own.
+//     magicui_getRegistryItem. Descriptions and input schemas are the server's own.
 //   * tools/list is cached in this isolate (TTL below, stale copy kept when a refresh fails) and is read once at the start of a turn
-//     (Resident.runTurnInner calls prepareDesignTools next to betterDesignOn), so availableTools() stays synchronous and no turn waits on it again.
-//   * Better Design's tools are offered only while the account's Better Design switch is on (better-design.js), and are checked again at call time.
-//   * Better Design is one shared key for every 1Helm account, so the tools that read or change the key's own account state (team rules, design
-//     config, feedback, claim link) are not offered: BD_NOT_OFFERED.
+//     (Resident.runTurnInner calls prepareDesignTools), so availableTools() stays synchronous and no turn waits on it again.
 //   * Results are untrusted data (resident.js untrusted wrapper) and are cut to RESULT_MAX characters with a note on how to ask for less.
 import { coerceArgs, checkArgs } from "./payload-cut.js";
 import { cleanToolSchema } from "./tool-schema-clean.js";   // the schema the model gets is cleaned of what providers reject; checks and calls use the server's own
@@ -19,12 +15,10 @@ export const designBase = (env) => String(env?.DESIGN_MCP_URL || "").trim().repl
 const setBase = (env) => (BASE = designBase(env));
 export const DESIGN_SERVERS = [
   { id: "inspo", prefix: "inspo", path: "/inspo/mcp", url: "https://inspomcp.dev/api/mcp", label: "Inspo" },
-  { id: "better-design", prefix: "better_design", path: "/better-design/mcp", label: "Better Design", betterDesign: true },
   { id: "magicui", prefix: "magicui", path: "/magicui/mcp", label: "Magic UI" },
   { id: "reactbits", prefix: "reactbits", path: "/reactbits/mcp", label: "React Bits" },
   { id: "canvasui", prefix: "canvasui", path: "/canvasui/mcp", label: "Canvas UI" },
 ];
-export const BD_NOT_OFFERED = new Set(["get-team-rules", "propose-team-rule", "set-team-rules", "get-design-config", "set-design-config", "send-feedback", "confirm-claim"]);
 export const LIST_TTL_MS = 6 * 3600e3, FAIL_RETRY_MS = 60e3, CALL_TIMEOUT_MS = 25e3, LIST_TIMEOUT_MS = 6e3, RESULT_MAX = 24000, NAME_MAX = 64;
 const PROTOCOL = "2025-06-18";
 
@@ -96,7 +90,7 @@ async function listOne(fetchImpl, server) {
   const result = await rpc(fetchImpl, server, "tools/list", {}, { timeoutMs: LIST_TIMEOUT_MS });
   const seen = new Set(), tools = [];
   for (const t of result?.tools || []) {
-    if (!t || typeof t.name !== "string" || (server.betterDesign && BD_NOT_OFFERED.has(t.name))) continue;
+    if (!t || typeof t.name !== "string") continue;
     const full = nameOf(server, t.name); if (seen.has(full)) continue; seen.add(full);
     const schema = t.inputSchema && typeof t.inputSchema === "object" ? { ...t.inputSchema } : { type: "object", properties: {} };
     delete schema.$schema; if (!schema.type) schema.type = "object"; if (schema.type === "object" && !schema.properties) schema.properties = {};
@@ -115,12 +109,11 @@ export async function prepareDesignTools(env, { fetchImpl = globalThis.fetch, no
     await inflight.get(s.id);
   }));
 }
-// The tool definitions (the shape of every tool in Resident.tools()). betterDesign false: Better Design's tools are left out.
-export function designToolDefs({ betterDesign = false } = {}) {
+// The tool definitions (the shape of every tool in Resident.tools()).
+export function designToolDefs() {
   if (!BASE) return [];   // not configured (prepareDesignTools sets the base)
   const out = [];
   for (const s of DESIGN_SERVERS) {
-    if (s.betterDesign && !betterDesign) continue;
     for (const t of lists.get(s.id)?.tools || []) {
       out.push({ type: "function", function: { name: t.full, description: `[${s.label}] ${t.description}`, parameters: cleanToolSchema(t.inputSchema) } });
     }
@@ -129,13 +122,12 @@ export function designToolDefs({ betterDesign = false } = {}) {
 }
 const find = (full) => { for (const s of DESIGN_SERVERS) for (const t of lists.get(s.id)?.tools || []) if (t.full === full) return { s, t }; return null; };
 
-// Run one design tool. Returns text for the model (never throws). betterDesign: the account's switch right now.
-export async function designToolCall(env, fullName, args, { betterDesign = false, fetchImpl = globalThis.fetch, wrap = (src, body) => body } = {}) {
+// Run one design tool. Returns text for the model (never throws).
+export async function designToolCall(env, fullName, args, { fetchImpl = globalThis.fetch, wrap = (src, body) => body } = {}) {
   if (!setBase(env)) return "error: the design sources are not configured on this install (DESIGN_MCP_URL is not set).";
   const hit = find(fullName);
   if (!hit) return `error: unknown tool ${fullName}`;
   const { s, t } = hit;
-  if (s.betterDesign && !betterDesign) return "error: Better Design is switched off for this account (Settings), so its tools are not available. Use Inspo, Magic UI, React Bits and Canvas UI.";
   const a = coerceArgs(args && typeof args === "object" && !Array.isArray(args) ? args : {}, t.inputSchema), problems = checkArgs(a, t.inputSchema);
   if (problems.length) return `error: this call was not run because its arguments do not match the tool: ${problems.join("; ")}. Call it again with correct arguments.\n${JSON.stringify({ tool: { name: t.full, description: t.description, parameters: t.inputSchema } })}`;
   let result;

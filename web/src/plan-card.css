@@ -39,6 +39,6 @@ button.pl-item[disabled]{pointer-events:none}
 .pl-bl{display:flex;align-items:center;gap:5px;font-size:12px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--mute)}
 .pl-bb p{margin:0;line-height:1.45;overflow-wrap:anywhere;white-space:pre-wrap}.pl-bb p b{font-weight:600}
 .pl-from{margin:0;font-size:13.5px}.pl-brief .pl-from a{color:var(--accent);font-weight:600;text-decoration:none}@media (hover:hover) and (pointer:fine){.pl-brief .pl-from a:hover{text-decoration:underline}}
-@media (max-width:599px),(max-height:499px){.pl-item{padding:11px 12px;gap:10px}.m.brief{max-width:100%}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.pl-item{padding:11px 12px;gap:10px}.m.brief{max-width:100%}
   .gu-plan .gu-btns{flex-wrap:nowrap;gap:6px}.gu-plan .gu-btns .gu-b{flex:1 1 auto;padding-left:12px;padding-right:12px;white-space:nowrap}}
 @media (prefers-reduced-motion:reduce){.pl-item,.pl-box{transition:none}}

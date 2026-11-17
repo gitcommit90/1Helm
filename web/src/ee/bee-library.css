@@ -37,7 +37,7 @@
 .beelib-text{font-size:15px;line-height:1.55;overflow-wrap:anywhere;white-space:pre-wrap}
 .beelib-who{font-weight:600;margin-right:8px}
 
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .beelib{margin-top:30px}
   .beelib-bar h2{font-size:21px}
   .beelib-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"when dur" "main main";gap:4px 12px;margin:0 -8px;padding:12px 8px}

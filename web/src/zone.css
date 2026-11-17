@@ -118,7 +118,7 @@ html.zdoc-report .zth{width:64px}html.zdoc-report .zthi{aspect-ratio:auto;min-he
 .rqin.rqzone .rqico,.mq.mqzone svg{color:var(--zsel)}
 
 /* narrower windows: two columns, the inspector opens over the canvas */
-@media (min-width:600px) and (min-height:500px) and (max-width:1359px){
+@media (min-width:600px) and (min-height:500px) and (max-width:1359px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse) and (max-width:1359px){
   html.zone-open{--zinspw:0px;--zgaps:30px}
   html.zone-open body,html.zone-open body.pc-on{grid-template-columns:var(--zchatw) minmax(0,1fr)}
   html.zone-open.zchat-off body,html.zone-open.zchat-off body.pc-on{grid-template-columns:minmax(0,1fr)}
@@ -129,7 +129,7 @@ html.zdoc-report .zth{width:64px}html.zdoc-report .zthi{aspect-ratio:auto;min-he
   .zih{padding-right:48px}
 }
 /* a header that is getting narrow keeps the essentials: labels become icons, then the less used actions go behind the three dots */
-@media (min-width:600px) and (min-height:500px){
+@media (min-width:600px) and (min-height:500px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){
   @container zh (max-width:900px){.zkind,.zsave{display:none}.zbtn.zsec{padding:0;width:34px;justify-content:center}.zbtn.zsec span{display:none}}
   @container zh (max-width:640px){.zzoomw{display:none}.zsec{display:none!important}.zmorew{display:flex}}
   @container zh (max-width:520px){.zback span{display:none}.zback{padding:0 6px}}
@@ -137,7 +137,7 @@ html.zdoc-report .zth{width:64px}html.zdoc-report .zthi{aspect-ratio:auto;min-he
 }
 
 /* phone: the canvas sits above the chat; the chat takes the rest of the screen */
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   html.zone-open{--zpad:8px}
   html.zone-open body{display:block}
   html.zone-open #zcanvas{position:fixed;left:0;right:0;top:0;z-index:30;border-radius:0;box-shadow:0 1px 0 var(--line);padding-top:env(safe-area-inset-top)}
@@ -212,7 +212,7 @@ html.zone-open.zdoc-sheet{--zinspw:0px}
 html.zone-open.zdoc-sheet #zinsp,html.zone-open.zdoc-sheet .zinspb{display:none}
 html.zone-open.zdoc-sheet body,html.zone-open.zdoc-sheet body.pc-on{grid-template-columns:var(--zchatw) minmax(0,1fr)}
 html.zone-open.zdoc-sheet.zchat-off body,html.zone-open.zdoc-sheet.zchat-off body.pc-on{grid-template-columns:minmax(0,1fr)}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   html.zone-open.zdoc-sheet .zcv{height:42dvh}
   html.zone-open.zdoc-sheet .zcv .zxw{border-radius:inherit}
 }
@@ -240,7 +240,7 @@ html.zdoc-dedit .zpages{justify-content:flex-start;width:100%;min-width:0}
 .zdt{width:100%;border-collapse:collapse;table-layout:fixed;margin:0 0 8px}
 .zdt td{border:1px solid #cfcdc6;padding:4px 6px;vertical-align:top;overflow-wrap:anywhere}
 .zdt td>.zdp:last-child{margin-bottom:0}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   html.zone-open.zdoc-dedit .zcv{height:46dvh}
   html.zone-open.zdoc-dedit .zpages{padding:8px}
   .zddw{--zdml:18px!important;--zdmr:18px!important;--zdmt:20px!important;--zdmb:20px!important;font-size:14px}

@@ -33,7 +33,7 @@
 .schh+.schlist{margin-top:12px}.schrow.past .schx{color:var(--ink2)}
 /* The drawer link's count, on phone. */
 .dn b[data-schn]{margin-left:auto;font-weight:400;font-size:14px;color:var(--mute);font-variant-numeric:tabular-nums}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .schsec{margin-top:24px}
   .schh h2{font-size:22px}.schp{margin-left:0;font-size:14.5px}
   .schlist{border-radius:22px}
@@ -46,7 +46,7 @@
   .schempty{margin-top:40px}.schempty p{font-size:15.5px}
 }
 /* Tablet portrait (pane under 600px beside the side panel): the buttons go under the title, so titles aren't cut to a few words. */
-@media (min-width:600px) and (min-height:500px){@container pane (max-width:599px){
+@media (min-width:600px) and (min-height:500px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){@container pane (max-width:599px){
   .schrow{flex-direction:column;align-items:stretch;gap:0;padding:4px 4px 12px}
   .schm{padding:10px 12px 8px}.schx{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
   .schk{white-space:normal}.scha{padding:0 12px;flex-wrap:wrap}.schp{margin-left:0}

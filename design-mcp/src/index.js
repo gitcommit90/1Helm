@@ -1,14 +1,13 @@
-// 1helm-design-mcp: one Worker, six MCP endpoints (streamable HTTP, stateless JSON responses). All data is public, so there is no sign-in.
+// 1helm-design-mcp: one Worker, five MCP endpoints (streamable HTTP, stateless JSON responses). All data is public, so there is no sign-in.
 //   /magicui/mcp       Magic UI registry tools (port of @magicuidesign/mcp)
 //   /reactbits/mcp     React Bits registry tools
 //   /canvasui/mcp      Canvas UI registry tools
-//   /better-design/mcp forwards to https://better-design.com/api/mcp with the Bearer key from the BETTER_DESIGN_KEY secret
+//   /better-design/mcp removed: answers every request with a JSON-RPC error that points to design_brief
 //   /inspo/mcp         forwards to Inspo's public MCP server https://inspomcp.dev/api/mcp (no key)
 //   /brief/mcp         one tool, design_brief: fans out to all of the above and answers with one compact text brief
 import { registryTools } from "./registry.js";
 import { briefTools } from "./brief.js";
 
-const BETTER_DESIGN_URL = "https://better-design.com/api/mcp";
 const INSPO_URL = "https://inspomcp.dev/api/mcp";
 const LATEST = "2025-06-18";
 const SUPPORTED = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -23,9 +22,8 @@ const ENDPOINTS = [
  ["/magicui/mcp", "Magic UI: animated React components (listRegistryItems, searchRegistryItems, getRegistryItem)"],
  ["/reactbits/mcp", "React Bits: animated backgrounds, text effects and components (same three tools)"],
  ["/canvasui/mcp", "Canvas UI: canvas, WebGL and 3D components (same three tools)"],
- ["/better-design/mcp", "Better Design: design systems, UX principles, motion, icons, review rules (forwarded with a key held here)"],
  ["/inspo/mcp", "Inspo: references captured from real production websites (screens, palettes, type, components; forwarded, no key)"],
- ["/brief/mcp", "Design brief: one tool, design_brief, returns references, design tokens, rules and component suggestions in one text answer"],
+ ["/brief/mcp", "Design brief: one tool, design_brief, returns references, a design theme, rules and component suggestions in one text answer"],
 ];
 
 function json(body, status = 200, extra = {}) {
@@ -83,12 +81,6 @@ async function serveRegistry(request, serverId, env) {
  return out ? json(out) : new Response(null, { status: 202, headers: CORS });
 }
 
-async function forwardBetterDesign(request, env) {
- const key = env && env.BETTER_DESIGN_KEY;
- if (!key) return json(rpcError(null, -32000, "Better Design is not configured on this server (BETTER_DESIGN_KEY is not set)."), 503);
- return forward(request, BETTER_DESIGN_URL, key, "Better Design");
-}
-
 async function forward(request, target, key, label) {
  const headers = new Headers();
  for (const h of ["content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"]) {
@@ -127,7 +119,7 @@ export default {
   if (path === "/canvasui/mcp") return serveRegistry(request, "canvasui", env);
   if (path === "/brief/mcp") return serveRegistry(request, "brief", env);
   if (path === "/inspo/mcp") return forward(request, INSPO_URL, null, "Inspo");
-  if (path === "/better-design/mcp") return forwardBetterDesign(request, env);
+  if (path === "/better-design/mcp") return json(rpcError(null, -32000, "This source was removed. Use design_brief on /brief/mcp, which returns a design theme, tokens and rules."), 410);
   return new Response("Not found\n", { status: 404, headers: { "content-type": "text/plain", ...CORS } });
  },
 };

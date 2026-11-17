@@ -1,9 +1,10 @@
+import { phone } from "./phone-query";
 // Desktop channel navigation only. Never rerender the composer when changing layout.
 const DEFAULT = 272, MIN = 240, MAX = 480;
 let key = '', preferred = DEFAULT, collapsed = false, ready = false;
 let handle: HTMLDivElement;
 let drag: { id: number; x: number; width: number; preferred: number } | null = null;
-const desktop = () => innerWidth >= 600 && innerHeight >= 500;
+const desktop = () => !phone();
 const autoHidden = () => document.body.classList.contains('pc-on') && innerWidth < 1440;
 // What the task list may grow to: the rest after the channel strip and room for the chat (a slimmer strip and a narrower chat on
 // medium screens, 600-899px, or the divider could not move at all there).

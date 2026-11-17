@@ -16,7 +16,7 @@
 .apk-none:not(.on){color:var(--ink2)}
 .apk-empty{flex-basis:100%;margin:2px 2px 0;color:var(--mute);font-size:14px;line-height:1.45}
 .apk-note{margin:-2px 2px 0;color:var(--faint);font-size:13px;line-height:1.45}.apk-note b{font-weight:600;color:var(--mute)}
-@media (max-width:599px),(max-height:499px){.apk-chips{gap:7px}.gu-chip.apk-chip{font-size:14.5px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.apk-chips{gap:7px}.gu-chip.apk-chip{font-size:14.5px}}
 /* Settings → Connected accounts → Apps I use (v3.ts au*) */
 .au-logos{flex:none;display:flex;align-items:center}.au-logos .au-l{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:13px;box-shadow:0 0 0 2px var(--abub)}
 .au-logos .au-l+.au-l{margin-left:-9px}.au-logos .au-l.cxlogo img{padding:4px}

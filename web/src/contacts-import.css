@@ -60,13 +60,13 @@
 .cidone{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;border-radius:16px;background:var(--abub)}.cidone svg{flex:none;margin-top:1px}.cidone p{margin:0;font-size:14.5px;line-height:1.5;color:var(--ink2)}
 /* phone: the header's Import button is hidden there, so Contacts gets one under the list */
 .cxlimp{display:none}
-@media (max-width:599px),(max-height:499px){.cxlimp{display:flex;align-items:center;gap:10px;width:100%;margin:10px 0 4px;padding:14px 12px;border-radius:16px;background:var(--abub);color:var(--ink2);font-size:14.5px;font-weight:600;text-align:left}.cxlimp svg{flex:none}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.cxlimp{display:flex;align-items:center;gap:10px;width:100%;margin:10px 0 4px;padding:14px 12px;border-radius:16px;background:var(--abub);color:var(--ink2);font-size:14.5px;font-weight:600;text-align:left}.cxlimp svg{flex:none}}
 /* a contact's photo, anywhere an avatar shows */
 .cxav.ph{overflow:hidden;padding:0}.cxav.ph img{width:100%;height:100%;object-fit:cover;display:block;border-radius:inherit}
 body.cidrag .cxwrap{outline:2px dashed var(--ink2);outline-offset:-6px;border-radius:20px}
 :root[data-theme=dark] .ciback{background:rgba(0,0,0,.5)}:root[data-theme=dark] .cibox{box-shadow:0 30px 80px rgba(0,0,0,.55)}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]) .ciback{background:rgba(0,0,0,.5)}:root:not([data-theme=light]) .cibox{box-shadow:0 30px 80px rgba(0,0,0,.55)}}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .ciw{place-items:end stretch;padding:0}
   .ciback{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(0,0,0,.4)}
   .cibox{width:100%;max-height:92dvh;border:0;border-radius:26px 26px 0 0;opacity:1;transform:translateY(100%);transition:transform .3s cubic-bezier(.2,.8,.2,1)}

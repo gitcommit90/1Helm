@@ -206,7 +206,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 
 #m,#sheet{display:none}
 /* ---------- phone: Grok-style channel list, Muse-style chat + sessions drawer ---------- */
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   :root{font-size:16px}
   body{display:block;height:100dvh;background:var(--page)}
   #rail,#side,#stage{display:none}
@@ -329,7 +329,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 @keyframes spin{to{transform:rotate(360deg)}}
 .fresh{animation:drop .45s cubic-bezier(.2,.8,.2,1)}
 @keyframes drop{from{opacity:0;transform:translateY(-10px);background:color-mix(in srgb,var(--accent) 10%,transparent)}}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .mhome{padding:18px 20px 24px}
   .mhome h1{margin:4px 0 2px;font-size:28px;font-weight:600;letter-spacing:-.025em}
   .mhome .hsec{margin-top:24px}
@@ -352,7 +352,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .an{font-weight:600;font-size:14px;line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;min-height:2.6em}
 .am{font-size:12.5px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media (prefers-color-scheme:dark){.k-pdf{color:#f87171}.k-image{color:#c084fc}.k-video{color:#22d3ee}.k-audio{color:#f472b6}}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .arts{grid-template-columns:1fr 1fr;gap:8px}
   .art{padding:12px;border-radius:18px}.an{font-size:15px}.am{font-size:13px}
   .hdate span::before{margin-right:8px}}
@@ -390,7 +390,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .ldate{font-size:12.5px;color:var(--faint);text-align:right;font-variant-numeric:tabular-nums}
 .lgrid .am{display:flex;align-items:center;gap:6px}
 .lempty{padding:28px 0;color:var(--mute);text-align:center}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .lwrap{padding:12px 16px 32px}
   .lnew span{display:none}.lnew{width:48px;height:48px;padding:0;justify-content:center}
   .lsearch{height:48px}
@@ -429,7 +429,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .tview{flex:none;height:34px;padding:0 14px;border-radius:12px;background:var(--abub);font-weight:600;font-size:13.5px}@media (hover:hover) and (pointer:fine){.tview:hover{background:var(--hover)}}
 .tx{flex:none;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;color:var(--mute)}@media (hover:hover) and (pointer:fine){.tx:hover{background:var(--abub);color:var(--ink)}}
 @media (prefers-color-scheme:dark){.nmodal{box-shadow:0 24px 64px rgba(0,0,0,.5)}}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   #nt{place-items:end stretch;padding:0}
   .nback{background:rgba(0,0,0,.4);backdrop-filter:none;-webkit-backdrop-filter:none}
   .nmodal{width:100%;margin:0;border-radius:30px 30px 0 0;border:0;padding:18px 10px calc(10px + env(safe-area-inset-bottom));transform:translateY(100%);opacity:1;transition:transform .32s cubic-bezier(.2,.8,.2,1)}
@@ -451,7 +451,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .scope button{white-space:nowrap}.scope button:first-child{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .lbar.first{margin-top:26px}
 .lrows.one .lrow{grid-template-columns:40px 1fr 90px 70px}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .lhead{flex-wrap:wrap;gap:12px;margin-bottom:16px}.av.lh,.lh-all{width:48px;height:48px}.lht h1{font-size:23px}.lht p{font-size:14px}
   .scope{width:100%}.scope button{flex:1;height:40px;font-size:15px}
   .lrows.one .lrow{grid-template-columns:40px 1fr auto}}
@@ -503,7 +503,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
   .sess.on:hover::after,.sess.on:focus-within::after{background:linear-gradient(to right,transparent,var(--chip) 32px)}
   .sess:focus-within .pin,.sess:focus-within .rmore{opacity:1}
 }
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .dsub{display:flex;align-items:center;gap:6px;padding:14px 16px 6px;font-size:14px;font-weight:600;color:var(--faint)}.dsub svg{width:13px;height:13px}
   .ds .pin{width:34px;height:34px;margin-right:-8px}
   .task .pin,.recent .pin{width:34px;height:34px}}
@@ -536,12 +536,12 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 @media (hover:hover) and (pointer:fine){.hdone:hover{color:var(--ink)}}@media (hover:hover) and (pointer:fine){.hdone:hover .box:not(.done){border-color:var(--mute);color:var(--faint)}}.hdone .box{pointer-events:none}
 .hdone.on{color:var(--mute)}
 .tok.ink{background:var(--ink);color:var(--sheet)}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .ds{gap:12px}.ds .box{flex:none;width:22px;height:22px;min-width:0}
   .task .box{width:22px;height:22px}
   .box.sm{width:20px;height:20px}
   .mh .hdone-wrap{display:none}}
-@media (max-width:599px),(max-height:499px){.mdone .box{pointer-events:none;width:22px;height:22px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.mdone .box{pointer-events:none;width:22px;height:22px}}
 
 /* ---------- Settings: rail menu, popover, two-pane modal (desktop), full-screen list → detail (phone) ---------- */
 .foot{gap:10px}
@@ -623,7 +623,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .sbk{display:inline-flex;align-items:center;gap:4px;margin:-6px 0 12px -8px;height:30px;padding:0 10px 0 4px;border-radius:999px;font-size:13.5px;color:var(--mute)}@media (hover:hover) and (pointer:fine){.sbk:hover{background:var(--abub);color:var(--ink)}}.sbk svg{width:18px;height:18px}
 :root[data-theme=dark] .smodal,:root[data-theme=dark] .smenu{box-shadow:0 30px 80px rgba(0,0,0,.55)}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]) .smodal,:root:not([data-theme=light]) .smenu{box-shadow:0 30px 80px rgba(0,0,0,.55)}}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   #setw{padding:0;place-items:stretch}
   .sback{display:none}
   .smodal.sphone{display:flex;flex-direction:column;width:100%;height:100dvh;border:0;border-radius:0;background:var(--page);transform:translateY(24px);box-shadow:none}
@@ -661,7 +661,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 
 /* live browser pane (the channel computer's real Chrome) */
 .meta,.hdone{white-space:nowrap}
-@media (min-width:600px) and (min-height:500px) and (max-width: 1439px){body.pc-on{grid-template-columns:80px 0 minmax(0,1fr) minmax(400px,50vw)}body.pc-on #side{display:none}body.pc-on #stage{grid-column:3}}
+@media (min-width:600px) and (min-height:500px) and (max-width: 1439px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse) and (max-width: 1439px){body.pc-on{grid-template-columns:80px 0 minmax(0,1fr) minmax(400px,50vw)}body.pc-on #side{display:none}body.pc-on #stage{grid-column:3}}
 
 /* screenshots the helper shows in chat */
 .shot{display:block;max-width:min(86%,560px);margin-top:8px;padding:0;border-radius:18px;overflow:hidden;background:var(--abub);box-shadow:var(--shadow);text-align:left;cursor:zoom-in}
@@ -748,7 +748,7 @@ h2 .soonp,h3 .soonp{margin-left:8px}
 .apfoot{display:flex;align-items:center;gap:8px;margin:0 -28px;padding:12px 28px 14px;border-top:1px solid var(--line);font-size:12.5px;color:var(--faint)}.apfoot svg{width:14px;height:14px}
 :root[data-theme=dark] .aptag.one{color:#4ade80;background:#14301f}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]) .aptag.one{color:#4ade80;background:#14301f}}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .apmodal{width:100%;height:calc(100dvh - 28px);max-height:calc(100dvh - 28px);border-radius:22px 22px 0 0;padding:20px 16px 0}
   .aphead p{font-size:14px}
   .apsearch input{font-size:16px}
@@ -756,11 +756,11 @@ h2 .soonp,h3 .soonp{margin-left:8px}
   .apcats{margin:0 -16px;padding:0 16px}
   .apgrid{grid-template-columns:1fr;gap:8px;padding-bottom:calc(16px + env(safe-area-inset-bottom))}
   .apfoot{margin:0 -16px;padding:10px 16px calc(10px + env(safe-area-inset-bottom))}}
-@media (min-width:600px) and (min-height:500px) and (max-width:1024px){.apgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (min-width:600px) and (min-height:500px) and (max-width:1024px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse) and (max-width:1024px){.apgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .sbrowse{display:flex;align-items:center;gap:12px;width:100%;margin-top:14px;padding:14px 16px;border-radius:16px;background:var(--abub);font-weight:600;font-size:14.5px;text-align:left}
 .sbrowse span{flex:1}.sbrowse em{font-style:normal;font-weight:400;color:var(--faint);font-size:13px}@media (hover:hover) and (pointer:fine){.sbrowse:hover{background:var(--hover)}}
 
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .nact{opacity:1}.nbrow{padding:12px 2px}.nmain p{font-size:15.5px}
   #appw{padding:0;place-items:end stretch}}
 .sgroup a.srow{text-decoration:none;color:inherit;display:flex;justify-content:space-between;align-items:center;font-weight:600}
@@ -829,7 +829,7 @@ h2 .soonp,h3 .soonp{margin-left:8px}
 .cxapple{display:grid;place-items:center}
 .cxnote{margin:6px -22px 0!important;padding:12px 22px 14px!important}
 .cxback{display:inline-flex;align-items:center;gap:4px;margin:-6px 0 12px -6px;color:var(--accent);font-weight:600;font-size:15px;text-decoration:none}.cxback svg{width:20px;height:20px}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .cxwrap .lhead{flex-wrap:wrap}.cxwrap .lht{flex:1 0 auto}.cxwrap .lht h1{white-space:nowrap}.cxhb{margin-left:auto}.cxwrap .lht p{display:none}.cxhb .sa{display:none}
   .cxsplit{grid-template-columns:1fr;gap:0}.cxleft{position:static}
   .cxwrap.has .cxleft{display:none}.cxwrap:not(.has) .cxright{display:none}
@@ -874,7 +874,7 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .chhead h2{font:400 24px/1.1 var(--serif);letter-spacing:-.01em}
 .nsh h2,.lsec h2,.lbar h2{font-family:var(--serif);font-weight:400;font-size:24px;letter-spacing:-.005em}.cxsec .nsh h2{font-size:21px}
 .shero h2{font-family:var(--serif);font-weight:400}
-@media (max-width:599px),(max-height:499px){.hwrap h1,.mhome h1{font-size:38px}.lht h1,.cxdh h1{font-size:30px}.dtop h2{font-size:30px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.hwrap h1,.mhome h1{font-size:38px}.lht h1,.cxdh h1{font-size:30px}.dtop h2{font-size:30px}}
 
 /* marigold = noticed / needs you. Nothing else is colored. */
 .dot,.pip,.udot,.cxnew{background:var(--mari)!important}
@@ -934,7 +934,7 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 /* rail: projects as serif initials (Skipper alone keeps a character) */
 .mono{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;background:color-mix(in srgb,var(--c) 14%,var(--sheet));color:color-mix(in srgb,var(--c) 80%,var(--ink));font:400 22px/1 var(--serif);letter-spacing:-.01em}
 
-@media (max-width:599px),(max-height:499px){.aphead h2{font-size:32px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.aphead h2{font-size:32px}}
 .cximpbox .aphead h2{font-size:22px}
 .cximpbox .aphead .cb{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;background:var(--abub);color:var(--mute)}@media (hover:hover) and (pointer:fine){.cximpbox .aphead .cb:hover{color:var(--ink)}}
 #toast{z-index:80}
@@ -959,12 +959,12 @@ body.pc-on #stage>header{padding-right:20px}
 :root[data-theme=dark] .hmi.bad,:root[data-theme=dark] .hmi.bad svg{color:#ff6b6b}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]) .hmi.bad,:root:not([data-theme=light]) .hmi.bad svg{color:#ff6b6b}}
 /* Library, Notebook, Contacts, Scheduled: while the page column reaches the stage's right edge, its title row keeps clear of the button. */
-@media (min-width:600px) and (min-height:500px){
+@media (min-width:600px) and (min-height:500px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){
   @container pane (max-width:1099px){.lwrap>.lhead,.lwrap>#lhd>.lhead{padding-right:30px}}
   @container pane (max-width:599px){.lwrap>.lhead,.lwrap>#lhd>.lhead{padding-right:46px}}
   body.pc-on .lwrap>.lhead,body.pc-on .lwrap>#lhd>.lhead{padding-right:0}}
 /* DEV strip (dev only, fixed at the top): the phone header starts below it */
-@media (max-width:599px),(max-height:499px){body:has(#devstrip) .mh,body:has(#devstrip) .sph{padding-top:calc(26px + env(safe-area-inset-top))}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){body:has(#devstrip) .mh,body:has(#devstrip) .sph{padding-top:calc(26px + env(safe-area-inset-top))}}
 .pcfab{position:absolute;top:12px;right:14px;z-index:5;width:40px;height:40px;border-radius:50%;display:grid;place-items:center;background:var(--chip);color:var(--ink);box-shadow:var(--shadow)}
 .pcfab svg{width:19px;height:19px}@media (hover:hover) and (pointer:fine){.pcfab:hover{background:var(--hover)}}
 .pcfab .pcdot,.mh .cb.busy::after{position:absolute;top:7px;right:7px;width:8px;height:8px;border-radius:50%;background:#f0ae2c;box-shadow:0 0 0 2px var(--chip)}
@@ -1044,7 +1044,7 @@ body.pc-on{grid-template-columns:80px var(--channel-sidebar-width,272px) minmax(
 .stbtns{display:flex;flex-direction:column;gap:8px}
 .pcbtn{height:40px;padding:0 13px;border-radius:999px;font-size:14px;background:var(--abub);color:var(--ink);white-space:nowrap}@media (hover:hover) and (pointer:fine){.pcbtn:hover{background:var(--hover)}}
 .pcbtn.on{background:var(--ink);color:var(--sheet)}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   #pc{position:fixed;left:0;right:0;top:0;bottom:0;z-index:90;margin:0;border-radius:0;box-shadow:none;padding-top:env(safe-area-inset-top)}
   #pc.ctl{box-shadow:none}
   .pcscreen{margin:0;border-radius:0}
@@ -1076,7 +1076,7 @@ body.pc-on{grid-template-columns:80px var(--channel-sidebar-width,272px) minmax(
 .lrows .lrow:has(.ldel){grid-template-columns:40px 1fr 90px 150px 70px 64px}.lrows.one .lrow:has(.ldel){grid-template-columns:40px 1fr 90px 70px 64px}
 .linkb{color:var(--ink);text-decoration:underline;text-underline-offset:3px;font:inherit}
 body.dropping::after{content:"Drop files to add them";position:fixed;inset:12px;z-index:200;display:grid;place-items:center;border:2px dashed var(--ink2);border-radius:28px;background:color-mix(in srgb,var(--page) 82%,transparent);font:400 34px/1.2 "Instrument Serif",serif;color:var(--ink);pointer-events:none}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .uchip{max-width:calc(50% - 3px);flex:1 1 auto}
   .uchip.memo{gap:6px;padding:0 2px 0 5px}.uchip.memo .aico{width:30px;height:30px}.uchip.memo .ucn b{font-size:12.5px}.uchip.memo .ucx{width:24px;height:24px;flex:none}
   .lrows .lrow:has(.ldel),.lrows.one .lrow:has(.ldel){grid-template-columns:40px 1fr auto auto}
@@ -1126,7 +1126,7 @@ body.fvopen{overflow:hidden}
 .fvnav{position:absolute;top:50%;width:46px;height:46px;margin-top:-23px;border-radius:50%;display:grid;place-items:center;background:var(--sheet);color:var(--ink);box-shadow:var(--lift)}
 .fvnav.prev{left:4px}.fvnav.next{right:4px}.fvnav:disabled{opacity:0;pointer-events:none}@media (hover:hover) and (pointer:fine){.fvnav:hover{transform:scale(1.05)}}
 .fvcount{position:absolute;bottom:0;left:50%;transform:translateX(-50%);padding:4px 12px;border-radius:999px;background:rgba(0,0,0,.5);color:#fff;font-size:12.5px;font-variant-numeric:tabular-nums}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .fvbox{inset:0;padding:calc(8px + env(safe-area-inset-top)) 8px calc(8px + env(safe-area-inset-bottom))}
   .fvhd{margin-bottom:8px;border-radius:16px}
   .fvzoom{display:none}
@@ -1151,14 +1151,14 @@ body.fvopen{overflow:hidden}
 .fv-deck .fvcount{display:none}
 .fvhn{display:flex;align-items:center;flex:none}.fvhn .fvb:disabled{opacity:.35;pointer-events:none}.fvhc{font-size:12.5px;color:var(--mute);font-variant-numeric:tabular-nums;white-space:nowrap;padding:0 2px}
 .fvacts{display:flex;flex-wrap:wrap;justify-content:center;gap:8px}.fvdl{white-space:nowrap}.fvdl.ghost{background:var(--abub);color:var(--ink)}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .fv-deck .fvbody{scroll-snap-type:y proximity}
   .fvpages.fvdeck{gap:12px;padding:2px 0 24px}
   .fvslide{height:auto;padding:0;scroll-snap-align:center;scroll-snap-stop:normal}
   .fvdeck .fvpg{width:100%}
   .fvpager{margin-top:8px}}
 body:has(#devstrip) .fvbox{top:22px}
-@media (max-width:599px),(max-height:499px){body:has(#devstrip) .fvbox{top:0;padding-top:calc(26px + env(safe-area-inset-top))}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){body:has(#devstrip) .fvbox{top:0;padding-top:calc(26px + env(safe-area-inset-top))}}
 
 /* ---------- Library uploads: a row per file in the Library + a quiet tray that follows you between pages ---------- */
 .lrows.lups{margin-bottom:0}.lrows.lups + .lrows .lrow:first-child{box-shadow:0 -1px 0 var(--line)}
@@ -1186,7 +1186,7 @@ body:has(#devstrip) .fvbox{top:22px}
 .utx{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;color:var(--mute);flex:none}@media (hover:hover) and (pointer:fine){.utx:hover{background:var(--abub);color:var(--ink)}}
 .utbar{position:absolute;left:0;bottom:0;height:2px;background:var(--ink);transition:width .2s}
 body.fvopen #uptray{opacity:0;pointer-events:none}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   #uptray{left:10px;right:10px;max-width:none;bottom:calc(84px + env(safe-area-inset-bottom))}}
 /* spreadsheet preview */
 .fv-xlsx .fvbody{flex-direction:column;align-items:center;justify-content:flex-start;padding-top:8px}
@@ -1232,7 +1232,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .aphd{grid-column:1/-1;font-size:13px;font-weight:600;color:var(--faint);padding:14px 8px 4px}
 .aphd:first-child{padding-top:2px}
 .apmeta{display:none}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .apmodal{padding:14px 12px 0}
   .aphead{align-items:center}.aphead h2{font-size:26px!important}.aphead p{display:none}
   .apx{width:38px;height:38px}
@@ -1269,7 +1269,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .piwarn{display:flex;gap:8px;align-items:flex-start;margin:10px 0 0!important;padding:10px 12px;border-radius:12px;background:color-mix(in srgb,var(--warn) 12%,transparent);color:var(--ink)!important}
 .piwarn svg{flex:none;color:var(--warn);margin-top:1px}
 #setw.pidrag .smodal::after{content:"Drop Chrome Passwords.csv to import it";position:absolute;inset:10px;z-index:5;display:grid;place-items:center;border:2px dashed var(--ink2);border-radius:22px;background:color-mix(in srgb,var(--page) 86%,transparent);font:400 28px/1.2 "Instrument Serif",serif;color:var(--ink);pointer-events:none;text-align:center;padding:20px}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .pir{padding:11px 14px;font-size:16px}.pir input{width:20px;height:20px}
   .pilist{max-height:46dvh}
   .pistats>span,.pisk{height:32px;font-size:14px}
@@ -1324,7 +1324,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .pkfoot .pkup:only-child{flex:1;justify-content:center}
 .pkgo{height:38px;padding:0 16px;border-radius:999px;background:var(--ink);color:var(--sheet);font-size:14px;font-weight:600}
 .pkgo:disabled{background:var(--abub);color:var(--faint);cursor:default}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .pkback{background:rgba(0,0,0,.4);opacity:0;transition:opacity .3s}
   #pkw.on .pkback{opacity:1}
   .pkpop{left:0;right:0;bottom:0;top:auto;max-height:85dvh;border:0;border-radius:32px 32px 0 0;padding:10px 12px calc(14px + env(safe-area-inset-bottom));opacity:1;transform:translateY(100%);transition:transform .34s cubic-bezier(.2,.8,.2,1)}
@@ -1349,7 +1349,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 
 /* ---------- Phone + touch-tablet nav pass: a compact drawer/sidebar so the task list gets the height ---------- */
 .sidesrch{display:none}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   /* drawer: channel switcher header, one row of tiles, tight task rows */
   .dtop{gap:6px;padding:8px 10px 4px 8px}
   .dchsw{flex:1;min-width:0;position:relative;display:flex;align-items:center;gap:10px;height:48px;padding:0 10px 0 6px;border-radius:16px;color:var(--ink);text-align:left}
@@ -1431,7 +1431,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .dchsw b{font-size:22px}
   .mpill{padding-right:12px}}
 /* Touch tablets (iPad, Android tablets): the same compact idea in the side panel. A mouse/trackpad desktop never matches. */
-@media (min-width:600px) and (min-height:500px) and (pointer:coarse){
+@media (min-width:600px) and (min-height:500px) and (pointer:coarse),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){
   #side{display:grid;grid-template-columns:repeat(auto-fill,minmax(max(3.75em,calc(25% - 3.1px)),1fr));grid-template-rows:auto auto auto auto auto minmax(0,1fr);column-gap:4px;row-gap:4px;padding-top:14px}
   #side>.chhead{grid-column:1/-1;grid-row:1;padding:0 6px 8px}
   #side>.chhead .av.lg{width:36px;height:36px;border-radius:12px;padding:4px}
@@ -1468,7 +1468,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
    Phones keep their own rules above; a wide desktop pane never reaches these widths, so it looks the same. */
 .dhome{container:pane/inline-size}
 @media (hover:none) and (pointer:coarse){.nact{opacity:1}.ldel{opacity:1}}
-@media (min-width:600px) and (min-height:500px){
+@media (min-width:600px) and (min-height:500px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){
   .cxback{display:none}
   /* Contacts: the list column narrows first, then the page becomes list → contact (with a back link), as on the phone. */
   @container pane (max-width:839px) and (min-width:752px){
@@ -1492,11 +1492,11 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
     .cxdhead{flex-wrap:wrap;row-gap:14px}.cxdact{flex-basis:100%}
     .cxsec .nsh{flex-wrap:wrap;row-gap:2px}.cxsec .nsh span{flex-basis:100%}}}
 /* Phone contact page: Merge/Edit go under the name, so the name isn't squeezed to one word per line */
-@media (max-width:599px),(max-height:499px){.cxdhead{flex-wrap:wrap;row-gap:14px}.cxdact{flex-basis:100%}.cxsec .nsh{flex-wrap:wrap;row-gap:2px}.cxsec .nsh span{flex-basis:100%}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.cxdhead{flex-wrap:wrap;row-gap:14px}.cxdact{flex-basis:100%}.cxsec .nsh{flex-wrap:wrap;row-gap:2px}.cxsec .nsh span{flex-basis:100%}}
 /* Computer pane open on a tablet / small desktop: the side panel is hidden (rule above, near .meta), but the later
    desktop grid (#pc section) still reserved its 272px column, leaving the page ~190px wide on a 1024px screen and 0px
    in portrait. Collapse that column so the page gets the room. */
-@media (min-width:600px) and (min-height:500px) and (max-width:1439px){body.pc-on{grid-template-columns:80px 0 minmax(0,1fr) minmax(420px,46vw)}}
+@media (min-width:600px) and (min-height:500px) and (max-width:1439px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse) and (max-width:1439px){body.pc-on{grid-template-columns:80px 0 minmax(0,1fr) minmax(420px,46vw)}}
 /* Settings → Your account, and the note on Add a login / Edit login */
 .sf textarea{width:100%;min-height:64px;border:0;outline:0;border-radius:14px;background:var(--sheet);box-shadow:0 0 0 1px var(--line);padding:11px 14px;font:inherit;font-size:15px;line-height:1.4;color:var(--ink);resize:vertical}
 .sf textarea:focus{box-shadow:0 0 0 2px var(--accent)}.sf textarea:disabled{opacity:.6}
@@ -1509,7 +1509,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 /* Keep unbroken login domains inside their text column, clear of Edit and Remove. */
 .sr[data-kyrow] .srt>b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sr[data-kyrow] .sa+.sa{margin-left:-6px}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .sf textarea{font-size:17px}
   .sr[data-acpend]{flex-wrap:wrap}.sr[data-acpend] .srt{flex:1 1 calc(100% - 54px)}.sr[data-acpend] .sa{margin-left:auto}
   .sr[data-kyrow]{gap:10px}.sr[data-kyrow] .sa{padding:0 6px}.sr[data-kyrow] .srt>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
@@ -1522,7 +1522,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .cxpb{display:flex;gap:8px}
 .cxpbtn{display:inline-flex;align-items:center;gap:4px;padding:0 12px}.cxpbtn svg{flex:none}
 .cxpbtn:disabled{opacity:.4;cursor:default;box-shadow:0 0 0 1px var(--line)}
-@media (max-width:599px),(max-height:499px){.sphone .sbrowse.cxbrowse{margin:0 0 12px;background:var(--sheet);border-radius:22px;box-shadow:var(--shadow);padding:16px}.sphone .sbrowse.cxbrowse:active{background:var(--hover)}.cxpbtn{height:36px;padding:0 14px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.sphone .sbrowse.cxbrowse{margin:0 0 12px;background:var(--sheet);border-radius:22px;box-shadow:var(--shadow);padding:16px}.sphone .sbrowse.cxbrowse:active{background:var(--hover)}.cxpbtn{height:36px;padding:0 14px}}
 .nbi{flex:none;width:32px;height:32px;border-radius:10px;display:grid;place-items:center;color:var(--mute)}@media (hover:hover) and (pointer:fine){.nbi:hover{background:var(--hover);color:var(--ink)}}
 .nbi svg{width:15px;height:15px}
 .nbmeta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:5px;font-size:12.5px;line-height:1.35;color:var(--faint)}
@@ -1539,7 +1539,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 /* touch: Edit / Delete behind ⋯ (no hover to reveal them) */
 @media (hover:none) and (pointer:coarse){.nbmw{display:block}}
 @container pane (max-width:679px){.nbmw{display:block}}
-@media (max-width:599px),(max-height:499px){.nbmw{display:block}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.nbmw{display:block}
   .nbmeta{font-size:13px}
   .nbi{width:38px;height:38px}}
 /* ---- Buttons and pills never cut their label off ----
@@ -1554,7 +1554,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .shead .txtbtn{height:auto;min-height:36px;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.2}
 .gu-plan .gu-btns{flex-wrap:wrap}.gu-plan .gu-btns .gu-b{white-space:normal}
 [data-computer-offer][hidden]{display:none}
-@media (max-width:599px),(max-height:499px){.sa{min-height:36px}.mpill{min-height:44px}.cxpbtn{min-height:36px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.sa{min-height:36px}.mpill{min-height:44px}.cxpbtn{min-height:36px}}
 /* Keep task titles on one line. The edit cue stays visible when a long title
    ellipsizes, while the tools disclosure leaves room for the title and status. */
 .mpill{flex:1 1 auto;min-width:0;max-width:max-content}
@@ -1576,7 +1576,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .scwarn{color:var(--warn)}
 .scnote{margin:12px 6px 0;font-size:13px;line-height:1.45;color:var(--mute);max-width:560px}
 .sr[data-scrow][aria-expanded=true]{background:color-mix(in srgb,var(--hover) 70%,transparent)}
-@media (max-width:599px),(max-height:499px){.scedit{padding:6px 14px 14px}.scedit .sprim{flex:1 1 100%}.scedit .sa{flex:1 1 auto}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.scedit{padding:6px 14px 14px}.scedit .sprim{flex:1 1 100%}.scedit .sa{flex:1 1 auto}}
 .sc kbd.kbig,.sccap kbd.kbig{display:inline-block}   /* the phone rule that hides key hints must not hide the ones Settings is about */
 .acue-enable{display:flex;align-items:center;gap:10px;min-height:44px;font-size:14px;margin:10px 0}.acue-enable input{width:18px;height:18px;accent-color:var(--accent);flex:none}.acue textarea{resize:vertical;min-height:88px}.acue .sfine{margin:10px 0;line-height:1.5}.acue-message{font-size:13px;color:var(--warn);overflow-wrap:anywhere}.acue-message:empty{display:none}.acue .sbtns{flex-wrap:wrap}
 @media(max-width:400px){.acue .sbtns>button{flex:1 1 100%;white-space:nowrap}}
@@ -1587,7 +1587,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .wkbico{display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:color-mix(in srgb,#f7d64a 26%,var(--sheet))}.wkbico .beemark{border-radius:4px}
 .wkbbody{min-width:0;display:flex;flex-direction:column;gap:3px}
 .wkbp{margin:0;font-size:15px;line-height:1.4;color:var(--ink);overflow-wrap:anywhere}.wkbp b{font-weight:600}
-@media (min-width:600px) and (min-height:500px){.wkbf{height:calc(4em * 1.4);overflow-y:auto}.wkbbody .wkbta{height:calc(4em * 1.4);margin-top:0;resize:none}}   /* a fact is always 4 lines tall on desktop and tablet (its Edit box too), so the box and buttons never move; longer text scrolls */
+@media (min-width:600px) and (min-height:500px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){.wkbf{height:calc(4em * 1.4);overflow-y:auto}.wkbbody .wkbta{height:calc(4em * 1.4);margin-top:0;resize:none}}   /* a fact is always 4 lines tall on desktop and tablet (its Edit box too), so the box and buttons never move; longer text scrolls */
 .wkbq{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
 .wkbmt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wkbas::before{content:"\2192";margin:0 8px;color:var(--faint)}.wkbas{color:var(--ink2)}
@@ -1610,7 +1610,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .wkbmr .wkbok{height:36px}}
 /* Notebook pages (v3.ts nbWiki). Everything answers the width of .wk (container "wk"), so the narrow layout is the default. */
 .wkwrap{padding-top:24px}
-@media (min-width:600px) and (min-height:500px) and (max-width:1500px){.wkwrap{padding-right:60px}}   /* clear the computer button that floats at the top right */
+@media (min-width:600px) and (min-height:500px) and (max-width:1500px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse) and (max-width:1500px){.wkwrap{padding-right:60px}}   /* clear the computer button that floats at the top right */
 .wk{container:wk/inline-size;display:flex;flex-direction:column;gap:20px;color:var(--ink)}
 .wkart{min-width:0}
 /* Before the page text arrives the Notebook is one screen tall and empty, so the scroller can take a drag that started before the content landed. */
@@ -1691,7 +1691,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 @media (prefers-reduced-motion:reduce){.wks,.wkp{transition:none}}
 /* Phone: the Bee review is a small pill at the bottom edge that opens a tray over the article. The article keeps bottom padding equal to the pill's height and offset, so no text is hidden under it. */
 .wkdock,.wkx{display:none}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .wk{--pill:40px;--pillb:14px}
   .wkdock{position:fixed;left:0;right:0;bottom:calc(var(--pillb) + env(safe-area-inset-bottom));z-index:40;display:flex;justify-content:center;pointer-events:none}
   .wkdock>*{pointer-events:auto}
@@ -1785,7 +1785,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 /* Medium screens, 600-899px wide (an unfolded iPhone Duo or other foldable, iPad mini, split-screen iPads, small tablets, a narrow
    window): the same two columns as a tablet, with a slimmer channel strip (tiles only, names on hover / long-press) and a task list
    capped at about a third of the width, so the open task keeps most of the screen. */
-@media (min-width:600px) and (min-height:500px) and (max-width:899px){
+@media (min-width:600px) and (min-height:500px) and (max-width:899px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse) and (max-width:899px){
   body{grid-template-columns:68px var(--channel-sidebar-width,272px) minmax(0,1fr)}
   .navh{width:68px}.navhb{width:12px}.navh .brand{width:28px}
   .ch{width:56px}.ch .lbl{display:none}.tile{width:44px;height:44px;border-radius:14px}
@@ -1795,7 +1795,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
    reach the edges, only text and controls keep clear of the reserved areas (clock bar, camera column, home indicator, rounded corners).
    So the main panel keeps its shape and reaches into the right / bottom area, and pads its contents instead; the channel strip and task list pad theirs. Every env() is 0 in a browser window, so nothing changes there.
    */
-@media (min-width:600px) and (min-height:500px){
+@media (min-width:600px) and (min-height:500px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){
   #rail{padding-top:calc(14px + min(env(safe-area-inset-top,0px), 32px));padding-bottom:calc(16px + env(safe-area-inset-bottom,0px));padding-left:env(safe-area-inset-left,0px)}
   #side{padding-top:calc(18px + min(env(safe-area-inset-top,0px), 32px));padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
   /* The panel keeps its 10px gap and all four rounded corners; under the clock column / home indicator only its contents move in. */
@@ -1814,13 +1814,13 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 
 /* Skipper's computer on a medium screen (600-1099px wide: an unfolded phone, a small tablet): the computer takes the whole width
    beside the channel strip instead of squeezing the task into a strip a few letters wide. Its back button returns to the task. */
-@media (min-width:600px) and (min-height:500px) and (max-width:1099px){
+@media (min-width:600px) and (min-height:500px) and (max-width:1099px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse) and (max-width:1099px){
   body.pc-on{grid-template-columns:80px 0 0 minmax(0,1fr)}body.pc-on #side,body.pc-on #stage{display:none}
 }
-@media (min-width:600px) and (min-height:500px) and (max-width:899px){body.pc-on{grid-template-columns:68px 0 0 minmax(0,1fr)}}
+@media (min-width:600px) and (min-height:500px) and (max-width:899px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse) and (max-width:899px){body.pc-on{grid-template-columns:68px 0 0 minmax(0,1fr)}}
 /* Home on a touch tablet or an unfolded phone: the space above the greeting is 11% of the screen height on a computer, which on a
    tall portrait screen (unfolded iPhone Duo, iPad) left a large empty top. Capped there. */
-@media (pointer:coarse) and (min-width:600px) and (min-height:500px){.hwrap{padding-top:min(11vh, 56px)}}
+@media (pointer:coarse) and (min-width:600px) and (min-height:500px),(pointer:coarse) and (min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){.hwrap{padding-top:min(11vh, 56px)}}
 .wkmore{margin-top:4px;margin-left:-8px}.wknotes .wkmore{margin-top:6px}
 /* Android draws a blue box over anything tapped (WebView default). Buttons and rows have their own pressed and focus styles. */
 html{-webkit-tap-highlight-color:transparent}
@@ -1834,7 +1834,7 @@ html{-webkit-tap-highlight-color:transparent}
 
 /* Settings on an unfolded phone held upright (the two-column Settings in a window 600 to 759px wide and at least 500px high, e.g. a Galaxy Z Fold): the page beside the list is only about
    300 to 400px wide, so the rows give their actions a second line instead of squeezing the text, the list column is narrower, and the close button has a strip of its own above the page. */
-@media (min-width:600px) and (max-width:759px) and (min-height:500px){
+@media (min-width:600px) and (max-width:759px) and (min-height:500px),(min-width:600px) and (max-width:759px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){
   #setw .smodal{grid-template-columns:fit-content(260px) minmax(0,1fr)}   /* as wide as the longest label needs (at least 196px), so larger text never wraps a label */
   #setw .smodal .snav{min-width:196px}
   #setw .smodal .sn{flex:none;white-space:nowrap}

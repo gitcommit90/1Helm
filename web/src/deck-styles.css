@@ -42,7 +42,7 @@
 .dsbox{max-height:min(460px,60dvh);overflow:auto;overscroll-behavior:contain;margin-top:8px;padding:2px}
 :root[data-theme=dark] .dsback{background:rgba(0,0,0,.5)}:root[data-theme=dark] .dsp{box-shadow:0 30px 80px rgba(0,0,0,.55)}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]) .dsback{background:rgba(0,0,0,.5)}:root:not([data-theme=light]) .dsp{box-shadow:0 30px 80px rgba(0,0,0,.55)}}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .dsw{place-items:end stretch;padding:0}
   .dsback{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(0,0,0,.4)}
   .dsp{width:100%;max-height:90dvh;border:0;border-radius:28px 28px 0 0;opacity:1;transform:translateY(100%);transition:transform .3s cubic-bezier(.2,.8,.2,1)}

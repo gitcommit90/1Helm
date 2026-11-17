@@ -2,6 +2,7 @@
 // card with a QR code drawn as round dots, and the dots popping in ring by ring. Plain TypeScript, no React; the code itself is made by uqr.)
 // bdqrHtml(id, items) returns the "Show QR code" pill and its card. Open or closed is kept per id, so a repaint of the page keeps it.
 import { encode } from "uqr";
+import { phone } from "./phone-query";
 
 const OPEN = new Map<string, boolean>();
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
@@ -52,7 +53,7 @@ function toggle(box: HTMLElement) {
   if (box.hasAttribute("data-moving")) return;
   const next = !box.hasAttribute("data-open"), items = SRC.get(id) || [];
   const dlgWrap = box.closest<HTMLElement>(".shw"), dlg = box.closest<HTMLElement>(".dlg");
-  const wide = matchMedia("(min-width:600px) and (min-height:500px)").matches;
+  const wide = !phone();
   const anim = !reduced();
   const h0 = box.offsetHeight, pr = pill.getBoundingClientRect(), t0 = dlg?.getBoundingClientRect().top ?? 0;
   OPEN.set(id, next);

@@ -28,7 +28,7 @@ a.sr{text-decoration:none;color:var(--ink)}@media (hover:hover) and (pointer:fin
 .rpok{display:inline-grid;place-items:center;width:52px;height:52px;border-radius:50%;color:var(--live);background:color-mix(in srgb,var(--live) 13%,transparent)}
 /* While capturing the screen: our sheet, Settings and any toast step aside so the picture shows the page itself. */
 .rpcapturing .rpw,.rpcapturing #setw,.rpcapturing #toast,.rpcapturing #sheet{opacity:0!important;transition:none!important}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .rpw .dlg{width:100%}
   .rptx{font-size:16px;min-height:120px}
   .rpbtns{flex-direction:column-reverse}.rpbtns .dlgb{width:100%;min-height:50px;font-size:16px}

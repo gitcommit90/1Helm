@@ -89,7 +89,7 @@ a.gu-thumb{transition:transform .12s}@media (hover:hover) and (pointer:fine){a.g
 .gu-ssh-receipt .gu-pgone span{min-width:0;overflow-wrap:anywhere}
 .gu-ssh .gu-ssh-trustnote{font-size:14px;line-height:1.5;color:var(--mute);overflow-wrap:anywhere}
 .m.agent .gu-reply+.gu-reply,.m.agent .gu-reply+.bubble{margin-top:8px}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .gu-reply{max-width:100%}.gu-say{font-size:16.5px}
   .gu-bars{gap:6px;padding:12px 10px 8px}.gu-thumb{width:96px}
 }

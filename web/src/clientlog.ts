@@ -1,3 +1,4 @@
+import { PHONE } from "./phone-query";
 // Dev-only diagnostic for the app page (app-detail.ts): what actually got drawn in the person's browser. One call site
 // (openAppDetail) → two beacons to POST <api>/clientlog: ~0.4 s after opening and 2 s after. Layout facts only: no response
 // bodies, no tokens, nothing personal beyond the workspace slug, the app opened and the browser's userAgent.
@@ -57,7 +58,7 @@ function report(s: Sess, phase: string): Rep {
     },
     errors: s.errors,
     vp: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio, vv: vv ? [vv.width, vv.height, vv.scale, vv.offsetTop].map(n => Math.round(n * 100) / 100) : null, sy: scrollY, de: [document.documentElement.clientWidth, document.documentElement.clientHeight] },
-    mq: { phone767: mq("(max-width:599px),(max-height:499px)"), w860: mq("(max-width:860px)"), w1024: mq("(max-width:1024px)"), dark: mq("(prefers-color-scheme:dark)"), reduce: mq("(prefers-reduced-motion:reduce)"), coarse: mq("(pointer:coarse)"), hover: mq("(hover:hover)"), standalone: mq("(display-mode:standalone)") },
+    mq: { phone767: mq(PHONE), w860: mq("(max-width:860px)"), w1024: mq("(max-width:1024px)"), dark: mq("(prefers-color-scheme:dark)"), reduce: mq("(prefers-reduced-motion:reduce)"), coarse: mq("(pointer:coarse)"), hover: mq("(hover:hover)"), standalone: mq("(display-mode:standalone)") },
     theme: document.documentElement.dataset.theme || null,
     el: { root: box("#appdw"), backdrop: box("#appdw .apdback"), panel: box("#appdw .apdpanel"), header: box("#appdw .apdtop"), btn: box("#appdw .apdtop .apdbk"), body: box("#appdw .apdbody"), hero: box("#appdw .apdhero"), grid: box("#appdw .apdgrid") },
     panelStyle: cut(w?.querySelector<HTMLElement>(".apdpanel")?.style.cssText, 200),

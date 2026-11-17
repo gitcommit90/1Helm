@@ -16,7 +16,7 @@
 @media (hover:hover) and (pointer:fine){.rstop:hover{background:var(--line2);color:var(--ink)}}
 .rstop:focus-visible{opacity:1}@media (hover:hover) and (pointer:fine){.sess:hover .rstop,.task:hover .rstop,.ds:hover .rstop{opacity:1}}
 @media (hover:none){.rstop{opacity:.8}}
-@media (max-width:599px),(max-height:499px){.ds .rstop,.task .rstop{width:32px;height:32px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.ds .rstop,.task .rstop{width:32px;height:32px}}
 
 /* Phone header */
 .mh .mstop svg{width:13px;height:13px}

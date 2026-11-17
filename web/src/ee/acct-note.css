@@ -28,7 +28,7 @@
 .acnrow{padding:0 18px 9px 70px;margin-top:-6px}
 .acnrow+.sr{box-shadow:0 -1px 0 var(--line)}
 .acnrow+.sr[data-cxacct]{box-shadow:none;background:linear-gradient(var(--line),var(--line)) 70px 0/calc(100% - 70px) 1px no-repeat}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .acnta{font-size:16px}   /* no zoom on focus */
   .acnb{height:36px;padding:0 14px}
   .apdaccnt{margin-left:48px}

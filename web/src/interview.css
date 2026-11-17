@@ -38,7 +38,7 @@ a.gu-b{display:inline-flex;align-items:center;gap:8px;text-decoration:none}
 .iv-in{animation:ivin .28s cubic-bezier(.2,.8,.2,1)}.iv-back{animation:ivback .28s cubic-bezier(.2,.8,.2,1)}
 @keyframes ivin{from{opacity:0;transform:translateX(18px)}}@keyframes ivback{from{opacity:0;transform:translateX(-18px)}}
 @media (prefers-reduced-motion:reduce){.iv-in,.iv-back{animation:none}.iv-bar i{transition:none}}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .iv{padding:12px 14px calc(28px + env(safe-area-inset-bottom));gap:12px}
   .iv-card{padding:20px 18px 18px;border-radius:22px}
   .iv-card h2{font-size:27px}

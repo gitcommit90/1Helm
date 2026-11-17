@@ -17,9 +17,9 @@
 .tk-btn span{font-weight:600}
 .tk-btn.m{padding:0;gap:0;width:48px;height:48px;border-radius:50%;display:grid;place-items:center;color:var(--ink)}
 .tk-btn.m.on{box-shadow:none;background:var(--hover)}
-@media (max-width:599px),(max-height:499px){.mh:has(.tk-btn){gap:5px}.mh:has(.tk-btn) .mpill{padding-right:14px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.mh:has(.tk-btn){gap:5px}.mh:has(.tk-btn) .mpill{padding-right:14px}}
 /* A narrower header keeps the title's room: the label drops and only the icon shows. */
-@media (max-width:1279px) and (min-width:600px) and (min-height:500px){#stage>header:has(.tk-btn):has(.tdbtn) .tk-btn span{display:none}#stage>header:has(.tk-btn):has(.tdbtn) .tk-btn{padding:0 9px}}
+@media (max-width:1279px) and (min-width:600px) and (min-height:500px),(max-width:1279px) and (min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){#stage>header:has(.tk-btn):has(.tdbtn) .tk-btn span{display:none}#stage>header:has(.tk-btn):has(.tdbtn) .tk-btn{padding:0 9px}}
 
 /* the session view: chat column + the feed beside it (or over it) */
 .tk-w{flex:1;min-height:0;display:flex;position:relative}
@@ -189,7 +189,7 @@ button.tk-rr:focus-visible{outline:0;box-shadow:inset 0 0 0 2px var(--ink2)}
 .tk-sheet .tk-flist{overflow:visible;padding:0 4px 8px}
 .tk-sheet .tk-row{padding:11px 10px}.tk-sheet .tk-rt b{font-size:15.5px}.tk-sheet .tk-rt span{font-size:14px}
 .tk-sheet .tk-hstrip{margin:2px 8px 8px}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .tk-modal{left:0;top:0;width:100%;height:100%;border-radius:0;border:0!important;opacity:1;transform:translateY(100%);transition:transform .32s cubic-bezier(.2,.8,.2,1)}
   #tkm.on .tk-modal{transform:none}
   .tk-mhead{flex-wrap:wrap;row-gap:8px;padding:calc(10px + env(safe-area-inset-top)) 10px 14px 16px}

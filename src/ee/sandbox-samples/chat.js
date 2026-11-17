@@ -93,13 +93,13 @@ export async function chatRequestFor(env, ctx = {}, category = "general") {
   const channelOptions = chatChannelOptions({ ee: eeEnabled(e), profile: PROFILE, tz: TZ, channel: "main", ch: CHANNEL, mmode: c.mmode, mem: pinned.text, recent: recentChannelLines(MESSAGES(now)),
     memoryProfile: useOn ? PROFILE_TEXT : "", keysLine: "", loginsLine: "Saved logins (browser_fill_login types them; you never see the passwords): hawthornemarket.example, brightwell-benefits.example.",
     skillsLine: channelSkillsLine([]), appsLine: "", textingLine: "", permLine: "" });
-  const prompt = composeSystemPrompt(e, { flagOpts: { browser: c.browser, mode: c.mmode, betterDesign: false }, stable: true, cards: c.cards, layered: c.layered, append: c.appendRuntime, channelOptions });
+  const prompt = composeSystemPrompt(e, { flagOpts: { browser: c.browser, mode: c.mmode }, stable: true, cards: c.cards, layered: c.layered, append: c.appendRuntime, channelOptions });
   const att = ask.photo ? [{ name: PHOTO.name, mime: PHOTO.type, bytes: PHOTO_BYTES }] : [], pic = { type: "image_url", image_url: { url: { $file: PHOTO.name, as: "data_url" } } }, pics = ask.photo ? [pic] : [];
   const attNote = ask.photo ? attachmentNote({ att, pics, sc: { got: [], saved: "", body: "" }, unseen: [], extra: 0 }) : "";
   const nowTag = currentTimeTag(now, TZ);
   const placeNote = `\n\n${placeLine({ device: { at: now - 5 * 60e3, place: "Portland, Oregon", lat: 45.52, lng: -122.68 }, tz: TZ, tzKnown: true, tzLabel: tzLabel(TZ), now, cards: c.cards }).line}`;
   const tc = { kind: "chat", appendRuntime: c.appendRuntime, appendLazy: c.appendLazy, context: c.layered ? { version: 2 } : null };
-  const tools = modelChatTools(e, availableChatTools(e, chatBaseTools(e, { workmem: c.workmem, browser: c.browser, betterDesign: false, general: true, sidecars: sidecarOn(e) ? undefined : false }), () => "main", tc), tc);
+  const tools = modelChatTools(e, availableChatTools(e, chatBaseTools(e, { workmem: c.workmem, browser: c.browser, general: true, sidecars: sidecarOn(e) ? undefined : false }), () => "main", tc), tc);
   let messages;
   if (c.layered) {
     const context = { version: 2, ...prompt, developer: taskDeveloperText(prompt.developer, { appendRuntime: c.appendRuntime, appendLazy: c.appendLazy }), userText: asked,

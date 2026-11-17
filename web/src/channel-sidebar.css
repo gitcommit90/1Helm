@@ -1,6 +1,6 @@
 /* Desktop channel panel: the global channel rail and phone drawer remain independent. */
 .sidebar-collapse,.sidebar-restore,#channel-sidebar-resize{display:none}
-@media (min-width:600px) and (min-height:500px){
+@media (min-width:600px) and (min-height:500px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){
   body #side{grid-column:2;min-width:0}
   body #stage{grid-column:3}
   body.sidebar-collapsed #side{display:none}
@@ -23,4 +23,4 @@
   @media (hover:hover){#channel-sidebar-resize:hover:after{top:8px;bottom:8px;height:auto;background:var(--accent)}}
   body.sidebar-resizing,body.sidebar-resizing *{cursor:col-resize!important;user-select:none!important}
 }
-@media (min-width:600px) and (min-height:500px) and (pointer:coarse){.sidebar-collapse{width:36px;height:40px}}
+@media (min-width:600px) and (min-height:500px) and (pointer:coarse),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){.sidebar-collapse{width:36px;height:40px}}

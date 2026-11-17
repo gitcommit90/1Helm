@@ -7,7 +7,7 @@ const ok = (m) => console.log("  ok", m);
 const BD = { type: "object", properties: { device: { type: "string", description: "device name", pattern: "^[\\p{L}\\p{N}][\\p{L}\\p{N} ._'\\u2019()-]{0,99}$", maxLength: 100 } }, required: ["device"] };
 const c = cleanToolSchema(BD);
 assert.equal("pattern" in c.properties.device, false); assert.deepEqual(c.properties.device, { type: "string", description: "device name", maxLength: 100 }); assert.deepEqual(c.required, ["device"]);
-assert.ok("pattern" in BD.properties.device, "input not changed"); ok("Better Design device pattern dropped, rest intact");
+assert.ok("pattern" in BD.properties.device, "input not changed"); ok("device pattern dropped, rest intact");
 for (const p of ["^[a-z]+$", "^\\d{4}-\\d{2}$", "^(?:a|b)+$", "^(?=a)b", "^[\\w.-]+@[\\w.-]+$"]) assert.ok(safePattern(p), p);
 for (const p of ["\\p{L}", "\\P{N}", "(?<=a)b", "(?<!a)b", "(?<name>a)", "(a", "\\k<x>", "\\u{1F600}", "(?i)a", 5]) assert.ok(!safePattern(p), String(p));
 ok("simple patterns kept, risky or broken patterns dropped");
@@ -25,7 +25,7 @@ assert.equal("pattern" in d.properties.d.prefixItems[0], false); assert.equal(d.
 assert.deepEqual(d.properties.pattern, deep.properties.pattern, "a property named pattern, its enum and default are untouched");
 assert.equal("pattern" in d.$defs.z, false); assert.equal("pattern" in d.allOf[0].properties.q, false); assert.equal("pattern" in d.oneOf[0].not, false);
 ok("nested properties, items, anyOf, additionalProperties, patternProperties, prefixItems, $defs, allOf, oneOf, not");
-// the design tools path: a server list with the Better Design schema reaches the model cleaned; the stored schema (used to check arguments) is the server's own
+// the design tools path: a server list with a pattern in its schema reaches the model cleaned; the stored schema (used to check arguments) is the server's own
 resetDesignToolsCache();
 const fetchImpl = async (url, init) => {
   const m = JSON.parse(init.body); const h = { "content-type": "application/json" };
@@ -34,7 +34,7 @@ const fetchImpl = async (url, init) => {
   return new Response(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: r }), { status: 200, headers: h });
 };
 await prepareDesignTools({ DESIGN_MCP_URL: "https://design.example.test" }, { fetchImpl });
-const defs = designToolDefs({ betterDesign: true }).filter((t) => t.function.name.endsWith("use_device"));
+const defs = designToolDefs().filter((t) => t.function.name.endsWith("use_device"));
 assert.ok(defs.length >= 1, "use_device offered");
 for (const t of defs) assert.equal("pattern" in t.function.parameters.properties.device, false);
 ok("design tools: every use_device definition sent to the model has no pattern");

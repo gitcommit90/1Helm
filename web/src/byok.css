@@ -12,4 +12,4 @@ p.bykerr{margin:12px 0 0!important;color:#d14343!important}
 .bykorbox{padding:14px 16px}.bykorbox p{font-size:13px;color:var(--mute)}
 .bykorcon{display:block;margin:8px 0 2px;padding:10px 12px;border-radius:14px;background:color-mix(in srgb,var(--live) 10%,transparent)}
 .bykorlink{display:inline;border:0;background:none;padding:0;font:inherit;color:var(--accent);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
-@media (max-width:599px),(max-height:499px){.bykwarn p,.bykack{font-size:14.5px}#bykf .sbtns{flex-wrap:wrap}#bykf .sbtns .sprim{flex:1 1 100%}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.bykwarn p,.bykack{font-size:14.5px}#bykf .sbtns{flex-wrap:wrap}#bykf .sbtns .sprim{flex:1 1 100%}}

@@ -10,7 +10,7 @@ html.zdoc-image .zpages{align-items:center;justify-content:center}
 .zann-b:focus-visible{outline:2px solid var(--zsel);outline-offset:2px}
 .zann-pop{position:absolute;z-index:6;pointer-events:auto;width:min(230px,calc(100vw - 32px));box-sizing:border-box;padding:6px 8px;background:var(--sheet);border:1px solid var(--line);border-left:4px solid var(--c);border-radius:12px;box-shadow:var(--lift)}
 .zann-pop textarea{display:block;width:100%;min-height:22px;max-height:96px;margin:0;padding:1px 0;border:0;outline:0;resize:none;background:none;color:var(--ink);font:inherit;font-size:14px;line-height:1.45}
-@media (max-width:599px),(max-height:499px){.zann-pop textarea{font-size:16px}.zann-b{width:26px;height:26px;left:-13px;top:-13px}.zann-b.off{left:2px;top:-28px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.zann-pop textarea{font-size:16px}.zann-b{width:26px;height:26px;left:-13px;top:-13px}.zann-b.off{left:2px;top:-28px}}
 .zib.zpencil{position:relative}.zib.zpencil.on{background:var(--ink);color:var(--sheet)}@media (hover:hover) and (pointer:fine){.zib.zpencil.on:hover:not(:disabled){background:var(--ink);color:var(--sheet);opacity:.88}}
 .zib.zpencil i{position:absolute;right:3px;top:3px;min-width:15px;height:15px;padding:0 3px;box-sizing:border-box;border-radius:8px;background:var(--zsel);color:#fff;font:700 10px/15px system-ui,sans-serif;font-style:normal;text-align:center}
 
@@ -20,7 +20,7 @@ html.zone-open.zdoc-image{--zinspw:0px;--zgaps:30px}
 html.zone-open.zdoc-image body,html.zone-open.zdoc-image body.pc-on{grid-template-columns:var(--zchatw) minmax(0,1fr)}
 html.zone-open.zdoc-image.zchat-off body,html.zone-open.zdoc-image.zchat-off body.pc-on{grid-template-columns:minmax(0,1fr)}
 html.zone-open.zdoc-image.zchat-off #zcanvas{grid-column:1}
-@media (max-width:599px),(max-height:499px){html.zone-open.zdoc-image .zcv{height:34dvh}html.zone-open.zdoc-image .zpages{padding:8px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){html.zone-open.zdoc-image .zcv{height:34dvh}html.zone-open.zdoc-image .zpages{padding:8px}}
 
 /* the cards above the composer: one per mark, in the style of the reply bar (msgreply.css .rqin) */
 .annbar{max-width:760px;margin:0 auto;max-height:min(220px,32dvh);overflow-y:auto;overscroll-behavior:contain}
@@ -29,7 +29,7 @@ html.zone-open.zdoc-image.zchat-off #zcanvas{grid-column:1}
 .annn{flex:1;min-width:0;height:32px;padding:0 10px;border:0;border-radius:10px;outline:0;background:var(--hover);color:var(--ink);font:inherit;font-size:14px}
 .annn:focus{box-shadow:0 0 0 2px color-mix(in srgb,var(--c) 45%,transparent)}
 .annx{flex:none;display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:10px;background:none;color:var(--ink2);cursor:pointer}@media (hover:hover) and (pointer:fine){.annx:hover{background:var(--hover);color:var(--ink)}}
-@media (max-width:599px),(max-height:499px){.anncard{margin:0 2px 6px}.annn{font-size:16px;height:36px}.annx{width:40px;height:40px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.anncard{margin:0 2px 6px}.annn{font-size:16px;height:36px}.annx{width:40px;height:40px}}
 .composer.ann-hl{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 30%,transparent),var(--lift)}
 @media (prefers-reduced-motion:reduce){.anncard{animation:none}}
 /* a phone turned sideways is short: the canvas takes about half the height and the cards stay compact */

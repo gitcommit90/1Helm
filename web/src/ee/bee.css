@@ -63,7 +63,7 @@
 .bsdone h3{margin:12px 0 4px;font-size:18px}
 .bsdone p{margin:0!important}
 .bsdone+.bsbtns{justify-content:center}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .bsw .dlg{width:100%;padding:10px 18px calc(16px + env(safe-area-inset-bottom))}
   .bshd{margin-bottom:14px}.bshd h2,.bshd .bsn{text-align:left!important}
   .bsidv{font-size:21px;text-align:center}

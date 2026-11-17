@@ -2,7 +2,7 @@
 // the channel sidebar opens. On a phone it is mounted inside `#m .chat` (that pane has a transform, so position:fixed inside
 // it is placed against the pane); on a wide screen it stays on the body. The phone render rebuilds the pane, so v3.ts carries
 // these elements from the old pane to the new one with keepPaneFloats.
-const PHONE = "(max-width:599px),(max-height:499px)";
+import { PHONE } from "./phone-query";
 export const paneHost = (): HTMLElement => (matchMedia(PHONE).matches && document.querySelector<HTMLElement>("#m .chat")) || document.body;
 // Put a floating panel in the right parent for the current layout and mark it, so the render can find it.
 export function mountPaneFloat(el: HTMLElement) { el.dataset.paneFloat = ""; const h = paneHost(); if (el.parentElement !== h) h.appendChild(el); }

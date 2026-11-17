@@ -8,7 +8,7 @@ import { BILL_LABELLER, LABEL_MARKUP } from "./label-billing.js";
 
 export const CHAT_TITLE_JOB = "chat_title";
 export const CHAT_TITLE_KIND = "chat-title";
-export const CHAT_TITLE_INSTRUCTION = "Title this in 3-7 words";
+export const CHAT_TITLE_INSTRUCTION = "Title this in up to 5 words";
 export const CHAT_TITLE_TAIL = "Reply with the title only.";
 export const CHAT_TITLE_TEXT_MAX = 4000;   // characters of the first message sent to the model
 
@@ -16,14 +16,17 @@ function words(value) {
   return typeof value === "string" ? value.normalize("NFC").replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\u200D\u20E3]/gu, " ").replace(/[^\p{L}\p{M}\p{N}\s]/gu, " ").trim().split(/\s+/u).filter(Boolean) : [];
 }
 // A model's answer as a chat name: first line, no emojis, markdown marks, surrounding quotes, "Title:" label or final period.
-// Three to seven words and at most 80 characters, otherwise null (the placeholder name stays).
+// One to five words and at most 80 characters. A longer answer is cut to its first five words, and a joining word or punctuation
+// left at the end by the cut is dropped. An empty answer gives null (the placeholder name stays).
 export function cleanChatTitle(value) {
   const line = String(value ?? "").split("</think>").pop().normalize("NFC").replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\u200D\u20E3]/gu, "")
     .split(/\r?\n/).map((x) => x.trim()).find(Boolean) || "";
   const title = line.replace(/[*`#~]+/g, "").replace(/^[\s>\-"'\u201C\u201D\u2018\u2019\u00AB\u00BB]+/u, "").replace(/^(?:chat )?title\s*:\s*/i, "")
     .replace(/[\s"'\u201C\u201D\u2018\u2019\u00AB\u00BB]*[.\u3002]*[\s"'\u201C\u201D\u2018\u2019\u00AB\u00BB]*$/u, "").replace(/\s+/g, " ").trim();
   const parts = title ? title.split(" ") : [];
-  return parts.length >= 3 && parts.length <= 7 && title.length <= 80 ? title : null;
+  let out = parts.slice(0, 5).join(" ");
+  if (parts.length > 5) for (let prev = ""; prev !== out;) { prev = out; out = out.replace(/[\s,:;\u2013\u2014-]+$/u, "").replace(/\s(?:and|or|of|for|the|a|to|in|on|with)$/i, ""); }
+  return out && out.length <= 80 ? out : null;
 }
 // The placeholder name keeps the person's characters as typed (apostrophes, symbols, emojis with their joiners and
 // modifiers). Words split on whitespace only, so a word is never cut inside an emoji.

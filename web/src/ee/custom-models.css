@@ -39,7 +39,7 @@
 .cmitem{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;min-height:56px;gap:1px;padding:9px 12px;border-radius:10px;text-align:left;width:100%}
 .cmitem.on{background:var(--hover)}@media (hover:hover) and (pointer:fine){.cmitem:hover{background:var(--hover)}}
 .cmin{font-size:14.5px;font-weight:600;color:var(--ink)}.cmis{font-size:12.5px;color:var(--mute)}
-@media (max-width:599px),(max-height:499px),(min-width:600px) and (max-width:759px) and (min-height:500px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)),(min-width:600px) and (max-width:759px) and (min-height:500px),(min-width:600px) and (max-width:759px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){
   .cmcat{padding:14px 16px 16px}
   .cmslot{grid-template-columns:minmax(0,1fr) 120px}.cmlab{grid-column:1 / -1}.cmwhy{grid-column:1 / -1}
   .cmback{align-items:flex-end;padding:0}.cmpick{width:100%;border-radius:20px 20px 0 0;max-height:86vh}
@@ -70,8 +70,8 @@
 .cmmodel.cmempty span{color:var(--faint)}
 .meta.cmerr{display:block;height:auto;background:none;border-radius:0;padding:0;white-space:normal}
 .cmnone{margin:12px 6px 0!important;white-space:normal;overflow-wrap:anywhere;color:var(--mute)}
-@media (max-width:599px),(max-height:499px){.sbk[data-cmback],.cmhead:has(>.cmname){display:none}}
-@media (max-width:599px),(min-width:600px) and (max-width:759px) and (min-height:500px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.sbk[data-cmback],.cmhead:has(>.cmname){display:none}}
+@media (max-width:599px),(min-width:600px) and (max-width:759px) and (min-height:500px),(min-width:600px) and (max-width:759px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){
   .cmslot.cmown,.cmbg .cmslot.cmown{grid-template-columns:minmax(0,1fr) 40px;grid-template-areas:"m m" "s r" "w w";grid-template-rows:auto 32px;padding:7px 0;min-height:0}
   .cmnum{display:none}.cmown .efs-header{width:68px}.cmown .cmrm{width:40px;height:40px;margin:-4px 0}
   .cmslot.cmown:not(:has(.efs)),.cmbg .cmslot.cmown:not(:has(.efs)){grid-template-areas:"m r" "w w";grid-template-rows:auto}

@@ -12,7 +12,7 @@
 .sr[data-pirow]{flex-wrap:wrap;row-gap:8px}
 .sr[data-pirow] .srt{min-width:170px}
 .sr[data-pirow]>.sa{margin-left:auto;height:auto;min-height:32px;white-space:nowrap}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .pistep{padding:12px}
   .pitx{font-size:15px}
   .dlg p.pifine{font-size:13.5px}

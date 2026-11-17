@@ -42,7 +42,7 @@
 .ivc-done[open] summary{border-radius:20px 20px 0 0}
 .ivc-done .ivc-list{margin:0 12px 12px}
 .ivc-note{margin:0;padding:0 16px 12px;font-size:13.5px;color:var(--mute)}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .gu-sys.ivc{padding:14px 14px 12px}
   .ivc-q{font-size:22px}
   .ivc-foot{flex-direction:row;align-items:center;flex-wrap:wrap}

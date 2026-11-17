@@ -9,7 +9,6 @@
 //   POST /api/account/email/cancel     → { ok }
 //   POST /api/account/signout { id } | { others: true } → { ok, signed_out }
 //   POST /api/account/prefs { voice_memo_send: "release" | "manually" } → { ok, voice_memo_send }   (voice-memo.js; tenant_flags k='voice_memo_send')
-//   POST /api/account/prefs { better_design: boolean } → { ok, better_design: { choice, on } }   (better-design.js; tenant_flags k='better_design')
 //   GET  /api/account/custom-models[?scope=services] → the switch, the privacy level, any models that need replacing, the account's categories (custom-models.js).
 //        scope=services (Settings → AI services) is the own-key editor on every plan; without it a full plan gets 1Helm's models unless its own key answers chat
 //   GET  /api/account/custom-models/catalog?q= → { level, models }: chat models with a provider allowed at the account's level
@@ -31,7 +30,6 @@ import { boundedForm, boundedJson, BodyTooLargeError } from "./bounded-body.js";
 import { privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // Settings → General → AI data privacy
 import { setSecretPrompt } from "./secret-card-api.js";
 import { voiceMemoChoice, setVoiceMemoChoice, CHOICES as VOICE_MEMO_CHOICES } from "./voice-memo.js";
-import { betterDesignView, betterDesignChoice, setBetterDesign } from "./better-design.js";   // Settings: Better Design as a design source
 import { autoUseNow } from "./byok.js";   // Use my services now: choosing General's model turns it on (licensed own-key editor only)
 import { enabled as eeEnabled, customView, readCustom, saveCustom, pickerModels, statusOfRow, ownKeyKind, ownKindForStatus, ownViewFor, ownPicker, saveOwn, warmLists, readModelSettings } from "./ee/index.js";   // Settings → Advanced: Custom Model Selection (licensed; off unless ONEHELM_EE)
 import { dropSubsForSessions } from "./notify.js";   // signing a device out also cancels its notification sign-ups
@@ -132,7 +130,7 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
     catch { return json({ error: 'Spending settings are temporarily unavailable.' }, 503); }
   }
   if (req.method === "GET" && sub === "/api/account")
-    return json({ name: t.first_name || "", email: user.email, pending: await pendingChange(env, user.id), sessions: await listSessions(env, req, user.id), passwordless: true, show_costs: Number(t.show_costs) === 1, shortcuts: shortcutsView(t), ai_privacy: privacyView(t), ...(eeEnabled(env) ? { custom_models: statusOfRow(t, await ownKindForStatus(env, t)) } : {}), better_design: betterDesignView(t, await betterDesignChoice(env, t.id)), voice_memo_send: await voiceMemoChoice(env, t.id),
+    return json({ name: t.first_name || "", email: user.email, pending: await pendingChange(env, user.id), sessions: await listSessions(env, req, user.id), passwordless: true, show_costs: Number(t.show_costs) === 1, shortcuts: shortcutsView(t), ai_privacy: privacyView(t), ...(eeEnabled(env) ? { custom_models: statusOfRow(t, await ownKindForStatus(env, t)) } : {}), voice_memo_send: await voiceMemoChoice(env, t.id),
       ...(hsWalls(env) ? { front_door_available: true, front_door: Number(t.front_door) === 1 } : {}) });   // HS_WALLS: General's front door (walls.js)
   if (eeEnabled(env) && req.method === "GET" && sub === "/api/account/custom-models") {
     const own = await editorKind(env, t, url);
@@ -193,12 +191,6 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
       if (typeof b.front_door !== "boolean") return json({ error: "front_door must be true or false." }, 400);
       await frontDoorSet(env, t.id, b.front_door);
       return json({ ok: true, front_door: b.front_door });
-    }
-    // Better Design as a design source (better-design.js): an explicit on or off. Unrestricted accounts read on until they turn it off; No Training and ZDR read off until they turn it on.
-    if (b.better_design !== undefined) {
-      if (typeof b.better_design !== "boolean") return json({ error: "better_design must be true or false." }, 400);
-      const choice = await setBetterDesign(env, t.id, b.better_design, at);
-      return json({ ok: true, better_design: betterDesignView(t, choice) });
     }
     // Voice memos (voice-memo.js): "release" sends the message as soon as a held-mic memo is uploaded, "manually" leaves it in the composer.
     if (b.voice_memo_send !== undefined) {

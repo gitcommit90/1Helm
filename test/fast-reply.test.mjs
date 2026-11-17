@@ -33,7 +33,7 @@ test("the D1 reads of one vector search run together", async () => {
 test("the reads before the first model call overlap instead of adding up", async () => {
   const firstModel = async (ms) => {
     const W = world(), R = W.R, wait = (v) => async () => { await sleep(ms); return v; }; let t0, first = null;
-    R.placeNote = wait(""); R.lnNote = wait(""); R.betterDesignOn = wait();
+    R.placeNote = wait(""); R.lnNote = wait("");
     W.brain = () => { first ??= Date.now() - t0; return "Done."; }; t0 = Date.now();
     await R.runTurn("t1", "main", "1", "Hello there", null, { session: R.newSession("T") });
     return first;

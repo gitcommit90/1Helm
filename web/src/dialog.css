@@ -22,7 +22,8 @@
 .dlgin:focus{border-color:var(--ink2);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
 :root[data-theme=dark] .dlgback{background:rgba(0,0,0,.5)}:root[data-theme=dark] .dlg{box-shadow:0 30px 80px rgba(0,0,0,.55)}:root[data-theme=dark] .dlgw{--dlgred:#e5484d}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]) .dlgback{background:rgba(0,0,0,.5)}:root:not([data-theme=light]) .dlg{box-shadow:0 30px 80px rgba(0,0,0,.55)}:root:not([data-theme=light]) .dlgw{--dlgred:#e5484d}}
-@media (max-width:599px),(max-height:499px){
+/* Sheet layout. Every phone-layout media query in src/*.css repeats this text (src/phone-query.ts): a short window counts only on a short screen or with a fine pointer, because an on-screen keyboard shrinks the layout height of a tablet. The desktop-layout queries are its complement. */
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .dlgw{place-items:end stretch;padding:0}
   .dlgback{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(0,0,0,.4)}
   .dlg{width:100%;max-height:90dvh;border:0;border-radius:28px 28px 0 0;padding:10px 20px calc(16px + env(safe-area-inset-bottom));opacity:1;transform:translateY(100%);transition:transform .3s cubic-bezier(.2,.8,.2,1)}
@@ -38,7 +39,7 @@
 @media (prefers-reduced-motion:reduce){.dlg,.dlgback{transition:none}}
 /* choose(): the third button (Discard) is red text; on desktop it sits alone on the left, on phone between Save and Keep editing. */
 .dlgb.alt{color:var(--dlgred)}
-@media (min-width:600px) and (min-height:500px){.dlgb.alt{order:-1;margin-right:auto}}
+@media (min-width:600px) and (min-height:500px),(min-width:600px) and (min-device-height:500px) and (min-device-width:500px) and (pointer:coarse){.dlgb.alt{order:-1;margin-right:auto}}
 /* sheet(): radio choices (one row each: label + a line under it), a switch under the picked one, and a one-line fix (check()). */
 .dlgopts{display:grid;gap:8px;margin-top:16px;text-align:left}
 .dlgopt,.dlgtog{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-radius:14px;box-shadow:inset 0 0 0 1px var(--line2);cursor:pointer;transition:box-shadow .12s,background .12s}
@@ -54,4 +55,4 @@
 .dlgerr{margin:12px 0 0!important;padding:10px 12px;border-radius:12px;background:color-mix(in srgb,var(--warn,#d97706) 16%,var(--sheet));color:var(--ink)!important;font-size:14px!important;text-align:left!important}
 .dlgerr[hidden]{display:none}
 .dlg.busy .dlgopts{opacity:.6;pointer-events:none}
-@media (max-width:599px),(max-height:499px){.dlgopt b,.dlgtog b{font-size:15.5px}.dlgopt small,.dlgtog small{font-size:14px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.dlgopt b,.dlgtog b{font-size:15.5px}.dlgopt small,.dlgtog small{font-size:14px}}

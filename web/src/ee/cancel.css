@@ -12,7 +12,7 @@ body:has(#devstrip) #bcxbar{padding-top:24px}
 .bcxkeep{flex:none;height:30px;padding:0 14px;border:0;border-radius:999px;background:var(--bcxbtn);color:var(--bcxbtnink);font:inherit;font-size:13.5px;font-weight:600;cursor:pointer}
 @media (hover:hover) and (pointer:fine){.bcxkeep:hover{filter:brightness(1.12)}}.bcxkeep[disabled]{opacity:.7;cursor:default}
 body.bcx-on{padding-top:var(--bcxh,44px)}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   #bcxbar{justify-content:flex-start;padding-left:16px;padding-right:12px;font-size:13.5px}
   body.bcx-on{padding-top:0}
   body.bcx-on .home{padding-top:calc(env(safe-area-inset-top) + var(--bcxh,64px))}

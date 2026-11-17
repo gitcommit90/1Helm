@@ -101,7 +101,7 @@ form.sl-on .slchip{flex:1 0 100%;order:-1}
 .slb-e{font-size:12.5px;color:var(--slred);margin:5px 4px 0;text-align:right}
 .slsent{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:var(--faint);margin:3px 6px 0}
 
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .slback{background:rgba(0,0,0,.4);opacity:0;transition:opacity .3s}
   #slw.on .slback{opacity:1}
   .slpop,.slpop.center{left:0;right:0;bottom:0;top:auto;width:auto;max-height:88dvh;border:0;border-radius:32px 32px 0 0;padding:10px 12px calc(14px + env(safe-area-inset-bottom));opacity:1;transform:translateY(100%);transition:transform .34s cubic-bezier(.2,.8,.2,1)}

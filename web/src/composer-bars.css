@@ -12,5 +12,5 @@
 .cbb:focus-visible,.cbx:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .cbx{flex:none;display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:50%;background:none;color:var(--mute);cursor:pointer}
 @media (hover:hover) and (pointer:fine){.cbx:hover{background:var(--hover);color:var(--ink)}}
-@media (max-width:599px),(max-height:499px){.cbin{margin:0 2px 6px;flex-wrap:wrap;row-gap:6px}.cbx{width:40px;height:40px}.cbb{height:36px}.cbtx{flex:1 1 140px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.cbin{margin:0 2px 6px;flex-wrap:wrap;row-gap:6px}.cbx{width:40px;height:40px}.cbb{height:36px}.cbtx{flex:1 1 140px}}
 @media (prefers-reduced-motion:reduce){.cbin{animation:none}}

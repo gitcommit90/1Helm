@@ -18,7 +18,7 @@
 .ncw .dlgb[disabled]{pointer-events:none}
 :root[data-theme=dark] .ncw{--ncred:#ff7b6b}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]) .ncw{--ncred:#ff7b6b}}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .ncw .dlg.nc{width:100%;padding:10px 20px calc(16px + env(safe-area-inset-bottom))}
   .nchead{flex-direction:column;align-items:center;text-align:center;gap:10px}
   .nc .nchead p{font-size:15px;text-align:center}

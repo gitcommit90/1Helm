@@ -71,7 +71,7 @@ for (const s of samples) {
   const pinned = chatPinned(env, [], "on");
   assert.equal(pinned.useOn, true);
   // Rebuild the system prompt from the builders with the same inputs; the core and developer layers must be identical.
-  const again = composeSystemPrompt(env, { flagOpts: { browser: true, mode: "on", betterDesign: false }, stable: true, cards: genuiEnvOn(env), layered: true, append: true,
+  const again = composeSystemPrompt(env, { flagOpts: { browser: true, mode: "on" }, stable: true, cards: genuiEnvOn(env), layered: true, append: true,
     channelOptions: chatChannelOptions({ ee: true, profile: { first_name: "Maya", helper_name: "Juniper", helper_tone: 1 }, tz: "America/Los_Angeles", channel: "main", ch: { name: "General" }, mmode: "on", mem: "", recent: "", memoryProfile: "" }) });
   assert.equal(msgs[0].content, again.core, "system message is the real core prompt");
   assert.equal(msgs[1].content.endsWith(taskDeveloperText("", { appendRuntime: true, appendLazy: cutLazy(env) && contextV2(env) }).replace(/^\n\n/, "\n\n")), true, "developer layer ends with the real task tool note");

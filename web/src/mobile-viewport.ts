@@ -1,3 +1,4 @@
+import { PHONE } from "./phone-query";
 // A phone keyboard can resize and pan the visible viewport without resizing the
 // layout viewport. Keep the whole chat, including its header, in the visible area.
 const viewport = window.visualViewport;

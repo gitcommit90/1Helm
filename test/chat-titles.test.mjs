@@ -24,9 +24,9 @@ function fixture(engine = "classic") {
   return W;
 }
 
-await test("the model is sent the message and the instruction, and the answer is cleaned to 3 to 7 words", async () => {
-  assert.equal(CHAT_TITLE_INSTRUCTION, "Title this in 3-7 words");
-  assert.deepEqual(chatTitleRequest("Hello there friend").messages, [{ role: "user", content: "Hello there friend\n\nTitle this in 3-7 words\nReply with the title only." }]);
+await test("the model is sent the message and the instruction, and the answer is cleaned to 1 to 5 words", async () => {
+  assert.equal(CHAT_TITLE_INSTRUCTION, "Title this in up to 5 words");
+  assert.deepEqual(chatTitleRequest("Hello there friend").messages, [{ role: "user", content: "Hello there friend\n\nTitle this in up to 5 words\nReply with the title only." }]);
   assert.equal(chatTitleRequest("x".repeat(9000)).messages[0].content.length, 4000 + `\n\n${CHAT_TITLE_INSTRUCTION}\n${CHAT_TITLE_TAIL}`.length);
   assert.equal(chatTitleRequest("a b c", 50).max_tokens, 50);
   assert.equal(cleanChatTitle('**"Garden plans for spring"** 🌱'), "Garden plans for spring");
@@ -35,8 +35,12 @@ await test("the model is sent the message and the instruction, and the answer is
   assert.equal(cleanChatTitle("Don't overwater your basil"), "Don't overwater your basil");
   assert.equal(cleanChatTitle("Café résumé tips 2026"), "Café résumé tips 2026");
   assert.equal(cleanChatTitle("<think>hmm</think>One two three"), "One two three");
-  for (const text of [null, {}, "", "🌱", "Garden", "Garden plans", "One two three four five six seven eight", "x ".repeat(3) + "y".repeat(80)]) assert.equal(cleanChatTitle(text), null);
-  assert.equal(cleanChatTitle("a b c d e f g"), "a b c d e f g");
+  for (const text of [null, "", "🌱", "x ".repeat(3) + "y".repeat(80)]) assert.equal(cleanChatTitle(text), null);
+  assert.equal(cleanChatTitle("a b c d e"), "a b c d e");
+  assert.equal(cleanChatTitle("Garden plans"), "Garden plans"); assert.equal(cleanChatTitle("Garden"), "Garden");
+  assert.equal(cleanChatTitle("One two three four five six seven eight"), "One two three four five");
+  assert.equal(cleanChatTitle("Compact pots with drainage and water often"), "Compact pots with drainage");
+  assert.equal(cleanChatTitle("Plans for the garden, and the rest"), "Plans for the garden");
 });
 await test("the placeholder name keeps the characters as typed", async () => {
   const cases = [
@@ -132,7 +136,7 @@ await test("the claim is taken before the call, so a restart or a second message
   assert.match(R2.session(s).title, /^[\p{L}\p{N} ]+$/u);   // the placeholder stays; the old object's late answer cannot write
 });
 await test("provider failure, a malformed answer and a denied budget leave the placeholder", async () => {
-  for (const title of [async () => { throw Error("fixture provider unavailable"); }, async () => "Hmm", async () => "One two three four five six seven eight nine", async () => "🌱"]) {
+  for (const title of [async () => { throw Error("fixture provider unavailable"); }, async () => "", async () => "🌱"]) {
     const W = fixture(); W.title = title;
     const s = (await W.R.createSession(null, MESSAGE)).id, before = W.R.session(s).title;
     await startChatTitle(W.R, s); await W.settle();
@@ -178,13 +182,12 @@ await test("send-later: a new chat is named, a replayed send pays once, an exist
   await R.updateSession(named, { title: "My exact chosen name" }); await R.laterSend(keep.id); await W.settle();
   assert.equal(R.session(named).title, "My exact chosen name"); assert.equal(W.titleCalls.length, 2);
 });
-await test("an 8 word model answer is dropped by design and the placeholder stays at revision 0", async () => {
+await test("an 8 word model answer is cut to its first 5 words", async () => {
   const answer = "Choose compact pots with drainage and water often.";
-  assert.equal(cleanChatTitle(answer), null);
+  assert.equal(cleanChatTitle(answer), "Choose compact pots with drainage");
   const W = fixture(), R = W.R, id = newAutoChat(R, MESSAGE), claim = claimChatTitle(R, id);
-  applyChatTitle(R, claim, answer);
-  assert.equal(R.session(id).title_revision, 0); assert.equal(R.session(id).title, claim.title);
-  applyChatTitle(R, claim, "Choose compact pots and water daily"); assert.equal(R.session(id).title_revision, 1);
+  applyChatTitle(R, claim, ""); assert.equal(R.session(id).title_revision, 0); assert.equal(R.session(id).title, claim.title);
+  applyChatTitle(R, claim, answer); assert.equal(R.session(id).title_revision, 1); assert.equal(R.session(id).title, "Choose compact pots with drainage");
 });
 await test("a first message of only voice memos: placeholder Voice memo, mark waits for the transcript, claim holds its plain words", async () => {
   const W = fixture(), R = W.R, id = newAutoChat(R, "Voice memo 1 (7).wav", "", true);

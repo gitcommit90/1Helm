@@ -35,7 +35,7 @@ label.cmp-item{cursor:pointer;position:relative}
 .cmp-mm{position:absolute;right:14px;bottom:calc(max(18px,env(safe-area-inset-bottom)) + 66px);width:max-content;min-width:200px;max-width:calc(100% - 28px);padding:6px;background:var(--sheet);border:1px solid var(--line);border-radius:22px;box-shadow:0 18px 50px rgba(0,0,0,.4);color:var(--ink)}
 .cmp-mm[hidden]{display:none}
 /* A phone on its side: the panel fills the height and the three buttons stack on its right edge. */
-@media (orientation:landscape) and (max-height:499px){
+@media (orientation:landscape) and (max-height:499px) and (max-device-height:499px),(orientation:landscape) and (max-height:499px) and (not (pointer:coarse)){
   .cmp-panel{top:max(8px,env(safe-area-inset-top));height:auto;left:max(8px,env(safe-area-inset-left));border-radius:26px}
   .cmp-b{bottom:auto;left:auto;right:18px;width:46px;height:46px}
   .cmp-back{top:16px}.cmp-more{bottom:16px;top:auto}

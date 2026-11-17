@@ -3,6 +3,7 @@
 // over the surface it came from (same size and place, with a back button); on a phone it's full screen.
 // Data: GET <api>/apps/<slug> (Composio's catalog, cached on the server, + this workspace's connection). Connecting and
 // disconnecting go through the app's existing flow (deps.connect / POST /apps/disconnect + deps.setAccounts).
+import { PHONE } from "../phone-query";
 import { appPageDiag } from "../clientlog";   // dev-only diagnostic (removable)
 import { ask, dialogOpen } from "../dialog";   // before this module's own Esc listener below, so the dialog's Esc wins
 import { matches } from "../shortcuts";   // the Apps shortcut can be rebound
@@ -59,7 +60,7 @@ const shown = () => ST.open || !!document.querySelector("#appdw.on");
 function host(): HTMLElement | null {
   return document.querySelector<HTMLElement>("#appw.on .apmodal") || document.querySelector<HTMLElement>("#setw.on .smodal");
 }
-const isPhone = () => matchMedia("(max-width:599px),(max-height:499px)").matches;
+const isPhone = () => matchMedia(PHONE).matches;
 function place() {
   const w = document.getElementById("appdw"), p = w?.querySelector<HTMLElement>(".apdpanel"); if (!w || !p) return;
   const h = host();

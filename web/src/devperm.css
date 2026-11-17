@@ -13,7 +13,7 @@
 .dptx b{color:var(--ink);font-size:14.5px;font-weight:600}
 .dlg p.dpfine{font-size:13px;color:var(--mute);margin-top:14px}
 .dpw .dlgb{white-space:normal;height:auto;min-height:40px;padding:9px 18px;line-height:1.25}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .dprow{padding:12px}
   .dlg p.dpfine{font-size:13.5px}
   .dpw .dlgb{min-height:50px}

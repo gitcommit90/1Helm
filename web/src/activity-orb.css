@@ -9,6 +9,6 @@ activity-orb{display:inline-block;width:20px;height:20px;flex:0 0 20px;vertical-
 .tp-text{display:flex;flex-direction:column;min-width:0;gap:1px;font:400 11px/1.4 var(--sans);color:var(--mute)}
 .tp-text b{font:500 12px/1.4 var(--sans);color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px}
 .tp-text span{white-space:nowrap}
-@media (max-width:599px),(max-height:499px){.tp-text b{max-width:min(245px,calc(100vw - 100px))}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.tp-text b{max-width:min(245px,calc(100vw - 100px))}}
 .tk-hico:has(activity-orb){width:20px;color:var(--ink2)}
 @media(forced-colors:active){activity-orb{border:2px dotted currentColor;border-radius:50%}activity-orb::part(canvas){visibility:hidden}}

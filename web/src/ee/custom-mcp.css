@@ -33,7 +33,7 @@
 .mcxform input[type=radio]{height:16px}
 .mcxform [hidden]{display:none}
 .mcxrow button:focus-visible,.mcxdisc:focus-visible,.mcxlink:focus-visible,.mcxform button:focus-visible,.mcxform input:focus-visible,.mcxkey input:focus-visible,.mcxkey button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .mcxrow{padding:14px 16px 10px}
   .mcxtop{flex-wrap:wrap}.mcxtop .srt{flex:1 1 60%}.mcxst{max-width:none}
   .mcxacts{margin-left:0}.mcxerr,.mcxrow .mcxfine,.mcxtools{margin-left:0}

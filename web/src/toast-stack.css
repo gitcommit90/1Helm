@@ -37,7 +37,7 @@
 /* the look stays 26px; the tap area is 44 by 44 (the toast's own edge clips it on the top and right) */
 .bdts-t .tx::before{content:"";position:absolute;top:-8px;right:-8px;bottom:-10px;left:-10px}
 .bdts-t .tx:focus-visible,.bdts-t .tview:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   #toast{left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom));width:auto}
 }
 @media (prefers-reduced-motion:reduce){.bdts-t,.bdts-t[data-leaving],.bdts-t[data-leaving][data-swiped],.bdts-in{transition:none}}

@@ -51,7 +51,7 @@ h3.bykh{margin:22px 6px 8px}
 .bykuse.bykpend span{flex:1 1 auto;min-width:0}
 .bykuse.bykpend .sa{margin:0}
 .bykswbtns{flex:none!important;display:flex;gap:2px}.bykplan .bykswbtns .sa{margin:-4px 0 0 0}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .bykopts .bykopt .srt span{font-size:14px}
   .bykplan{margin:0 0 12px;font-size:14px;flex-wrap:wrap}.bykplan span{flex:1 1 calc(100% - 30px)}.bykplan .sa{margin:0 0 0 18px}
   .bykplan .bykswbtns{margin-left:18px}.bykplan .bykswbtns .sa{margin:0}
@@ -81,7 +81,7 @@ h3.bykh{margin:22px 6px 8px}
 .bykml li code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
 .bykml li[aria-selected="true"]{background:var(--hover)}@media (hover:hover) and (pointer:fine){.bykml li[data-bykm]:hover{background:var(--hover)}}
 .bykml li.bykmnote{cursor:default;color:var(--mute);font-size:13px}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .bykorrow .sprim.bykorbtn{flex:1 1 100%}
   .bykort>span,.bykorfine{font-size:14px!important}
   .bykml{max-height:240px}
@@ -111,12 +111,12 @@ h3.bykh{margin:22px 6px 8px}
 .siwcmark .siwcl{width:21px;height:21px}
 .bykconn .bykacts{align-items:center}
 .bykcgsteps{margin:2px 4px 12px!important;max-width:620px}
-@media (max-width:599px),(max-height:499px){
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
   .siwcoffer{flex-direction:column;align-items:stretch}
   .siwctxt{flex:none}
 }
 #bykcgf .sbtns,#bykccf .sbtns{flex-wrap:wrap}
-@media (max-width:599px),(max-height:499px){#bykcgf .sbtns .sprim,#bykccf .sbtns .sprim{flex:1 1 100%}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){#bykcgf .sbtns .sprim,#bykccf .sbtns .sprim{flex:1 1 100%}}
 .bykeff{margin-top:10px}
 /* several services: the list of connected ones, and the buttons that add one */
 .bykconn{margin-bottom:10px}
@@ -125,7 +125,7 @@ h3.bykh{margin:22px 6px 8px}
 .bykaddrow>.sprim,.bykaddrow>.bykaddb{flex:none;max-width:100%;display:inline-flex;align-items:center;justify-content:center;white-space:normal;text-align:center;line-height:1.25;min-height:40px;padding:8px 18px;border-radius:999px;font-size:14.5px}
 .bykaddb{border:0;background:var(--page);box-shadow:0 0 0 1px var(--line);color:var(--ink);font:inherit;font-size:14.5px;font-weight:600;cursor:pointer}@media (hover:hover) and (pointer:fine){.bykaddb:hover{background:var(--hover)}}.bykaddb:disabled{opacity:.55;cursor:default}
 .bykchoose .sa{align-self:center}
-@media (max-width:599px),(max-height:499px){.bykaddrow>*{flex:1 1 100%}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.bykaddrow>*{flex:1 1 100%}}
 .bykcgsteps a{color:var(--accent)}
 /* Logos from logo.dev (src/logo.ts): a form heading's icon and the small chip inside the add buttons. Same sizes as the icons they sit over. */
 .bykhl{position:relative;display:inline-grid;place-items:center;flex:none;width:22px;height:22px;border-radius:6px;overflow:hidden}
@@ -154,7 +154,7 @@ h3.bykh{margin:22px 6px 8px}
 @media (hover:hover) and (pointer:fine){.bukcheck:not(:disabled):hover{color:var(--ink)}}
 .bukmanage{color:var(--accent);font-weight:600;text-decoration:none}@media (hover:hover) and (pointer:fine){.bukmanage:hover{text-decoration:underline}}
 .bykusage.bukno{padding:9px 12px}
-@media (max-width:599px),(max-height:499px){.bukt{flex-wrap:wrap;row-gap:0}.bukt em{flex:1 1 auto}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.bukt{flex-wrap:wrap;row-gap:0}.bukt em{flex:1 1 auto}}
 
 /* ChatGPT plan usage summary (OpenAI's "Link to ChatGPT usage"): title, the 30 day line, three figures, then Manage usage beside the summary. The block has the same size with or without numbers. */
 .siwcuse{gap:10px}
@@ -162,7 +162,7 @@ h3.bykh{margin:22px 6px 8px}
 .siwcst{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0}
 .siwcst>div{min-width:0}.siwcst dt{font-size:12px;color:var(--faint)}.siwcst dd{margin:2px 0 0;font-size:15px;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
 .siwcmg{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:12.5px;color:var(--mute)}
-@media (max-width:599px),(max-height:499px){.siwcmg{flex-wrap:wrap;row-gap:2px}.siwcst dd{font-size:14px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.siwcmg{flex-wrap:wrap;row-gap:2px}.siwcst dd{font-size:14px}}
 /* "Using ChatGPT plan" under the composer: one quiet line in OpenAI's words */
 .siwcplan{margin:6px 16px 0;font-size:12px;line-height:16px;color:var(--faint);text-align:center}
 .siwcplan a{color:var(--faint);font-weight:600;text-decoration:underline;text-underline-offset:2px;margin-left:6px}@media (hover:hover) and (pointer:fine){.siwcplan a:hover{color:var(--ink)}}
@@ -176,7 +176,7 @@ h3.bykh{margin:22px 6px 8px}
 .siwcpri{background:var(--ink);color:var(--sheet)}@media (hover:hover) and (pointer:fine){.siwcpri:hover{opacity:.9}}
 .siwcsec{background:none;color:var(--ink);box-shadow:inset 0 0 0 1px var(--line2)}@media (hover:hover) and (pointer:fine){.siwcsec:hover{background:var(--hover)}}
 .siwcpri:focus-visible,.siwcsec:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-@media (max-width:599px),(max-height:499px){.siwclim{max-width:none}.siwcacts>*{flex:1 1 auto}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.siwclim{max-width:none}.siwcacts>*{flex:1 1 auto}}
 
 /* the invite banner at the top of AI services */
 .siwcinv{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:12px 14px 12px 16px;margin-bottom:14px;position:relative}
@@ -184,4 +184,4 @@ h3.bykh{margin:22px 6px 8px}
 .siwcnew{flex:none;padding:2px 8px;border-radius:999px;background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent);font-size:11.5px;font-weight:600;letter-spacing:.02em}
 .siwcx{flex:none;width:32px;height:32px;display:grid;place-items:center;border:0;border-radius:50%;background:none;color:var(--mute);cursor:pointer}@media (hover:hover) and (pointer:fine){.siwcx:hover{background:var(--hover);color:var(--ink)}}
 .siwcx:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-@media (max-width:599px),(max-height:499px){.siwcinv{flex-wrap:wrap;padding-right:52px}.siwcit{flex:1 1 100%}.siwcx{position:absolute;top:8px;right:8px}}
+@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.siwcinv{flex-wrap:wrap;padding-right:52px}.siwcit{flex:1 1 100%}.siwcx{position:absolute;top:8px;right:8px}}
