@@ -185,7 +185,7 @@ async function factsFor(env, id, have, settings, lookup, live = {}) {
 const titleOf = (t) => (typeof t === "string" ? t : "");
 // Checks a whole set of categories exactly as a save does and returns the config to store. input: [{ id, title, chain: [{model, effort}], max_price }].
 // have: the account's saved catalog (its models keep their facts). Throws an error with a plain message and status 400 for anything wrong.
-// chain: how many models a category may have, [min, max]. A full plan has exactly three; an own key (byok-custom.js) has one to three.
+// chain: how many models a category may have, [min, max]. A full plan has exactly three; an own key (byok-custom.js) has one to five.
 export async function validateCategories(env, input, level, { have = {}, settings = null, lookup = null, live = {}, chain: [chainMin, chainMax] = [CHAIN_LENGTH, CHAIN_LENGTH], ownKey = false } = {}) {
   level = normalizePrivacy(level);
   if (!Array.isArray(input) || !input.length || input.length > MAX_CATEGORIES) fail(`Save between 1 and ${MAX_CATEGORIES} categories.`);

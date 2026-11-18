@@ -63,7 +63,6 @@ h3.bykh{margin:22px 6px 8px}
 .bykorbox{padding:14px 16px}
 .bykorrow{display:flex;align-items:center;gap:12px 16px;flex-wrap:wrap}
 .bykort{flex:1 1 260px;min-width:0}.bykort b{display:block;font-weight:600;font-size:14.5px;color:var(--ink)}.bykort>span{display:block;font-size:13px;color:var(--mute);line-height:1.45;margin-top:2px}
-.sprim.bykorbtn{flex:none;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center}
 .bykorerr{margin:10px 0 0!important}
 .bykorsep{margin:14px 6px 8px!important;font-size:13px;color:var(--mute)}
 .bykorcon{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 2px;padding:10px 12px;border-radius:14px;background:color-mix(in srgb,var(--live) 10%,transparent)}
@@ -82,7 +81,6 @@ h3.bykh{margin:22px 6px 8px}
 .bykml li[aria-selected="true"]{background:var(--hover)}@media (hover:hover) and (pointer:fine){.bykml li[data-bykm]:hover{background:var(--hover)}}
 .bykml li.bykmnote{cursor:default;color:var(--mute);font-size:13px}
 @media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){
-  .bykorrow .sprim.bykorbtn{flex:1 1 100%}
   .bykort>span,.bykorfine{font-size:14px!important}
   .bykml{max-height:240px}
   .bykml li b{font-size:15px}.bykml li>span{font-size:13px}
@@ -120,16 +118,11 @@ h3.bykh{margin:22px 6px 8px}
 .bykeff{margin-top:10px}
 /* several services: the list of connected ones, and the buttons that add one */
 .bykconn{margin-bottom:10px}
-.bykadd{padding:14px 16px}
-.bykaddrow{display:flex;flex-wrap:wrap;gap:10px}
-.bykaddrow>.sprim,.bykaddrow>.bykaddb{flex:none;max-width:100%;display:inline-flex;align-items:center;justify-content:center;white-space:normal;text-align:center;line-height:1.25;min-height:40px;padding:8px 18px;border-radius:999px;font-size:14.5px}
 .bykaddb{border:0;background:var(--page);box-shadow:0 0 0 1px var(--line);color:var(--ink);font:inherit;font-size:14.5px;font-weight:600;cursor:pointer}@media (hover:hover) and (pointer:fine){.bykaddb:hover{background:var(--hover)}}.bykaddb:disabled{opacity:.55;cursor:default}
 .bykchoose .sa{align-self:center}
-@media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.bykaddrow>*{flex:1 1 100%}}
 .bykcgsteps a{color:var(--accent)}
-/* Logos from logo.dev (src/logo.ts): a form heading's icon and the small chip inside the add buttons. Same sizes as the icons they sit over. */
+/* Logos from logo.dev (src/logo.ts): a form heading's icon and the icon on a form heading. Same size as the icon it sits over. */
 .bykhl{position:relative;display:inline-grid;place-items:center;flex:none;width:22px;height:22px;border-radius:6px;overflow:hidden}
-.bykaddrow .lgc{margin-right:8px;width:20px;height:20px;vertical-align:0}
 /* Use OpenCode: the numbered steps */
 .bykol{padding-left:22px;display:grid;gap:10px;font-size:14px;line-height:1.5}
 .bykol a{color:var(--accent)}
@@ -185,3 +178,13 @@ h3.bykh{margin:22px 6px 8px}
 .siwcx{flex:none;width:32px;height:32px;display:grid;place-items:center;border:0;border-radius:50%;background:none;color:var(--mute);cursor:pointer}@media (hover:hover) and (pointer:fine){.siwcx:hover{background:var(--hover);color:var(--ink)}}
 .siwcx:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (max-width:599px),(max-height:499px) and (max-device-height:499px),(max-height:499px) and (max-device-width:499px),(max-height:499px) and (not (pointer:coarse)){.siwcinv{flex-wrap:wrap;padding-right:52px}.siwcit{flex:1 1 100%}.siwcx{position:absolute;top:8px;right:8px}}
+/* connected services: one strip each in a shared list, opened in place to show the test, usage and buttons */
+.bykcp+.bykcp{box-shadow:0 -1px 0 var(--line)}
+.bykrw{cursor:pointer}.bykrw:focus-visible{outline:2px solid var(--ink);outline-offset:-2px}
+@media (hover:hover) and (pointer:fine){.bykrw:hover{background:var(--hover)}}
+.bykrw .srt>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bykar{transition:transform .15s}.bykar.on{transform:rotate(90deg)}
+/* services that can be added: strips like the connected ones, with a Connect label where a connected strip says Works */
+.sr .sval.bykgo{color:var(--ink);font-weight:600;font-size:13px;text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px}
+.bykaddrw:disabled{opacity:.55;cursor:default}
+.bykaddrw{width:100%;text-align:left}

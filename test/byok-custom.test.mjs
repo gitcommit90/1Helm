@@ -136,7 +136,7 @@ test("on OpenRouter the picker is the same catalog and privacy filter as a full 
 });
 
 // ===== saving =====
-test("a plain service: nothing is chosen for the account, then models are validated against the list, one to three, no max price", async () => {
+test("a plain service: nothing is chosen for the account, then models are validated against the list, one to five, no max price", async () => {
   await reset(); modelList = PLAIN;
   const none = await ownViewFor(env, { id: "t1" }, "own");
   assert.deepEqual(none.categories, [{ id: "general", title: "General", chain: [], max_price: null }]); assert.equal(none.no_model, true, "no model is picked on the account's behalf"); assert.deepEqual(none.connections.map((c) => c.id), ["p_main"]);
@@ -151,7 +151,7 @@ test("a plain service: nothing is chosen for the account, then models are valida
   await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("qwen-coder"), "high"))] }, base), /doesn't support the reasoning level "high"/);
   await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("o-reason"), "max"))] }, base), /doesn't support the reasoning level "max"/);
   await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")), entry(P("main-1")))] }, base), /different models/);
-  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")), entry(P("gemma-2")), entry(P("qwen-coder")), entry(P("mistral-small")))] }, base), /up to two fallbacks/);
+  await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")), entry(P("gemma-2")), entry(P("qwen-coder")), entry(P("mistral-small")), entry(P("fast-1")), entry(P("llama-3.3-70b")))] }, base), /up to 4 fallbacks/);
   await refuses(saveOwn(env, "t1", { categories: [{ ...cat("general", "General", entry(P("main-1"))), max_price: { prompt: 1, completion: 2 } }] }, base), /only available on OpenRouter/);
   await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1"))), cat("c_dup00001", "general", entry(P("gemma-2")))] }, base), /different name/);
   await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry("gone:main-1"))] }, base), /isn't connected/);
@@ -161,6 +161,9 @@ test("a plain service: nothing is chosen for the account, then models are valida
   assert.equal((await saveOwn(env, "t1", { categories: ok.categories }, base)).categories.length, 2, "a list that can't be read: models already saved stay");
   await refuses(saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("gemma-2")))] }, base), /Couldn't read the model list of/, 503);
   const gone = await saveOwn(env, "t1", { on: false }, base); assert.equal(gone.categories.length, 2, "an own key has no off state: on is ignored");
+  _resetLists(); modelList = PLAIN;
+  assert.equal((await saveOwn(env, "t1", { categories: [cat("general", "General", entry(P("main-1")), entry(P("gemma-2")), entry(P("qwen-coder")), entry(P("mistral-small")), entry(P("fast-1")))] }, base)).categories[0].chain.length, 5, "five models save");
+  assert.equal((await ownViewFor(env, { id: "t1" }, "own")).max_chain, 5, "the view reports the limit");
 });
 
 test("an OpenRouter connection: the same catalog rules as a full plan, with max price and the privacy level", async () => {
@@ -310,7 +313,7 @@ test("Background jobs is validated like a category and exists only for own-key a
   await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("not-served"))] } }, base), /isn't in the model list of/);
   await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("qwen-coder"), "high")] } }, base), /Background jobs, first choice|doesn't support the reasoning level "high"/);
   await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("main-1")), entry(P("main-1"))] } }, base), /Background jobs: choose different models/);
-  await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("main-1")), entry(P("gemma-2")), entry(P("qwen-coder")), entry(P("mistral-small"))] } }, base), /Background jobs: choose a first model and up to two fallbacks/);
+  await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("main-1")), entry(P("gemma-2")), entry(P("qwen-coder")), entry(P("mistral-small")), entry(P("fast-1")), entry(P("llama-3.3-70b"))] } }, base), /Background jobs: choose a first model and up to 4 fallbacks/);
   await refuses(saveOwn(env, "t1", { background: { chain: [entry(P("main-1"))], extra: 1 } }, base), /Invalid Background jobs/);
   await assert.rejects(saveCustom(env, "t1", { background: { chain: [entry("acme/a")] } }, { settings: SETTINGS }), /Nothing to change/);
   d1.exec("UPDATE tenants SET plan='plus' WHERE id='t1'"); assert.equal(await loadByok(env, "t1"), null);

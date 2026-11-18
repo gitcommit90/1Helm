@@ -1,9 +1,9 @@
 // Settings → Advanced → Custom Model Selection (for 1Helm's own models; the own-key editor lives in Settings → AI services → Models, cmodelsOwnPanel). Off by default.
 // Both editors share this module's state, told apart by `scope`: the AI services page asks the server for ?scope=services (the own-key editor on every plan, as soon as a service is connected;
 // choosing is optional on a full plan, so no warning shows) and Advanced asks with no scope (1Helm's models, or the own-key editor while an own key answers chat). Opening the other page starts the state over. When it is on, this account's chat answers from its own categories: each has a first
-// model and two fallbacks (each with its reasoning level) and a max price in and out. Max output, sort and timeout stay ours.
+// model and fallbacks (each with its reasoning level) and a max price in and out. Max output, sort and timeout stay ours.
 // On an own AI key (the server says own_key) this is the only place its models are chosen (task byok-multi): there is no switch (it is always used), nothing is chosen for the account until it picks
-// General's first model, and the person adds up to two fallbacks. A category has one to three models, and the picker lists the models of every connected service together, each labelled with its
+// General's first model, and the person adds fallbacks. A category has one to five models, and the picker lists the models of every connected service together, each labelled with its
 // service, so one chain or Background jobs may mix services. A model is named <connection id>:<model id>. The reasoning level of each model is a row of text buttons (Default, Low, ...), with only the
 // levels that model lists. Max price shows only when OpenRouter is connected.
 // The editing rules are the /models console's own (app-assets/app-static/models-console-core.js: applyEdit, newEntry, pickerList, termsTag), loaded
@@ -40,11 +40,11 @@ type Scope = "" | "services";
 let scope: Scope = "";
 const boot0 = { on: false, own: false };   // what the boot answer said about Advanced: kept so the Advanced card doesn't flash the wrong editor while its own answer loads
 const LEVEL_NAME: Record<string, string> = { unrestricted: "Unrestricted", no_training: "No Training", zdr: "Zero Data Retention" };
-const SLOT = ["First choice", "Second choice", "Third choice"];
+const SLOT = ["First choice", "Second choice", "Third choice", "Fourth choice", "Fifth choice"];
 type Svc = { id: string; kind: string; label: string; host?: string };
-const M: { fetched: boolean; at: number; loaded: boolean; loading: boolean; busy: boolean; err: string; on: boolean; level: string; own: boolean; endpoint: string; needs: boolean; problems: Problem[]; max: number; cats: Cat[]; bg: Cat | null; models: Record<string, Card>;
+const M: { fetched: boolean; at: number; loaded: boolean; loading: boolean; busy: boolean; err: string; on: boolean; level: string; own: boolean; endpoint: string; needs: boolean; problems: Problem[]; max: number; chainMax: number; cats: Cat[]; bg: Cat | null; models: Record<string, Card>;
   draft: Record<string, { prompt: string; completion: string }>; open: string | null; top: number; core: any; noModel: boolean; optional: boolean; oneHelm: boolean; svcs: Svc[]; hasOr: boolean } =
-  { fetched: false, at: 0, loaded: false, loading: false, busy: false, err: "", on: false, level: "zdr", own: false, endpoint: "", needs: false, problems: [], max: 12, cats: [], bg: null, models: {}, draft: {}, open: null, top: 0, core: null, noModel: false, optional: false, oneHelm: false, svcs: [], hasOr: false };
+  { fetched: false, at: 0, loaded: false, loading: false, busy: false, err: "", on: false, level: "zdr", own: false, endpoint: "", needs: false, problems: [], max: 12, chainMax: 3, cats: [], bg: null, models: {}, draft: {}, open: null, top: 0, core: null, noModel: false, optional: false, oneHelm: false, svcs: [], hasOr: false };
 const BG = "background";
 // Choose models per channel (own editor): on = the switch, chan = the chosen channel's slug ("" is All channels), own = that channel has models of its own.
 const CH = { on: false, chan: "", own: false };
@@ -98,7 +98,7 @@ const asState = (cfg = asConfig()) => ({ dynamicRouting: true, config: cfg, grou
 const fromConfig = (cfg: any): Cat[] => cfg.routing.categories.filter((c: any) => c.id !== BG).map((c: any) => ({ id: c.id, title: String(c.title), chain: c.chains[M.level].map((e: any) => ({ model: e.model, effort: e.effort ?? null })), max_price: c.max_price ?? null }));
 
 function adopt(v: any, fromCache = false) {
-  M.on = !!v.on; M.level = v.level || M.level; M.own = !!v.own_key; M.endpoint = M.own ? v.endpoint || "plain" : ""; M.needs = !!v.needs_choice; M.problems = v.problems || []; M.max = v.max_categories || M.max;
+  M.on = !!v.on; M.level = v.level || M.level; M.own = !!v.own_key; M.endpoint = M.own ? v.endpoint || "plain" : ""; M.needs = !!v.needs_choice; M.problems = v.problems || []; M.max = v.max_categories || M.max; M.chainMax = Math.min(SLOT.length, v.max_chain || 3);
   M.cats = v.categories || []; M.bg = v.background?.chain ? { id: BG, title: "Background jobs", chain: v.background.chain, max_price: null } : null; M.models = v.models || {}; M.draft = {}; M.loaded = true;
   CH.on = !!v.per_channel; CH.own = !!v.channel_own;
   M.noModel = !!v.no_model; M.optional = !!v.optional; M.oneHelm = !!v.onehelm; M.svcs = Array.isArray(v.connections) ? v.connections : []; M.hasOr = !!v.has_openrouter; if (M.own) M.on = true;   // an own key has no switch: it is always used
@@ -232,7 +232,7 @@ function catHtml(c: Cat, bad: Set<string>) {
     return `<div class="cmslot${isBad ? " bad" : ""}"><span class="cmlab">${SLOT[i]}</span><button type="button" class="cmmodel" data-cmpick="${esc(c.id)}|${i}" aria-label="${esc(SLOT[i])} model for ${esc(c.title)}: ${esc(m?.name || e.model)}"><span>${esc(m?.name || e.model)}</span></button>${select}${isBad ? `<span class="cmwhy">Not available with ${esc(LEVEL_NAME[M.level] || M.level)}</span>` : ""}</div>`;
   }).join("");
   const priceErr = d && (!!d.prompt !== !!d.completion) ? `<p class="meta cmerr">Enter both prices, or leave both empty.</p>` : "";
-  const addFb = M.own && c.chain.length && c.chain.length < SLOT.length ? `<div class="cmfbrow"><button type="button" class="sa blue" data-cmfb="${esc(c.id)}">Add fallback</button></div>` : "";
+  const addFb = M.own && c.chain.length && c.chain.length < M.chainMax ? `<div class="cmfbrow"><button type="button" class="sa blue" data-cmfb="${esc(c.id)}">Add fallback</button></div>` : "";
   const prices = (M.own ? !M.hasOr : M.endpoint === "plain") || isBg ? "" : `<div class="cmprice"><label><span>Max price in</span><span class="cmusd">$<input type="number" inputmode="decimal" min="0" max="10000" step="any" data-cmprice="${esc(c.id)}|prompt" value="${esc(pin)}" placeholder="Default" aria-label="Max price in, dollars per million tokens"></span></label>
       <label><span>Max price out</span><span class="cmusd">$<input type="number" inputmode="decimal" min="0" max="10000" step="any" data-cmprice="${esc(c.id)}|completion" value="${esc(pout)}" placeholder="Default" aria-label="Max price out, dollars per million tokens"></span></label></div>${priceErr}`;
   const note = isBg ? `<p class="cmbgnote">${esc(BG_NOTE)}</p>` : "";
@@ -475,7 +475,7 @@ async function demoApi(path: string, init?: { method?: string; body?: any }) {
       else { if (body.categories) demo.categories = clone(body.categories); if (body.background) demo.bg = clone(body.background.chain); } }
     const chan = decodeURIComponent((path.match(/[?&]channel=([^&]*)/) || [])[1] || body?.channel || ""), ce = demo.pc ? demo.chans[chan] : undefined, cats = ce?.cats || demo.categories!, bg = ce?.bg || demo.bg!;
     const used = new Set([...cats.flatMap(c => c.chain.map(e => e.model)), ...bg.map(e => e.model)]);
-    return { on: true, level, own_key: true, per_channel: demo.pc, channel: chan || null, channel_own: !!ce, endpoint: "own", optional: !OWN_Q().includes("byokplan"), needs_choice: false, no_model: !cats[0].chain.length, problems: [], max_categories: 12, categories: clone(cats), background: { title: "Background jobs", chain: clone(bg) }, connections: svcs, has_openrouter: false,
+    return { on: true, level, own_key: true, per_channel: demo.pc, channel: chan || null, channel_own: !!ce, endpoint: "own", optional: !OWN_Q().includes("byokplan"), needs_choice: false, no_model: !cats[0].chain.length, problems: [], max_categories: 12, max_chain: 5, categories: clone(cats), background: { title: "Background jobs", chain: clone(bg) }, connections: svcs, has_openrouter: false,
       onehelm: OWN_Q().includes("byokplan") ? null : { id: ONE_ID, name: ONE_NAME, service: "1Helm" }, models: Object.fromEntries([...OWN_MODELS, ...(OWN_Q().includes("byokplan") ? [] : [oneCard()])].filter(m => used.has(m.id)).map(m => [m.id, { ...m, allowed: true }])) };
   }
   const view = () => { const cats = demo.categories || (demo.categories = [{ id: "general", title: "General", chain: DEMO.slice(0, 3).map(m => ({ model: m.id, effort: m.default_effort })), max_price: null }]);

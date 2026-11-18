@@ -1,7 +1,7 @@
-// Custom model selection on an own AI key: the same options as the advanced model choice (the General slot with up to 3 fallbacks, effort levels, all of it).
+// Custom model selection on an own AI key: the same options as the advanced model choice (the General slot with up to 3 models, effort levels, all of it).
 // An account connects any number of AI services (byok-connections.js) and this is the only place where own-key models are chosen.
 //   - where the choices live: tenants.custom_models_own / custom_models_own_on (migration 080). An own key has no off state: the setting is always used. The shape is the same as for our models:
-//     { version, categories: [{ id, title, chain: [{model, effort}], max_price }], background: { chain }, catalog }, one to three models per category, but every model is named
+//     { version, categories: [{ id, title, chain: [{model, effort}], max_price }], background: { chain }, catalog }, one to five models per category, but every model is named
 //     <connection id>:<model id>, and its record in the catalog says which connection and kind it came from (conn, connKind).
 //   - the picker lists the models of every connected service together, each labelled with its service. OpenRouter's models come from the same catalog and the same privacy filter as a full
 //     plan (pickerModels, allowedAt); any other service's models are what its list says (GET /models with that connection's key, or ChatGPT's and OpenCode's own list), with the facts the list
@@ -12,7 +12,7 @@
 //     worker, which runs on that category's models. byokChatChain tries a plan's models in order through byokChat, which sends each to the connection it is named after.
 import { allFailed, byokChat, streamFallback, byokModelsJson, answersOnOwnKey, ByokError, chooseModelText } from "../byok.js";
 import { normalizePrivacy, privacyOf } from "../privacy.js";
-import { liveConfig, parse, ownFor, BACKGROUND_TITLE, CUSTOM_VERSION, MAX_CATEGORIES, CHAIN_LENGTH, allowedAt, nameOf, validateCategories, ownProblems, requiredMessage, CustomModelsRequired, modelCard, pickerModels, statusOf, customEnv } from "./custom-models.js";
+import { liveConfig, parse, ownFor, BACKGROUND_TITLE, CUSTOM_VERSION, MAX_CATEGORIES, allowedAt, nameOf, validateCategories, ownProblems, requiredMessage, CustomModelsRequired, modelCard, pickerModels, statusOf, customEnv } from "./custom-models.js";
 import { modelSettingsEnv } from "./model-settings.js";
 import { dynamicRoutingOn } from "./routing-config.js";
 import { chooseTwo, prevToolsOf, openWorkOf, openAgentsOf, browserBackSteer } from "./route2.js";
@@ -24,7 +24,8 @@ const fail = (message, status = 400) => { throw Object.assign(new Error(message)
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/;
 const NS_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,219}$/;
 const CATEGORY_ID = /^(general|c_[a-z0-9]{6,16})$/;
-export const OWN_CHAIN = [1, CHAIN_LENGTH];
+export const OWN_CHAIN_MAX = 5;
+export const OWN_CHAIN = [1, OWN_CHAIN_MAX];
 // The most the request sorter may cost on an own key, in nano$ before markup: it is reserved first, and a turn that can't pay for it answers from General.
 export const SORTER_NANO = 1_000_000;
 
@@ -187,7 +188,7 @@ async function validateOwn(input, ctx, { empty = false } = {}) {
     if ((c.id === "general") !== (title === "General")) fail("General's name can't be changed.");
     if (titles.has(title.toLowerCase())) fail("Each category needs a different name.");
     titles.add(title.toLowerCase());
-    if (!Array.isArray(c.chain) || c.chain.length < (empty ? 0 : OWN_CHAIN[0]) || c.chain.length > OWN_CHAIN[1]) fail(`${title}: choose a first model and up to two fallbacks.`);
+    if (!Array.isArray(c.chain) || c.chain.length < (empty ? 0 : OWN_CHAIN[0]) || c.chain.length > OWN_CHAIN[1]) fail(`${title}: choose a first model and up to ${OWN_CHAIN[1] - 1} fallbacks.`);
     if (new Set(c.chain.map((e) => e?.model)).size !== c.chain.length) fail(`${title}: choose different models.`);
     let max_price = null;
     if (c.max_price != null) {
@@ -259,7 +260,7 @@ export function ownView(st, conns = [], { byokPlan = false } = {}) {
   // On the Bring your own key plan 1Helm's models don't exist: the editor neither offers them nor lists a saved entry (it stays stored, and comes back on a full plan).
   const cfg = !st.config || !byokPlan ? st.config : { ...st.config, categories: st.config.categories.map((c) => ({ ...c, chain: c.chain.filter((e) => !isOneHelm(e.model)) })), background: st.config.background ? { chain: st.config.background.chain.filter((e) => !isOneHelm(e.model)) } : st.config.background, catalog: Object.fromEntries(Object.entries(st.config.catalog).filter(([id]) => !isOneHelm(id))) };
   const cats = cfg?.categories?.length ? cfg.categories : [{ id: "general", title: "General", chain: [], max_price: null }];
-  return { ...s, max_categories: MAX_CATEGORIES, categories: cats.map((c) => ({ id: c.id, title: c.title, chain: c.chain.map((e) => ({ ...e })), max_price: c.max_price ? { ...c.max_price } : null })),
+  return { ...s, max_categories: MAX_CATEGORIES, max_chain: OWN_CHAIN_MAX, categories: cats.map((c) => ({ id: c.id, title: c.title, chain: c.chain.map((e) => ({ ...e })), max_price: c.max_price ? { ...c.max_price } : null })),
     background: { title: BACKGROUND_TITLE, chain: (cfg?.background?.chain || []).map((e) => ({ model: e.model, effort: e.effort ?? null })) },
     onehelm: byokPlan ? null : { id: ONEHELM_MODEL, name: ONEHELM_NAME, service: "1Helm" },
     connections: conns.map((c) => ({ id: c.id, kind: c.kind, label: c.label, host: c.kind === "plain" ? String(c.host || "") : "" })), has_openrouter: conns.some((c) => c.kind === "openrouter"),

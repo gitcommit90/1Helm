@@ -110,6 +110,7 @@ if (QP.has("byoksaved") || QP.has("byokfb") || QP.has("byokswitch")) mockSt.conn
 if (QP.has("byokthree")) mockSt.connections = [MOCK_CONNS.chatgpt, MOCK_CONNS.opencode, MOCK_CONNS.p_work1];
 if (QP.has("byokcc")) mockSt.connections = [MOCK_CONNS.claudecode, MOCK_CONNS.opencode];
 if (QP.has("byokcgagain")) mockSt.connections = [{ ...MOCK_CONNS.chatgpt, signin_again: true }];
+if (QP.has("byokfail")) mockSt.connections = [MOCK_CONNS.claudecode, MOCK_CONNS.opencode, { ...MOCK_CONNS.p_work1, test: { ok: false, at: Date.now() - 600e3, checks: { reach: { ok: false, ms: 0, error: "The key was rejected (401)." } } } }];
 // Sandbox only: Claude shows two bars (?byokusagelink: the link instead, ?byokusagelimit: a limit reached), OpenCode shows three. ChatGPT shows the usage summary (?byokcgzero: no use yet, ?byokcgnosum: not loaded, ?byokcgwelcome: the first-sign-in message).
 const mockUsage = (kinds: string[]): Record<string, Usage> => Object.fromEntries(kinds.map(k => {
   const manage = usagePages()[k], none = k === "chatgpt" || QP.has("byokusagelink"), hit = QP.has("byokusagelimit") && k === "chatgpt";
@@ -381,13 +382,15 @@ export function bykUsageLoad() {
   }).catch(fail).finally(() => { usageBusy = false; if (usageAgain) { usageAgain = false; bykUsageLoad(); } });
 }
 
+const shut = new Set<string>();   // ids whose strip was toggled from its default (in memory only)
 function connRow(c: Conn): string {
   const busy = B.busy === "test" && B.busyId === c.id, del = B.busy === "del" && B.busyId === c.id, off = B.busy ? " disabled" : "";
   const again = c.kind === "chatgpt" && c.signin_again ? cgButton(off) : "";
   const ccAgain = c.kind === "claudecode" && c.signin_again ? `<button class="bykaddb" data-bykcc${off}>${logoChip(serviceDomain("claudecode"), 20)}Continue with Claude</button>` : "";
-  return `<div class="sc bykconn" data-bykconn="${esc(c.id)}">${D!.srow(svcIcon(c.kind, c.host, D!.icon(c.kind === "chatgpt" || c.kind === "openrouter" ? "key" : "spark")), esc(c.label), subOf(c), c.test ? `<span class="${c.test.ok ? "sok" : "sval bykneed"}">${c.test.ok ? D!.icon("check", 14) + "Works" : "Failed"}</span>` : "")}
-    ${testHtml(c.test && !c.test.ok ? c.test : null)}${usageBlock(c)}
-    <div class="sfoot bykacts">${again}${ccAgain}${c.kind === "opencode" ? `<button class="sa" data-bykplan="${c.plan === "payg" ? "go" : "payg"}"${off}>${B.busy === "plan" ? "Switching…" : c.plan === "payg" ? "Use my Go plan" : "Use pay as you go"}</button>` : ""}<button class="sa blue" data-byktest="${esc(c.id)}"${off}>${busy ? "Testing…" : "Test"}</button><button class="sa mute" data-bykrm="${esc(c.id)}"${off}>${del ? "Removing…" : "Remove"}</button></div></div>`;
+  const bad = !!(c.test && !c.test.ok) || !!c.signin_again, open = bad !== shut.has(c.id);   // a strip with a problem starts open; toggling flips either state
+  const st = c.signin_again ? `<span class="sval bykneed">Sign in again</span>` : c.test ? `<span class="${c.test.ok ? "sok" : "sval bykneed"}">${c.test.ok ? D!.icon("check", 14) + "Works" : "Failed"}</span>` : "";
+  return `<div class="bykcp" data-bykconn="${esc(c.id)}"><button type="button" class="sr bykrw" data-bykopen="${esc(c.id)}" aria-expanded="${open}">${svcIcon(c.kind, c.host, D!.icon(c.kind === "chatgpt" || c.kind === "openrouter" ? "key" : "spark"))}<span class="srt"><b>${esc(c.label)}</b><span>${subOf(c)}</span></span>${st}<span class="schev bykar${open ? " on" : ""}">${D!.icon("chev", 18)}</span></button><div class="bykcb"${open ? "" : " hidden"}>${testHtml(c.test && !c.test.ok ? c.test : null)}${usageBlock(c)}
+    <div class="sfoot bykacts">${again}${ccAgain}${c.kind === "opencode" ? `<button class="sa" data-bykplan="${c.plan === "payg" ? "go" : "payg"}"${off}>${B.busy === "plan" ? "Switching…" : c.plan === "payg" ? "Use my Go plan" : "Use pay as you go"}</button>` : ""}<button class="sa blue" data-byktest="${esc(c.id)}"${off}>${busy ? "Testing…" : "Test"}</button><button class="sa mute" data-bykrm="${esc(c.id)}"${off}>${del ? "Removing…" : "Remove"}</button></div></div></div>`;
 }
 // OpenAI's "Invite existing users to sign in with ChatGPT": a small New banner at the top of AI services for an account with no ChatGPT connection that has not dismissed it (the server keeps the dismissal).
 // Continue with ChatGPT is the action and starts the same connect flow as the offer card below.
@@ -401,16 +404,13 @@ function inviteDismiss() {
   B.st = { ...B.st, chatgpt: { ...B.st.chatgpt, invite: false } }; D?.repaint();
   call("/byok/chatgpt/invite-dismiss", {}).then(d => { if (d?.ok) applyState(d); }).catch(() => {});
 }
-// The buttons that add a service. A service that can only be connected once leaves the list of buttons when it is connected.
+// The strips that add a service. A service that can only be connected once leaves the list when it is connected.
 function addButtons(): string {
   const off = B.busy ? " disabled" : "";
   // ChatGPT plan use is offered in a card of its own (OpenAI's guidelines: say what it is and keep it distinct from the app's own plan), the other services are the row below.
   const offer = !has("chatgpt") ? `<div class="sc siwcoffer"><div class="siwctxt"><b>Use your ChatGPT plan</b><span>Complete eligible AI requests in this app with usage included in your ChatGPT plan or credits balance.</span><em>ChatGPT plan usage is separate from your 1Helm plan.</em></div>${cgButton(off)}</div>` : "";
-  return `${offer}<div class="sc bykadd"><div class="bykaddrow">${!has("openrouter") ? `<button type="button" class="sprim bykorbtn" data-bykor${off}>${logoChip(serviceDomain("openrouter"), 20)}Sign in with OpenRouter</button>` : ""}
-    ${!has("claudecode") ? `<button type="button" class="bykaddb" data-bykcc${off}>${logoChip(serviceDomain("claudecode"), 20)}Continue with Claude</button>` : ""}
-    ${!has("opencode") ? `<button type="button" class="bykaddb" data-bykoc${off}>${logoChip(serviceDomain("opencode"), 20)}Use OpenCode</button>` : ""}
-    ${!has("tokenpass") ? `<button type="button" class="bykaddb" data-bykvtp${off}>${logoChip(serviceDomain("tokenpass"), 20)}Vercel Token Pass</button>` : ""}
-    <button type="button" class="bykaddb" data-bykplain${off}>Add an OpenAI-compatible service</button></div></div>`;
+  const row = (attr: string, kind: Kind, title: string, sub: string) => `<button type="button" class="sr bykrw bykaddrw" ${attr}${off}>${svcIcon(kind, "", D!.icon("spark"))}<span class="srt"><b>${title}</b><span>${sub}</span></span><span class="sval bykgo">Connect</span></button>`;
+  return `${offer}<div class="sc bykconn">${!has("openrouter") ? row("data-bykor", "openrouter", "OpenRouter", "Sign in with OpenRouter") : ""}${!has("claudecode") ? row("data-bykcc", "claudecode", "Claude", "Use your Claude plan") : ""}${!has("opencode") ? row("data-bykoc", "opencode", "OpenCode", "Paste an OpenCode API key") : ""}${!has("tokenpass") ? row("data-bykvtp", "tokenpass", "Vercel Token Pass", "Paste a Vercel AI Gateway key") : ""}<button type="button" class="sr bykrw bykaddrw" data-bykplain${off}><span class="favi">${D!.icon("spark")}</span><span class="srt"><b>OpenAI-compatible</b><span>Any compatible service</span></span><span class="sval bykgo">Connect</span></button></div>`;
 }
 const warn = () => `<div class="bykwarn${B.field === "ack" ? " bykbad" : ""}">${D!.icon("help", 16)}<div><p>${esc(BYK_WARN)}</p>${B.st?.full ? `<p class="bykterms">${esc(BYK_ZDR_FULL)}</p>` : ""}<p class="bykterms">${esc(BYK_TERMS)}</p>
   <label class="bykack"><input type="checkbox" data-bykack${B.f.ack ? " checked" : ""}><span>I understand</span></label>${B.field === "ack" && B.err ? `<em class="bykerr" role="alert">${esc(B.err)}</em>` : ""}</div></div>`;
@@ -484,7 +484,7 @@ export function bykPage(): string {
     : s.mode === "switch" ? switchBanner(cs.length > 0)
     : fbOn() ? `<div class="bykplan bykfb">${D.icon("spark", 16)}<span><b>${esc(FALLBACK_NOTE)}</b>${who} is using your services for chat until your credits refill: when ${plan} renews, or when you add credits. The computer, browser, web search and memory need 1Helm credits, so they're paused until then.</span><button class="sa blue" data-bykcredits>Add credits</button></div>`
     : cs.length ? "" : `<div class="bykplan">${D.icon("spark", 16)}<span><b>Ways to use it on ${plan}</b>Connect a service below, then choose its models: ${who} can use them right away, keep ${plan} and use your services only when your 1Helm credits run out, or switch now to the $${s.price} plan with them.</span></div>`;
-  const list = cs.map(connRow).join(""), step = stepForm();
+  const list = cs.length ? `<div class="sc bykconn">${cs.map(connRow).join("")}</div>` : "", step = stepForm();
   const status = B.err && !B.step && !B.field ? `<p class="bykerr" role="alert">${esc(B.err)}</p>` : B.orErr ? `<p class="bykerr bykorerr" role="alert">${esc(B.orErr)}</p>` : "";
   return `${head}${step ? "" : inviteBanner()}${top}${list}${step || addButtons()}${status}${cmodelsOwnPanel(cs.length > 0)}${s.full && cs.length && !step ? choiceHtml() : ""}
     <p class="sfine">${esc(BYK_WARN)} If a service stops working, ${who} says so in the task and points you here; ${s.full ? "while your services are in use, " : ""}1Helm never switches to its own AI instead. Keys are stored encrypted and can't be shown again, only their last 4 characters.</p>`;
@@ -704,6 +704,7 @@ export function bykInit(d: Deps) {
     if (t.closest("[data-bykswitchnow]")) { e.preventDefault(); bykSwitchNow(); return; }
     if (t.closest("[data-bykundo]")) { e.preventDefault(); pickMode("undo"); return; }
     if (t.closest("[data-bykcredits]")) { e.preventDefault(); D?.credits(); return; }
+    const ob = t.closest<HTMLElement>("[data-bykopen]"); if (ob) { e.preventDefault(); const i = ob.dataset.bykopen!; shut.has(i) ? shut.delete(i) : shut.add(i); D?.repaint(); return; }
     const tb = t.closest<HTMLElement>("[data-byktest]"); if (tb) { e.preventDefault(); test(tb.dataset.byktest!); return; }
     const pb = t.closest<HTMLElement>("[data-bykplan]"); if (pb) { e.preventDefault(); ocPlan(pb.dataset.bykplan!); return; }
     const rb = t.closest<HTMLElement>("[data-bykrm]"); if (rb) { e.preventDefault(); remove(rb.dataset.bykrm!); return; }
